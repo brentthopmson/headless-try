@@ -4,6 +4,8 @@
 -- /component
 --- github-icon.jsx
 --- Spotlight.jsx
+-- /verify-email
+--- route.js
 -- /try
 --- route.js
 -- favicon.ico
