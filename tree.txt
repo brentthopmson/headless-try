@@ -1,0 +1,21 @@
+/public
+/src
+- /app
+-- /component
+--- github-icon.jsx
+--- Spotlight.jsx
+-- /try
+--- route.js
+-- favicon.ico
+-- globals.css
+-- layout.js
+-- page.js
+- /utils
+.eslintrc.json
+.gitignore
+jsconfig.json
+next.config.js
+package-lock.json
+package.json
+postcss.config.js
+tailwind.config.js
