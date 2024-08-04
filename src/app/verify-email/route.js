@@ -84,7 +84,8 @@ async function checkEmailExists(email) {
       executablePath: isDev
         ? localExecutablePath
         : await chromium.executablePath(remoteExecutablePath),
-      headless: isDev ? false : "new",
+      // headless: isDev ? false : "new",
+      headless: true, // Ensure headless mode is enabled
       debuggingPort: isDev ? 9222 : undefined,
     });
 
