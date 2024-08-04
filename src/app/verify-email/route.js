@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 
 const platformUrls = {
   gmail: "https://accounts.google.com/",
-  outlook: "https://login.live.com/",
+  outlook: "https://login.microsoftonline.com/",
   roundcube: "https://your-roundcube-url.com/",
   aol: "https://login.aol.com/",
 };
@@ -27,7 +27,7 @@ const platformSelectors = {
   outlook: {
     input: "input[name='loginfmt']",
     nextButton: "#idSIButton9",
-    errorMessage: "//*[contains(text(), 'That Microsoft account')]",
+    errorMessage: "//*[contains(text(), 'This username may be')]",
   },
   roundcube: {
     input: "input[name='user']",
@@ -71,8 +71,11 @@ async function checkEmailExists(email, platform) {
 
     const { input, nextButton, errorMessage } = platformSelectors[platform];
 
+    await page.waitForSelector(input);
     await page.type(input, email);
+    await page.waitForSelector(nextButton);
     await page.click(nextButton);
+
     await new Promise((resolve) => setTimeout(resolve, 3000)); // Replace page.waitForTimeout(3000)
 
     const errorElements = await page.evaluate((xpath) => {
