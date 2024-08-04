@@ -27,7 +27,7 @@ const platformSelectors = {
   outlook: {
     input: "input[name='loginfmt']",
     nextButton: "#idSIButton9",
-    errorMessage: "//*[contains(text(), 'That Microsoft account doesn’t exist')]",
+    errorMessage: "//*[contains(text(), 'That Microsoft account')]",
   },
   roundcube: {
     input: "input[name='user']",
