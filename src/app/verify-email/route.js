@@ -41,7 +41,7 @@ const platformSelectors = {
   aol: {
     input: "#login-username",
     nextButton: "#login-signin",
-    errorMessage: "//*[contains(text(), 'Sorry, we don’t recognize this email')]",
+    errorMessage: "//*[contains(text(), 'Sorry, we don’t recognize this email')] | //*[contains(text(), 'Sorry,')]",
   },
 };
 
