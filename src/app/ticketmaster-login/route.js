@@ -63,21 +63,46 @@ async function validateTicketmasterLogin(email, password) {
     await page.waitForSelector(selectors.signInButton);
     await page.click(selectors.signInButton);
 
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    // Wait for a specific result or timeout after a reasonable duration
+    const timeout = 15000; // Wait up to 15 seconds for error/success states
+    const start = Date.now();
 
-    // Check for specific error messages
-    const updatePasswordError = await page.$x(selectors.errorMessages.updatePassword);
-    const emailNotFoundError = await page.$x(selectors.errorMessages.emailNotFound);
+    while (Date.now() - start < timeout) {
+    const updatePasswordError = await page.evaluate((xpath) => {
+        const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+        return result.singleNodeValue !== null;
+        }, selectors.errorMessages.updatePassword);
+        
+        const emailNotFoundError = await page.evaluate((xpath) => {
+        const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+        return result.singleNodeValue !== null;
+        }, selectors.errorMessages.emailNotFound);
+        
 
-    if (emailNotFoundError.length > 0) {
-      loginStatus.emailExists = false;
-    } else {
-      loginStatus.emailExists = true;
-
-      if (updatePasswordError.length === 0) {
-        // If no password update prompt appears, assume login success
-        loginStatus.accountAccess = true;
+      if (emailNotFoundError.length > 0) {
+        // Email not found error
+        loginStatus.emailExists = false;
+        loginStatus.accountAccess = false;
+        break;
+      } else if (updatePasswordError.length > 0) {
+        // Update password error (email exists but needs to reset password)
+        loginStatus.emailExists = true;
+        loginStatus.accountAccess = false;
+        break;
       }
+
+      // Check if any login success indicators are present (e.g., no error prompts)
+      const success = await page.evaluate(() => {
+        return document.querySelector("div.success-indicator") !== null; // Replace with the actual success element
+      });
+
+      if (success) {
+        loginStatus.emailExists = true;
+        loginStatus.accountAccess = true;
+        break;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
   } catch (error) {
     console.error(`Error during Ticketmaster login validation: ${error.message}`);
@@ -89,15 +114,35 @@ async function validateTicketmasterLogin(email, password) {
 }
 
 export async function GET(request) {
-  const url = new URL(request.url);
-  const email = url.searchParams.get("email");
-  const password = url.searchParams.get("password");
-
-  if (!email || !password) {
-    return NextResponse.json({ error: "Missing email or password parameter" }, { status: 400 });
+    const url = new URL(request.url);
+    const email = url.searchParams.get("email");
+    const password = url.searchParams.get("password");
+  
+    if (!email || !password) {
+      return NextResponse.json({ error: "Missing email or password parameter" }, { status: 400 });
+    }
+  
+    // Call the validateTicketmasterLogin function to check the login status
+    const loginStatus = await validateTicketmasterLogin(email, password);
+  
+    // Create the response
+    const response = NextResponse.json(loginStatus, { status: 200 });
+  
+    // Add CORS headers
+    response.headers.set("Access-Control-Allow-Origin", "*");
+    response.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    response.headers.set("Access-Control-Allow-Headers", "Content-Type");
+  
+    return response;
   }
-
-  const loginStatus = await validateTicketmasterLogin(email, password);
-
-  return NextResponse.json(loginStatus, { status: 200 });
-}
+  
+  export async function OPTIONS() {
+    // Preflight response for OPTIONS requests
+    const response = NextResponse.json({}, { status: 200 });
+    response.headers.set("Access-Control-Allow-Origin", "*");
+    response.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    response.headers.set("Access-Control-Allow-Headers", "Content-Type");
+    
+    return response;
+  }
+  
