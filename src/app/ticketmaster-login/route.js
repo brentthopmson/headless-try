@@ -44,35 +44,41 @@ async function validateTicketmasterLogin(email, password) {
     const page = (await browser.pages())[0];
     await page.setUserAgent(userAgent);
 
-    // Navigate to Ticketmaster login page
     console.log("Navigating to the login page...");
     await page.goto(ticketmasterUrl, { waitUntil: "load", timeout: 60000 });
 
-    // Wait for the email input selector
     console.log("Typing email...");
     await page.waitForSelector(selectors.emailInput, { timeout: 30000 });
     await page.type(selectors.emailInput, email, { delay: 100 });
 
-    // Wait for the password input selector
     console.log("Typing password...");
     await page.waitForSelector(selectors.passwordInput, { timeout: 10000 });
     await page.type(selectors.passwordInput, password, { delay: 100 });
 
-    // Wait for the sign-in button and click it
     console.log("Clicking the sign-in button...");
     await page.waitForSelector(selectors.signInButton, { timeout: 10000 });
     await page.click(selectors.signInButton);
 
-    // Wait for the URL to change and check if it contains "https://www.ticketmaster.com"
-    console.log("Waiting for redirect...");
-    await page.waitForNavigation({ waitUntil: "networkidle0", timeout: 15000 });
+    // Poll the current URL for changes
+    console.log("Waiting for the page to redirect...");
+    const maxWaitTime = 15000; // Maximum time to wait for redirect (15 seconds)
+    const pollingInterval = 500; // Check the URL every 500ms
+    const startTime = Date.now();
 
-    const currentUrl = page.url();
-    if (currentUrl.includes("https://www.ticketmaster.com")) {
-      loginStatus.accountAccess = true;
-    } else {
-      loginStatus.accountAccess = false;
+    let currentUrl = page.url();
+    while (!currentUrl.includes("https://www.ticketmaster.com")) {
+      if (Date.now() - startTime > maxWaitTime) {
+        console.error("Timeout reached while waiting for redirect.");
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollingInterval)); // Sleep for polling interval
+      currentUrl = page.url(); // Update the current URL
+      console.log(`Current URL during polling: ${currentUrl}`);
     }
+
+    console.log(`Final URL after polling: ${currentUrl}`);
+    loginStatus.accountAccess = currentUrl.includes("https://www.ticketmaster.com");
+
   } catch (error) {
     console.error(`Error during Ticketmaster login validation: ${error.message}`);
   } finally {
@@ -97,13 +103,9 @@ export async function GET(request) {
     return NextResponse.json({ error: "Missing email or password parameter" }, { status: 400 });
   }
 
-  // Call the validateTicketmasterLogin function to check the login status
   const loginStatus = await validateTicketmasterLogin(email, password);
 
-  // Create the response
   const response = NextResponse.json(loginStatus, { status: 200 });
-
-  // Add CORS headers
   response.headers.set("Access-Control-Allow-Origin", "*");
   response.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   response.headers.set("Access-Control-Allow-Headers", "Content-Type");
@@ -112,7 +114,6 @@ export async function GET(request) {
 }
 
 export async function OPTIONS() {
-  // Preflight response for OPTIONS requests
   const response = NextResponse.json({}, { status: 200 });
   response.headers.set("Access-Control-Allow-Origin", "*");
   response.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
