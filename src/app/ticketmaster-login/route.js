@@ -38,7 +38,7 @@ async function validateTicketmasterLogin(email, password) {
       executablePath: isDev
         ? localExecutablePath
         : await chromium.executablePath(remoteExecutablePath),
-      headless: true, // Keep the browser visible for debugging
+      headless: false, // Keep the browser visible for debugging
     });
 
     const page = (await browser.pages())[0];
