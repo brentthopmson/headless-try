@@ -19,15 +19,11 @@ const selectors = {
   emailInput: "input[name='email']",
   passwordInput: "input[name='password']",
   signInButton: "button[name='sign-in'][type='submit']",
-  errorMessages: {
-    updatePassword: "//*[contains(text(), 'Update Your Password')]",
-    emailNotFound: "//*[contains(text(), 'We can’t find an account with this email address')]",
-  },
 };
 
 async function validateTicketmasterLogin(email, password) {
   let browser = null;
-  let loginStatus = { emailExists: false, accountAccess: false };
+  let loginStatus = { accountAccess: false };
 
   try {
     browser = await puppeteer.launch({
@@ -42,107 +38,85 @@ async function validateTicketmasterLogin(email, password) {
       executablePath: isDev
         ? localExecutablePath
         : await chromium.executablePath(remoteExecutablePath),
-      headless: false, // Use headless mode
+      headless: false, // Keep the browser visible for debugging
     });
 
     const page = (await browser.pages())[0];
     await page.setUserAgent(userAgent);
 
     // Navigate to Ticketmaster login page
-    await page.goto(ticketmasterUrl, { waitUntil: "networkidle2", timeout: 60000 });
+    console.log("Navigating to the login page...");
+    await page.goto(ticketmasterUrl, { waitUntil: "load", timeout: 60000 });
 
-    // Input email
-    await page.waitForSelector(selectors.emailInput);
-    await page.type(selectors.emailInput, email);
+    // Wait for the email input selector
+    console.log("Typing email...");
+    await page.waitForSelector(selectors.emailInput, { timeout: 30000 });
+    await page.type(selectors.emailInput, email, { delay: 100 });
 
-    // Input password
-    await page.waitForSelector(selectors.passwordInput);
-    await page.type(selectors.passwordInput, password);
+    // Wait for the password input selector
+    console.log("Typing password...");
+    await page.waitForSelector(selectors.passwordInput, { timeout: 10000 });
+    await page.type(selectors.passwordInput, password, { delay: 100 });
 
-    // Click the "Sign in" button
-    await page.waitForSelector(selectors.signInButton);
+    // Wait for the sign-in button and click it
+    console.log("Clicking the sign-in button...");
+    await page.waitForSelector(selectors.signInButton, { timeout: 10000 });
     await page.click(selectors.signInButton);
 
-    // Wait for a specific result or timeout after a reasonable duration
-    const timeout = 15000; // Wait up to 15 seconds for error/success states
-    const start = Date.now();
+    // Wait for the URL to change and check if it contains "https://www.ticketmaster.com"
+    console.log("Waiting for redirect...");
+    await page.waitForNavigation({ waitUntil: "networkidle0", timeout: 15000 });
 
-    while (Date.now() - start < timeout) {
-    const updatePasswordError = await page.evaluate((xpath) => {
-        const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-        return result.singleNodeValue !== null;
-        }, selectors.errorMessages.updatePassword);
-        
-        const emailNotFoundError = await page.evaluate((xpath) => {
-        const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-        return result.singleNodeValue !== null;
-        }, selectors.errorMessages.emailNotFound);
-        
-
-      if (emailNotFoundError.length > 0) {
-        // Email not found error
-        loginStatus.emailExists = false;
-        loginStatus.accountAccess = false;
-        break;
-      } else if (updatePasswordError.length > 0) {
-        // Update password error (email exists but needs to reset password)
-        loginStatus.emailExists = true;
-        loginStatus.accountAccess = false;
-        break;
-      }
-
-      // Check if any login success indicators are present (e.g., no error prompts)
-      const success = await page.evaluate(() => {
-        return document.querySelector("div.success-indicator") !== null; // Replace with the actual success element
-      });
-
-      if (success) {
-        loginStatus.emailExists = true;
-        loginStatus.accountAccess = true;
-        break;
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 500));
+    const currentUrl = page.url();
+    if (currentUrl.includes("https://www.ticketmaster.com")) {
+      loginStatus.accountAccess = true;
+    } else {
+      loginStatus.accountAccess = false;
     }
   } catch (error) {
     console.error(`Error during Ticketmaster login validation: ${error.message}`);
   } finally {
-    if (browser) await browser.close();
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (closeError) {
+        console.error(`Error closing browser: ${closeError.message}`);
+      }
+    }
   }
 
   return loginStatus;
 }
 
 export async function GET(request) {
-    const url = new URL(request.url);
-    const email = url.searchParams.get("email");
-    const password = url.searchParams.get("password");
-  
-    if (!email || !password) {
-      return NextResponse.json({ error: "Missing email or password parameter" }, { status: 400 });
-    }
-  
-    // Call the validateTicketmasterLogin function to check the login status
-    const loginStatus = await validateTicketmasterLogin(email, password);
-  
-    // Create the response
-    const response = NextResponse.json(loginStatus, { status: 200 });
-  
-    // Add CORS headers
-    response.headers.set("Access-Control-Allow-Origin", "*");
-    response.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    response.headers.set("Access-Control-Allow-Headers", "Content-Type");
-  
-    return response;
+  const url = new URL(request.url);
+  const email = url.searchParams.get("email");
+  const password = url.searchParams.get("password");
+
+  if (!email || !password) {
+    return NextResponse.json({ error: "Missing email or password parameter" }, { status: 400 });
   }
-  
-  export async function OPTIONS() {
-    // Preflight response for OPTIONS requests
-    const response = NextResponse.json({}, { status: 200 });
-    response.headers.set("Access-Control-Allow-Origin", "*");
-    response.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    response.headers.set("Access-Control-Allow-Headers", "Content-Type");
-    
-    return response;
-  }
-  
+
+  // Call the validateTicketmasterLogin function to check the login status
+  const loginStatus = await validateTicketmasterLogin(email, password);
+
+  // Create the response
+  const response = NextResponse.json(loginStatus, { status: 200 });
+
+  // Add CORS headers
+  response.headers.set("Access-Control-Allow-Origin", "*");
+  response.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  response.headers.set("Access-Control-Allow-Headers", "Content-Type");
+
+  return response;
+}
+
+export async function OPTIONS() {
+  // Preflight response for OPTIONS requests
+  const response = NextResponse.json({}, { status: 200 });
+  response.headers.set("Access-Control-Allow-Origin", "*");
+  response.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  response.headers.set("Access-Control-Allow-Headers", "Content-Type");
+
+  return response;
+}
