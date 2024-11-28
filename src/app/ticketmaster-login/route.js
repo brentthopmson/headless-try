@@ -13,9 +13,10 @@ export const maxDuration = 60; // Max duration: 60 seconds
 export const dynamic = "force-dynamic";
 
 const ticketmasterUrl =
-  "https://auth.ticketmaster.com/as/authorization.oauth2?client_id=8bf7204a7e97.web.ticketmaster.us&response_type=code&scope=openid%20profile%20phone%20email%20tm&redirect_uri=https://identity.ticketmaster.com/exchange&visualPresets=tm&lang=en-us&placementId=mytmlogin&hideLeftPanel=false&integratorId=prd1741.iccp&intSiteToken=tm-us&TMUO=west_ZYM0IjVU6c1ayyL7bKkNdATyLfzKLkNoSHzKurAMPLk%3D&deviceId=2G%2Bc0ShtdcnHy8zGycbMycjMzMdiohX1ps2rRQ&doNotTrack=false";
+  "https://www.ticketmaster.com";
 
 const selectors = {
+  signInNavigationIcon: "button[data-testid='accountLink']", // Adjusted selector for the button
   emailInput: "input[name='email']",
   passwordInput: "input[name='password']",
   signInButton: "button[name='sign-in'][type='submit']",
@@ -44,8 +45,15 @@ async function validateTicketmasterLogin(email, password) {
     const page = (await browser.pages())[0];
     await page.setUserAgent(userAgent);
 
-    console.log("Navigating to the login page...");
+    console.log("Navigating to the homepage...");
     await page.goto(ticketmasterUrl, { waitUntil: "load", timeout: 60000 });
+
+    console.log("Clicking the Sign In/Register icon...");
+    await page.waitForSelector(selectors.signInNavigationIcon, { timeout: 30000 });
+    await page.click(selectors.signInNavigationIcon);
+
+    console.log("Waiting for navigation to the sign-in page...");
+    await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 });
 
     console.log("Typing email...");
     await page.waitForSelector(selectors.emailInput, { timeout: 30000 });
@@ -59,7 +67,6 @@ async function validateTicketmasterLogin(email, password) {
     await page.waitForSelector(selectors.signInButton, { timeout: 10000 });
     await page.click(selectors.signInButton);
 
-    // Poll the current URL for changes
     console.log("Waiting for the page to redirect...");
     const maxWaitTime = 15000; // Maximum time to wait for redirect (15 seconds)
     const pollingInterval = 500; // Check the URL every 500ms
@@ -71,8 +78,8 @@ async function validateTicketmasterLogin(email, password) {
         console.error("Timeout reached while waiting for redirect.");
         break;
       }
-      await new Promise((resolve) => setTimeout(resolve, pollingInterval)); // Sleep for polling interval
-      currentUrl = page.url(); // Update the current URL
+      await new Promise((resolve) => setTimeout(resolve, pollingInterval));
+      currentUrl = page.url();
       console.log(`Current URL during polling: ${currentUrl}`);
     }
 
@@ -93,6 +100,7 @@ async function validateTicketmasterLogin(email, password) {
 
   return loginStatus;
 }
+
 
 export async function GET(request) {
   const url = new URL(request.url);
