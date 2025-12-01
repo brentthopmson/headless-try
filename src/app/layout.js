@@ -1,5 +1,6 @@
 import { GeistSans } from "geist/font/sans";
 import "./globals.css";
+import "../app/api/initGoogleClients.js"; // Import to trigger global initialization
 
 export const metadata = {
   title: "Try screenshot",
