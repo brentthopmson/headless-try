@@ -1,0 +1,437 @@
+body, html {
+  height: 100%;
+  margin: 0;
+  font-family: 'Roboto', Arial, sans-serif;
+  background-color: #f5f5f5;
+  overflow-x: hidden;
+}
+
+.main-container {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  position: relative;
+}
+
+.top-navbar {
+  background-color: #fff;
+  height: 60px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  position: relative;
+  z-index: 10;
+}
+
+.adobe-logo {
+  width: 24px;
+  height: 24px;
+  margin-right: 10px;
+}
+
+.nav-title {
+  font-size: 18px;
+  font-weight: 500;
+  color: #333;
+}
+
+.content-area {
+  display: flex;
+  flex: 1;
+  position: relative;
+}
+
+.document-preview {
+  flex: 1;
+  background-color: #EAEAEA;
+  padding: 40px;
+  position: relative;
+  width: 100%;   /* Ensure full width */
+}
+
+.document-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 25px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.document-card {
+  background: white;
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  transition: all 0.2s;
+  position: relative;
+}
+
+.document-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 5px 15px rgba(0,0,0,0.15);
+}
+
+.document-thumbnail {
+  height: 150px;
+  background-color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-bottom: 1px solid #eee;
+  padding: 10px;
+}
+
+.thumbnail-content {
+  width: 100%;
+  height: 100%;
+  background-color: #f8f8f8;
+  display: flex;
+  flex-direction: column;
+}
+
+.thumbnail-header {
+  background-color: #E15300;
+  height: 20px;
+  width: 100%;
+}
+
+.thumbnail-body {
+  flex: 1;
+  padding: 5px;
+  font-size: 6px;
+  overflow: hidden;
+}
+
+.thumbnail-line {
+  height: 3px;
+  background-color: #ddd;
+  margin: 3px 0;
+  width: 90%;
+}
+
+.document-info {
+  padding: 12px;
+}
+
+.document-title {
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.document-meta {
+  font-size: 12px;
+  color: #666;
+  display: flex;
+  align-items: center;
+}
+
+.document-date {
+  margin-right: 10px;
+}
+
+.document-type {
+  padding: 2px 6px;
+  background-color: #E8F0FE;
+  color: #1A73E8;
+  border-radius: 3px;
+  font-size: 10px;
+}
+
+.document-overlay {
+  position: fixed;  /* Changed from absolute to fixed */
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;  /* Increased z-index */
+  overflow-y: auto;  /* Allow scrolling on mobile */
+  padding: 20px;  /* Add padding for mobile */
+}
+
+.login-container {
+  width: 420px;
+  max-width: 100%;  /* Changed from 90% to 100% */
+  background-color: #fff;
+  border-radius: 8px;
+  box-shadow: 0 0 20px rgba(0,0,0,0.5);
+  padding: 40px;
+  z-index: 1001;
+  position: relative;  /* Added position relative */
+  margin: auto;  /* Center horizontally */
+}
+
+.form-title {
+  text-align: center;
+  margin-bottom: 25px;
+  color: #333;
+  font-weight: 500;
+}
+
+.form-subtitle {
+  text-align: center;
+  margin-bottom: 20px;
+  color: #666;
+  font-size: 14px;
+  font-weight: 300;
+}
+
+.email-providers {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 30px;
+  align-items: center;
+  padding: 0 20px;
+}
+
+.email-provider-logo {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+}
+
+.form-group label {
+  font-weight: 500;
+  color: #333;
+}
+
+.form-control {
+  height: 45px;
+  border-radius: 4px;
+  border: 1px solid #ccc;
+  padding-left: 12px;
+}
+
+.form-control:focus {
+  box-shadow: 0 0 0 2px rgba(225, 83, 0, 0.2);
+  border-color: #E15300;
+}
+
+.btn-primary {
+  background-color: #E15300;
+  border-color: #E15300;
+  height: 45px;
+  font-weight: 500;
+  width: 100%;
+  margin-top: 10px;
+  border-radius: 4px;
+  transition: all 0.3s;
+}
+
+.btn-primary:hover {
+  background-color: #C24500;
+  border-color: #C24500;
+}
+
+.security-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 30px;
+  padding-top: 15px;
+  border-top: 1px solid #eee;
+}
+
+.security-text {
+  color: #E15300;
+  font-weight: 500;
+  font-size: 13px;
+  margin-right: 10px;
+}
+
+.adobe-logo-footer {
+  width: 24px;
+  height: 24px;
+}
+
+.error-message {
+  color: #D32F2F;
+  font-size: 13px;
+  text-align: left;
+  margin-top: 5px;
+  margin-bottom: 15px;
+  display: none;
+}
+
+.loading-overlay {
+  display: none; /* Hidden by default */
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.2); /* Even more transparent dark background */
+  z-index: 9999; /* Ensure it's on top of everything */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 20px;
+}
+
+.loading-spinner {
+  border: 5px solid #f3f3f3; /* Light grey */
+  border-top: 5px solid #E15300; /* Adobe orange */
+  border-radius: 50%;
+  width: 50px;
+  height: 50px;
+  animation: spin 1s linear infinite;
+  margin-bottom: 20px;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.loading-text {
+  font-size: 1.2em;
+  color: #333;
+  margin-bottom: 15px;
+  max-width: 80%;
+}
+
+.loading-error-message {
+  font-size: 1.2em;
+  color: #D32F2F;
+  font-weight: bold;
+  display: none; /* Hidden by default */
+}
+
+.form-text {
+  font-size: 12px;
+}
+
+/* Callout error style for email field */
+.email-callout-error {
+  color: #D32F2F !important;
+  font-weight: 500;
+}
+
+.lock-icon {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background-color: rgba(255, 255, 255, 0.9);
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #E15300;
+  font-size: 12px;
+}
+
+/* Improved Mobile Responsiveness */
+@media (max-width: 768px) {
+  .document-list {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 15px;
+    padding: 0 10px;
+  }
+  
+  .document-preview {
+    padding: 20px 10px;
+  }
+  
+  .login-container {
+    padding: 30px 20px;
+    width: 95%;
+    max-width: 350px;
+    margin: 40px auto;  /* Add more margin for better positioning */
+  }
+  
+  .document-overlay {
+    padding: 0;  /* Remove padding on mobile */
+    align-items: center;  /* Better centering */
+    justify-content: center;
+  }
+  
+  .form-title {
+    font-size: 20px;
+  }
+  
+  .form-subtitle {
+    font-size: 12px;
+  }
+  
+  .email-providers {
+    padding: 0 5px;
+  }
+  
+  .email-provider-logo {
+    width: 28px;
+    height: 28px;
+  }
+  
+  .security-text {
+    font-size: 11px;
+  }
+}
+
+@media (max-width: 480px) {
+  .document-list {
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 10px;
+  }
+  
+  .document-thumbnail {
+    height: 120px;
+  }
+  
+  .document-title {
+    font-size: 12px;
+  }
+  
+  .document-meta {
+    font-size: 10px;
+  }
+  
+  .top-navbar {
+    height: 50px;
+  }
+  
+  .nav-title {
+    font-size: 16px;
+  }
+  
+  .login-container {
+    width: 90%;
+    padding: 25px 15px;
+  }
+  
+  .email-providers {
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: center;
+  }
+  
+  .email-provider-logo {
+    margin: 0 5px;
+  }
+}
+
+/* Portrait phones */
+@media (max-width: 320px) {
+  .login-container {
+    padding: 20px 15px;
+  }
+  
+  .email-providers {
+    padding: 0;
+  }
+  
+  .form-title {
+    font-size: 18px;
+  }
+}

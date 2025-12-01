@@ -18,6 +18,20 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+## Using Ngrok for Public URL
+
+To expose your local server to the internet:
+
+```bash
+# Install ngrok globally
+npm install -g ngrok
+
+# Start ngrok on port 3000
+ngrok http 3000
+```
+
+After running ngrok, you'll get a public URL that looks like `https://xxxx-xx-xx-xxx-xx.ngrok.io`
+
 ## Features
 
 - Support webpage screenshots

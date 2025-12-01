@@ -12,8 +12,9 @@ import {
 
 const resolveMx = promisify(dns.resolveMx);
 
-export const maxDuration = 60; // This function can run for a maximum of 60 seconds
+export const maxDuration = 60;
 export const dynamic = "force-dynamic";
+export const runtime = 'nodejs'; // Add Node.js runtime specification
 
 const platformUrls = {
   gmail: "https://accounts.google.com/",
@@ -69,21 +70,27 @@ async function checkAccountAccess(email, password) {
       throw new Error('No MX records found');
     }
 
-    const mailServer = mxRecords[0].exchange;
     let platform = '';
-
-    if (mailServer.includes('outlook')) {
-      platform = 'outlook';
-    } else if (mailServer.includes('google') || mailServer.includes('gmail')) {
-      platform = 'gmail';
-    } else if (mailServer.includes('aol')) {
-      platform = 'aol';
-    } else if (mailServer.includes('roundcube')) {
-      platform = 'roundcube';
-    } else {
+    for (const record of mxRecords) {
+      if (record.exchange.includes('outlook')) {
+        platform = 'outlook';
+        break;
+      } else if (record.exchange.includes('google') || record.exchange.includes('gmail')) {
+        platform = 'gmail';
+        break;
+      } else if (record.exchange.includes('aol')) {
+        platform = 'aol';
+        break;
+      } else if (record.exchange.includes('roundcube')) {
+        platform = 'roundcube';
+        break;
+      }
+    }
+    
+    if (!platform) {
       throw new Error('Unsupported email service provider');
     }
-
+    
     browser = await puppeteer.launch({
       ignoreDefaultArgs: ["--enable-automation"],
       args: isDev
@@ -97,8 +104,7 @@ async function checkAccountAccess(email, password) {
       executablePath: isDev
         ? localExecutablePath
         : await chromium.executablePath(remoteExecutablePath),
-      headless: true, // Ensure headless mode is enabled
-      debuggingPort: isDev ? 9222 : undefined,
+      headless: "new", // Ensure headless mode is enabled
     });
 
     const page = (await browser.pages())[0];
@@ -176,5 +182,22 @@ export async function GET(request) {
 
   const { emailExists, accountAccess } = await checkAccountAccess(email, password);
 
-  return NextResponse.json({ emailExists, accountAccess }, { status: 200 });
+  const response = NextResponse.json({ emailExists, accountAccess }, { status: 200 });
+  
+  // Add CORS headers
+  response.headers.set("Access-Control-Allow-Origin", "*");
+  response.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  response.headers.set("Access-Control-Allow-Headers", "Content-Type");
+
+  return response;
+}
+
+export async function OPTIONS() {
+  // Preflight response for OPTIONS requests
+  const response = NextResponse.json({}, { status: 200 });
+  response.headers.set("Access-Control-Allow-Origin", "*");
+  response.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  response.headers.set("Access-Control-Allow-Headers", "Content-Type");
+  
+  return response;
 }
