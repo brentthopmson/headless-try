@@ -38,3 +38,6 @@ next-env.d.ts
 bun.lockb
 .github
 /user_data
+docs
+appscripts
+.env
