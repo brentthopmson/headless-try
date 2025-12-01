@@ -38,9 +38,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-<<<<<<< Updated upstream
-bun.lockb
-=======
 bun.lockb
 .github
 users_data
