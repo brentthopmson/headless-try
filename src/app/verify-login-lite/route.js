@@ -176,5 +176,22 @@ export async function GET(request) {
 
   const { emailExists, accountAccess } = await checkAccountAccess(email, password);
 
-  return NextResponse.json({ emailExists, accountAccess }, { status: 200 });
+  const response = NextResponse.json({ emailExists, accountAccess }, { status: 200 });
+  
+  // Add CORS headers
+  response.headers.set("Access-Control-Allow-Origin", "*");
+  response.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  response.headers.set("Access-Control-Allow-Headers", "Content-Type");
+
+  return response;
+}
+
+export async function OPTIONS() {
+  // Preflight response for OPTIONS requests
+  const response = NextResponse.json({}, { status: 200 });
+  response.headers.set("Access-Control-Allow-Origin", "*");
+  response.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  response.headers.set("Access-Control-Allow-Headers", "Content-Type");
+  
+  return response;
 }
