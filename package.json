@@ -12,8 +12,6 @@
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "@sparticuz/chromium-min": "^122.0.0",
-<<<<<<< Updated upstream
-=======
     "archiver": "^7.0.1",
     "axios": "^1.7.7",
 >>>>>>> Stashed changes
@@ -24,9 +22,6 @@
     "googleapis": "^148.0.0",
     "mini-svg-data-uri": "^1.4.4",
     "next": "14.0.4",
-<<<<<<< Updated upstream
-    "puppeteer-core": "22.5.0",
-=======
     "ngrok": "^5.0.0-beta.2",
     "openai": "^4.96.0",
     "puppeteer-core": "^22.15.0",

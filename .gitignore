@@ -47,4 +47,13 @@ users_data
 
 appscripts
 docs
->>>>>>> Stashed changes
+users_data
+
+appscripts
+docs
+tree.txt
+
+.vscode
+.idea
+*package-lock.json
+package-lock.json

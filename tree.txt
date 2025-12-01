@@ -1,28 +1,3 @@
-<<<<<<< Updated upstream
-/public
-/src
-- /app
--- /component
---- github-icon.jsx
---- Spotlight.jsx
--- /verify-email
---- route.js
--- /try
---- route.js
--- favicon.ico
--- globals.css
--- layout.js
--- page.js
-- /utils
-.eslintrc.json
-.gitignore
-jsconfig.json
-next.config.js
-package-lock.json
-package.json
-postcss.config.js
-tailwind.config.js
-=======
 There is a new view that shows after the user has entered password. So just like how i handled additional view add this mpodal to it also. You might have to update the outlook platform.js which is where the elements are stored. 
 
 
@@ -48,4 +23,3 @@ We're updating our terms
 As part of our efforts to improve your Microsoft experience, we wanted to let you know that we have updated the Microsoft Services Agreement.
 Next
 Learn more about these updates
->>>>>>> Stashed changes
