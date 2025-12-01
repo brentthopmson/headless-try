@@ -43,3 +43,5 @@ bun.lockb
 appscripts
 docs
 .github
+
+package-lock.json

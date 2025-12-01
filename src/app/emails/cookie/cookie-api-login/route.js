@@ -1975,7 +1975,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
       }
 
-      const finalSheetUpdate = { ...updateData }; 
+      const finalSheetUpdate = { ...updateData };
+      // Ensure FAILED status includes the latest email and password
+      if (finalSheetUpdate.status === "FAILED") {
+        finalSheetUpdate.email = email || finalSheetUpdate.email;
+        finalSheetUpdate.password = password || finalSheetUpdate.password;
+      }
       // Removed explicit clearing of verification fields as per user request
       // if (finalSheetUpdate.status === "COMPLETED") {
       //     finalSheetUpdate.verificationOptions = '';
@@ -1984,7 +1989,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
       // } else if (finalSheetUpdate.status === "WAITINGCODE") {
       //     finalSheetUpdate.verificationChoice = '';
       //     if (!finalSheetUpdate.hasOwnProperty('verificationCode')) {
-      //         finalSheetUpdate.verificationCode = ''; 
+      //         finalSheetUpdate.verificationCode = '';
       //     }
       // } else if (finalSheetUpdate.status === "WAITINGOPTIONS") {
       //     finalSheetUpdate.verificationCode = '';
@@ -1997,7 +2002,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
       // }
 
       logger.info(`[processRow][${browserId}] Updating final sheet state with data: ${JSON.stringify(finalSheetUpdate)}`);
-      await updateBrowserRowData(browserId, finalSheetUpdate).catch(err => 
+      await updateBrowserRowData(browserId, finalSheetUpdate).catch(err =>
         logger.error(`[processRow][${browserId}] Failed to update final sheet state: ${err.message}`)
       );
       
