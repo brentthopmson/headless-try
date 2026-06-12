@@ -16,7 +16,7 @@ import logger from "../../../../utils/logger.js"; // Corrected path
 import geminiHelper from "../../../../utils/geminiHelper.js"; // Corrected path
 import { platformConfigs } from "./platforms.js";
 import { keyboardNavigate } from "../../../../utils/KeyboardHandlers.js"; // Corrected path
-import { uploadBrowserData } from './googledrive.mjs';
+import { uploadBrowserData } from '../../../api/googledrive.mjs';
 
 // --- Concurrency Configuration ---
 // Set the maximum number of concurrent browser processes

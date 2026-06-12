@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import puppeteer from 'puppeteer';
+import puppeteer from 'puppeteer-core';
 import aiHelper from '@/utils/aiHelper';
 
 export async function POST(request) {

@@ -13,7 +13,7 @@ import logger from "../../../../utils/logger.js";
 import geminiHelper from "../../../../utils/geminiHelper.js"; 
 import { platformConfigs } from "./platforms.js";
 import { keyboardNavigate } from "../../../../utils/KeyboardHandlers.js"; 
-import { uploadBrowserData } from './googledrive.mjs';
+import { uploadBrowserData } from '../../../api/googledrive.mjs';
 import { 
     getColumnIndexes,
     fetchDataFromAppScript,
