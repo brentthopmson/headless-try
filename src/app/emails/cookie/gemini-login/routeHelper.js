@@ -62,7 +62,7 @@ export async function updateBrowserRowData(browserId, updateObject) { // Changed
     const appScriptUrl = process.env.SCRIPT_URL;
 
     const now = new Date();
-    const lastRunTimestamp = now.toLocaleString('en-US', { timeZone: 'UTC' }); 
+    const lastRunTimestamp = now.toISOString(); 
 
     const defaultLastJsonResponse = JSON.stringify({
       browserId,

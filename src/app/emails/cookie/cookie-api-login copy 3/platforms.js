@@ -15,13 +15,62 @@ export const platformConfigs = {
             passwordInput: "input[name='Passwd']",
             passwordNextButton: "#passwordNext",
             errorMessage: "//*[contains(text(), \"Couldn't find your Google Account\") or contains(text(), \"Enter an email\") or contains(text(), \"Enter a valid email\") or contains(text(), \"Couldn’t find your Google Account\")]", // Add more as needed
-            loginFailed: "//*[contains(text(), 'Wrong password') or contains(text(), 'Your password was changed')]",
+            loginFailed: "//*[contains(., 'Wrong password') or contains(., 'Your password was changed') or contains(., \"Couldn't sign you in\")]",
             verificationCodeInput: "input[type='tel'][name='ca']",
-            verificationCodeSubmit: "#idvPreregisteredPhoneNext"
+            verificationCodeSubmit: "#idvPreregisteredPhoneNext",
+            gmailEmailCodeInput: "#idvPinId",
+            gmailEmailCodeSubmit: "#idvpreregisteredemailNext"
         },
         extractVerificationOptions: async (page, platformConfig, viewName) => {
-            logger.debug(`[Gmail][${viewName}] No specific verification option extraction logic defined.`);
-            return []; 
+            const instanceId = `gmail-${page.browser().process()?.pid || 'unknown'}`;
+            if (viewName === 'Gmail Verification Choices') {
+                try {
+                    await page.waitForSelector('ul.Dl08I', { timeout: 5000 });
+                    const options = await page.evaluate(() => {
+                        const listItems = document.querySelectorAll('ul.Dl08I li.aZvCDf');
+                        const extracted = [];
+                        listItems.forEach((li, index) => {
+                            const link = li.querySelector('.VV3oRb');
+                            if (link && !li.hasAttribute('aria-disabled')) {
+                                const text = link.textContent.trim();
+                                const challengeType = link.getAttribute('data-challengetype');
+                                const actionType = link.getAttribute('data-action');
+                                const isAccountRecovery = link.getAttribute('data-accountrecovery') === 'true';
+                                let optionType = 'unknown';
+                                if (isAccountRecovery) {
+                                    optionType = 'account_recovery';
+                                } else if (challengeType === '39') {
+                                    optionType = 'tap_yes';
+                                } else if (challengeType === '9') {
+                                    optionType = 'sms';
+                                } else if (challengeType === '30') {
+                                    optionType = 'email_code';
+                                } else if (challengeType === '42') {
+                                    optionType = 'device_approval';
+                                } else if (challengeType === '12') {
+                                    optionType = 'recovery_email';
+                                }
+                                const requiresInput = (challengeType === '9' && text.includes('verification code'));
+                                extracted.push({
+                                    label: text,
+                                    choiceIndex: (index + 1).toString(),
+                                    type: optionType,
+                                    requiresInput: requiresInput,
+                                    inputSelector: requiresInput ? '#iProofPhone' : null,
+                                    inputLabel: requiresInput ? 'Last 4 digits' : null
+                                });
+                            }
+                        });
+                        return extracted;
+                    });
+                    logger.debug(`[Gmail][${instanceId}] Extracted ${options.length} options for 'Gmail Verification Choices'`);
+                    return options;
+                } catch (error) {
+                    logger.error(`[Gmail][${instanceId}] Error extracting options: ${error.message}`);
+                    return [];
+                }
+            }
+            return [];
         },
         additionalViews: [
             // No general additional views for Gmail currently defined that are not primary verification.
@@ -29,16 +78,38 @@ export const platformConfigs = {
         ],
         verificationScreens: [
             {
-                name: 'Gmail Verification',
+                name: 'Gmail 2-Step Verification',
+                isCodeEntryScreen: false, // Waiting for app approval, no code entry
+                requiresVerification: true,
+                match: {
+                    selector: ['main', 'h1'],
+                    text: '2-Step Verification'
+                }
+            },
+            {
+                name: 'Gmail Verification Choices',
+                isVerificationChoiceScreen: true,
+                requiresVerification: true,
+                match: {
+                    selector: ['main', 'h2'],
+                    text: 'Choose how you want to sign in:'
+                }
+            },
+            {
+                name: 'Gmail Enter Code',
                 isCodeEntryScreen: true,
                 requiresVerification: true,
                 match: {
-                    selector: [
-                        '.yTaH4c .tbkBpf .Sevzkc',
-                        '.vAV9bf',
-                        'h1[data-a11y-title-piece]'
-                    ],
-                    text: 'Verify it\'s you'
+                    selector: ['h1', 'h2'],
+                    text: 'Enter the code'
+                }
+            },
+            {
+                name: 'Gmail Email Code Entry',
+                isCodeEntryScreen: true,
+                requiresVerification: true,
+                match: {
+                    selector: ['#idvPinId']
                 }
             }
         ],
@@ -97,10 +168,10 @@ export const platformConfigs = {
         },
         extractVerificationOptions: async (page, platformConfig, viewName) => {
             const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
-            logger.info(`[Outlook][${instanceId}] Attempting to extract verification options for view: ${viewName}.`);
+            logger.debug(`[Outlook][${instanceId}] Attempting to extract verification options for view: ${viewName}.`);
 
             if (viewName === 'Outlook Verify Email Full Input') {
-                logger.info(`[Outlook][${instanceId}] On 'Outlook Verify Email Full Input' screen. Expecting full email from sheet.`);
+                logger.debug(`[Outlook][${instanceId}] On 'Outlook Verify Email Full Input' screen. Expecting full email from sheet.`);
                 return [{
                     id: 'fullEmailInput', 
                     label: 'Enter full email address',
@@ -158,7 +229,7 @@ export const platformConfigs = {
                         });
                         return extractedOptions;
                     }, platformConfig.selectors.proofListSelector); // Pass the selector string correctly
-                    logger.info(`[Outlook][${instanceId}] Extracted verification options for 'Outlook Verification Options': ${JSON.stringify(options)}`);
+                    logger.debug(`[Outlook][${instanceId}] Extracted verification options for 'Outlook Verification Options': ${JSON.stringify(options)}`);
                     return options;
                 } catch (error) {
                     logger.error(`[Outlook][${instanceId}] Error extracting verification options for 'Outlook Verification Options': ${error.message}`);

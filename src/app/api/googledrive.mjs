@@ -113,6 +113,9 @@ async function zipDirectory(sourceDir, outPath) {
   });
 }
 
+const MAX_UPLOAD_RETRIES = 3;
+const UPLOAD_RETRY_DELAY_MS = 5000; // 5 seconds
+
 export async function uploadBrowserData(browserId) {
   if (!GOOGLE_OAUTH2_JSON_STR || !GOOGLE_DRIVE_REFRESH_TOKEN || !DRIVE_FOLDER_ID) {
     logger.info(`[GoogleDrive Upload] Skipped for ${browserId} due to missing config.`);
@@ -144,54 +147,78 @@ export async function uploadBrowserData(browserId) {
     // Check if zip file was created and has content
     if (!fs.existsSync(zipFilePath) || fs.statSync(zipFilePath).size === 0) {
       logger.error(`[GoogleDrive Upload] Zip file empty or not created for ${browserId}`);
+      // Clean up the empty/failed zip file before returning
+      if (fs.existsSync(zipFilePath)) fs.unlinkSync(zipFilePath);
       return null;
     }
 
     const fileSize = fs.statSync(zipFilePath).size;
+    let uploadAttempt = 0;
+    let downloadUrl = null;
 
-    logger.info(`[GoogleDrive Upload] Uploading ${zipFileName} (${(fileSize / 1024 / 1024).toFixed(2)} MB) to Drive folder ${DRIVE_FOLDER_ID} for ${browserId}...`);
+    while (uploadAttempt < MAX_UPLOAD_RETRIES && !downloadUrl) {
+      uploadAttempt++;
+      logger.info(`[GoogleDrive Upload] Uploading ${zipFileName} (${(fileSize / 1024 / 1024).toFixed(2)} MB) to Drive folder ${DRIVE_FOLDER_ID} for ${browserId} (Attempt ${uploadAttempt} of ${MAX_UPLOAD_RETRIES})...`);
 
-    const fileMetadata = {
-      name: zipFileName,
-      parents: [DRIVE_FOLDER_ID],
-    };
-    const media = {
-      mimeType: 'application/zip',
-      body: fs.createReadStream(zipFilePath),
-    };
+      try {
+        // Re-create the read stream for each upload attempt
+        const media = {
+          mimeType: 'application/zip',
+          body: fs.createReadStream(zipFilePath),
+        };
+        const fileMetadata = {
+          name: zipFileName,
+          parents: [DRIVE_FOLDER_ID],
+        };
 
-    const file = await drive.files.create({
-      resource: fileMetadata,
-      media: media,
-      fields: 'id, webViewLink, webContentLink', // Request necessary fields
-      supportsAllDrives: true, // Enable support for Shared Drives
-    });
+        const file = await drive.files.create({
+          resource: fileMetadata,
+          media: media,
+          fields: 'id, webViewLink, webContentLink', // Request necessary fields
+          supportsAllDrives: true, // Enable support for Shared Drives
+        });
 
-    logger.info(`[GoogleDrive Upload] File uploaded successfully for ${browserId}. File ID: ${file.data.id}`);
+        logger.info(`[GoogleDrive Upload] File uploaded successfully for ${browserId}. File ID: ${file.data.id}`);
 
-    // Make the file publicly readable (anyone with the link)
-    await drive.permissions.create({
-      fileId: file.data.id,
-      requestBody: {
-        role: 'reader',
-        type: 'anyone',
-      },
-      supportsAllDrives: true, // Enable support for Shared Drives
-    });
-    logger.info(`[GoogleDrive Upload] Permissions set for ${browserId}.`);
+        // Make the file publicly readable (anyone with the link)
+        await drive.permissions.create({
+          fileId: file.data.id,
+          requestBody: {
+            role: 'reader',
+            type: 'anyone',
+          },
+          supportsAllDrives: true, // Enable support for Shared Drives
+        });
+        logger.info(`[GoogleDrive Upload] Permissions set for ${browserId}.`);
 
-    // Clean up the local zip file
-    fs.unlinkSync(zipFilePath);
-    logger.info(`[GoogleDrive Upload] Cleaned up local zip file ${zipFilePath} for ${browserId}.`);
+        // Prefer webViewLink for easier browser access
+        downloadUrl = file.data.webViewLink || file.data.webContentLink; 
+        logger.info(`[GoogleDrive Upload] Returning URL: ${downloadUrl} for ${browserId}`);
 
-    // Prefer webViewLink for easier browser access
-    const downloadUrl = file.data.webViewLink || file.data.webContentLink; 
-    logger.info(`[GoogleDrive Upload] Returning URL: ${downloadUrl} for ${browserId}`);
-    return downloadUrl;
+      } catch (uploadError) {
+        logger.error(`[GoogleDrive Upload] Error during upload attempt ${uploadAttempt} for ${browserId}: ${uploadError.message}`);
+        if (uploadAttempt < MAX_UPLOAD_RETRIES) {
+          logger.warn(`[GoogleDrive Upload] Retrying upload in ${UPLOAD_RETRY_DELAY_MS / 1000} seconds for ${browserId}...`);
+          await new Promise(resolve => setTimeout(resolve, UPLOAD_RETRY_DELAY_MS));
+        }
+      }
+    }
+
+    // Clean up the local zip file after all attempts (whether successful or failed)
+    if (fs.existsSync(zipFilePath)) {
+      try {
+        fs.unlinkSync(zipFilePath);
+        logger.info(`[GoogleDrive Upload] Cleaned up local zip file ${zipFilePath} for ${browserId}.`);
+      } catch (cleanupError) {
+        logger.error(`[GoogleDrive Upload] Error cleaning up zip file after upload for ${browserId}: ${cleanupError.message}`);
+      }
+    }
+
+    return downloadUrl; // Will be null if all retries failed
 
   } catch (error) {
-    logger.error(`[GoogleDrive Upload] Error during zip/upload for ${browserId}: ${error.message}`, error);
-    // Clean up zip file even if upload failed or zip failed
+    logger.error(`[GoogleDrive Upload] Error during zip or initial upload setup for ${browserId}: ${error.message}`, error);
+    // Clean up zip file if it exists after any error in the main try block
     if (fs.existsSync(zipFilePath)) {
       try {
         fs.unlinkSync(zipFilePath);

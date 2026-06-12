@@ -1,597 +1,270 @@
-import puppeteer from "puppeteer-core";
-import chromium from "@sparticuz/chromium-min";
-import readlineSync from 'readline-sync';
-import axios from 'axios';
+import { NextResponse } from "next/server";
+import logger from "../../../../utils/logger.js";
 import {
-  localExecutablePath,
-  isDev,
-  userAgent,
-  remoteExecutablePath,
-} from "@/utils/utils";
-import fs from 'fs';
-import qs from 'qs';
+    getPlatformConfig,
+    getWorkflow,
+    getAIPrompt,
+    getExtractor,
+    MultiProviderAI
+} from "./platforms.js";
+import {
+    getColumnIndexes,
+    DOMHelpers,
+    setCorsHeaders,
+    launchBrowserWithSession,
+    executeWorkflow
+} from '../_shared/routeHelper.js';
+import { checkActionAllowed, getPlatformLimits } from '../_shared/limits.js';
+import { getAccountUsage, updateAccountUsage, updateAccountStatus } from '../_shared/hubUpdater.js';
+import { fetchTaskData, updateTaskRow } from './routeHelper.js';
 
+export const maxDuration = 60;
+export const dynamic = "force-dynamic";
+export const runtime = 'nodejs';
 
-// Add a global variable to track if the process is running
-let isRunning = false;
-let browser; // Declare a global browser variable
-let hasLoggedIn = false; // Flag to track if the user has logged in
+const MAX_CONCURRENT_TASKS = parseInt(process.env.MAX_CONCURRENT_TASKS || '2', 10);
+const activeTasks = new Map();
+logger.info(`[Search Interact] Concurrency limit: ${MAX_CONCURRENT_TASKS}`);
 
-// Helper function for launching the browser with session persistence
-async function launchBrowser(cookieJson) {
-  const browser = await puppeteer.launch({
-    ignoreDefaultArgs: ["--enable-automation"],
-    args: isDev
-      ? [
-          "--disable-blink-features=AutomationControlled",
-          "--disable-features=site-per-process",
-          "-disable-site-isolation-trials",
-        ]
-      : [...chromium.args, "--disable-blink-features=AutomationControlled"],
-    executablePath: isDev
-      ? localExecutablePath
-      : await chromium.executablePath(remoteExecutablePath),
-    headless: false,
-  });
+export { processTask as processSearchInteractTask };
 
-  const page = await browser.newPage();
-  await page.setUserAgent(userAgent); // Set the user agent
+// ==================== Action-to-Limit Mapping ====================
 
-  if (cookieJson) {
-    try {
-      const cookies = JSON.parse(cookieJson);
-      await page.setCookie(...cookies);
-      console.log("Cookies set successfully.");
-    } catch (error) {
-      console.error("Error setting cookies:", error);
-    }
-  }
-  await page.close(); // Close the temporary page
+const ACTION_LIMIT_MAP = {
+    "like": "likesOnPost",
+    "comment": "commentOnPost",
+    "follow": "follow",
+    "unfollow": "unfollow",
+    "message": "coldMessage",
+    "likeComment": "likesOnComment",
+    "likeStory": "likeOnStory",
+    "commentStory": "commentOnStory",
+    "commentComment": "commentOnComment",
+};
 
-  return browser;
+function mapOperationToActions(operation) {
+    if (operation === "search-interact") return ["like", "comment", "follow"];
+    if (operation === "page-interact") return ["like", "follow"];
+    if (operation === "inbox-interact") return ["message"];
+    if (operation === "activities-interact") return ["like", "comment"];
+    return ["like"];
 }
 
-// Helper function to save cookies back to Google Sheets
-async function saveCookiesToSheet(cookieJson, rowId) {
-  try {
-    const endpoint = "https://script.google.com/macros/s/AKfycbzQZxwzDMuGgu5PdkyYTMkaoLXHM4MR1SNBNqR17zXQA6QE_oPxogTW8Gi_OgUBuUu9/exec";
-    const updateData = {
-      action: 'updateData',
-      dbname: 'Accounts',
-      accountId: rowId, // Row ID to identify the row
-      cookie: cookieJson, // Updated cookies as a JSON string
-    };
+// ==================== Task Processing ====================
 
-    const response = await axios.post(endpoint, qs.stringify(updateData), {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-    });
-
-    console.log(`Cookies updated successfully for row ID ${rowId}`);
-  } catch (error) {
-    console.error(`Failed to update cookies for row ID ${rowId}:`, error.message);
-  }
-}
-
-// Helper function to log cookies
-async function logCookies(page, rowId, sheetCookieJson) {
-  try {
-    // Log cookies from the sheet
-    console.log(`Sheet cookies for row ID ${rowId}:`, sheetCookieJson);
-
-    // Fetch cookies stored via Puppeteer's API
-    const browserCookies = await page.cookies();
-    const browserCookieJson = JSON.stringify(browserCookies);
-    console.log(`Puppeteer cookies for row ID ${rowId}:`, browserCookieJson);
-
-    // Save Puppeteer's cookies back to Google Sheets
-    await saveCookiesToSheet(browserCookieJson, rowId);
-  } catch (error) {
-    console.error(`Failed to log and save cookies for row ID ${rowId}:`, error.message);
-  }
-}
-
-
-// Helper function to open and wait for manual login
-async function openPlatformPage(url) {
-  const page = await browser.newPage();
-  await page.setViewport({ width: 1366, height: 768 });
-  await page.setUserAgent(
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'
-  );
-
-  console.log(`Navigating to URL: ${url}`); // Debugging line
-  await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
-  console.log(`Page loaded: ${url}`);
-  return page;
-}
-
-
-// Helper function to close a page
-async function closePage(page) {
-  await page.close();
-  console.log("Tab closed.");
-}
-
-
-// Wait for manual input "Continue"
-function waitForContinue() {
-  readlineSync.question('Press "Enter" when you have logged in to all accounts and are ready to continue: ');
-}
-
-
-// Helper function to fetch data from App Script endpoint with retry logic
-async function fetchDataFromAppScript(retries = 3, timeout = 120000) {
-  const endpoint = "https://script.google.com/macros/s/AKfycbzQZxwzDMuGgu5PdkyYTMkaoLXHM4MR1SNBNqR17zXQA6QE_oPxogTW8Gi_OgUBuUu9/exec?action=getData&sheetname=Accounts&range=A1:BD";
-
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      // Attempt to fetch the data with an extended timeout
-      const response = await axios.get(endpoint, { timeout });
-      console.log(`Data fetched successfully on attempt ${attempt}`);
-      console.log(`Data: ${response}`);
-
-      return response.data;
-    } catch (error) {
-      console.error(`Attempt ${attempt} failed: ${error.message}`);
-      if (attempt === retries) {
-        throw new Error(`Failed to fetch data after ${retries} attempts.`);
-      }
-      console.log(`Retrying... (${attempt}/${retries})`);
-    }
-  }
-}
-
-// Helper function to fetch data from App Script endpoint with retry logic
-async function fetchLimitsDataFromAppScript(limitCategory, limitValue, retries = 3, timeout = 120000) {
-  const endpoint = "https://script.google.com/macros/s/AKfycbzQZxwzDMuGgu5PdkyYTMkaoLXHM4MR1SNBNqR17zXQA6QE_oPxogTW8Gi_OgUBuUu9/exec?action=getData&sheetname=Limits&range=A1:Z";
-  
-  // Fetch the data with retry logic
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      const response = await axios.get(endpoint, { timeout });
-      console.log(`Data fetched successfully on attempt ${attempt}`);
-      
-      const data = response.data;
-      const headers = data[0]; // The header row
-      const categoryColumnIndex = headers.indexOf("category"); // Assuming the category column is named "category"
-      const limitColumnIndex = headers.indexOf(limitValue); // Use limitValue to find the correct column index
-      
-      if (categoryColumnIndex === -1 || limitColumnIndex === -1) {
-        throw new Error("Category or limit column not found.");
-      }
-
-      // Find the row where the limitCategory matches the value in the "category" column
-      const categoryRow = data.find(row => row[categoryColumnIndex] === limitCategory);
-      
-      if (!categoryRow) {
-        console.error(`Category '${limitCategory}' not found.`);
-        return null;
-      }
-      
-      // Get the value from the corresponding row and column (based on limitValue)
-      const result = categoryRow[limitColumnIndex];
-
-      // Return the result
-      console.log(`Found value: ${result}`);
-      return result;
-      
-    } catch (error) {
-      console.error(`Attempt ${attempt} failed: ${error.message}`);
-      if (attempt === retries) {
-        throw new Error(`Failed to fetch data after ${retries} attempts.`);
-      }
-      console.log(`Retrying... (${attempt}/${retries})`);
-    }
-  }
-}
-
-// Helper function to fetch data from App Script endpoint with retry logic
-async function fetchSearchInteractDataFromAppScript(limitCategory, limitValue, retries = 3, timeout = 120000) {
-  const endpoint = "https://script.google.com/macros/s/AKfycbzQZxwzDMuGgu5PdkyYTMkaoLXHM4MR1SNBNqR17zXQA6QE_oPxogTW8Gi_OgUBuUu9/exec?action=getData&sheetname=SearchInteract&range=A1:Z";
-  
-  // Fetch the data with retry logic
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      const response = await axios.get(endpoint, { timeout });
-      console.log(`Data fetched successfully on attempt ${attempt}`);
-      
-      const data = response.data;
-      const headers = data[0]; // The header row
-      const categoryColumnIndex = headers.indexOf("category"); // Assuming the category column is named "category"
-      const limitColumnIndex = headers.indexOf("headername"); // The column where limitValue should be found (replace "headername" with the actual column name)
-      
-      if (categoryColumnIndex === -1 || limitColumnIndex === -1) {
-        throw new Error("Category or limit column not found.");
-      }
-
-      // Find the row where the limitCategory matches the value in the "category" column
-      const categoryRow = data.find(row => row[categoryColumnIndex] === limitCategory);
-      
-      if (!categoryRow) {
-        console.error(`Category '${limitCategory}' not found.`);
-        return null;
-      }
-      
-      // Get the value from the corresponding row and column (based on limitValue)
-      const result = categoryRow[limitColumnIndex];
-
-      // Return the result
-      console.log(`Found value: ${result}`);
-      return result;
-      
-    } catch (error) {
-      console.error(`Attempt ${attempt} failed: ${error.message}`);
-      if (attempt === retries) {
-        throw new Error(`Failed to fetch data after ${retries} attempts.`);
-      }
-      console.log(`Retrying... (${attempt}/${retries})`);
-    }
-  }
-}
-
-
-// Helper function to dynamically extract column indexes from headers
-function getColumnIndexes(headers) {
-  const indexMap = {};
-  headers.forEach((header, index) => {
-    indexMap[header] = index;
-  });
-  return indexMap;
-}
-
-
-// Function to handle platform-specific posting logic based on conditions
-async function handlePlatformLogic(platformData, platformName, content, browser) {
-  const { contentId, jobType, contentType, shouldSend, title, longTitle, description, longDescription, imageUrls, videos, location, ticktokStamp, quoraStamp } = content;
-
-  let page;
-
-  const axios = require('axios');
-  const fs = require('fs');
-  const path = require('path'); // Require path for file resolution
-  const qs = require('qs'); // Import the querystring library
-  
-
-
-  // TikTok Logic
-  if (platformName === "TikTok") {
-    console.log("Running TikTok Following...");
-
-    page = await openPlatformPage(platformData.url);
+async function processTask(taskRow, columnIndexes) {
+    const taskId = taskRow[columnIndexes['taskId']];
+    let browser = null;
+    let page = null;
+    let finalStatus = "FAILED";
+    let results = [];
 
     try {
-      // Fetch the tiktokLastSearchInteract value
-      const tiktokLastSearchInteract = await fetchDataFromAppScript('tiktokLastSearchInteract');
+        logger.info(`[processTask] Starting task: ${taskId}`);
 
-      // Fetch search interaction data
-      const searchInteractData = await fetchSearchInteractDataFromAppScript();
+        const platform = taskRow[columnIndexes['platform']]?.toLowerCase();
+        const operation = taskRow[columnIndexes['operation']]?.toLowerCase();
+        const keyword = taskRow[columnIndexes['searchQuery']];
+        const cookieJSON = taskRow[columnIndexes['cookieJSON']];
+        const profileId = taskRow[columnIndexes['profileId']] || taskRow[columnIndexes['accountId']] || null;
+        const socialStrategyPrompt = taskRow[columnIndexes['socialStrategyPrompt']] || null;
 
-      // Find the corresponding tiktokSearchTerm and the next row's tiktokSearchTerm
-      const currentIndex = searchInteractData.findIndex(data => data.searchId === tiktokLastSearchInteract);
-      const nextRowSearchTerm = currentIndex !== -1 && currentIndex + 1 < searchInteractData.length
-        ? searchInteractData[currentIndex + 1].tiktokSearchTerm
-        : null;
+        if (!platform) throw new Error("Platform not specified");
+        if (!operation) throw new Error("Operation not specified");
+        if (!cookieJSON) throw new Error("No cookies found. Must login first via social/cookie/cookie-api-login");
 
-      if (!nextRowSearchTerm) {
-        console.error("No valid search term found.");
-        return;
-      }
-
-      // Fetch limit values from the App Script (limitCategory and limitValue)
-      const limitCategory = "tiktokLimit";
-      const likeLimitValue = "hourlyLikeLimitValue"; 
-      const commentLimitValue = "hourlyCommentLimitValue"; 
-      const repostLimitValue = "hourlyRepostLimitValue";
-
-      const likeResult = await fetchLimitsDataFromAppScript(limitCategory, likeLimitValue);
-      const commentResult = await fetchLimitsDataFromAppScript(limitCategory, commentLimitValue);
-      const repostResult = await fetchLimitsDataFromAppScript(limitCategory, repostLimitValue);
-
-      const likeLimit = likeResult ? parseInt(likeResult) : 0;
-      const commentLimit = commentResult ? parseInt(commentResult) : 0;
-      const repostLimit = repostResult ? parseInt(repostResult) : 0;
-
-      let likeCount = 0;
-      let commentCount = 0;
-      let repostCount = 0;
-
-      // Perform the search on TikTok
-      await page.type('input[data-e2e="search-input"]', nextRowSearchTerm);
-      await page.keyboard.press('Enter');
-      await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 60000 });
-
-      // Interact with each post result
-      const postResults = await page.$$('div[data-e2e="search-result-item"]');
-      for (const post of postResults) {
-        await post.click();
-        await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 60000 });
-
-        // Like the post
-        if (likeCount < likeLimit) {
-          const likeButton = await page.$('button[data-e2e="like-button"]');
-          if (likeButton) {
-            await likeButton.click();
-            likeCount++;
-          }
-        }
-
-        // Comment on the post
-        if (commentCount < commentLimit) {
-          const commentButton = await page.$('button[data-e2e="comment-button"]');
-          if (commentButton) {
-            await commentButton.click();
-            await page.type('textarea[data-e2e="comment-input"]', 'Great post!');
-            await page.keyboard.press('Enter');
-            commentCount++;
-          }
-        }
-
-        // Repost the post
-        if (repostCount < repostLimit) {
-          const repostButton = await page.$('button[data-e2e="repost-button"]');
-          if (repostButton) {
-            await repostButton.click();
-            repostCount++;
-          }
-        }
-
-        // Like all comments on the post
-        const commentLikes = await page.$$('button[data-e2e="comment-like-button"]');
-        for (const commentLike of commentLikes) {
-          await commentLike.click();
-        }
-
-        // Go back to search results
-        await page.goBack();
-        await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 60000 });
-
-        // Check if like, comment, or repost limit is reached
-        if (likeCount >= likeLimit && commentCount >= commentLimit && repostCount >= repostLimit) {
-          console.log("Like, comment, and repost limits reached.");
-          break;
-        }
-      }
-
-      // Update the timestamp and data in Google Sheets
-      const currentTimestamp = new Date().toISOString();
-      const updateData = {
-        action: 'updateData',
-        dbname: 'Accounts',
-        accountId: rowId,
-        tiktokLastSearchInteract: nextRowSearchTerm,
-        likedThisHour: likeCount,
-        commentedThisHour: commentCount,
-        repostedThisHour: repostCount,
-        likedToday: totalLikedToday + likeCount, // Addition of current likeCount + existing likedToday
-        commentedToday: totalCommentedToday + commentCount, // Addition of current commentCount + existing commentedToday
-        repostedToday: totalRepostedToday + repostCount, // Addition of current repostCount + existing repostedToday
-        likeStamp: currentTimestamp,
-        commentStamp: currentTimestamp,
-        repostStamp: currentTimestamp,
-      };
-
-      // Send the updated data to Google Sheets
-      await updateTimestamp(
-        'https://script.google.com/macros/s/AKfycbzQZxwzDMuGgu5PdkyYTMkaoLXHM4MR1SNBNqR17zXQA6QE_oPxogTW8Gi_OgUBuUu9/exec',
-        updateData,
-        3,
-        10000
-      );
-
-      console.log("Updated data successfully for TikTok.");
-
-    } catch (error) {
-      console.error("Failed to process TikTok actions:", error.message);
-    }
-
-    // Close the tab after processing
-    await closePage(page);
-  }
-
-
-  // Quora Logic
-  if (platformName === "Quora") {
-    console.log("Uploading to Quora...");
-
-    page = await openPlatformPage(platformData.url); // Ensure page is defined here too
-
-    try {
-      // Step 1: Click on the element "What do you want to ask or share?"
-      await page.waitForSelector('div.q-text.qu-color--gray_light', { visible: true });
-      await page.click('div.q-text.qu-color--gray_light');
-      console.log("Clicked on 'What do you want to ask or share?'");
-
-
-      // Step 7: Update timestamp in Google Sheets via App Script
-
-      const qs = require('qs'); // Import the querystring library
-      
-      // Function to update timestamp with retries and timeout
-      const updateTimestamp = async (url, data, retries = 3, timeout = 10000) => {
-        for (let attempt = 1; attempt <= retries; attempt++) {
-          try {
-            console.log(`Attempt ${attempt}: Updating timestamp in Google Sheets...`);
-
-            // Send the request as form data
-            const response = await axios.post(url, qs.stringify(data), {
-              timeout,
-              headers: {
-                'Content-Type': 'application/x-www-form-urlencoded', // Set the content type to URL encoded
-              },
-            });
-
-            // If the request is successful, log the result and exit the loop
-            console.log("Timestamp updated successfully in Google Sheets.");
-            console.log(response.data);
-            return response;
-
-          } catch (error) {
-            console.error(`Failed to update timestamp on attempt ${attempt}. Error: ${error.message}`);
-            
-            // If the number of retries is not exceeded, retry after a delay
-            if (attempt < retries) {
-              console.log(`Retrying timestamp update in 2 seconds...`);
-              await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for 2 seconds before retrying
-            } else {
-              // If all attempts fail, throw an error
-              console.error("Failed to update timestamp after multiple attempts.");
-              throw error;
+        // Check platform limits for all likely actions
+        const actions = mapOperationToActions(operation);
+        for (const action of actions) {
+            const limit = await checkActionAllowed(platform, action, {});
+            if (!limit.allowed) {
+                throw new Error(`Action '${action}' blocked by platform limits: ${limit.reason}`);
             }
-          }
         }
-      };
 
-      const currentTimestamp = new Date().toISOString();
-      const updateData = {
-        action: 'updateData',
-        'dbname': 'SM-Content-F',
-        'contentId': contentId,
-        platform: 'Quora',
-        quoraStamp: currentTimestamp
-      };
+        const platformConfig = getPlatformConfig(platform);
+        ({ browser, page } = await launchBrowserWithSession(cookieJSON));
 
-      // Call the function to update the timestamp with retries and timeout
-      await updateTimestamp(
-        'https://script.google.com/macros/s/AKfycbxrsER0ks-9yFbibZ8MEILfv1_dEPDLYwZBXEu7g5vEX2c0_Ic-Al_U-W3QbAkl73Zs/exec',
-        updateData,
-        3,
-        10000
-      );
+        const workflow = getWorkflow(platform, operation);
+        
+        const context = {
+            platform,
+            operation,
+            keyword,
+            platformConfig,
+            socialStrategyPrompt,
+        };
 
-      // Step 8: Clean up local image files after upload
-      imagePaths.forEach(imagePath => require('fs').unlinkSync(imagePath)); // Deletes the temporary images
-      console.log("Deleted local images after uploading.");
+        const workflowResults = await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI);
+
+        if (workflow.extract) {
+            const extractor = getExtractor(platform, workflow.extract);
+            if (extractor && extractor.parseFunction) {
+                try {
+                    const parseFunc = new Function('items', extractor.parseFunction);
+                    const elements = await page.$$(extractor.selector);
+                    results = parseFunc(elements);
+                    logger.info(`[processTask] Extracted ${results.length} items`);
+                } catch (e) {
+                    logger.error(`[processTask] Extraction failed: ${e.message}`);
+                    results = [];
+                }
+            }
+        }
+
+        finalStatus = "COMPLETED";
+
+        // Update hub interaction usage if profileId is available
+        if (profileId && finalStatus === "COMPLETED") {
+            for (const action of actions) {
+                await updateAccountUsage(profileId, ACTION_LIMIT_MAP[action] || action);
+            }
+        }
+
+        logger.info(`[processTask] Task ${taskId} completed successfully`);
 
     } catch (error) {
-      console.error("An error occurred during the Quora upload process: ", error.message);
-      // Log the failure and continue with the next row
+        logger.error(`[processTask] Task ${taskId} failed: ${error.message}`);
+        finalStatus = "FAILED";
+        results = [{ error: error.message, timestamp: new Date().toISOString() }];
+
+        // Mark account as rate limited if limits were hit
+        if (error.message.includes("blocked by platform limits") && taskRow[columnIndexes['profileId']]) {
+            await updateAccountStatus(taskRow[columnIndexes['profileId']], "RATE_LIMITED");
+        }
+    } finally {
+        if (page) {
+            try { await page.close(); } catch (e) { logger.warn(`[processTask] Error closing page: ${e.message}`); }
+        }
+        if (browser) {
+            try { await browser.close(); } catch (e) { logger.warn(`[processTask] Error closing browser: ${e.message}`); }
+        }
+
+        try {
+            await updateTaskRow(taskId, {
+                status: finalStatus,
+                resultCount: results.length,
+                lastResult: JSON.stringify(results[results.length - 1] || { status: finalStatus }),
+                completedAt: new Date().toISOString()
+            });
+            logger.info(`[processTask] Updated task: ${taskId} -> ${finalStatus}`);
+        } catch (updateError) {
+            logger.error(`[processTask] Error updating task row: ${updateError.message}`);
+        }
+
+        activeTasks.delete(taskId);
     }
-    
-    // Close the tab after processing
-    await closePage(page);
-  }
 
-
-  // Twitter Logic
-
-  // Facebook Logic
-
-  // Instagram Logic
-
+    return { taskId, status: finalStatus, resultCount: results.length };
 }
 
+// ==================== API Handlers ====================
 
-// Function to run the whole process for posting content
-async function runAutomation(platformsToRun, postContent) {
-  if (isRunning) {
-    console.log("Automation is already running, skipping this cycle...");
-    return; // Skip the current cycle if one is already running
-  }
-
-  isRunning = true; // Set the flag to prevent other instances from starting
-
-  try {
-    const data = await fetchDataFromAppScript();
-    const headers = data[0];
-    const columnIndexes = getColumnIndexes(headers);
-    const platforms = [
-      { name: "Facebook", url: "https://facebook.com" },
-      { name: "Instagram", url: "https://instagram.com" },
-      { name: "Quora", url: "https://quora.com" },
-      { name: "Twitter", url: "https://twitter.com" },
-      { name: "TikTok", url: "https://www.tiktok.com/" },
-      { name: "Reddit", url: "https://reddit.com" },
-    ];
-
-    const selectedPlatforms = platforms.filter(platform =>
-      platformsToRun.includes(platform.name)
-    );
-
-    for (let i = 1; i < data.length; i++) {
-      const row = data[i];
-      const platformName = row[columnIndexes['platform']];
-      const cookieJson = row[columnIndexes['cookie']];
-      const likeLimtReached = row[columnIndexes['likeLimtReached']];
-      const commentLimtReached = row[columnIndexes['commentLimtReached']];
-      const rowId = row[columnIndexes['accountId']];
-
-      // Check if followLimitReached is "TRUE", and skip the current row if true
-      if (likeLimtReached === true || commentLimtReached === true) {
-        console.log(`Skipping account: likeLimtReached or commentLimtReached is TRUE for row ${i + 1}`);
-        continue;
-      }
-
-      // Check if rowId is defined (you can add additional checks here if needed)
-      if (!rowId) {
-        console.log(`Skipping account: rowId is missing for row ${i + 1}`);
-        continue;
-      }
-
-      // Match platform with URL
-      const platformData = platforms.find(p => p.name === platformName);
-      if (!platformData) {
-        console.log(`No matching platform found for: ${platformName}`);
-        continue;
-      }
-
-      console.log(`Processing platform: ${platformName}, URL: ${platformData.url}`);
-      browser = await launchBrowser(cookieJson); // Launch browser with cookies
-
-      // If the cookie is blank, pause the automation and wait for user to log in manually
-      if (!cookieJson || cookieJson === "null" || cookieJson.trim() === "") {
-        console.log(`No valid cookies found for row ID ${rowId}. Pausing automation...`);
-        waitForContinue(); // Wait for manual login
-        console.log("Resuming automation after login...");
-      }
-
-      // Log cookies before processing platforms
-      const tempPage = await browser.newPage();
-      await tempPage.setViewport({ width: 1366, height: 768 });
-      await tempPage.setUserAgent(
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'
-      );
-      // Make tempPage navigate to the platform URL as well
-      console.log(`Navigating tempPage to URL: ${platformData.url}`);
-      await tempPage.goto(platformData.url, { waitUntil: "networkidle2", timeout: 60000 });
-      console.log(`tempPage loaded successfully: ${platformData.url}`);
-
-      await logCookies(tempPage, rowId, cookieJson); // Log cookies after loading the page
-      await tempPage.close();
-
-      const content = { /* Your content object setup here */ };
-
-      console.log(`Posting content for ${platformName}`);
-      await handlePlatformLogic(platformData, platformName, content, browser);
-
-      await browser.close(); // Close browser after each account
-    }
-  } catch (error) {
-    console.error("Error running automation:", error);
-  } finally {
-    isRunning = false;
-  }
-}
-
-
-
-// Wrapper to run automation repeatedly every 2 minutes
-function runAutomationLoop() {
-  const platforms = ["Quora", "TikTok"]; // Platforms you want to post on
-  const postContent = "This is the content I'm posting!"; // Your post content
-
-  // Run the automation every 2 minutes (120000 ms)
-  setInterval(async () => {
+export async function POST(request) {
     try {
-      console.log("Running automation...");
-      await runAutomation(platforms, postContent);
-      console.log("Automation cycle complete.");
-    } catch (error) {
-      console.error("Error running automation:", error);
+        const body = await request.json();
+        const { action, taskId } = body;
+
+        logger.info(`[POST] Received: action=${action}`);
+
+        // Status check (from social-tasks sheet)
+        if (action === 'status' && taskId) {
+            const taskData = await fetchTaskData(true);
+            const headers = taskData[0];
+            const columnIndexes = getColumnIndexes(headers);
+            const row = taskData.slice(1).find(r => r[columnIndexes['taskId']] === taskId);
+
+            if (row) {
+                return setCorsHeaders(NextResponse.json({
+                    taskId,
+                    status: row[columnIndexes['status']],
+                    lastResult: row[columnIndexes['lastResult']],
+                    completedAt: row[columnIndexes['completedAt']],
+                    resultCount: row[columnIndexes['resultCount']]
+                }));
+            }
+            return setCorsHeaders(NextResponse.json({ error: "Task not found" }, { status: 404 }));
+        }
+
+        // Batch process pending tasks from social-tasks sheet (legacy)
+        if (action === 'process') {
+            const taskData = await fetchTaskData(true);
+            const headers = taskData[0];
+            const columnIndexes = getColumnIndexes(headers);
+            const pendingTasks = taskData.slice(1).filter(r => r[columnIndexes['status']] === 'PENDING');
+
+            logger.info(`[POST] Found ${pendingTasks.length} pending tasks`);
+
+            const results = [];
+            for (const taskRow of pendingTasks) {
+                if (activeTasks.size >= MAX_CONCURRENT_TASKS) {
+                    logger.warn(`[POST] Reached concurrency limit`);
+                    break;
+                }
+
+                const tid = taskRow[columnIndexes['taskId']];
+                activeTasks.set(tid, true);
+
+                processTask(taskRow, columnIndexes).catch(e => {
+                    logger.error(`[POST] Uncaught error in task ${tid}: ${e.message}`);
+                });
+
+                results.push({ taskId: tid, status: "PROCESSING" });
+            }
+
+            return setCorsHeaders(NextResponse.json({
+                message: "Tasks queued for processing",
+                tasksQueued: results.length,
+                tasks: results
+            }));
+        }
+
+        // Direct execution (new - called from execute-campaign, no social-tasks sheet)
+        if (action === 'execute') {
+            const { task } = body;
+            if (!task) {
+                return setCorsHeaders(NextResponse.json({ error: "Missing task payload" }, { status: 400 }));
+            }
+
+            const taskId = task.taskId || ("direct-" + Math.random().toString(36).substring(2, 11));
+            const headers = Object.keys(task);
+            const columnIndexes = getColumnIndexes(headers);
+            const taskRow = headers.map(h => task[h] !== undefined ? task[h] : '');
+
+            // Enrich the task row with headers for processTask compatibility
+            const enrichedTaskRow = [];
+            for (const h of headers) {
+                enrichedTaskRow[columnIndexes[h]] = task[h];
+            }
+
+            if (activeTasks.size >= MAX_CONCURRENT_TASKS) {
+                return setCorsHeaders(NextResponse.json({ error: "Concurrency limit reached" }, { status: 429 }));
+            }
+
+            activeTasks.set(taskId, true);
+            const result = await processTask(enrichedTaskRow, columnIndexes);
+
+            return setCorsHeaders(NextResponse.json({
+                message: "Task executed",
+                task: result
+            }));
+        }
+
+        return setCorsHeaders(NextResponse.json({ error: "Invalid action" }, { status: 400 }));
+
+    } catch (e) {
+        logger.error(`[POST] Error: ${e.message}`);
+        return setCorsHeaders(NextResponse.json({ error: e.message }, { status: 500 }));
     }
-  }, 15000); // 2 minutes interval
 }
 
-// Start the automation loop
-runAutomationLoop();
+export async function OPTIONS(request) {
+    return new Response(null, {
+        status: 200,
+        headers: {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type',
+        },
+    });
+}

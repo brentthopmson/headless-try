@@ -45,3 +45,8 @@ docs
 .github
 
 package-lock.json
+
+/users_data
+/graphify-out
+
+engine.log

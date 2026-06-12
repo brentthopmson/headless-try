@@ -73,6 +73,36 @@ export async function initializeGoogleSheets() {
  * @param {string} sheetName - The name of the sheet.
  * @returns {Object} An object with success status, headers, and data.
  */
+/**
+ * Gets the sheet ID for a given sheet name using the Sheets API.
+ * @param {string} sheetName - The name of the sheet.
+ * @returns {Object} An object with success and sheetId.
+ */
+export async function getSheetId(sheetName) {
+  if (!SPREADSHEET_ID) {
+    return { success: false, error: "SPREADSHEET_ID is not defined." };
+  }
+  try {
+    const authClient = await getSheetsAuthClient();
+    if (!authClient) {
+      return { success: false, error: "Failed to get Sheets API authentication client." };
+    }
+
+    const sheets = google.sheets({ version: 'v4', auth: authClient });
+    const spreadsheet = await sheets.spreadsheets.get({
+      spreadsheetId: SPREADSHEET_ID,
+    });
+
+    const sheet = spreadsheet.data.sheets.find(s => s.properties.title === sheetName);
+    if (!sheet) {
+      return { success: false, error: `Sheet '${sheetName}' not found.` };
+    }
+    return { success: true, sheetId: sheet.properties.sheetId };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
 export async function getSheetDataApi(sheetName) {
   if (!SPREADSHEET_ID) {
     return { success: false, error: "SPREADSHEET_ID is not defined." };
@@ -150,23 +180,50 @@ export async function deleteSheetRowApi(sheetName, searchColumn, searchValue) {
 
     const actualRowNumber = rowIndex + 2; // +1 for 0-based index, +1 for header
 
-    // Instead of deleteRange which fails over array formulas, clear the row by setting all cells to empty strings
-    const lastColLetter = column_index_to_letter(headers.length - 1);
-    const rangeToClear = `${sheetName}!A${actualRowNumber}:${lastColLetter}${actualRowNumber}`;
-    const emptyValues = Array(headers.length).fill("");
+    // Get the correct sheetId for the sheetName
+    const sheetIdResult = await getSheetId(sheetName);
+    if (!sheetIdResult.success) {
+      return { success: false, error: `Failed to get sheetId for '${sheetName}': ${sheetIdResult.error}` };
+    }
+    const sheetId = sheetIdResult.sheetId;
 
-    const response = await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: SPREADSHEET_ID,
-      resource: {
-        valueInputOption: 'RAW',
-        data: [{
-          range: rangeToClear,
-          values: [emptyValues]
-        }]
-      }
-    });
+    // Attempt to delete the row using deleteRange with shiftDimension
+    try {
+      const response = await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: SPREADSHEET_ID,
+        resource: {
+          requests: [{
+            deleteDimension: {
+              range: {
+                sheetId: sheetId,
+                dimension: "ROWS",
+                startIndex: actualRowNumber - 1, // 0-based
+                endIndex: actualRowNumber // Exclusive
+              }
+            }
+          }]
+        }
+      });
+      return { success: true, message: "Row deleted successfully via Sheets API" };
+    } catch (deleteError) {
+      logger.warn(`[deleteSheetRowApi] Delete failed: ${deleteError.message}. Falling back to clearing row.`);
+      // Fallback: clear the row by setting all cells to empty strings
+      const lastColLetter = column_index_to_letter(headers.length - 1);
+      const rangeToClear = `${sheetName}!A${actualRowNumber}:${lastColLetter}${actualRowNumber}`;
+      const emptyValues = Array(headers.length).fill("");
 
-    return { success: true, message: "Row cleared successfully via Sheets API (delete not allowed over array formula)" };
+      const clearResponse = await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: SPREADSHEET_ID,
+        resource: {
+          valueInputOption: 'RAW',
+          data: [{
+            range: rangeToClear,
+            values: [emptyValues]
+          }]
+        }
+      });
+      return { success: true, message: "Row cleared successfully via Sheets API (delete failed, used clear as fallback)" };
+    }
   } catch (error) {
     return { success: false, error: error.message };
   }

