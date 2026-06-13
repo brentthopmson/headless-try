@@ -61,20 +61,36 @@ async function handleAdditionalViews(page, platformConfig, instanceId, context =
                     if (skipNames.includes(view.name)) continue;
                     if (ctx === 'post_verification' && (view.isVerificationChoiceScreen || view.isCodeEntryScreen)) continue;
 
-                    const selectors = Array.isArray(view.match.selector) ? view.match.selector : [view.match.selector];
                     let match = false;
-                    for (const sel of selectors) {
-                        if (typeof sel !== 'string') continue;
-                        const element = document.querySelector(sel);
-                        if (element) {
-                            if (view.match.text) {
-                                if ((element.textContent || "").includes(view.match.text)) {
+
+                    // URL-based matching
+                    if (view.match.url) {
+                        const currentUrl = window.location.href;
+                        const urlPatterns = Array.isArray(view.match.url) ? view.match.url : [view.match.url];
+                        for (const pattern of urlPatterns) {
+                            if (typeof pattern === 'string' && currentUrl.includes(pattern)) {
+                                match = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    // DOM selector + text matching (only if not already matched by URL)
+                    if (!match && view.match.selector) {
+                        const selectors = Array.isArray(view.match.selector) ? view.match.selector : [view.match.selector];
+                        for (const sel of selectors) {
+                            if (typeof sel !== 'string') continue;
+                            const element = document.querySelector(sel);
+                            if (element) {
+                                if (view.match.text) {
+                                    if ((element.textContent || "").includes(view.match.text)) {
+                                        match = true;
+                                        break;
+                                    }
+                                } else {
                                     match = true;
                                     break;
                                 }
-                            } else {
-                                match = true;
-                                break;
                             }
                         }
                     }

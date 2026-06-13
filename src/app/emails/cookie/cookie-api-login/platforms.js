@@ -376,16 +376,38 @@ export const platformConfigs = {
             {
                 name: 'Outlook FIDO Create Passkey',
                 match: {
-                    selector: ["h1", "[data-testid='title']", "#fidoCreateTitle", "div[id*='fido']"],
-                    text: "Setting up your"
+                    url: ['fido/create', 'fido/createpassword']
                 },
-                action: {
-                    type: 'click',
-                    selector: [
+                action: async (page, view, platformConfig) => {
+                    const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
+                    // Try clicking Cancel button
+                    const cancelSelectors = [
                         "button#cancelButton",
                         "button::-p-text('Cancel')",
-                        "button[data-testid='cancelButton']"
-                    ]
+                        "button[data-testid='cancelButton']",
+                        "button::-p-text('Back')"
+                    ];
+                    for (const sel of cancelSelectors) {
+                        try {
+                            await page.waitForSelector(sel, { visible: true, timeout: 3000 });
+                            await page.click(sel);
+                            logger.info(`[handleAdditionalViews][${instanceId}] Clicked FIDO cancel: ${sel}`);
+                            await new Promise(r => setTimeout(r, 2000));
+                            return;
+                        } catch (e) { }
+                    }
+                    // Fallback 1: Tab+Enter
+                    logger.info(`[handleAdditionalViews][${instanceId}] FIDO cancel not found, trying Tab+Enter`);
+                    await page.keyboard.press('Tab');
+                    await new Promise(r => setTimeout(r, 300));
+                    await page.keyboard.press('Enter');
+                    await new Promise(r => setTimeout(r, 2000));
+                    // Fallback 2: goBack if still on FIDO
+                    if (page.url().includes('fido/')) {
+                        logger.info(`[handleAdditionalViews][${instanceId}] Still on FIDO, going back`);
+                        await page.goBack({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => null);
+                        await new Promise(r => setTimeout(r, 2000));
+                    }
                 }
             },
             {
@@ -413,6 +435,18 @@ export const platformConfigs = {
                 action: {
                     type: 'keyboard',
                     keys: ['Tab', 'Enter']
+                }
+            },
+            {
+                name: 'Outlook FIDO Navigate to Inbox',
+                match: {
+                    url: ['fido/create', 'fido/createpassword']
+                },
+                action: async (page, view, platformConfig) => {
+                    const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
+                    logger.info(`[handleAdditionalViews][${instanceId}] FIDO still present, navigating to inbox`);
+                    await page.goto('https://outlook.live.com/mail/', { waitUntil: 'networkidle0', timeout: 30000 }).catch(() => null);
+                    await new Promise(r => setTimeout(r, 3000));
                 }
             },
             {
