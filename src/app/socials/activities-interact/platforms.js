@@ -1,4 +1,4 @@
-import MultiProviderAI from "../../../../utils/multiProviderAI.js";
+import MultiProviderAI from "../../../utils/multiProviderAI.js";
 
 const ai = new MultiProviderAI();
 

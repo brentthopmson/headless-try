@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import logger from "../../../../utils/logger.js";
+import logger from "../../../utils/logger.js";
 import {
     getPlatformConfig,
     getWorkflow,

@@ -1,5 +1,5 @@
-import logger from "../../../../utils/logger.js";
-import MultiProviderAI from "../../../../utils/multiProviderAI.js";
+import logger from "../../../utils/logger.js";
+import MultiProviderAI from "../../../utils/multiProviderAI.js";
 
 // AI instance for content analysis & comment generation
 const ai = new MultiProviderAI();

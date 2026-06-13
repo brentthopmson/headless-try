@@ -1,5 +1,5 @@
 import axios from 'axios';
-import logger from "../../../../utils/logger.js";
+import logger from "./logger.js";
 
 /**
  * Multi-Provider AI Helper with fallback chain
