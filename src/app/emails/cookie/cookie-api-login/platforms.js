@@ -374,6 +374,48 @@ export const platformConfigs = {
                 }
             },
             {
+                name: 'Outlook FIDO Create Passkey',
+                match: {
+                    selector: ["h1", "[data-testid='title']", "#fidoCreateTitle", "div[id*='fido']"],
+                    text: "Setting up your"
+                },
+                action: {
+                    type: 'click',
+                    selector: [
+                        "button#cancelButton",
+                        "button::-p-text('Cancel')",
+                        "button[data-testid='cancelButton']"
+                    ]
+                }
+            },
+            {
+                name: 'Outlook FIDO Passkeys QR Modal',
+                match: {
+                    selector: ["h1", "h2", "[role='heading']", "div"],
+                    text: "Passkeys"
+                },
+                action: {
+                    type: 'click',
+                    selector: [
+                        "button::-p-text('Cancel')",
+                        "button::-p-text('Back')",
+                        "button[data-testid='cancelButton']",
+                        "#cancelButton"
+                    ]
+                }
+            },
+            {
+                name: 'Outlook FIDO Cancel Confirmation',
+                match: {
+                    selector: ["*"],
+                    text: "Are you sure"
+                },
+                action: {
+                    type: 'keyboard',
+                    keys: ['Tab', 'Enter']
+                }
+            },
+            {
                 name: 'Outlook Terms of Use Update',
                 match: {
                     selector: ["#iTOUTitle", "h1[data-testid='title']"],
@@ -483,14 +525,14 @@ export const platformConfigs = {
         url: "https://login.yahoo.com/",
         mxKeywords: ['yahoo'],
         selectors: {
-            input: "#login-username",
-            nextButton: "#login-signin",
+            input: "#username",
+            nextButton: "button[name='signin']",
             passwordInput: "#login-passwd",
-            passwordNextButton: "#login-signin",
-            errorMessage: "//*[contains(text(), 'Sorry, we don't recognize this email')]",
+            passwordNextButton: "button[name='validate']",
+            errorMessage: '//*[contains(text(), "Sorry, we don\'t recognize this email")]',
             loginFailed: "//*[contains(text(), 'Invalid password')]",
-            verificationCodeInput: "#login-otp-code", 
-            verificationCodeSubmit: "#login-otp-verify" 
+            verificationCodeInput: "#login-otp-code",
+            verificationCodeSubmit: "#login-otp-verify"
         },
         extractVerificationOptions: async (page, platformConfig, viewName) => {
              logger.debug(`[Yahoo][${viewName}] No specific verification option extraction logic defined.`);

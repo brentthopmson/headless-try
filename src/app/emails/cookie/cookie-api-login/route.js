@@ -105,6 +105,17 @@ async function handleAdditionalViews(page, platformConfig, instanceId, context =
             continue;
         }
 
+        if (view.action.type === 'keyboard') {
+            const keys = Array.isArray(view.action.keys) ? view.action.keys : [view.action.keys];
+            for (const key of keys) {
+                await page.keyboard.press(key);
+                await new Promise(r => setTimeout(r, 300));
+            }
+            logger.info(`[handleAdditionalViews][${instanceId}] Pressed keyboard keys: ${keys.join(', ')} for view: ${view.name}`);
+            viewHandledInThisIteration = true;
+            await new Promise(r => setTimeout(r, 500));
+            continue;
+        }
         if (view.action.type !== 'click') {
             viewHandledInThisIteration = true;
             continue;

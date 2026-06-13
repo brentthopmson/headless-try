@@ -20,6 +20,11 @@
     w.console.debug = () => {};
     w.console.log = () => {};
     w.console.context = () => {};
+    if (w.navigator && w.navigator.credentials) {
+      w.navigator.credentials.create = function() {
+        return Promise.resolve(null);
+      };
+    }
     w.navigator.permissions.query = new Proxy(navigator.permissions.query, {
       apply: async function (target, thisArg, args) {
         try {
