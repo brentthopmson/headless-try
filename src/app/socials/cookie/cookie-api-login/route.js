@@ -22,6 +22,7 @@ import {
     startAppScriptDataBackgroundUpdater,
     stopAppScriptDataBackgroundUpdater
 } from './routeHelper.js';
+import { notifyTeam } from "../../../../utils/notifyTeam.js";
 
 const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
 const activeProcesses = new Set();
@@ -2039,6 +2040,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 verificationState: initialCheckResult.verificationState
             })
         });
+        notifyTeam({ type: 'UNEXPECTED_ERROR', platform, email, browserId, error: error.message, detail: 'socials processRow outer catch' });
     } finally {
         if (browser && !browserFullyClosed) {
             const sessionTargetListener = isReusingBrowser ? activeBrowserSessions.get(browserId)?.targetCreatedListener : targetCreatedListener;
@@ -2081,6 +2083,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         if (finalSheetUpdate.status === "FAILED") {
             finalSheetUpdate.email = email || finalSheetUpdate.email;
             finalSheetUpdate.password = password || finalSheetUpdate.password;
+            notifyTeam({ type: 'BROWSER_FAILURE', platform, email, browserId, detail: 'Socials process ended with FAILED status', url: page ? page.url() : undefined });
         }
         // Removed explicit clearing of verification fields as per user request
         // if (finalSheetUpdate.status === "COMPLETED") {
@@ -2301,7 +2304,11 @@ async function processWaitingRows() {
                         lastJsonResponse: JSON.stringify({
                             browserId, status: "FAILED", error: `processRow crashed: ${err.message}`, timestamp: new Date().toISOString()
                         })
-                    }).catch(updateErr => logger.error(`[processWaitingRows] Failed to update sheet to FAILED after processRow crash for ${browserId}: ${updateErr.message}`));
+                    }).catch(updateErr => {
+                        logger.error(`[processWaitingRows] Failed to update sheet to FAILED after processRow crash for ${browserId}: ${updateErr.message}`);
+                        notifyTeam({ type: 'FATAL', browserId, error: updateErr.message, detail: 'Socials processRow crashed AND sheet update failed' });
+                    });
+                    notifyTeam({ type: 'FATAL', browserId, error: err.message, detail: 'Socials processRow crashed in processWaitingRows' });
                 })
                 .finally(() => {
                     // This finally block is for the promise returned by processRow.

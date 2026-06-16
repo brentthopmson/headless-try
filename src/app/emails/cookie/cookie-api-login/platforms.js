@@ -144,6 +144,15 @@ export const platformConfigs = {
                 match: {
                     selector: ['#knowledge-preregistered-email-response']
                 }
+            },
+            {
+                name: 'Gmail CAPTCHA Challenge',
+                requiresVerification: true,
+                requiresCaptcha: true,
+                match: {
+                    selector: ['#headingText'],
+                    text: "Verify it's you"
+                }
             }
         ],
         flow: [

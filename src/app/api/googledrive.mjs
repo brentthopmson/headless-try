@@ -105,7 +105,7 @@ async function zipDirectory(sourceDir, outPath) {
     // Add directory contents directly, skipping problematic files
     archive.glob('**/*', {
       cwd: sourceDir,
-      ignore: ['**/Temp/**', '**/Cache/**', '**/CacheStorage/**', '**/BrowserMetrics/**'],
+      ignore: [],
       dot: true  // Include dotfiles
     });
     

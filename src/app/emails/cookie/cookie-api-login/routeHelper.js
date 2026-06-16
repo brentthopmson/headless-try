@@ -422,6 +422,10 @@ export async function checkVerification(page, platformConfig) {
           logger.info(`[checkVerification][${instanceId}] Matched a verification CODE ENTRY screen: ${view.name}`);
           return { required: true, type: 'code', viewName: view.name, viewConfig: view };
         }
+        if (view.requiresCaptcha) {
+          logger.info(`[checkVerification][${instanceId}] Matched a CAPTCHA verification screen: ${view.name}`);
+          return { required: true, type: 'captcha', viewName: view.name, viewConfig: view };
+        }
         // For Gmail 2-Step Verification, treat as code for waiting, even if no entry
         if (view.name === 'Gmail 2-Step Verification') {
           logger.info(`[checkVerification][${instanceId}] Matched 'Gmail 2-Step Verification', treating as code type for waiting.`);

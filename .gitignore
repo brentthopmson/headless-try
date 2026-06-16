@@ -48,5 +48,6 @@ package-lock.json
 
 /users_data
 /graphify-out
+/test_sessions
 
 engine.log

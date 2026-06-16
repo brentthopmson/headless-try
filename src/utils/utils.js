@@ -72,6 +72,12 @@ export async function launchBrowser(customOptions = {}) {
     '--js-flags="--max-old-space-size=512"'
   ];
 
+  // Proxy support via environment variable (opt-in)
+  const proxyUrl = process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
+  if (proxyUrl) {
+    baseArgs.push(`--proxy-server=${proxyUrl}`);
+  }
+
   const defaultOptions = {
     ignoreDefaultArgs: ["--enable-automation"],
     args: baseArgs,

