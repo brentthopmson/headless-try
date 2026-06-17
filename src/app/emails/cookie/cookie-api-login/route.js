@@ -828,6 +828,22 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             initialCheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId);
         } else if (status === "WAITINGEMAIL") {
             logger.info(`[processRow][${browserId}] Entering WAITINGEMAIL poll loop.`);
+            // If strictly provides a known platform, navigate to its login URL immediately
+            // so the user sees the login page while waiting for email input
+            try {
+                const rowStrictly = row[columnIndexes['strictly']];
+                if (rowStrictly && platformConfigs[rowStrictly] && platformConfigs[rowStrictly].url) {
+                    const targetUrl = platformConfigs[rowStrictly].url;
+                    logger.info(`[processRow][${browserId}] strictly='${rowStrictly}' -> navigating to ${targetUrl} while waiting for email`);
+                    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => {
+                        logger.warn(`[processRow][${browserId}] Early navigation to ${targetUrl} failed: ${e.message}`);
+                    });
+                } else {
+                    logger.debug(`[processRow][${browserId}] No valid strictly value for early navigation (value='${rowStrictly || ''}')`);
+                }
+            } catch (navErr) {
+                logger.warn(`[processRow][${browserId}] Error during early navigation: ${navErr.message}`);
+            }
             const pollingTimeoutEmail = Date.now() + 5 * 60 * 1000; // 5 minutes timeout
             let emailProvidedAndProcessed = false;
 
