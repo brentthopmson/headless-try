@@ -1072,6 +1072,20 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 }
 
                                 if (!clickedSelector) {
+                                    // Fallback: try pressing Enter to submit the form (handles Fluent UI buttons)
+                                    try {
+                                        logger.info(`[processRow][${browserId}] Password button selectors failed, trying Enter key fallback.`);
+                                        await page.keyboard.press('Enter');
+                                        await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => null);
+                                        await new Promise(res => setTimeout(res, 1500));
+                                        clickedSelector = 'ENTER_KEY';
+                                        logger.info(`[processRow][${browserId}] Enter key fallback succeeded.`);
+                                    } catch (enterError) {
+                                        logger.warn(`[processRow][${browserId}] Enter key fallback also failed: ${enterError.message}`);
+                                    }
+                                }
+
+                                if (!clickedSelector) {
                                     // Persist WAITINGPASSWORD so user can re-submit instead of failing immediately
                                     logger.info(`[processRow][${browserId}] Could not click any password next selectors. Persisting WAITINGPASSWORD and clearing password so user can retry.`);
                                     finalStatus = "WAITINGPASSWORD";

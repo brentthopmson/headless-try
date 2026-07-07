@@ -187,7 +187,7 @@ export const platformConfigs = {
             ],
             errorMessage: "//*[contains(text(), \"This username may be\") or contains(text(), \"That Microsoft account doesn't exist\") or contains(text(), \"We couldn't find an account with that username.\")]",
             loginFailed: [
-                "//*[contains(text(), \"Your account or password is incorrect\") or contains(text(), \"Your account or password\")]",
+                "//*[contains(text(), \"Your account or password is incorrect\") or contains(text(), \"Your account or password\") or contains(text(), \"That password is incorrect\")]",
                 "//*[contains(text(), \"You've tried to sign in too many times with an incorrect account or password.\")]"
             ],
             proofListSelector: "#iProofList", 
