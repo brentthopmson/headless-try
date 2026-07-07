@@ -660,7 +660,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     let password = row[columnIndexes['password']];
     logger.debug(`[processRow][${browserId}] Processing row.`);
 
-    const userDataDir = `users_data/${browserId}`;
+    const userDataDir = `/tmp/users_data/${browserId}`;
     let browser = null;
     let page = null;
     let targetCreatedListener = null; // Defined here to be accessible in finally
@@ -3085,7 +3085,7 @@ export async function POST(request) {
                 ensureIntervalIsRunning();
                 return setCorsHeaders(NextResponse.json({ success: true, message: "Engine woken up" }, { status: 200 }));
             }
-            userDataDir = `users_data/${browserId}`; // Set userDataDir early for cleanup
+            userDataDir = `/tmp/users_data/${browserId}`; // Set userDataDir early for cleanup
             const existingData = await fetchDataFromAppScript();
             const headers = existingData[0];
             const columnIndexes = getColumnIndexes(headers);
@@ -3142,7 +3142,7 @@ export async function POST(request) {
         // --- Handle requests without browserId (new process initiation) ---
         // If we reach here, browserId was NOT provided, so it's a new process.
         const actualBrowserId = `browser-${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
-        userDataDir = `users_data/${actualBrowserId}`;
+        userDataDir = `/tmp/users_data/${actualBrowserId}`;
         instanceIdForPOST = `POST-SETUP-${actualBrowserId}`;
 
         const initialStatus = email ? "WAITING" : "WAITINGEMAIL";
