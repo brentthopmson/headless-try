@@ -31,13 +31,24 @@ export const userAgent = getRandomUserAgent(); // Maintain legacy export just in
 
 import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium-min";
+import { existsSync, rmSync } from 'node:fs';
 
 /**
  * Centrally launches an optimized Puppeteer browser instance.
  * Automatically randomizes User-Agent while keeping the physical layout
  * locked to standard widescreen dimensions (1920x1080) for automation safety.
  */
+let _chromiumCacheCleaned = false;
+
 export async function launchBrowser(customOptions = {}) {
+  // Clean stale chromium binary from Docker layer cache (once per process)
+  if (!isDev && !_chromiumCacheCleaned) {
+    _chromiumCacheCleaned = true;
+    if (existsSync('/tmp/chromium')) {
+      try { rmSync('/tmp/chromium', { recursive: true }); } catch (_) {}
+    }
+  }
+
   // 1. Resolve User-Agent (dynamic random selection by default)
   const selectedUA = customOptions.userAgent || getRandomUserAgent();
 
