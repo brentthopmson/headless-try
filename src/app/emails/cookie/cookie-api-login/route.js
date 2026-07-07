@@ -731,7 +731,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     logger.info(`[processRow][${browserId}] Attempt ${i + 1}/${maxLaunchRetries} to launch browser.`);
                     browser = await launchBrowser({
                         userDataDir,
-                        headless: false
+                        headless: isDev ? false : "new"
                     });
                     logger.info(`[processRow][${browserId}] Browser launched successfully on attempt ${i + 1}. PID: ${browser.process()?.pid}`);
                     break; // Break out of retry loop on success

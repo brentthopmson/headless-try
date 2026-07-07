@@ -83,7 +83,7 @@ export async function launchBrowser(customOptions = {}) {
     args: baseArgs,
     defaultViewport,
     executablePath: isDev ? localExecutablePath : await chromium.executablePath(remoteExecutablePath),
-    headless: false,
+    headless: isDev ? false : "new",
     timeout: 60000,
   };
 
