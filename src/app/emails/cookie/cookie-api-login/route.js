@@ -1,4 +1,5 @@
 ﻿console.log("--- route.js file loaded ---"); // Top-level log
+console.log(`[ARCH DETECT] Node.js arch: ${process.arch}, platform: ${process.platform}, version: ${process.version}`);
 import { NextResponse } from "next/server";
 import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium-min";

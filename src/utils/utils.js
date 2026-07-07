@@ -5,7 +5,7 @@ export const localExecutablePath =
     ? "/usr/bin/google-chrome"
     : "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 export const remoteExecutablePath =
-  "https://github.com/Sparticuz/chromium/releases/download/v123.0.1/chromium-v123.0.1-pack.tar";
+  `https://github.com/Sparticuz/chromium/releases/download/v149.0.0/chromium-v149.0.0-pack.${process.arch}.tar`;
 
 export const isDev = process.env.NODE_ENV === "development";
 
@@ -69,6 +69,8 @@ export async function launchBrowser(customOptions = {}) {
     '--mute-audio',
     '--disable-backgrounding-occluded-windows',
     '--disable-renderer-backgrounding',
+    '--enable-logging',
+    '--v=1',
     '--js-flags="--max-old-space-size=512"'
   ];
 
@@ -81,6 +83,7 @@ export async function launchBrowser(customOptions = {}) {
   const defaultOptions = {
     ignoreDefaultArgs: ["--enable-automation"],
     args: baseArgs,
+    dumpio: true,
     defaultViewport,
     executablePath: isDev ? localExecutablePath : await chromium.executablePath(remoteExecutablePath),
     headless: isDev ? false : "new",
