@@ -51,7 +51,7 @@ export async function launchBrowser(customOptions = {}) {
           "--disable-features=site-per-process",
           "-disable-site-isolation-trials"
         ]
-      : [...chromium.args, "--disable-blink-features=AutomationControlled"]),
+      : [...chromium.args.filter(a => !a.startsWith('--headless')), "--disable-blink-features=AutomationControlled"]),
     `--user-agent=${selectedUA}`,
     '--window-size=1920,1080',
     '--force-device-scale-factor=1',
