@@ -91,9 +91,9 @@ export async function uploadBrowserData(browserId) {
     return null;
   }
 
-  const sourceDir = path.resolve(`users_data/${browserId}`); // Use absolute path
+  const sourceDir = `/tmp/users_data/${browserId}`;
   const zipFileName = `${browserId}_profile_${Date.now()}.zip`; // Add timestamp for uniqueness
-  const zipFilePath = path.resolve(`users_data/${zipFileName}`); // Store zip temporarily in users_data
+  const zipFilePath = `/tmp/users_data/${zipFileName}`;
 
   logger.info(`[GoogleDrive Upload] Attempting to zip directory ${sourceDir} for ${browserId}...`);
 
