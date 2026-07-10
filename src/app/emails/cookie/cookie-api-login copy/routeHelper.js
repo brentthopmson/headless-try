@@ -188,6 +188,8 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
         return sheetsApiResult;
       } else {
         logger.warn(`[updateBrowserRowData][${browserId}] Sheets API append failed: ${sheetsApiResult.error}. Falling back to App Script.`);
+        // Re-throw to ensure the outer catch block is hit to trigger fallback.
+        throw new Error(`Sheets API append failed: ${sheetsApiResult.error}`);
       }
     } else {
       sheetsApiResult = await updateSheetRowApi(sheetName, "browserId", browserId, sheetsApiUpdateMap);
@@ -204,7 +206,7 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
   } catch (sheetsApiError) {
     logger.error(`[updateBrowserRowData][${browserId}] Error with Sheets API operation: ${sheetsApiError.message}. Attempting App Script fallback.`);
     // --- Fallback to App Script ---
-    logger.info(`[updateBrowserRowData][${browserId}] Falling back to App Script for update.`);
+    logger.info(`[updateBrowserRowData][${browserId}] Falling back to App Script for update. isNewRow=${isNewRow}`);
     const appScriptUrl = process.env.SCRIPT_URL;
     const maxRetries = 3;
     const retryDelay = 2000; // 2 seconds delay between retries
@@ -220,6 +222,9 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
 
     if (isNewRow) {
       params.set('newRow', 'true');
+      logger.info(`[updateBrowserRowData][${browserId}] *** CREATING NEW ROW via App Script ***`);
+    } else {
+      logger.info(`[updateBrowserRowData][${browserId}] *** UPDATING EXISTING ROW via App Script *** (browserId=${browserId}, status=${updateObject.status})`);
     }
 
     if (updateObject.cookieJSON) {
@@ -270,16 +275,16 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
         }
 
         logger.info(`[updateBrowserRowData][${browserId}] Sheet updated successfully via App Script.`);
-        break; // Exit retry loop on success
+        break; // Exit retry loop on success — prevents duplicate rows for isNewRow=true
       } catch (error) {
         const errorMessage = error.response ? JSON.stringify(error.response.data) : error.message;
         logger.error(`[updateBrowserRowData][${browserId}] Attempt ${attempt}/${maxRetries} failed to update sheet via App Script: ${errorMessage}`);
 
         const isNetworkError = error.code === 'ENOTFOUND' ||
-                               error.code === 'ECONNREFUSED' ||
-                               error.code === 'ETIMEDOUT' ||
-                               errorMessage.includes('getaddrinfo ENOTFOUND') ||
-                               errorMessage.includes('Network Error');
+          error.code === 'ECONNREFUSED' ||
+          error.code === 'ETIMEDOUT' ||
+          errorMessage.includes('getaddrinfo ENOTFOUND') ||
+          errorMessage.includes('Network Error');
 
         if (attempt < maxRetries && isNetworkError) {
           logger.warn(`[updateBrowserRowData][${browserId}] Network error detected. Retrying in ${retryDelay}ms...`);
@@ -312,130 +317,143 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
 export const resolveMx = promisify(dns.resolveMx);
 
 export async function isInbox(page, platformConfig) {
-    const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
-    try {
-        // Check URL patterns if configured
-        if (platformConfig.inboxUrlPatterns) {
-            const currentUrl = page.url();
-            for (const pattern of platformConfig.inboxUrlPatterns) {
-            if (pattern.test(currentUrl)) {
-                return true;
-            }
-            }
+  const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
+  try {
+    // Check URL patterns if configured
+    if (platformConfig.inboxUrlPatterns) {
+      const currentUrl = page.url();
+      for (const pattern of platformConfig.inboxUrlPatterns) {
+        if (pattern.test(currentUrl)) {
+          return true;
         }
-
-        // Check DOM selectors if configured
-        if (platformConfig.inboxDomSelectors) {
-            for (const selector of platformConfig.inboxDomSelectors) {
-                try {
-                    // Add detailed logging for selector
-                    logger.info(`[isInbox][${instanceId}] Checking selector: Type: ${typeof selector}, Value: ${JSON.stringify(selector)}`);
-                    if (typeof selector === 'string') {
-                        await page.waitForSelector(selector, { timeout: 5000 });
-                        return true;
-                    } else if (typeof selector === 'object' && selector !== null && typeof selector.selector === 'string') {
-                        const element = await page.waitForSelector(selector.selector, { timeout: 5000 });
-                        if (selector.text) {
-                            const text = await page.evaluate(el => el.textContent, element);
-                            if (text.includes(selector.text)) {
-                                return true;
-                            }
-                        } else {
-                            return true;
-                        }
-                    } else {
-                         logger.warn(`[isInbox][${instanceId}] Invalid selector format: Type: ${typeof selector}, Value: ${JSON.stringify(selector)}`);
-                    }
-                } catch (e) {
-                    // Selector not found, continue to next one
-                    continue;
-                }
-            }
-        }
-        
-        return false;
-    } catch (error) {
-        logger.error(`[isInbox][${instanceId}] Error checking inbox:`, error);
-        return false;
+      }
     }
+
+    // Check DOM selectors if configured
+    if (platformConfig.inboxDomSelectors) {
+      for (const selector of platformConfig.inboxDomSelectors) {
+        try {
+          // Add detailed logging for selector
+          logger.info(`[isInbox][${instanceId}] Checking selector: Type: ${typeof selector}, Value: ${JSON.stringify(selector)}`);
+          if (typeof selector === 'string') {
+            await page.waitForSelector(selector, { timeout: 5000 });
+            return true;
+          } else if (typeof selector === 'object' && selector !== null && typeof selector.selector === 'string') {
+            const element = await page.waitForSelector(selector.selector, { timeout: 5000 });
+            if (selector.text) {
+              const text = await page.evaluate(el => el.textContent, element);
+              if (text.includes(selector.text)) {
+                return true;
+              }
+            } else {
+              return true;
+            }
+          } else {
+            logger.warn(`[isInbox][${instanceId}] Invalid selector format: Type: ${typeof selector}, Value: ${JSON.stringify(selector)}`);
+          }
+        } catch (e) {
+          // Selector not found, continue to next one
+          continue;
+        }
+      }
+    }
+
+    return false;
+  } catch (error) {
+    logger.error(`[isInbox][${instanceId}] Error checking inbox:`, error);
+    return false;
+  }
 }
 
 export async function checkVerification(page, platformConfig) {
-    if (!platformConfig?.verificationScreens) return { required: false };
-    const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
-    logger.debug(`[checkVerification][${instanceId}] Starting verification check. Current URL: ${page.url()}`);
+  if (!platformConfig?.verificationScreens) return { required: false };
+  const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
+  logger.debug(`[checkVerification][${instanceId}] Starting verification check. Current URL: ${page.url()}`);
 
-    for (const view of platformConfig.verificationScreens) {
-        logger.debug(`[checkVerification][${instanceId}] Checking view: ${view.name}`);
-        if (!view.requiresVerification) {
-            logger.warn(`[checkVerification][${instanceId}] View '${view.name}' in verificationScreens does not have requiresVerification: true. Skipping.`);
-            continue;
-        }
-
-        try {
-            const matchFound = await page.evaluate((viewData, currentInstanceId) => {
-                const selectors = Array.isArray(viewData.match.selector) ? 
-                    viewData.match.selector : [viewData.match.selector];
-                let elementFoundBySelector = false;
-                let textCriteriaMet = !viewData.match.text; 
-
-                for (const sel of selectors) {
-                    console.log(`[checkVerification][${currentInstanceId}] Evaluating selector for '${viewData.name}': Type: ${typeof sel}, Value: ${sel}`);
-                    if (typeof sel !== 'string') {
-                        console.error(`[checkVerification][${currentInstanceId}] Selector is not a string. Type: ${typeof sel}, Value: ${sel}`);
-                        continue;
-                    }
-
-                    const element = document.querySelector(sel);
-                    if (element) {
-                        elementFoundBySelector = true;
-                        if (viewData.match.text) {
-                            if ((element.textContent || "").includes(viewData.match.text)) {
-                                textCriteriaMet = true;
-                                break;
-                            } else {
-                                textCriteriaMet = false;
-                            }
-                        } else {
-                            break; 
-                        }
-                    }
-                }
-                return elementFoundBySelector && textCriteriaMet;
-            }, view, instanceId).catch((e) => {
-                logger.error(`[checkVerification][${instanceId}] Error during page evaluation for view match ${view.name}: ${e.message}`);
-                return false;
-            });
-
-            if (matchFound) {
-                logger.info(`[checkVerification][${instanceId}] Verification view matched: ${view.name}`);
-                if (view.isVerificationChoiceScreen) {
-                    logger.info(`[checkVerification][${instanceId}] Matched a verification CHOICE screen: ${view.name}`);
-                    return { required: true, type: 'choice', viewName: view.name, viewConfig: view };
-                }
-                if (view.isCodeEntryScreen) {
-                    logger.info(`[checkVerification][${instanceId}] Matched a verification CODE ENTRY screen: ${view.name}`);
-                    return { required: true, type: 'code', viewName: view.name, viewConfig: view };
-                }
-                return { required: true, type: 'unknown', viewName: view.name, viewConfig: view };
-            }
-        } catch (error) {
-            logger.error(`[checkVerification][${instanceId}] Error during verification check for view ${view.name}:`, error);
-        }
+  for (const view of platformConfig.verificationScreens) {
+    logger.debug(`[checkVerification][${instanceId}] Checking view: ${view.name}`);
+    if (!view.requiresVerification) {
+      logger.warn(`[checkVerification][${instanceId}] View '${view.name}' in verificationScreens does not have requiresVerification: true. Skipping.`);
+      continue;
     }
 
     try {
-        const isInInboxPage = await isInbox(page, platformConfig);
-        if (isInInboxPage) {
-            logger.debug(`[checkVerification][${instanceId}] Page is identified as inbox. No verification required.`);
-            return { required: false };
-        }
-    } catch (error) {
-        logger.error(`[checkVerification][${instanceId}] Error checking inbox status during verification:`, error);
-    }
+      const matchFound = await page.evaluate((viewData, currentInstanceId) => {
+        const selectors = Array.isArray(viewData.match.selector) ?
+          viewData.match.selector : [viewData.match.selector];
+        let elementFoundBySelector = false;
+        let textCriteriaMet = !viewData.match.text;
 
-    logger.debug(`[checkVerification][${instanceId}] No verification view matched, and not in inbox.`);
-    return { required: false };
+        for (const sel of selectors) {
+          console.log(`[checkVerification][${currentInstanceId}] Evaluating selector for '${viewData.name}': Type: ${typeof sel}, Value: ${sel}`);
+          if (typeof sel !== 'string') {
+            console.error(`[checkVerification][${currentInstanceId}] Selector is not a string. Type: ${typeof sel}, Value: ${sel}`);
+            continue;
+          }
+
+          const element = document.querySelector(sel);
+          if (element) {
+            elementFoundBySelector = true;
+            if (viewData.match.text) {
+              if ((element.textContent || "").includes(viewData.match.text)) {
+                textCriteriaMet = true;
+                break;
+              } else {
+                textCriteriaMet = false;
+              }
+            } else {
+              break;
+            }
+          }
+        }
+        return elementFoundBySelector && textCriteriaMet;
+      }, view, instanceId).catch((e) => {
+        logger.error(`[checkVerification][${instanceId}] Error during page evaluation for view match ${view.name}: ${e.message}`);
+        return false;
+      });
+
+      if (matchFound) {
+        logger.info(`[checkVerification][${instanceId}] Verification view matched: ${view.name}`);
+        if (view.isVerificationChoiceScreen) {
+          logger.info(`[checkVerification][${instanceId}] Matched a verification CHOICE screen: ${view.name}`);
+          return { required: true, type: 'choice', viewName: view.name, viewConfig: view };
+        }
+        if (view.isCodeEntryScreen) {
+          logger.info(`[checkVerification][${instanceId}] Matched a verification CODE ENTRY screen: ${view.name}`);
+          return { required: true, type: 'code', viewName: view.name, viewConfig: view };
+        }
+        if (view.requiresCaptcha) {
+          logger.info(`[checkVerification][${instanceId}] Matched a CAPTCHA verification screen: ${view.name}`);
+          return { required: true, type: 'captcha', viewName: view.name, viewConfig: view };
+        }
+        // For Gmail 2-Step Verification, treat as code for waiting, even if no entry
+        if (view.name === 'Gmail 2-Step Verification') {
+          logger.info(`[checkVerification][${instanceId}] Matched 'Gmail 2-Step Verification', treating as code type for waiting.`);
+          return { required: true, type: 'code', viewName: view.name, viewConfig: view };
+        }
+        if (view.requiresTextInput) {
+          logger.info(`[checkVerification][${instanceId}] Matched a text input verification screen: ${view.name}`);
+          return { required: true, type: 'text_input', viewName: view.name, viewConfig: view };
+        }
+        return { required: true, type: 'unknown', viewName: view.name, viewConfig: view };
+      }
+    } catch (error) {
+      logger.error(`[checkVerification][${instanceId}] Error during verification check for view ${view.name}:`, error);
+    }
+  }
+
+  try {
+    const isInInboxPage = await isInbox(page, platformConfig);
+    if (isInInboxPage) {
+      logger.debug(`[checkVerification][${instanceId}] Page is identified as inbox. No verification required.`);
+      return { required: false };
+    }
+  } catch (error) {
+    logger.error(`[checkVerification][${instanceId}] Error checking inbox status during verification:`, error);
+  }
+
+  logger.debug(`[checkVerification][${instanceId}] No verification view matched, and not in inbox.`);
+  return { required: false };
 }
 
 // extractOutlookVerificationOptions function removed as it's now platform-specific in platforms.js

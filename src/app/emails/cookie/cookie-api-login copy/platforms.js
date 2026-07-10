@@ -12,14 +12,16 @@ export const platformConfigs = {
         selectors: {
             input: "#identifierId",
             nextButton: "#identifierNext",
-            passwordInput: "input[name='Passwd']",
+            passwordInput: ["input[name='Passwd']", "input[type='password']"],
             passwordNextButton: "#passwordNext",
             errorMessage: "//*[contains(text(), \"Couldn't find your Google Account\") or contains(text(), \"Enter an email\") or contains(text(), \"Enter a valid email\") or contains(text(), \"Couldn’t find your Google Account\")]", // Add more as needed
             loginFailed: "//*[contains(., 'Wrong password') or contains(., 'Your password was changed') or contains(., \"Couldn't sign you in\")]",
             verificationCodeInput: "input[type='tel'][name='ca']",
             verificationCodeSubmit: "#idvPreregisteredPhoneNext",
             gmailEmailCodeInput: "#idvPinId",
-            gmailEmailCodeSubmit: "#idvpreregisteredemailNext"
+            gmailEmailCodeSubmit: "#idvpreregisteredemailNext",
+            recoveryEmailInput: "#knowledge-preregistered-email-response",
+            recoveryEmailNext: "#knowledge-preregistered-email-next"
         },
         extractVerificationOptions: async (page, platformConfig, viewName) => {
             const instanceId = `gmail-${page.browser().process()?.pid || 'unknown'}`;
@@ -73,8 +75,31 @@ export const platformConfigs = {
             return [];
         },
         additionalViews: [
-            // No general additional views for Gmail currently defined that are not primary verification.
-            // If any transient pop-ups appear, they would go here with an action.
+            {
+                name: 'Gmail Recovery Info Setup',
+                match: {
+                    selector: ['*'],
+                    text: 'Make sure you can always sign in'
+                },
+                action: {
+                    type: 'click',
+                    selector: ['button::-p-text("Cancel")'],
+                    navigationWaitUntil: 'networkidle0'
+                }
+            },
+            {
+                name: 'Gmail Set a Home Address Setup',
+                match: {
+                    selector: ['*'],
+                    text: 'Set a home address'
+                },
+                action: {
+                    type: 'click',
+                    selector: ['button::-p-text("Skip")'],
+                    navigationWaitUntil: 'networkidle0'
+                }
+            }
+            // If any other transient pop-ups appear, they would go here with an action.
         ],
         verificationScreens: [
             {
@@ -111,6 +136,23 @@ export const platformConfigs = {
                 match: {
                     selector: ['#idvPinId']
                 }
+            },
+            {
+                name: 'Gmail Recovery Email Confirmation',
+                requiresVerification: true,
+                requiresTextInput: true,
+                match: {
+                    selector: ['#knowledge-preregistered-email-response']
+                }
+            },
+            {
+                name: 'Gmail CAPTCHA Challenge',
+                requiresVerification: true,
+                requiresCaptcha: true,
+                match: {
+                    selector: ['#headingText'],
+                    text: "Verify it's you"
+                }
             }
         ],
         flow: [
@@ -145,7 +187,7 @@ export const platformConfigs = {
             ],
             errorMessage: "//*[contains(text(), \"This username may be\") or contains(text(), \"That Microsoft account doesn't exist\") or contains(text(), \"We couldn't find an account with that username.\")]",
             loginFailed: [
-                "//*[contains(text(), \"Your account or password is incorrect\") or contains(text(), \"Your account or password\")]",
+                "//*[contains(text(), \"Your account or password is incorrect\") or contains(text(), \"Your account or password\") or contains(text(), \"That password is incorrect\")]",
                 "//*[contains(text(), \"You've tried to sign in too many times with an incorrect account or password.\")]"
             ],
             proofListSelector: "#iProofList", 
@@ -314,18 +356,106 @@ export const platformConfigs = {
                     selector: ['button::-p-text("Skip for now")', '[role="button"]::-p-text("Skip for now")']
                 }
             },
-            { // Moved back to additionalViews as it's a click-through to proceed
-                name: 'Outlook Verify Email Full Input',
+            {
+                name: 'Outlook Other Ways to Sign In',
                 match: {
-                    selector: ["[data-testid='title']", "#proof-confirmation-email-input", "body"],
+                    selector: ["[data-testid='title']", "#proof-confirmation-email-input", "h1", "h2", "[role='heading']", "#iPageTitle"],
+                    text: "Verify your email"
+                },
+                action: {
+                    type: 'click',
+                    selector: 'span[role="button"]',
+                    text: 'Other ways to sign in',
+                    navigationWaitUntil: 'domcontentloaded'
+                }
+            },
+            {
+                name: 'Outlook Use Your Password',
+                match: {
+                    selector: ["[data-testid='title']", "#view", "h1", "h2", "[role='heading']", "#iPageTitle"],
                     text: "Use your password"
                 },
-                // Removed requiresVerification and isVerificationChoiceScreen as it's not a primary verification choice screen
                 action: {
                     type: 'click',
                     selector: 'span[role="button"]',
                     text: 'Use your password',
                     navigationWaitUntil: 'domcontentloaded'
+                }
+            },
+            {
+                name: 'Outlook FIDO Create Passkey',
+                match: {
+                    url: ['fido/create', 'fido/createpassword']
+                },
+                action: async (page, view, platformConfig) => {
+                    const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
+                    // Try clicking Cancel button
+                    const cancelSelectors = [
+                        "button#cancelButton",
+                        "button::-p-text('Cancel')",
+                        "button[data-testid='cancelButton']",
+                        "button::-p-text('Back')"
+                    ];
+                    for (const sel of cancelSelectors) {
+                        try {
+                            await page.waitForSelector(sel, { visible: true, timeout: 3000 });
+                            await page.click(sel);
+                            logger.info(`[handleAdditionalViews][${instanceId}] Clicked FIDO cancel: ${sel}`);
+                            await new Promise(r => setTimeout(r, 2000));
+                            return;
+                        } catch (e) { }
+                    }
+                    // Fallback 1: Tab+Enter
+                    logger.info(`[handleAdditionalViews][${instanceId}] FIDO cancel not found, trying Tab+Enter`);
+                    await page.keyboard.press('Tab');
+                    await new Promise(r => setTimeout(r, 300));
+                    await page.keyboard.press('Enter');
+                    await new Promise(r => setTimeout(r, 2000));
+                    // Fallback 2: goBack if still on FIDO
+                    if (page.url().includes('fido/')) {
+                        logger.info(`[handleAdditionalViews][${instanceId}] Still on FIDO, going back`);
+                        await page.goBack({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => null);
+                        await new Promise(r => setTimeout(r, 2000));
+                    }
+                }
+            },
+            {
+                name: 'Outlook FIDO Passkeys QR Modal',
+                match: {
+                    selector: ["h1", "h2", "[role='heading']", "div"],
+                    text: "Passkeys"
+                },
+                action: {
+                    type: 'click',
+                    selector: [
+                        "button::-p-text('Cancel')",
+                        "button::-p-text('Back')",
+                        "button[data-testid='cancelButton']",
+                        "#cancelButton"
+                    ]
+                }
+            },
+            {
+                name: 'Outlook FIDO Cancel Confirmation',
+                match: {
+                    selector: ["*"],
+                    text: "Are you sure"
+                },
+                action: {
+                    type: 'keyboard',
+                    keys: ['Tab', 'Enter']
+                }
+            },
+            {
+                name: 'Outlook FIDO Navigate to Inbox',
+                match: {
+                    url: ['fido/create', 'fido/createpassword']
+                },
+                action: async (page, view, platformConfig) => {
+                    const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
+                    logger.info(`[handleAdditionalViews][${instanceId}] FIDO still present, navigating to inbox`);
+                    await page.goto('https://outlook.live.com/mail/', { waitUntil: 'networkidle0', timeout: 30000 }).catch(() => null);
+                    await new Promise(r => setTimeout(r, 3000));
                 }
             },
             {
@@ -438,14 +568,14 @@ export const platformConfigs = {
         url: "https://login.yahoo.com/",
         mxKeywords: ['yahoo'],
         selectors: {
-            input: "#login-username",
-            nextButton: "#login-signin",
+            input: "#username",
+            nextButton: "button[name='signin']",
             passwordInput: "#login-passwd",
-            passwordNextButton: "#login-signin",
-            errorMessage: "//*[contains(text(), 'Sorry, we don't recognize this email')]",
+            passwordNextButton: "button[name='validate']",
+            errorMessage: '//*[contains(text(), "Sorry, we don\'t recognize this email")]',
             loginFailed: "//*[contains(text(), 'Invalid password')]",
-            verificationCodeInput: "#login-otp-code", 
-            verificationCodeSubmit: "#login-otp-verify" 
+            verificationCodeInput: "#login-otp-code",
+            verificationCodeSubmit: "#login-otp-verify"
         },
         extractVerificationOptions: async (page, platformConfig, viewName) => {
              logger.debug(`[Yahoo][${viewName}] No specific verification option extraction logic defined.`);
@@ -460,6 +590,74 @@ export const platformConfigs = {
                 match: {
                     selector: ['#login-otp-form'],
                     text: 'Enter the code'
+                }
+            }
+        ],
+        flow: [
+            { action: 'waitForSelector', selector: 'input', timeout: 10000 },
+            { action: 'type', selector: 'input', value: 'EMAIL', delay: 100 },
+            { action: 'click', selector: 'nextButton' },
+            { action: 'wait', duration: 3000 },
+            { action: 'waitForSelector', selector: 'passwordInput', timeout: 15000 },
+            { action: 'type', selector: 'passwordInput', value: 'PASSWORD', delay: 100 },
+            { action: 'click', selector: 'passwordNextButton' },
+            { action: 'wait', duration: 5000 }
+        ]
+    },
+    apple: {
+        inboxUrlPatterns: [
+            /mail\.icloud\.com\//
+        ],
+        inboxDomSelectors: [
+            '#mail-list',
+            '.mail-list-container'
+        ],
+        url: "https://appleid.apple.com/sign-in",
+        mxKeywords: ['icloud', 'me.com', 'mac.com'],
+        selectors: {
+            input: "#account_name_text_field",
+            nextButton: "#sign-in",
+            passwordInput: "#password_text_field",
+            passwordNextButton: "#sign-in",
+            errorMessage: "//*[contains(text(), 'Apple ID or password was incorrect') or contains(text(), 'This Apple Account is locked') or contains(text(), 'Enter a valid email')]",
+            loginFailed: "//*[contains(text(), 'incorrect') or contains(text(), 'locked') or contains(text(), 'too many')]",
+            verificationCodeInput: "input[type='text'][name='code']",
+            verificationCodeSubmit: "#sign-in"
+        },
+        extractVerificationOptions: async (page, platformConfig, viewName) => {
+             logger.debug(`[Apple][${viewName}] No specific verification option extraction logic defined.`);
+             return [];
+        },
+        additionalViews: [
+            {
+                name: 'Apple Verification Method',
+                match: {
+                    selector: ["h1", "h2", "[role='heading']"],
+                    text: "Choose how to verify"
+                },
+                action: {
+                    type: 'click',
+                    selector: ['button[type="submit"]', 'button::-p-text("Continue")']
+                }
+            }
+        ],
+        verificationScreens: [
+            {
+                name: 'Apple 2FA Code Entry',
+                requiresVerification: true,
+                isCodeEntryScreen: true,
+                match: {
+                    selector: ['#authcode', 'input[type="text"]', 'input[type="tel"]'],
+                    text: 'code'
+                }
+            },
+            {
+                name: 'Apple Device Approval',
+                requiresVerification: true,
+                isCodeEntryScreen: false,
+                match: {
+                    selector: ['h1', 'h2', '[role="heading"]'],
+                    text: 'Approve this sign-in'
                 }
             }
         ],

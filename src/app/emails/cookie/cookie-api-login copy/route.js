@@ -1059,7 +1059,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         }
                                     }
                                     if (!foundSelector) {
-                                        const currentUrl = page.url();
+                                        const currentUrl = await page.url().catch(() => 'unknown');
                                         const pageTitle = await page.title().catch(() => 'unknown');
                                         logger.debug(`[processRow][${browserId}] Password input not found. URL: ${currentUrl}, Title: ${pageTitle}`);
                                         await handleAdditionalViews(page, platformConfig, instanceId, 'password_entry');
