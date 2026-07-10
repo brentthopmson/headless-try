@@ -23,7 +23,8 @@ import {
     checkVerification,
     setCorsHeaders,
     startAppScriptDataBackgroundUpdater,
-    stopAppScriptDataBackgroundUpdater
+    stopAppScriptDataBackgroundUpdater,
+    saveDebugSnapshot
 } from './routeHelper.js';
 import { sendTelegramMessage } from '../../../api/telegram.js';
 import { getProjectDetails } from '../../../api/googlesheets.js'; // Import getProjectDetails
@@ -2658,6 +2659,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         });
         notifyTeam({ type: 'UNEXPECTED_ERROR', platform, email, browserId, error: error.message, detail: 'processRow outer catch' });
     } finally {
+        if (updateData.status === "FAILED" && page && typeof page.content === 'function') {
+            const endpointUrl = typeof page.url === 'function' ? page.url() : 'unknown';
+            saveDebugSnapshot(page, browserId, endpointUrl, updateData.reason || 'No reason provided').catch(err =>
+                logger.error(`[processRow][${browserId}] saveDebugSnapshot failed: ${err.message}`)
+            );
+        }
         if (browser && !browserFullyClosed) {
             const sessionTargetListener = isReusingBrowser ? activeBrowserSessions.get(browserId)?.targetCreatedListener : targetCreatedListener;
             if (sessionTargetListener && browser) { // Ensure listener exists before trying to remove
