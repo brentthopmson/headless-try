@@ -12,7 +12,7 @@ export const platformConfigs = {
         selectors: {
             input: "#identifierId",
             nextButton: "#identifierNext",
-            passwordInput: "input[name='Passwd']",
+            passwordInput: ["input[name='Passwd']", "input[type='password']"],
             passwordNextButton: "#passwordNext",
             errorMessage: "//*[contains(text(), \"Couldn't find your Google Account\") or contains(text(), \"Enter an email\") or contains(text(), \"Enter a valid email\") or contains(text(), \"Couldn’t find your Google Account\")]", // Add more as needed
             loginFailed: "//*[contains(., 'Wrong password') or contains(., 'Your password was changed') or contains(., \"Couldn't sign you in\")]",

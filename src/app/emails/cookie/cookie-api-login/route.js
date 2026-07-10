@@ -317,22 +317,33 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     }
 
                     // Wait for password input to become visible (handles Outlook "Use your password" transition delay)
-                    if (platformConfig.selectors?.passwordInput && typeof platformConfig.selectors.passwordInput === 'string') {
-                        try {
-                            await page.waitForSelector(platformConfig.selectors.passwordInput, { visible: true, timeout: 5000 });
-                        } catch (e) {
-                            logger.debug(`[checkAccountAccess][${instanceId}] Password input not visible after 5s wait.`);
+                    const pwInputSelectors = Array.isArray(platformConfig.selectors?.passwordInput) ? platformConfig.selectors.passwordInput : [platformConfig.selectors?.passwordInput].filter(Boolean);
+                    if (pwInputSelectors.length > 0) {
+                        for (const sel of pwInputSelectors) {
+                            try {
+                                await page.waitForSelector(sel, { visible: true, timeout: 5000 });
+                                break;
+                            } catch (e) {
+                                logger.debug(`[checkAccountAccess][${instanceId}] Password selector '${sel}' not visible after 5s wait.`);
+                            }
                         }
                     }
 
                     // Check for password input
-                    if (platformConfig.selectors.passwordInput) {
-                        const pwVisible = await page.$eval(platformConfig.selectors.passwordInput, el => el.offsetParent !== null).catch(() => false);
-                        if (pwVisible) {
+                    if (pwInputSelectors.length > 0) {
+                        let visiblePwSelector = null;
+                        for (const sel of pwInputSelectors) {
+                            const pwVisible = await page.$eval(sel, el => el.offsetParent !== null).catch(() => false);
+                            if (pwVisible) {
+                                visiblePwSelector = sel;
+                                break;
+                            }
+                        }
+                        if (visiblePwSelector) {
                             if (password) {
-                                logger.info(`[checkAccountAccess][${instanceId}] Password input visible and password available. Typing password directly.`);
-                                await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, platformConfig.selectors.passwordInput);
-                                await page.type(platformConfig.selectors.passwordInput, password, { delay: 50 });
+                                logger.info(`[checkAccountAccess][${instanceId}] Password input visible (${visiblePwSelector}) and password available. Typing password directly.`);
+                                await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, visiblePwSelector);
+                                await page.type(visiblePwSelector, password, { delay: 50 });
                                 let passwordNextClicked = false;
                                 if (platformConfig.selectors.passwordNextButton) {
                                     let pwdSelectors = Array.isArray(platformConfig.selectors.passwordNextButton) ? platformConfig.selectors.passwordNextButton : [platformConfig.selectors.passwordNextButton];
@@ -1028,20 +1039,29 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         // Removed page.waitForLoadState as it's not a function in this Puppeteer version.
                         await handleAdditionalViews(page, platformConfig, instanceId, 'password_entry'); // New context for password entry specific views
 
-                        const passwordInputSelector = platformConfig.selectors?.passwordInput;
+                        const passwordInputSelectors = Array.isArray(platformConfig.selectors?.passwordInput) ? platformConfig.selectors.passwordInput : [platformConfig.selectors?.passwordInput].filter(Boolean);
                         const passwordNextButtonSelector = platformConfig.selectors?.passwordNextButton;
 
-                        if (passwordInputSelector && typeof passwordInputSelector === 'string' &&
+                        if (passwordInputSelectors.length > 0 &&
                             passwordNextButtonSelector && (typeof passwordNextButtonSelector === 'string' || (Array.isArray(passwordNextButtonSelector) && passwordNextButtonSelector.length > 0))) {
                             try {
-                                let passwordFieldFound = false;
+                                let foundSelector = null;
                                 const passwordPollTimeout = Date.now() + 30000;
-                                while (Date.now() < passwordPollTimeout && !passwordFieldFound) {
-                                    try {
-                                        await page.waitForSelector(passwordInputSelector, { visible: true, timeout: 5000 });
-                                        passwordFieldFound = true;
-                                    } catch (pwWaitErr) {
-                                        logger.debug(`[processRow][${browserId}] Password input not yet visible, rechecking page state...`);
+                                while (Date.now() < passwordPollTimeout && !foundSelector) {
+                                    for (const sel of passwordInputSelectors) {
+                                        try {
+                                            await page.waitForSelector(sel, { visible: true, timeout: 5000 });
+                                            foundSelector = sel;
+                                            break;
+                                        } catch (pwWaitErr) {
+                                            if (pwWaitErr.name === 'TimeoutError') continue;
+                                            logger.warn(`[processRow][${browserId}] Selector '${sel}' error: ${pwWaitErr.message}`);
+                                        }
+                                    }
+                                    if (!foundSelector) {
+                                        const currentUrl = await page.url().catch(() => 'unknown');
+                                        const pageTitle = await page.title().catch(() => 'unknown');
+                                        logger.debug(`[processRow][${browserId}] Password input not found. URL: ${currentUrl}, Title: ${pageTitle}`);
                                         await handleAdditionalViews(page, platformConfig, instanceId, 'password_entry');
                                         const emailInputSelector = platformConfig.selectors?.input;
                                         if (emailInputSelector) {
@@ -1072,12 +1092,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         await new Promise(res => setTimeout(res, 1000));
                                     }
                                 }
-                                if (!passwordFieldFound) {
-                                    throw new Error(`Password input (${passwordInputSelector}) not found after 30s polling timeout`);
+                                if (!foundSelector) {
+                                    throw new Error(`Password input not found after 30s polling timeout. Tried selectors: ${JSON.stringify(passwordInputSelectors)}`);
                                 }
-                                logger.debug(`[processRow][${browserId}] Clearing password input field: ${passwordInputSelector}`);
-                                await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, passwordInputSelector);
-                                await page.type(passwordInputSelector, currentPassword, { delay: 50 });
+                                logger.debug(`[processRow][${browserId}] Using password selector: ${foundSelector}`);
+                                await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, foundSelector);
+                                await page.type(foundSelector, currentPassword, { delay: 50 });
                                 logger.info(`[processRow][${browserId}] Successfully typed password.`);
 
                                 logger.debug(`[processRow][${browserId}] Attempting to click password next button and await navigation. Selectors: ${JSON.stringify(passwordNextButtonSelector)}`);
@@ -1263,7 +1283,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 break;
                             }
                         } else {
-                            logger.error(`[processRow][${browserId}][WAITINGPASSWORD] Cannot resume: Missing password input or next button selectors. passwordInputSelector: '${passwordInputSelector}', passwordNextButtonSelector: '${passwordNextButtonSelector}'.`);
+                            logger.error(`[processRow][${browserId}][WAITINGPASSWORD] Cannot resume: Missing password input or next button selectors. passwordInputSelectors: '${JSON.stringify(passwordInputSelectors)}', passwordNextButtonSelector: '${passwordNextButtonSelector}'.`);
                             logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Cannot resume: Missing password input or next button selectors.`);
                             initialCheckResult = { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, error: "Missing password selectors for WAITINGPASSWORD resume." };
                             finalStatus = "FAILED";
