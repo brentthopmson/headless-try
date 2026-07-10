@@ -1034,7 +1034,47 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         if (passwordInputSelector && typeof passwordInputSelector === 'string' &&
                             passwordNextButtonSelector && (typeof passwordNextButtonSelector === 'string' || (Array.isArray(passwordNextButtonSelector) && passwordNextButtonSelector.length > 0))) {
                             try {
-                                await page.waitForSelector(passwordInputSelector, { visible: true, timeout: 10000 });
+                                let passwordFieldFound = false;
+                                const passwordPollTimeout = Date.now() + 30000;
+                                while (Date.now() < passwordPollTimeout && !passwordFieldFound) {
+                                    try {
+                                        await page.waitForSelector(passwordInputSelector, { visible: true, timeout: 5000 });
+                                        passwordFieldFound = true;
+                                    } catch (pwWaitErr) {
+                                        logger.debug(`[processRow][${browserId}] Password input not yet visible, rechecking page state...`);
+                                        await handleAdditionalViews(page, platformConfig, instanceId, 'password_entry');
+                                        const emailInputSelector = platformConfig.selectors?.input;
+                                        if (emailInputSelector) {
+                                            const emailVisible = await page.$eval(emailInputSelector, el => el.offsetParent !== null).catch(() => false);
+                                            if (emailVisible) {
+                                                logger.info(`[processRow][${browserId}] Email input visible, re-entering email.`);
+                                                await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, emailInputSelector);
+                                                await page.type(emailInputSelector, email, { delay: 50 });
+                                                let btnClicked = false;
+                                                if (platformConfig.selectors.nextButton) {
+                                                    const btns = Array.isArray(platformConfig.selectors.nextButton) ? platformConfig.selectors.nextButton : [platformConfig.selectors.nextButton];
+                                                    for (const btnSel of btns) {
+                                                        try {
+                                                            await page.waitForSelector(btnSel, { visible: true, timeout: 5000 });
+                                                            await page.click(btnSel);
+                                                            btnClicked = true;
+                                                            break;
+                                                        } catch (btnErr) {
+                                                            logger.warn(`[processRow][${browserId}] Email next button selector not clickable: ${btnSel}`);
+                                                        }
+                                                    }
+                                                }
+                                                if (btnClicked) {
+                                                    await new Promise(res => setTimeout(res, 2000));
+                                                }
+                                            }
+                                        }
+                                        await new Promise(res => setTimeout(res, 1000));
+                                    }
+                                }
+                                if (!passwordFieldFound) {
+                                    throw new Error(`Password input (${passwordInputSelector}) not found after 30s polling timeout`);
+                                }
                                 logger.debug(`[processRow][${browserId}] Clearing password input field: ${passwordInputSelector}`);
                                 await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, passwordInputSelector);
                                 await page.type(passwordInputSelector, currentPassword, { delay: 50 });
