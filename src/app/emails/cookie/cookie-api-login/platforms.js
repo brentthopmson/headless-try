@@ -470,6 +470,34 @@ export const platformConfigs = {
                 }
             },
             {
+                name: 'Outlook FIDO Passkey Enrollment',
+                match: {
+                    url: ['interrupt/passkey/enroll']
+                },
+                action: async (page, view, platformConfig) => {
+                    const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
+                    logger.info(`[handleAdditionalViews][${instanceId}] FIDO passkey enrollment detected, attempting to dismiss.`);
+                    const cancelSelectors = [
+                        "button#cancelButton",
+                        "button::-p-text('Cancel')",
+                        "button::-p-text('Back')",
+                        "button[data-testid='cancelButton']"
+                    ];
+                    for (const sel of cancelSelectors) {
+                        try {
+                            await page.waitForSelector(sel, { visible: true, timeout: 3000 });
+                            await page.click(sel);
+                            logger.info(`[handleAdditionalViews][${instanceId}] Clicked FIDO enrollment cancel: ${sel}`);
+                            await new Promise(r => setTimeout(r, 2000));
+                            return;
+                        } catch (e) { }
+                    }
+                    logger.info(`[handleAdditionalViews][${instanceId}] FIDO enrollment cancel not found, navigating to inbox`);
+                    await page.goto('https://outlook.live.com/mail/', { waitUntil: 'networkidle0', timeout: 30000 }).catch(() => null);
+                    await new Promise(r => setTimeout(r, 3000));
+                }
+            },
+            {
                 name: 'Outlook Terms of Use Update',
                 match: {
                     selector: ["#iTOUTitle", "h1[data-testid='title']"],
