@@ -23,6 +23,12 @@ export const platformConfigs = {
             recoveryEmailInput: "#knowledge-preregistered-email-response",
             recoveryEmailNext: "#knowledge-preregistered-email-next"
         },
+        captchaConfig: {
+            urlPatterns: [/\/challenge\/recaptcha/, /\/signin\/challenge\//],
+            answerInput: "input[name='ca'], input#ca, input[name='captcha']",
+            submitButton: "#confirm, button[jsname='LgbsSe']",
+            screenshotArea: "[jsname='rvuZqe'], form"
+        },
         extractVerificationOptions: async (page, platformConfig, viewName) => {
             const instanceId = `gmail-${page.browser().process()?.pid || 'unknown'}`;
             if (viewName === 'Gmail Verification Choices') {
@@ -297,8 +303,13 @@ export const platformConfigs = {
             },
             {
                 name: 'Security Info Confirmation',
-                match: { selector: "#iLooksGood" },
-                action: { type: 'click', selector: "#iLooksGood" }
+                match: {
+                    selector: ["#iSoundsGood", "#iLooksGood"]
+                },
+                action: {
+                    type: 'click',
+                    selector: ["#iSoundsGood", "#iLooksGood"]
+                }
             },
             {
                 name: 'Stay Signed In',

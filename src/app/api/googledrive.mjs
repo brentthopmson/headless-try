@@ -66,6 +66,37 @@ export async function initializeGoogleDrive() {
   }
 }
 
+export async function uploadImageToDrive(base64Image, fileName, parentFolderId) {
+  try {
+    const drive = await authenticate();
+    if (!drive) {
+      return { success: false, error: "Failed to get Drive API authentication client." };
+    }
+    const buffer = Buffer.from(base64Image, 'base64');
+    const media = { mimeType: 'image/png', body: buffer };
+    const fileMetadata = {
+      name: fileName,
+      parents: [parentFolderId || DRIVE_FOLDER_ID],
+    };
+    const file = await drive.files.create({
+      resource: fileMetadata,
+      media: media,
+      fields: 'id, webViewLink',
+      supportsAllDrives: true,
+    });
+    await drive.permissions.create({
+      fileId: file.data.id,
+      requestBody: { role: 'reader', type: 'anyone' },
+      supportsAllDrives: true,
+    });
+    logger.info(`[Drive API] Image uploaded: ${file.data.webViewLink}`);
+    return { success: true, webViewLink: file.data.webViewLink, id: file.data.id };
+  } catch (error) {
+    logger.error(`[Drive API] Error uploading image: ${error.message}`);
+    return { success: false, error: error.message };
+  }
+}
+
 async function zipDirectory(sourceDir, outPath) {
   // Ensure source directory exists and is accessible
   if (!fs.existsSync(sourceDir)) {

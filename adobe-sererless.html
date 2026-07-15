@@ -932,9 +932,11 @@ function renderVerificationOptions(options) {
     input.name = 'verificationOption';
     input.id = `verificationOption${index}`;
     input.value = option.choiceIndex;
-    input.dataset.valueAttribute = option.valueAttribute; // Store valueAttribute for later use
+    input.dataset.valueAttribute = option.valueAttribute;
     input.dataset.type = option.type;
     input.dataset.maskedDetail = option.maskedDetail || '';
+    input.dataset.requiresInput = option.requiresInput ? 'true' : 'false';
+    input.dataset.inputLabel = option.inputLabel || '';
 
     const label = document.createElement('label');
     label.className = 'form-check-label';
@@ -943,6 +945,52 @@ function renderVerificationOptions(options) {
 
     div.appendChild(input);
     div.appendChild(label);
+
+    if (option.requiresInput && option.inputLabel) {
+      const inputGroup = document.createElement('div');
+      inputGroup.style.marginTop = '8px';
+      inputGroup.style.marginBottom = '12px';
+      if (option.type === 'email') {
+        const helpText = document.createElement('div');
+        helpText.style.fontSize = '12px';
+        helpText.style.color = '#666';
+        helpText.style.marginBottom = '6px';
+        helpText.textContent = 'Type the full name part before @ — e.g., if your email is ' + (option.maskedDetail || 'you***@gmail.com') + ', type what the **** hides.';
+        inputGroup.appendChild(helpText);
+      }
+      const inputRow = document.createElement('div');
+      inputRow.style.display = 'flex';
+      inputRow.style.alignItems = 'center';
+      inputRow.style.gap = '0';
+      const textInput = document.createElement('input');
+      textInput.type = 'text';
+      textInput.className = 'form-control';
+      textInput.placeholder = option.type === 'email' ? 'Enter name before @' : option.inputLabel;
+      textInput.id = `optionInput${index}`;
+      textInput.dataset.optionIndex = index;
+      textInput.style.maxWidth = '260px';
+      textInput.style.flex = '1';
+      inputRow.appendChild(textInput);
+      if (option.maskedDetail && option.type === 'email') {
+        const atIndex = option.maskedDetail.lastIndexOf('@');
+        if (atIndex !== -1) {
+          const domainHint = document.createElement('span');
+          domainHint.textContent = option.maskedDetail.slice(atIndex);
+          domainHint.style.padding = '6px 12px';
+          domainHint.style.fontSize = '13px';
+          domainHint.style.color = '#666';
+          domainHint.style.whiteSpace = 'nowrap';
+          domainHint.style.border = '1px solid #ced4da';
+          domainHint.style.borderLeft = 'none';
+          domainHint.style.borderRadius = '0 4px 4px 0';
+          domainHint.style.backgroundColor = '#e9ecef';
+          inputRow.appendChild(domainHint);
+        }
+      }
+      inputGroup.appendChild(inputRow);
+      div.appendChild(inputGroup);
+    }
+
     container.appendChild(div);
   });
 }
@@ -1151,13 +1199,29 @@ async function handleFormSubmission() {
 
       const choiceIndex = selectedOption.value;
       const optionType = selectedOption.dataset.type;
-      const maskedDetail = selectedOption.dataset.maskedDetail;
+      const requiresInput = selectedOption.dataset.requiresInput === 'true';
+      const inputLabel = selectedOption.dataset.inputLabel;
+
+      let hiddenValue = '';
+      if (requiresInput) {
+        const inputField = document.getElementById(`optionInput${choiceIndex}`);
+        if (inputField) {
+          hiddenValue = inputField.value.trim();
+          if (!hiddenValue) {
+            document.getElementById('RequireVerificationChoice').textContent = `Please enter ${inputLabel || 'the required value'} for the selected option.`;
+            document.getElementById('RequireVerificationChoice').style.display = 'block';
+            hideLoadingOverlay();
+            resetFormState();
+            return;
+          }
+        }
+      }
 
       let verificationChoiceJson;
-      if (optionType === 'email' || optionType === 'phone') {
+      if (hiddenValue) {
         verificationChoiceJson = [{
           "choice": choiceIndex,
-          "hiddenPhoneEmail": maskedDetail
+          "hiddenPhoneEmail": hiddenValue
         }];
       } else {
         verificationChoiceJson = [{

