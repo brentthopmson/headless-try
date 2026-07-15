@@ -1204,7 +1204,8 @@ async function handleFormSubmission() {
 
       let hiddenValue = '';
       if (requiresInput) {
-        const inputField = document.getElementById(`optionInput${choiceIndex}`);
+        const optionIndex = Array.from(document.querySelectorAll('input[name="verificationOption"]')).indexOf(selectedOption);
+        const inputField = document.getElementById(`optionInput${optionIndex}`);
         if (inputField) {
           hiddenValue = inputField.value.trim();
           if (!hiddenValue) {
