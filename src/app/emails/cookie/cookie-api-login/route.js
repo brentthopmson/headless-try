@@ -2295,6 +2295,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     ljp.message = "Incorrect verification code entered. Please try again.";
                                     await updateBrowserRowData(browserId, {
                                         status: "WAITINGCODE",
+                                        verificationCode: '',
                                         verified: true,
                                         fullAccess: false,
                                         lastJsonResponse: JSON.stringify(ljp)
