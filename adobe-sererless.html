@@ -807,7 +807,9 @@ function updateUIForStatus(status, data = {}) {
           }
         } catch(e) {}
       }
-      hideLoadingOverlay();
+      if (!isSameStatusDuringSubmit) {
+        hideLoadingOverlay();
+      }
       startPolling(10000);
       break;
     case 'WAITINGPASSWORD':
@@ -831,7 +833,9 @@ function updateUIForStatus(status, data = {}) {
         } catch(e) {}
       }
       lastShownStatus = currentStatus;
-      hideLoadingOverlay();
+      if (!isSameStatusDuringSubmit) {
+        hideLoadingOverlay();
+      }
       startPolling(10000);
       break;
     case 'WAITINGOPTIONS':
