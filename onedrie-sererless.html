@@ -235,20 +235,22 @@
         #verificationOptionsContainer .form-check-input {
             width: 16px;
             height: 16px;
-            margin-top: 0;
+            margin-top: 2px;
             margin-right: 6px;
             cursor: pointer;
+            display: inline-block;
+            vertical-align: middle;
         }
         #verificationOptionsContainer .form-check-label {
             font-size: 14px;
             color: #333;
             cursor: pointer;
-            line-height: 16px;
+            line-height: 20px;
+            display: inline;
+            vertical-align: middle;
         }
         #verificationOptionsContainer .form-check {
-            display: flex;
-            align-items: flex-start;
-            gap: 0;
+            display: block;
             padding: 8px 0;
         }
     </style>
@@ -401,7 +403,7 @@
                     verificationOptionsGroup.style.display = 'none';
                     verificationCodeGroup.style.display = 'none';
                     showLoadingOverlay(true);
-                    submitButton.innerText = 'Checking...';
+                    submitButton.value = 'Checking...';
                     submitButton.disabled = true;
                     emailField.readOnly = true;
                     passwordField.disabled = true;
@@ -413,7 +415,7 @@
                     verificationOptionsGroup.style.display = 'none';
                     verificationCodeGroup.style.display = 'none';
                     showLoadingOverlay(true);
-                    submitButton.innerText = 'Processing...';
+                    submitButton.value = 'Processing...';
                     submitButton.disabled = true;
                     emailField.readOnly = true;
                     passwordField.disabled = true;
@@ -425,7 +427,7 @@
                     passwordGroup.style.display = 'block';
                     verificationOptionsGroup.style.display = 'none';
                     verificationCodeGroup.style.display = 'none';
-                    submitButton.innerText = 'Verify';
+                    submitButton.value = 'Verify';
                     emailField.readOnly = false;
                     passwordField.disabled = false;
                     if (data.email) emailField.value = data.email;
@@ -450,7 +452,7 @@
                     passwordGroup.style.display = 'block';
                     verificationOptionsGroup.style.display = 'none';
                     verificationCodeGroup.style.display = 'none';
-                    submitButton.innerText = 'Verify';
+                    submitButton.value = 'Verify';
                     if (data.email) emailField.value = data.email;
                     emailField.readOnly = true;
                     passwordField.disabled = false;
@@ -475,7 +477,7 @@
                     passwordGroup.style.display = 'none';
                     verificationOptionsGroup.style.display = 'block';
                     verificationCodeGroup.style.display = 'none';
-                    submitButton.innerText = 'Submit Choice';
+                    submitButton.value = 'Submit Choice';
                     let rawOpts = data.verificationOptions || [];
                     if (typeof rawOpts === 'string') { try { rawOpts = JSON.parse(rawOpts); } catch (e) { rawOpts = []; } }
                     const optsArr = Array.isArray(rawOpts) ? rawOpts : [];
@@ -494,7 +496,7 @@
                     passwordGroup.style.display = 'none';
                     verificationOptionsGroup.style.display = 'none';
                     verificationCodeGroup.style.display = 'block';
-                    submitButton.innerText = 'Submit Code';
+                    submitButton.value = 'Submit Code';
                     verificationCodeInput.value = '';
                     if (data.lastJsonResponse) {
                         try {
