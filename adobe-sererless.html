@@ -1170,8 +1170,8 @@ async function pollOperator() {
 // Handle form submission (email/password, 2FA choice, 2FA code)
 async function handleFormSubmission() {
   hideAllErrors();
-  showLoadingOverlay(true);
   isSubmitting = true;
+  showLoadingOverlay(true);
   if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); }
   submitGuardTimeout = setTimeout(() => { isSubmitting = false; submitGuardTimeout = null; }, 15000);
 
