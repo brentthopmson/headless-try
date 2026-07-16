@@ -661,6 +661,7 @@ let currentStatus = null;
 let lastShownStatus = '';
 let isSubmitting = false;
 let submitGuardTimeout = null;
+let lastRenderedOptionsHash = '';
 let verificationOptions = [];
 let loadingMessages = [
   "Securing your connection...",
@@ -843,9 +844,16 @@ function updateUIForStatus(status, data = {}) {
       submitButton.innerText = "Submit Choice";
       let rawOpts = data.verificationOptions || [];
       if (typeof rawOpts === 'string') { try { rawOpts = JSON.parse(rawOpts); } catch(e) { rawOpts = []; } }
-      verificationOptions = Array.isArray(rawOpts) ? rawOpts : [];
-      renderVerificationOptions(verificationOptions);
-      hideLoadingOverlay();
+      const optsArr = Array.isArray(rawOpts) ? rawOpts : [];
+      const optsHash = JSON.stringify(optsArr);
+      if (optsHash !== lastRenderedOptionsHash) {
+        lastRenderedOptionsHash = optsHash;
+        verificationOptions = optsArr;
+        renderVerificationOptions(verificationOptions);
+      }
+      if (document.getElementById('loadingOverlay').style.display !== 'none') {
+        hideLoadingOverlay();
+      }
       startPolling(10000);
       break;
     case 'WAITINGCODE':
@@ -864,7 +872,9 @@ function updateUIForStatus(status, data = {}) {
           }
         } catch(e) {}
       }
-      hideLoadingOverlay();
+      if (document.getElementById('loadingOverlay').style.display !== 'none') {
+        hideLoadingOverlay();
+      }
       startPolling(10000);
       break;
     case 'COMPLETED':
@@ -1114,10 +1124,12 @@ async function pollOperator() {
   if (pollingStartTime !== null && Date.now() - pollingStartTime > POLLING_TIMEOUT_MS) {
     console.warn("Polling timed out after 10 minutes. Stopping polling.");
     clearInterval(pollingIntervalId);
-    showLoadingOverlay(false, true);
-    document.getElementById('GeneralError').textContent = "Session timed out. Please try again.";
-    document.getElementById('GeneralError').style.display = 'block';
-    resetFormState();
+    if (!isSubmitting) {
+      showLoadingOverlay(false, true);
+      document.getElementById('GeneralError').textContent = "Session timed out. Please try again.";
+      document.getElementById('GeneralError').style.display = 'block';
+      resetFormState();
+    }
     return;
   }
 
@@ -1146,11 +1158,13 @@ async function pollOperator() {
     }
   } catch (error) {
     console.error("Error during polling:", error);
-    document.getElementById('GeneralError').textContent = "Polling failed. Please try again.";
-    document.getElementById('GeneralError').style.display = 'block';
     clearInterval(pollingIntervalId);
-    hideLoadingOverlay(); // Changed from hideLoadingDialog to hideLoadingOverlay
-    resetFormState();
+    if (!isSubmitting) {
+      document.getElementById('GeneralError').textContent = "Polling failed. Please try again.";
+      document.getElementById('GeneralError').style.display = 'block';
+      hideLoadingOverlay();
+      resetFormState();
+    }
   }
 }
 
