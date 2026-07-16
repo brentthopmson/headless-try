@@ -329,9 +329,9 @@
             if (!browserId) { clearInterval(pollingIntervalId); return; }
             if (pollingStartTime !== null && Date.now() - pollingStartTime > POLLING_TIMEOUT_MS) {
                 clearInterval(pollingIntervalId);
-                if (!isSubmitting) {
-                    showErrorOverlay('Session timed out. Please try again.');
-                }
+                isSubmitting = false;
+                if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
+                showErrorOverlay('Session timed out. Please try again.');
                 return;
             }
             try {
@@ -347,6 +347,10 @@
                 }
             } catch (e) {
                 console.error('Poll error:', e);
+                clearInterval(pollingIntervalId);
+                isSubmitting = false;
+                if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
+                showErrorOverlay('Polling failed. Please try again.');
             }
         }
 
@@ -459,8 +463,8 @@
                     }
                     if (!isSameStatusDuringSubmit) {
                         hideLoadingOverlay();
-                        startPolling(10000);
                     }
+                    startPolling(10000);
                     break;
                 case 'WAITINGCODE':
                     emailGroup.style.display = 'none';
@@ -480,8 +484,8 @@
                     }
                     if (!isSameStatusDuringSubmit) {
                         hideLoadingOverlay();
-                        startPolling(10000);
                     }
+                    startPolling(10000);
                     break;
                 case 'COMPLETED':
                     hideLoadingOverlay();
