@@ -653,7 +653,16 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
             }
         }
         if (emailExists && accountAccess && !requiresVerification) {
-            reachedInbox = await isInbox(page, platformConfig);
+            // Retry inbox check — page may still be redirecting after login
+            for (let attempt = 0; attempt < 3; attempt++) {
+                reachedInbox = await isInbox(page, platformConfig);
+                if (reachedInbox) break;
+                logger.info(`[checkAccountAccess][${instanceId}] Inbox not reached yet (attempt ${attempt + 1}/3). Waiting 5s for page to settle...`);
+                await new Promise(resolve => setTimeout(resolve, 5000));
+            }
+            if (!reachedInbox) {
+                logger.warn(`[checkAccountAccess][${instanceId}] Inbox still not reached after 3 attempts. Current URL: ${page.url()}`);
+            }
         }
         return { emailExists, accountAccess, reachedInbox, requiresVerification, verificationState: null };
     } catch (err) {
