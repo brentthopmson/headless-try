@@ -178,7 +178,10 @@ export const platformConfigs = {
             /office\.com\//
         ],
         inboxDomSelectors: [
-            '[aria-label="Mail list"]'
+            '[aria-label="Mail list"]',
+            '[data-app-id="Mail"]',
+            '[role="main"][aria-label*="mail" i]',
+            '[role="main"][aria-label*="inbox" i]'
         ],
         url: "https://login.microsoftonline.com/",
         mxKeywords: ['outlook', 'hotmail', 'microsoft'],

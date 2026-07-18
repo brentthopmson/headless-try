@@ -2878,7 +2878,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         }
 
 
-        if (finalStatus === "COMPLETED") {
+        if (finalStatus === "COMPLETED" && !browserFullyClosed) {
             const allUrls = [
                 `https://${domain}`,
                 `https://login.live.com`,
@@ -2940,11 +2940,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
     } catch (error) {
         logger.error(`[processRow][${browserId}] Error processing row: ${error.message}`, error);
-        finalStatus = "FAILED";
-        updateData.status = "FAILED";
-        updateData.verified = false; // FAILED so verified false
-        updateData.fullAccess = false; // FAILED so fullAccess false
-        updateData.lastJsonResponse = JSON.stringify({
+        if (finalStatus !== "COMPLETED") {
+            finalStatus = "FAILED";
+            updateData.status = "FAILED";
+            updateData.verified = false;
+            updateData.fullAccess = false;
+            updateData.lastJsonResponse = JSON.stringify({
             browserId, email, status: "FAILED", error: error.message,
             platform, timestamp: new Date().toISOString(),
             ...(initialCheckResult.emailExists !== undefined && {
