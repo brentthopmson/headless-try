@@ -689,6 +689,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     let processingStarted = false; // Track if main processing flow was reached
     let updateData = { status: finalStatus };
     let browserFullyClosed = false;
+    let exitingEarly = false;
     let platform = 'unknown';
     let initialCheckResult = {
         emailExists: false,
@@ -859,7 +860,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 if (rowStrictly && platformConfigs[rowStrictly] && platformConfigs[rowStrictly].url) {
                     const targetUrl = platformConfigs[rowStrictly].url;
                     logger.info(`[processRow][${browserId}] strictly='${rowStrictly}' -> navigating to ${targetUrl} while waiting for email`);
-                    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => {
+                    page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(e => {
                         logger.warn(`[processRow][${browserId}] Early navigation to ${targetUrl} failed: ${e.message}`);
                     });
                 } else {
@@ -953,6 +954,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             // Clear the email, domain, and password fields in the sheet when transitioning to WAITINGEMAIL
                             logger.debug(`[processRow][${browserId}] Clearing email, domain, password. Returning to WAITINGEMAIL state.`);
                             await updateBrowserRowData(browserId, { ...updateData, email: '', domain: '', password: '', verified: false, fullAccess: false });
+                            exitingEarly = true;
                             return; // Exit processRow immediately so no later logic overwrites status
                         }
 
@@ -3031,7 +3033,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         // }
 
         // Don't write FAILED to sheet if processing never started — another session may still be active
-        if (!processingStarted && finalSheetUpdate.status === "FAILED") {
+        if ((!processingStarted && finalSheetUpdate.status === "FAILED") || exitingEarly) {
             logger.info(`[processRow][${browserId}] Skipping sheet update — processing never started (browser launch failed). Existing session may still be active.`);
         } else {
             logger.info(`[processRow][${browserId}] Updating final sheet state with data: ${JSON.stringify(finalSheetUpdate)}`);
