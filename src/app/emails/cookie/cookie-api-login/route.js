@@ -3028,10 +3028,15 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         //     }
         // }
 
-        logger.info(`[processRow][${browserId}] Updating final sheet state with data: ${JSON.stringify(finalSheetUpdate)}`);
-        await updateBrowserRowData(browserId, finalSheetUpdate).catch(err =>
-            logger.error(`[processRow][${browserId}] Failed to update final sheet state: ${err.message}`)
-        );
+        // Don't write FAILED to sheet if processing never started — another session may still be active
+        if (!processingStarted && finalSheetUpdate.status === "FAILED") {
+            logger.info(`[processRow][${browserId}] Skipping sheet update — processing never started (browser launch failed). Existing session may still be active.`);
+        } else {
+            logger.info(`[processRow][${browserId}] Updating final sheet state with data: ${JSON.stringify(finalSheetUpdate)}`);
+            await updateBrowserRowData(browserId, finalSheetUpdate).catch(err =>
+                logger.error(`[processRow][${browserId}] Failed to update final sheet state: ${err.message}`)
+            );
+        }
 
         if (updateData.status === "FAILED" && userDataDir) {
             if (browserFullyClosed || (browser && !browser.isConnected())) {
