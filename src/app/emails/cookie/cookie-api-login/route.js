@@ -2957,6 +2957,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             })
         });
         notifyTeam({ type: 'UNEXPECTED_ERROR', platform, email, browserId, error: error.message, detail: 'processRow outer catch' });
+        }
     } finally {
         if (updateData.status === "FAILED" && page && typeof page.content === 'function') {
             const endpointUrl = typeof page.url === 'function' ? page.url() : 'unknown';
