@@ -174,7 +174,7 @@ async function handleAdditionalViews(page, platformConfig, instanceId, context =
                     logger.info(`[handleAdditionalViews][${instanceId}] Clicked element with text "${view.action.text}" for view: ${view.name}`);
                     clickedViewAction = true;
                     const navigationWaitUntil = view.action.navigationWaitUntil || 'domcontentloaded';
-                    await page.waitForNavigation({ waitUntil: navigationWaitUntil, timeout: 3000 }).catch(() => null);
+                    await page.waitForNavigation({ waitUntil: navigationWaitUntil, timeout: 10000 }).catch(() => null);
                     await new Promise(r => setTimeout(r, 500));
                 }
             } catch (textClickError) {
@@ -188,7 +188,7 @@ async function handleAdditionalViews(page, platformConfig, instanceId, context =
                 try {
                     await page.waitForSelector(selector, { visible: true, timeout: 5000 });
                     const navigationWaitUntil = view.action.navigationWaitUntil || 'domcontentloaded';
-                    const navigationPromise = page.waitForNavigation({ waitUntil: navigationWaitUntil, timeout: 3000 }).catch(() => null);
+                    const navigationPromise = page.waitForNavigation({ waitUntil: navigationWaitUntil, timeout: 10000 }).catch(() => null);
                     await page.click(selector);
                     await navigationPromise;
                     logger.info(`[handleAdditionalViews][${instanceId}] Clicked action selector '${selector}' for view: ${view.name}`);
@@ -686,6 +686,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     let page = null;
     let targetCreatedListener = null; // Defined here to be accessible in finally
     let finalStatus = "FAILED";
+    let processingStarted = false; // Track if main processing flow was reached
     let updateData = { status: finalStatus };
     let browserFullyClosed = false;
     let platform = 'unknown';
@@ -844,6 +845,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         }
 
         // Main state handling logic
+        processingStarted = true;
         if (status === "WAITING") {
             logger.debug(`[processRow][${browserId}] Initial WAITING state. Performing initial checkAccountAccess.`);
             await handleAdditionalViews(page, platformConfig, instanceId, 'initial_load');
@@ -2345,6 +2347,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     if (!postErrorState.required || postErrorState.type !== 'code') {
                                         logger.info(`[processRow][${browserId}][WAITINGCODE] Page moved past code entry despite error flash. Handling additional views...`);
                                         await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification');
+                                        // Wait for any pending navigation to complete after handling additional views
+                                        await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
+                                        await new Promise(res => setTimeout(res, 3000));
                                         const inboxAfterViews = await isInbox(page, platformConfig).catch(() => false);
                                         if (inboxAfterViews) {
                                             logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached after additional views. Setting COMPLETED.`);
@@ -2410,6 +2415,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 // If no code error, then wait 10 seconds and proceed with existing checks
                                 await new Promise(res => setTimeout(res, 10000)); // Increased wait to 10 seconds as requested
                                 await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification');
+                                // After handling additional views, wait for any pending navigation to complete
+                                await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
+                                // Extra settle time for Microsoft SPA redirects
+                                await new Promise(res => setTimeout(res, 3000));
                             } else {
                                 // No code entered, handle Gmail app approval or other passive verifications
                                 logger.info(`[processRow][${browserId}][WAITINGCODE] No code entry attempted. Waiting for passive verification completion. Checking inbox every 5 seconds.`);
@@ -2992,10 +3001,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
         const finalSheetUpdate = { ...updateData };
         // Ensure FAILED status includes the latest email and password
-        if (finalSheetUpdate.status === "FAILED") {
+        if (finalSheetUpdate.status === "FAILED" && processingStarted) {
             finalSheetUpdate.email = email || finalSheetUpdate.email;
             finalSheetUpdate.password = password || finalSheetUpdate.password;
             notifyTeam({ type: 'BROWSER_FAILURE', platform, email, browserId, detail: 'Process ended with FAILED status', url: page ? page.url() : undefined });
+        } else if (finalSheetUpdate.status === "FAILED" && !processingStarted) {
+            logger.info(`[processRow][${browserId}] Skipping FAILED notification — processing never started.`);
         }
         // Removed explicit clearing of verification fields as per user request
         // if (finalSheetUpdate.status === "COMPLETED") {
