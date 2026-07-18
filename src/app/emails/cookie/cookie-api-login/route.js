@@ -873,6 +873,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             let emailProvidedAndProcessed = false;
 
             while (Date.now() < pollingTimeoutEmail && !emailProvidedAndProcessed) {
+                logger.debug(`[processRow][${browserId}][WAITINGEMAIL] Poll iteration start. now: ${Date.now()}, timeoutAt: ${pollingTimeoutEmail}, emailProvided: ${emailProvidedAndProcessed}, page: ${!!page}`);
                 try {
                     // Session Health Check
                     if (page && !(await isPageResponsive(page, browserId, instanceId))) {
