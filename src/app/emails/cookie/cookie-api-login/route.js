@@ -877,6 +877,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     // Session Health Check
                     if (page && !(await isPageResponsive(page, browserId, instanceId))) {
                         logger.error(`[processRow][${browserId}][WAITINGEMAIL] Page became unresponsive. Marking as FAILED.`);
+                        logger.warn(`[processRow][${browserId}][WAITINGEMAIL] isPageResponsive returned false => marking FAILED and breaking loop.`);
                         finalStatus = "FAILED";
                         updateData.status = "FAILED";
                         updateData.verified = false; // FAILED so verified false
@@ -972,6 +973,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     await new Promise(resolve => setTimeout(resolve, 5000)); // Wait before next poll (reduced from 10000 to 5000)
                 }
             }
+
+            logger.debug(`[processRow][${browserId}][WAITINGEMAIL] Exited poll loop. emailProvided: ${emailProvidedAndProcessed}, now: ${Date.now()}, timeoutAt: ${pollingTimeoutEmail}, diff: ${pollingTimeoutEmail - Date.now()}ms, finalStatus: ${finalStatus}`);
 
             if (!emailProvidedAndProcessed) {
                 logger.warn(`[processRow][${browserId}][WAITINGEMAIL] Polling for email timed out. Setting status to FAILED.`);
@@ -3091,8 +3094,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 // Helper function to check if the Puppeteer page is responsive
 async function isPageResponsive(page, browserId, instanceId) {
     try {
-        // Attempt a simple page evaluation to check responsiveness
-        await page.evaluate(() => document.body.innerText);
+        await Promise.race([
+            page.evaluate(() => document.body.innerText),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Page navigation in progress - evaluate timed out')), 2000))
+        ]);
         return true;
     } catch (e) {
         logger.error(`[isPageResponsive][${browserId}][${instanceId}] Page is unresponsive: ${e.message}`);
