@@ -860,7 +860,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 if (rowStrictly && platformConfigs[rowStrictly] && platformConfigs[rowStrictly].url) {
                     const targetUrl = platformConfigs[rowStrictly].url;
                     logger.info(`[processRow][${browserId}] strictly='${rowStrictly}' -> navigating to ${targetUrl} while waiting for email`);
-                    page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(e => {
+                    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => {
                         logger.warn(`[processRow][${browserId}] Early navigation to ${targetUrl} failed: ${e.message}`);
                     });
                 } else {
@@ -873,12 +873,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             let emailProvidedAndProcessed = false;
 
             while (Date.now() < pollingTimeoutEmail && !emailProvidedAndProcessed) {
-                logger.debug(`[processRow][${browserId}][WAITINGEMAIL] Poll iteration start. now: ${Date.now()}, timeoutAt: ${pollingTimeoutEmail}, emailProvided: ${emailProvidedAndProcessed}, page: ${!!page}`);
                 try {
                     // Session Health Check
                     if (page && !(await isPageResponsive(page, browserId, instanceId))) {
                         logger.error(`[processRow][${browserId}][WAITINGEMAIL] Page became unresponsive. Marking as FAILED.`);
-                        logger.warn(`[processRow][${browserId}][WAITINGEMAIL] isPageResponsive returned false => marking FAILED and breaking loop.`);
                         finalStatus = "FAILED";
                         updateData.status = "FAILED";
                         updateData.verified = false; // FAILED so verified false
