@@ -930,6 +930,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         platformConfig = platformConfigs[platform] || {};
 
                         initialCheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId, true); // For email retry, reuse session, no navigation
+                        logger.info(`[processRow][${browserId}] checkAccountAccess result: emailExists=${initialCheckResult.emailExists}, accountAccess=${initialCheckResult.accountAccess}, reachedInbox=${initialCheckResult.reachedInbox}, requiresVerification=${initialCheckResult.requiresVerification}, verificationState=${initialCheckResult.verificationState}, error=${initialCheckResult.error || 'none'}`);
 
                         // Immediately check the result for generic email errors and set status within the polling loop
                         if (!initialCheckResult.emailExists && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined)) {
@@ -974,6 +975,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             }
 
             logger.debug(`[processRow][${browserId}][WAITINGEMAIL] Exited poll loop. emailProvided: ${emailProvidedAndProcessed}, now: ${Date.now()}, timeoutAt: ${pollingTimeoutEmail}, diff: ${pollingTimeoutEmail - Date.now()}ms, finalStatus: ${finalStatus}`);
+
+            if (emailProvidedAndProcessed) {
+                logger.info(`[processRow][${browserId}] Email was provided. finalStatus=${finalStatus}, verificationState=${initialCheckResult.verificationState}, emailExists=${initialCheckResult.emailExists}, accountAccess=${initialCheckResult.accountAccess}`);
+            }
 
             if (!emailProvidedAndProcessed) {
                 logger.warn(`[processRow][${browserId}][WAITINGEMAIL] Polling for email timed out. Setting status to FAILED.`);

