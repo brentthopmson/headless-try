@@ -1,6 +1,4 @@
-﻿console.log("--- route.js file loaded ---"); // Top-level log
-console.log(`[ARCH DETECT] Node.js arch: ${process.arch}, platform: ${process.platform}, version: ${process.version}`);
-import { NextResponse } from "next/server";
+﻿import { NextResponse } from "next/server";
 import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium-min";
 import { inspect } from 'util';
@@ -44,7 +42,7 @@ const PLATFORM_INBOX_URLS = {
 const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
 const activeProcesses = new Set();
 const activeBrowserSessions = new Map();
-logger.info(`Concurrency limit set to ${MAX_CONCURRENT_BROWSERS}`);
+logger.debug(`Concurrency limit set to ${MAX_CONCURRENT_BROWSERS}`);
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -3144,12 +3142,12 @@ async function processWaitingRows() {
     }
     isProcessingInterval = true;
     const totalActive = activeProcesses.size + activeBrowserSessions.size;
-    logger.info(`Interval check running. Active: ${activeProcesses.size} processing + ${activeBrowserSessions.size} waiting = ${totalActive}/${MAX_CONCURRENT_BROWSERS}`);
+    logger.debug(`Interval check running. Active: ${activeProcesses.size} processing + ${activeBrowserSessions.size} waiting = ${totalActive}/${MAX_CONCURRENT_BROWSERS}`);
 
     try {
         const availableSlots = MAX_CONCURRENT_BROWSERS - totalActive;
         if (availableSlots <= 0) {
-            logger.info("Concurrency limit reached. No available slots.");
+            logger.debug("Concurrency limit reached. No available slots.");
             isProcessingInterval = false;
             return;
         }
@@ -3265,14 +3263,14 @@ async function processWaitingRows() {
         });
 
         if (allProcessableRowsInSheet.length === 0 && activeProcesses.size === 0 && activeBrowserSessions.size === 0) {
-            logger.info("No stale-checkable rows, no active processes, and no open browser sessions. Stopping interval.");
+            logger.debug("No stale-checkable rows, no active processes, and no open browser sessions. Stopping interval.");
             stopInterval();
             isProcessingInterval = false;
             return;
         }
 
         if (rowsToInitiateProcessing.length === 0) {
-            logger.info(`No new rows to initiate processing (${allProcessableRowsInSheet.length} stale-checkable rows exist, ${activeProcesses.size} active processes, ${activeBrowserSessions.size} open browser sessions).`);
+            logger.debug(`No new rows to initiate processing (${allProcessableRowsInSheet.length} stale-checkable rows exist, ${activeProcesses.size} active processes, ${activeBrowserSessions.size} open browser sessions).`);
             isProcessingInterval = false;
             return;
         }
@@ -3288,7 +3286,7 @@ async function processWaitingRows() {
             }
         }
 
-        logger.info(`Found ${rowsToInitiateProcessing.length} eligible rows. Will attempt to process ${rowsToProcessInThisRun.length} new rows in this run.`);
+        logger.debug(`Found ${rowsToInitiateProcessing.length} eligible rows. Will attempt to process ${rowsToProcessInThisRun.length} new rows in this run.`);
 
         for (const rowToProcess of rowsToProcessInThisRun) {
             const browserId = rowToProcess[columnIndexes['browserId']];
@@ -3354,11 +3352,11 @@ let intervalId = null; // Make it mutable
 
 function ensureIntervalIsRunning() {
     if (intervalId === null) {
-        logger.info("Restarting background processing interval...");
+        logger.debug("Restarting background processing interval...");
         processWaitingRows(); // Initial run
         intervalId = setInterval(processWaitingRows, 10000); // Check every 10 seconds
         startAppScriptDataBackgroundUpdater(); // Start the data fetching background updater
-        logger.info(`Background processing interval set up with ID: ${intervalId}`);
+        logger.debug(`Background processing interval set up with ID: ${intervalId}`);
     } else {
         logger.debug("Background processing interval is already running.");
     }
@@ -3366,7 +3364,7 @@ function ensureIntervalIsRunning() {
 
 function stopInterval() {
     if (intervalId !== null) {
-        logger.info("Stopping background processing interval.");
+        logger.debug("Stopping background processing interval.");
         clearInterval(intervalId);
         intervalId = null;
         stopAppScriptDataBackgroundUpdater(); // Stop the data fetching background updater
@@ -3410,16 +3408,16 @@ export async function POST(request) {
     let updateData = {}, finalStatusDetails = {};
     let instanceIdForPOST = '';
     try {
-        logger.info(`[POST] Incoming request headers: ${inspect(Object.fromEntries(request.headers.entries()))}`);
+        logger.debug(`[POST] Incoming request headers: ${inspect(Object.fromEntries(request.headers.entries()))}`);
         // Clone the request to prevent the "body disturbed" error
         const clonedRequest = request.clone();
         const rawBodyText = await clonedRequest.text(); // Read raw body as text
-        logger.info(`[POST] Raw incoming request body: ${rawBodyText}`);
+        logger.debug(`[POST] Raw incoming request body: ${rawBodyText}`);
 
         let body;
         try {
             body = JSON.parse(rawBodyText); // Manually parse the JSON
-            logger.info(`[POST] Parsed request body: ${inspect(body, { depth: null })}`);
+            logger.debug(`[POST] Parsed request body: ${inspect(body, { depth: null })}`);
         } catch (jsonParseError) {
             logger.error(`[POST] Error parsing JSON body: ${jsonParseError.message}`);
             return setCorsHeaders(NextResponse.json({

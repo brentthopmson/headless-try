@@ -35,7 +35,7 @@ async function _fetchAndCacheAppScriptData(retries = 3, timeout = 120000, forceR
       try {
         const sheetsApiResult = await getSheetDataApi("cookie"); // Assuming "cookie" is the sheet name
         if (sheetsApiResult.success) {
-          logger.info("[_fetchAndCacheAppScriptData] Sheets API data fetched successfully.");
+          logger.debug("[_fetchAndCacheAppScriptData] Sheets API data fetched successfully.");
           appScriptDataCache = [sheetsApiResult.headers, ...sheetsApiResult.data];
           lastCacheUpdateTime = Date.now(); // Update timestamp only on successful API fetch
           return appScriptDataCache;
@@ -113,7 +113,7 @@ export function startAppScriptDataBackgroundUpdater() {
 
 export function stopAppScriptDataBackgroundUpdater() {
   if (backgroundUpdaterIntervalId !== null) {
-    logger.info("[stopAppScriptDataBackgroundUpdater] Stopping background App Script data updater.");
+    logger.debug("[stopAppScriptDataBackgroundUpdater] Stopping background App Script data updater.");
     clearInterval(backgroundUpdaterIntervalId);
     backgroundUpdaterIntervalId = null;
   }
