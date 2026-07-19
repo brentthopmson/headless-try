@@ -80,8 +80,6 @@ export async function launchBrowser(customOptions = {}) {
     '--mute-audio',
     '--disable-backgrounding-occluded-windows',
     '--disable-renderer-backgrounding',
-    '--enable-logging',
-    '--v=1',
     '--js-flags="--max-old-space-size=512"'
   ];
 
@@ -94,7 +92,7 @@ export async function launchBrowser(customOptions = {}) {
   const defaultOptions = {
     ignoreDefaultArgs: ["--enable-automation"],
     args: baseArgs,
-    dumpio: true,
+    dumpio: false,
     defaultViewport,
     executablePath: isDev ? localExecutablePath : await chromium.executablePath(remoteExecutablePath),
     headless: isDev ? false : "new",
