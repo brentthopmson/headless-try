@@ -175,13 +175,20 @@ export const platformConfigs = {
     outlook: {
         inboxUrlPatterns: [
             /m365\.cloud\.microsoft\//,
-            /office\.com\//
+            /office\.com\//,
+            /outlook\.live\.com\/mail/,
+            /outlook\.live\.com\/0\/mail/
         ],
         inboxDomSelectors: [
             '[aria-label="Mail list"]',
             '[data-app-id="Mail"]',
             '[role="main"][aria-label*="mail" i]',
-            '[role="main"][aria-label*="inbox" i]'
+            '[role="main"][aria-label*="inbox" i]',
+            '[data-testid="app-bar"]',
+            '[role="tree"]',
+            'div[class*="mail"]',
+            '#MailList',
+            'div[aria-label*="Inbox" i]'
         ],
         url: "https://login.microsoftonline.com/",
         mxKeywords: ['outlook', 'hotmail', 'microsoft'],
@@ -326,7 +333,8 @@ export const platformConfigs = {
                         "button[aria-label='Yes'][type='submit']#acceptButton",
                         "button.fui-Button.r1alrhcs.___jsyn8q0",
                         "button[type='submit'].fui-Button"
-                    ]
+                    ],
+                    navigationWaitUntil: 'networkidle0'
                 }
             },
             {

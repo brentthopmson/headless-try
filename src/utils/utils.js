@@ -10,17 +10,12 @@ export const remoteExecutablePath =
 export const isDev = process.env.NODE_ENV === "development";
 
 export const USER_AGENTS = [
-  // Android Mobile (Modern Chrome releases)
-  "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Mobile Safari/537.36",
-  "Mozilla/5.0 (Linux; Android 13; Samsung Galaxy S23 Ultra) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36",
-  "Mozilla/5.0 (Linux; Android 12; OnePlus 10 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36",
-  "Mozilla/5.0 (Linux; Android 11; Xiaomi Redmi Note 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-  
-  // Linux Desktop (Ubuntu, Debian, Fedora, standard X11)
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:124.0) Gecko/20100101 Firefox/124.0",
-  "Mozilla/5.0 (X11; Debian; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (X11; Fedora; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+  // Windows Chrome (matches actual browser environment)
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
 ];
 
 export function getRandomUserAgent() {
@@ -32,6 +27,17 @@ export const userAgent = getRandomUserAgent(); // Maintain legacy export just in
 import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium-min";
 import { existsSync, rmSync } from 'node:fs';
+
+let _puppeteerExtra = null;
+
+async function getPuppeteerExtra() {
+    if (_puppeteerExtra) return _puppeteerExtra;
+    const { default: pptrExtra } = await import('puppeteer-extra');
+    const { default: StealthPlugin } = await import('puppeteer-extra-plugin-stealth');
+    pptrExtra.use(StealthPlugin());
+    _puppeteerExtra = pptrExtra;
+    return _puppeteerExtra;
+}
 
 /**
  * Centrally launches an optimized Puppeteer browser instance.
@@ -60,7 +66,7 @@ export async function launchBrowser(customOptions = {}) {
       ? [
           "--disable-blink-features=AutomationControlled",
           "--disable-features=site-per-process",
-          "-disable-site-isolation-trials"
+          "--disable-site-isolation-trials"
         ]
       : [...chromium.args.filter(a => !a.startsWith('--headless')), "--disable-blink-features=AutomationControlled"]),
     `--user-agent=${selectedUA}`,
@@ -69,17 +75,27 @@ export async function launchBrowser(customOptions = {}) {
     '--disable-dev-shm-usage', 
     '--no-sandbox',
     
-    // Centralized CPU & RAM Optimizations
-    '--disable-gpu',
-    '--no-zygote',
-    '--disable-extensions',
-    '--disable-default-apps',
-    '--disable-background-networking',
-    '--disable-sync',
-    '--disable-translate',
-    '--mute-audio',
+    // Anti-detection flags
+    '--disable-blink-features=AutomationControlled',
+    '--disable-features=AutomationControlled',
+    '--enable-features=NetworkService,NetworkServiceInProcess',
+    '--disable-background-timer-throttling',
     '--disable-backgrounding-occluded-windows',
     '--disable-renderer-backgrounding',
+    '--disable-ipc-flooding-protection',
+    '--disable-client-side-phishing-detection',
+    '--disable-default-apps',
+    '--disable-extensions',
+    '--disable-hang-monitor',
+    '--disable-popup-blocking',
+    '--disable-prompt-on-repost',
+    '--disable-sync',
+    '--disable-translate',
+    '--metrics-recording-only',
+    '--no-first-run',
+    '--mute-audio',
+    '--no-zygote',
+    '--disable-gpu',
     '--js-flags="--max-old-space-size=512"'
   ];
 
@@ -95,7 +111,7 @@ export async function launchBrowser(customOptions = {}) {
     dumpio: false,
     defaultViewport,
     executablePath: isDev ? localExecutablePath : await chromium.executablePath(remoteExecutablePath),
-    headless: isDev ? false : "new",
+    headless: "new",
     timeout: 60000,
   };
 
@@ -113,7 +129,8 @@ export async function launchBrowser(customOptions = {}) {
     }
   };
 
-  const browser = await puppeteer.launch(mergedOptions);
+  const pptrExtra = await getPuppeteerExtra();
+  const browser = await pptrExtra.launch(mergedOptions);
   
   // Attach selected UA to the browser instance for logging / downstream set-up
   browser.selectedUserAgent = selectedUA;

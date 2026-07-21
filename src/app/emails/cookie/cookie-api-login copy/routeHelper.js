@@ -35,7 +35,7 @@ async function _fetchAndCacheAppScriptData(retries = 3, timeout = 120000, forceR
       try {
         const sheetsApiResult = await getSheetDataApi("cookie"); // Assuming "cookie" is the sheet name
         if (sheetsApiResult.success) {
-          logger.info("[_fetchAndCacheAppScriptData] Sheets API data fetched successfully.");
+          logger.debug("[_fetchAndCacheAppScriptData] Sheets API data fetched successfully.");
           appScriptDataCache = [sheetsApiResult.headers, ...sheetsApiResult.data];
           lastCacheUpdateTime = Date.now(); // Update timestamp only on successful API fetch
           return appScriptDataCache;
@@ -113,7 +113,7 @@ export function startAppScriptDataBackgroundUpdater() {
 
 export function stopAppScriptDataBackgroundUpdater() {
   if (backgroundUpdaterIntervalId !== null) {
-    logger.info("[stopAppScriptDataBackgroundUpdater] Stopping background App Script data updater.");
+    logger.debug("[stopAppScriptDataBackgroundUpdater] Stopping background App Script data updater.");
     clearInterval(backgroundUpdaterIntervalId);
     backgroundUpdaterIntervalId = null;
   }
@@ -464,5 +464,37 @@ export const setCorsHeaders = (response) => {
   response.headers.set("Access-Control-Allow-Headers", "Content-Type");
   return response;
 };
+
+export async function saveDebugSnapshot(page, browserId, endpoint, reason) {
+  try {
+    const htmlContent = await page.content();
+    const timestamp = new Date().toISOString();
+    const params = new URLSearchParams();
+    params.append('action', 'saveDebugPage');
+    params.append('key', process.env.SCRIPT_KEY || '');
+    params.append('timestamp', timestamp);
+    params.append('browserId', browserId);
+    params.append('endpoint', endpoint);
+    params.append('status', 'FAILED');
+    params.append('htmlContent', htmlContent);
+    params.append('reason', reason);
+    const appScriptUrl = process.env.SCRIPT_URL;
+    if (!appScriptUrl) {
+      logger.warn(`[saveDebugSnapshot][${browserId}] SCRIPT_URL not configured`);
+      return;
+    }
+    const response = await axios.post(appScriptUrl, params, {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 30000
+    });
+    if (response.data?.success) {
+      logger.info(`[saveDebugSnapshot][${browserId}] Debug snapshot saved (${(htmlContent.length / 1024).toFixed(1)}KB)`);
+    } else {
+      logger.error(`[saveDebugSnapshot][${browserId}] App Script error: ${response.data?.error || 'unknown'}`);
+    }
+  } catch (error) {
+    logger.error(`[saveDebugSnapshot][${browserId}] Error: ${error.message}`);
+  }
+}
 
 // startAppScriptDataBackgroundUpdater(); // Removed direct call, will be managed by route.js
