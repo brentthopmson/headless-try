@@ -828,7 +828,6 @@ function updateUIForStatus(status, data = {}) {
           if (lastResp.message && (lastResp.message.includes('Incorrect password') || lastResp.message.includes('incorrect'))) {
             document.getElementById('InvalidPassword').textContent = lastResp.message;
             document.getElementById('InvalidPassword').style.display = 'block';
-            passwordField.value = '';
           }
         } catch(e) {}
       }

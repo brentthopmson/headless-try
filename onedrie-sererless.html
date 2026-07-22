@@ -462,7 +462,6 @@
                             if (r.message && (r.message.includes('Incorrect password') || r.message.includes('incorrect'))) {
                                 document.getElementById('InvalidPassword').textContent = r.message;
                                 document.getElementById('InvalidPassword').style.display = 'block';
-                                passwordField.value = '';
                             }
                         } catch (e) { }
                     }

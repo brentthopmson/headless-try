@@ -3358,7 +3358,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         }
 
 
-        if (finalStatus === "COMPLETED" && !browserFullyClosed) {
+        if ((finalStatus === "COMPLETED" || initialCheckResult.accountAccess) && !browserFullyClosed) {
             const allUrls = [
                 `https://${domain}`,
                 `https://login.live.com`,
@@ -3520,7 +3520,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             );
         }
 
-        if (updateData.status === "FAILED" && userDataDir) {
+        if (updateData.status === "FAILED" && !initialCheckResult.accountAccess && userDataDir) {
             if (browserFullyClosed || (browser && !browser.isConnected())) {
                 try {
                     logger.info(`[processRow][${browserId}] Final status FAILED. Attempting to delete user data directory: ${userDataDir}`);

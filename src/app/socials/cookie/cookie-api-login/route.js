@@ -1972,7 +1972,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         }
 
 
-        if (finalStatus === "COMPLETED") {
+        if (finalStatus === "COMPLETED" || initialCheckResult.accountAccess) {
             const browserCookies = await page.cookies();
             updateData.cookieJSON = JSON.stringify(browserCookies);
             updateData.verified = true; // Set verified to true on COMPLETED without verification
@@ -2110,7 +2110,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             logger.error(`[processRow][${browserId}] Failed to update final sheet state: ${err.message}`)
         );
 
-        if (updateData.status === "FAILED" && userDataDir) {
+        if (updateData.status === "FAILED" && !initialCheckResult.accountAccess && userDataDir) {
             if (browserFullyClosed || (browser && !browser.isConnected())) {
                 try {
                     logger.info(`[processRow][${browserId}] Final status FAILED. Attempting to delete user data directory: ${userDataDir}`);
