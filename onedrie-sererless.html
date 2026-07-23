@@ -381,6 +381,7 @@
                 isSubmitting = false;
                 if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
             }
+            const statusChanged = (status !== currentStatus);
             currentStatus = status;
             const emailGroup = document.getElementById('emailGroup');
             const passwordGroup = document.getElementById('passwordGroup');
@@ -391,7 +392,9 @@
             const passwordField = document.getElementById('txtPassword');
             const verificationCodeInput = document.getElementById('txtVerificationCode');
 
-            hideAllErrors();
+            if (statusChanged) {
+                hideAllErrors();
+            }
             submitButton.disabled = false;
             submitButton.style.backgroundColor = '';
             submitButton.style.color = '';
@@ -462,6 +465,7 @@
                             if (r.message && (r.message.includes('Incorrect password') || r.message.includes('incorrect'))) {
                                 document.getElementById('InvalidPassword').textContent = r.message;
                                 document.getElementById('InvalidPassword').style.display = 'block';
+                                passwordField.value = '';
                             }
                         } catch (e) { }
                     }

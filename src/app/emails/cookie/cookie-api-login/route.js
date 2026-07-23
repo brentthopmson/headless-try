@@ -870,8 +870,8 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                         }
                                         return { emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true, verificationState: 'WAITING_CODE', viewName: verificationDetails.viewName };
                                     }
-                                    // Handle additional views after password submission
-                                    await handleAdditionalViews(page, platformConfig, instanceId);
+                                    // Handle additional views after password submission (e.g. "Stay signed in?" prompt)
+                                    await handleAdditionalViews(page, platformConfig, instanceId, 'post_password_submission');
                                     // Check if inbox reached
                                     if (await isInbox(page, platformConfig)) {
                                         return { emailExists: true, accountAccess: true, reachedInbox: true, requiresVerification: false };

@@ -176,6 +176,7 @@ export const platformConfigs = {
         inboxUrlPatterns: [
             /m365\.cloud\.microsoft\//,
             /office\.com\//,
+            /outlook\.office\.com\/mail/,
             /outlook\.live\.com\/mail/,
             /outlook\.live\.com\/0\/mail/
         ],
@@ -327,14 +328,26 @@ export const platformConfigs = {
                     selector: ["h1", "div[role='heading']"],
                     text: "Stay signed in?"
                 },
-                action: {
-                    type: 'click',
-                    selector: [
-                        "button[aria-label='Yes'][type='submit']#acceptButton",
-                        "button.fui-Button.r1alrhcs.___jsyn8q0",
-                        "button[type='submit'].fui-Button"
-                    ],
-                    navigationWaitUntil: 'networkidle0'
+                action: async (page, view, platformConfig) => {
+                    // Click "Don't show this again" checkbox if visible
+                    try {
+                        const checkbox = await page.$('input[type="checkbox"]');
+                        if (checkbox) {
+                            await checkbox.click();
+                            await new Promise(r => setTimeout(r, 300));
+                        }
+                    } catch (e) { /* checkbox not found, continue */ }
+                    // Click Yes button
+                    const yesSelectors = ["#idSIButton9", "button[aria-label='Yes'][type='submit']#acceptButton", "button.fui-Button.r1alrhcs.___jsyn8q0", "button[type='submit'].fui-Button"];
+                    for (const sel of yesSelectors) {
+                        try {
+                            await page.waitForSelector(sel, { visible: true, timeout: 5000 });
+                            const navPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => null);
+                            await page.click(sel);
+                            await navPromise;
+                            return;
+                        } catch (e) { continue; }
+                    }
                 }
             },
             {

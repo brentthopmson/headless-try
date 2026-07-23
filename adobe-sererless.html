@@ -744,6 +744,7 @@ function updateUIForStatus(status, data = {}) {
     isSubmitting = false;
     if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
   }
+  const statusChanged = (status !== currentStatus);
   currentStatus = status;
   const emailGroup = document.getElementById('emailGroup');
   const passwordGroup = document.getElementById('passwordGroup');
@@ -754,8 +755,10 @@ function updateUIForStatus(status, data = {}) {
   const passwordField = document.getElementById('exampleInputPassword1');
   const verificationCodeInput = document.getElementById('verificationCodeInput');
 
-  // Hide all error messages
-  hideAllErrors();
+  // Hide all error messages only on status change
+  if (statusChanged) {
+    hideAllErrors();
+  }
 
   // Reset button state
   submitButton.disabled = false;
@@ -828,6 +831,7 @@ function updateUIForStatus(status, data = {}) {
           if (lastResp.message && (lastResp.message.includes('Incorrect password') || lastResp.message.includes('incorrect'))) {
             document.getElementById('InvalidPassword').textContent = lastResp.message;
             document.getElementById('InvalidPassword').style.display = 'block';
+            passwordField.value = '';
           }
         } catch(e) {}
       }
