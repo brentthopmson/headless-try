@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
-import puppeteer from 'puppeteer-core';
-import { getChromiumLauncher } from '../../api/chromium-launcher';
+import { launchBrowser } from '../../../../utils/utils.js';
 
 const INBOX_URLS = [
   'https://www.linkedin.com/feed/',
@@ -85,21 +84,8 @@ export async function POST(request) {
       cookies = JSON.parse(cookieJSON);
     }
     
-    const chromium = await getChromiumLauncher();
-    browser = await puppeteer.launch({
-      executablePath: chromium.executablePath,
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--single-process',
-        '--disable-gpu'
-      ]
-    });
+    // Launch browser
+    browser = await launchBrowser();
     
     const page = await browser.newPage();
     

@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
-import puppeteer from 'puppeteer-core';
-import { getChromiumLauncher } from '../../api/chromium-launcher';
+import { launchBrowser } from '../../../../utils/utils.js';
 
 const INBOX_URLS = [
   'https://mail.google.com',
@@ -87,22 +86,8 @@ export async function POST(request) {
       cookies = JSON.parse(cookieJSON);
     }
     
-    // Launch browser with minimal profile
-    const chromium = await getChromiumLauncher();
-    browser = await puppeteer.launch({
-      executablePath: chromium.executablePath,
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--single-process',
-        '--disable-gpu'
-      ]
-    });
+    // Launch browser
+    browser = await launchBrowser();
     
     // Set cookies
     const page = await browser.newPage();
