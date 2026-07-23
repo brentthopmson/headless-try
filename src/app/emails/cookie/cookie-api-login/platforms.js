@@ -195,7 +195,7 @@ export const platformConfigs = {
         selectors: {
             input: "input[name='loginfmt']",
             nextButton: ["#idSIButton9", "button[type='submit'][data-testid='primaryButton']"],
-            passwordInput: "input#passwordEntry",
+            passwordInput: ["input[name='passwd']", "input[type='password']", "#passwordInput", "input#passwordEntry"],
             passwordNextButton: [
                 "button[type='submit'][data-testid='primaryButton']",
                 "button.fui-Button.r1alrhcs.___jsyn8q0",
