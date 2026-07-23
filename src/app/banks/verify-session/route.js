@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { launchBrowser } from '../../../../utils/utils.js';
+import { launchBrowser } from '../../../utils/utils.js';
 
 const BANK_URLS = [
   'https://www.chase.com/personal/dashboard',
