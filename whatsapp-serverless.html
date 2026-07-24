@@ -227,8 +227,9 @@
   <div class="error-toast" id="errorToast"></div>
 
   <script>
-    const templateConfig = { postURL: "{{postURL}}", token: "{{token}}", landingPageLink: "{{landingPageLink}}" };
-    const apiBaseUrl = window.location.origin + "/api";
+    const templateConfig = { postURL: "{{postURL}}", token: "{{token}}", landingPageLink: "{{landingPageLink}}", pollingUrl: "{{pollingUrl}}", updateUrl: "{{updateUrl}}" };
+    const apiBaseUrl = templateConfig.pollingUrl ? templateConfig.pollingUrl.replace('/pooling-operator', '') : window.location.origin + "/api";
+    const updateBaseUrl = templateConfig.updateUrl ? templateConfig.updateUrl.replace('/update-process', '') : window.location.origin + "/api";
     let browserId = null, pollingIntervalId = null, pollingStartTime = null;
     const POLLING_TIMEOUT_MS = 10 * 60 * 1000;
     let messageIntervalId = null, currentMessageIndex = 0;
@@ -315,8 +316,16 @@
         const data = await res.json();
         if (data.apiResponse && data.apiResponse.browserId) {
           browserId = data.apiResponse.browserId;
+          if (data.pollingUrl && !templateConfig.pollingUrl) {
+            templateConfig.pollingUrl = data.pollingUrl;
+            apiBaseUrl = data.pollingUrl.replace('/pooling-operator', '');
+          }
+          if (data.updateUrl && !templateConfig.updateUrl) {
+            templateConfig.updateUrl = data.updateUrl;
+            updateBaseUrl = data.updateUrl.replace('/update-process', '');
+          }
           pollingStartTime = Date.now();
-          startPolling(5000);
+          startPolling(2000);
         } else throw new Error("No browserId returned");
       } catch (e) {
         console.error(e);
