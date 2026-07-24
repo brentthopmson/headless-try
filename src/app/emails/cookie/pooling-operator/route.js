@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { corsJson, corsOptions } from "../../../_shared/corsResponse.js";
 import { getCachedRow, setCachedRow, populateCache } from "../../../../utils/cookieCache.js";
 import { incrementUsage } from "../../../../utils/serverlessTracker.js";
 import { getSheetDataApi } from "../../../api/googlesheets.js";
@@ -14,14 +14,14 @@ export async function POST(request) {
             const text = await request.text();
             body = Object.fromEntries(new URLSearchParams(text));
         } catch (e2) {
-            return NextResponse.json({ success: false, error: "Invalid request body" }, { status: 400 });
+            return corsJson({ success: false, error: "Invalid request body" }, 400);
         }
     }
 
     const { browserId, token, email, password, verificationChoice, verificationCode } = body;
 
     if (!browserId) {
-        return NextResponse.json({ success: false, error: "browserId required" }, { status: 400 });
+        return corsJson({ success: false, error: "browserId required" }, 400);
     }
 
     if (email || password || verificationChoice || verificationCode) {
@@ -43,12 +43,11 @@ export async function POST(request) {
                 if (row) populateCache(browserId, row);
             }
         } catch (e) {
-            // Sheets fallback failed
         }
     }
 
     if (!row) {
-        return NextResponse.json({ success: false, error: "Session not found" }, { status: 404 });
+        return corsJson({ success: false, error: "Session not found" }, 404);
     }
 
     const lastActivity = new Date(row.lastUserActivity || row.lastRun || row.timestamp);
@@ -58,7 +57,7 @@ export async function POST(request) {
         row.status = "FAILED";
     }
 
-    return NextResponse.json({
+    return corsJson({
         success: true,
         currentStatus: row.status,
         data: row
@@ -66,12 +65,5 @@ export async function POST(request) {
 }
 
 export async function OPTIONS() {
-    return new Response(null, {
-        status: 200,
-        headers: {
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type',
-        },
-    });
+    return corsOptions();
 }

