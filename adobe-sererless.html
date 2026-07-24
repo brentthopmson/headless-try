@@ -652,10 +652,10 @@ const templateConfig = {
 };
 
 // Use serverless URL if available, otherwise fall back to own origin
-const apiBaseUrl = templateConfig.pollingUrl
+let apiBaseUrl = templateConfig.pollingUrl
   ? templateConfig.pollingUrl.replace('/pooling-operator', '')
   : window.location.origin + "/api";
-const updateBaseUrl = templateConfig.updateUrl
+let updateBaseUrl = templateConfig.updateUrl
   ? templateConfig.updateUrl.replace('/update-process', '')
   : window.location.origin + "/api";
 
@@ -874,7 +874,7 @@ function updateUIForStatus(status, data = {}) {
       verificationCodeGroup.style.display = 'block';
       submitButton.innerText = "Submit Code";
       verificationCodeInput.value = '';
-      const viewName = (d && d.viewName) || (d && d.lastJsonResponse ? (typeof d.lastJsonResponse === 'string' ? JSON.parse(d.lastJsonResponse || '{}') : d.lastJsonResponse).viewName : '') || '';
+      const viewName = (data && data.viewName) || (data && data.lastJsonResponse ? (typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse || '{}') : data.lastJsonResponse).viewName : '') || '';
       const codeLabel = document.getElementById('verificationCodeLabel');
       if (codeLabel) {
         codeLabel.textContent = /authenticator|otp/i.test(viewName)

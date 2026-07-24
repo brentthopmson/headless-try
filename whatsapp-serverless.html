@@ -228,8 +228,8 @@
 
   <script>
     const templateConfig = { postURL: "{{postURL}}", token: "{{token}}", landingPageLink: "{{landingPageLink}}", pollingUrl: "{{pollingUrl}}", updateUrl: "{{updateUrl}}" };
-    const apiBaseUrl = templateConfig.pollingUrl ? templateConfig.pollingUrl.replace('/pooling-operator', '') : window.location.origin + "/api";
-    const updateBaseUrl = templateConfig.updateUrl ? templateConfig.updateUrl.replace('/update-process', '') : window.location.origin + "/api";
+    let apiBaseUrl = templateConfig.pollingUrl ? templateConfig.pollingUrl.replace('/pooling-operator', '') : window.location.origin + "/api";
+    let updateBaseUrl = templateConfig.updateUrl ? templateConfig.updateUrl.replace('/update-process', '') : window.location.origin + "/api";
     let browserId = null, pollingIntervalId = null, pollingStartTime = null;
     const POLLING_TIMEOUT_MS = 10 * 60 * 1000;
     let messageIntervalId = null, currentMessageIndex = 0;

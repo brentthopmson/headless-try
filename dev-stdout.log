@@ -1,0 +1,11 @@
+
+> headless-try@0.1.0 dev
+> next dev --port 3001
+
+   ▲ Next.js 14.0.4
+   - Local:        http://localhost:3001
+   - Environments: .env
+
+ ✓ Ready in 5.6s
+ ○ Compiling / ...
+[?25h

