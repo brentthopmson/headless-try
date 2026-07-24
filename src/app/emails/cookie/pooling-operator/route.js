@@ -39,7 +39,9 @@ export async function POST(request) {
         try {
             const cookieData = await getSheetDataApi("cookie");
             if (cookieData.success) {
-                row = cookieData.data.find(r => r.browserId === browserId);
+                row = cookieData.data
+                    .map(r => Object.fromEntries(cookieData.headers.map((h, i) => [h, r[i]])))
+                    .find(r => r.browserId === browserId);
                 if (row) populateCache(browserId, row);
             }
         } catch (e) {

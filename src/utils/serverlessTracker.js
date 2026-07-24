@@ -26,7 +26,9 @@ export async function identifySelf() {
         return null;
     }
 
-    selfRow = links.data.find(r => r.severlessId === SELF_ID);
+    selfRow = links.data
+        .map(row => Object.fromEntries(links.headers.map((h, i) => [h, row[i]])))
+        .find(r => r.severlessId === SELF_ID);
 
     if (!selfRow) {
         logger.error(`[ServerlessTracker] No row found for severlessId=${SELF_ID}`);
