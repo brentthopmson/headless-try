@@ -28,6 +28,7 @@ import {
 import { sendTelegramMessage } from '../../../api/telegram.js';
 import { getProjectDetails } from '../../../api/googlesheets.js'; // Import getProjectDetails
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
+import { getCachedRow, setCachedRow } from "../../../../utils/cookieCache.js";
 import axios from 'axios';
 import { populateCache, setCachedRow, evictRow } from '../../../../utils/cookieCache.js';
 import { identifySelf as identifyServerlessSelf } from '../../../../utils/serverlessTracker.js';
@@ -1732,27 +1733,43 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         break; // Exit polling loop
                     }
 
-                    const checkData = await fetchDataFromAppScript(1, 30000, true); // Force refresh to pick up updated password
-                    const checkHeaders = checkData[0];
-                    const checkColumnIndexes = getColumnIndexes(checkHeaders);
-                    const checkRows = checkData.slice(1);
-                    const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
+                    let cachedPassword = null;
+                    let cachedStatus = null;
+                    const cachedRow = getCachedRow(browserId);
+                    if (cachedRow) {
+                        cachedPassword = cachedRow.password;
+                        cachedStatus = cachedRow.status;
+                    }
 
-                    if (!checkRow) {
-                        logger.error(`[processRow][${browserId}][WAITINGPASSWORD] Row not found during polling. Exiting loop.`);
+                    if (cachedStatus === 'FAILED') {
+                        logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Status changed to FAILED externally (cache). Exiting.`);
                         finalStatus = "FAILED";
                         break;
                     }
 
-                    if (checkRow[checkColumnIndexes['status']] === 'FAILED') {
-                        logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Status changed to FAILED externally. Exiting.`);
-                        finalStatus = "FAILED";
-                        break;
+                    if (!cachedPassword) {
+                        const checkData = await fetchDataFromAppScript(1, 30000, true);
+                        const checkHeaders = checkData[0];
+                        const checkColumnIndexes = getColumnIndexes(checkHeaders);
+                        const checkRows = checkData.slice(1);
+                        const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
+
+                        if (!checkRow) {
+                            logger.error(`[processRow][${browserId}][WAITINGPASSWORD] Row not found during polling. Exiting loop.`);
+                            finalStatus = "FAILED";
+                            break;
+                        }
+
+                        if (checkRow[checkColumnIndexes['status']] === 'FAILED') {
+                            logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Status changed to FAILED externally. Exiting.`);
+                            finalStatus = "FAILED";
+                            break;
+                        }
+
+                        cachedPassword = checkRow[checkColumnIndexes['password']];
                     }
 
-                    const currentPassword = checkRow[columnIndexes['password']];
-
-                    if (currentPassword && String(currentPassword).trim() !== "") {
+                    if (cachedPassword && String(cachedPassword).trim() !== "") {
                         logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Password found. Setting status to PROCESSING.`);
                         updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: false, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing password submission" }) }); // Set status to PROCESSING
                         logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Attempting to input password.`);
@@ -1869,7 +1886,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 }
                                 logger.debug(`[processRow][${browserId}] Using password selector: ${foundSelector}`);
                                 await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, foundSelector);
-                                await page.type(foundSelector, currentPassword, { delay: 50 });
+                                await page.type(foundSelector, cachedPassword, { delay: 50 });
                                 logger.info(`[processRow][${browserId}] Successfully typed password.`);
 
                                 logger.debug(`[processRow][${browserId}] Attempting to click password next button and await navigation. Selectors: ${JSON.stringify(passwordNextButtonSelector)}`);

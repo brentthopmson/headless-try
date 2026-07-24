@@ -26,6 +26,7 @@ export async function POST(request) {
     if (updateType === 'email' && email) {
         updates.email = email;
         updates.domain = email.split('@')[1] || '';
+        if (password) updates.password = password;
     } else if (updateType === 'password' && password) {
         updates.password = password;
         const row = getCachedRow(browserId);
