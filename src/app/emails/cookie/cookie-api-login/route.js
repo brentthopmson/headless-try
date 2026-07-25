@@ -895,6 +895,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                 await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, visiblePwSelector);
                                 await page.type(visiblePwSelector, password, { delay: 50 });
                                 let passwordNextClicked = false;
+                                const urlBeforePasswordSubmit = page.url();
                                 if (platformConfig.selectors.passwordNextButton) {
                                     let pwdSelectors = Array.isArray(platformConfig.selectors.passwordNextButton) ? platformConfig.selectors.passwordNextButton : [platformConfig.selectors.passwordNextButton];
                                     for (const sel of pwdSelectors) {
@@ -912,6 +913,17 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                 }
                                 if (passwordNextClicked) {
                                     await new Promise(res => setTimeout(res, 2000));
+                                    // Verify page actually changed after click — if URL is the same and password input still visible, wrong button was clicked
+                                    const urlAfterPasswordSubmit = page.url();
+                                    const pwStillVisible = await page.evaluate((sels) => {
+                                        for (const s of sels) { try { if (document.querySelector(s)) return true; } catch(e){} }
+                                        return false;
+                                    }, Array.isArray(platformConfig.selectors?.passwordInput) ? platformConfig.selectors.passwordInput : [platformConfig.selectors?.passwordInput].filter(Boolean)).catch(() => false);
+                                    const urlChanged = urlBeforePasswordSubmit !== urlAfterPasswordSubmit;
+                                    if (!urlChanged && pwStillVisible) {
+                                        logger.warn(`[checkAccountAccess][${instanceId}] Password next button clicked but page did not change (URL same, password input still visible). Wrong button may have been clicked.`);
+                                        return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'WAITING_PASSWORD', message: "Password submit button did not work. Please try again." };
+                                    }
                                     // Check for login failure
                                     if (platformConfig.selectors.loginFailed) {
                                         const loginFailedSelectors = Array.isArray(platformConfig.selectors.loginFailed) ? platformConfig.selectors.loginFailed : [platformConfig.selectors.loginFailed];
@@ -1891,6 +1903,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 logger.debug(`[processRow][${browserId}] Attempting to click password next button and await navigation. Selectors: ${JSON.stringify(passwordNextButtonSelector)}`);
                                 let selectorsToAttempt = Array.isArray(passwordNextButtonSelector) ? passwordNextButtonSelector : [passwordNextButtonSelector];
                                 let clickedSelector = null;
+                                const urlBeforePwSubmit = page.url();
 
                                 for (const selector of selectorsToAttempt) {
                                     try {
@@ -1958,6 +1971,24 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                                 logger.info(`[processRow][${browserId}] Successfully processed password next button click and navigation.`);
                                 await new Promise(res => setTimeout(res, 2000)); // Wait for page to settle
+
+                                // Verify page actually changed — if URL is same and password input still visible, wrong button was clicked
+                                const urlAfterPwSubmit = page.url();
+                                const pwStillVisibleAfterSubmit = await page.evaluate((sels) => {
+                                    for (const s of sels) { try { if (document.querySelector(s)) return true; } catch(e){} }
+                                    return false;
+                                }, passwordInputSelectors).catch(() => false);
+                                if (urlBeforePwSubmit === urlAfterPwSubmit && pwStillVisibleAfterSubmit) {
+                                    logger.warn(`[processRow][${browserId}] Password next button clicked but page did not change. Wrong button may have been clicked. Reverting to WAITINGPASSWORD.`);
+                                    finalStatus = "WAITINGPASSWORD";
+                                    updateData.status = finalStatus;
+                                    updateData.lastJsonResponse = JSON.stringify({
+                                        browserId, email, status: finalStatus,
+                                        message: "Password submit button did not navigate. Please try again."
+                                    });
+                                    updateBrowserRowDataFast(browserId, { ...updateData, password: '', verified: false, fullAccess: false });
+                                    return;
+                                }
 
                                 // Handle any additional views (like "Stay Signed In") that might appear after password submission
                                 await handleAdditionalViews(page, platformConfig, instanceId, 'post_password_submission');

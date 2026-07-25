@@ -199,8 +199,7 @@ export const platformConfigs = {
             passwordInput: ["input[name='passwd']", "input[type='password']", "#passwordInput", "input#passwordEntry"],
             passwordNextButton: [
                 "#idSIButton9",
-                "button[type='submit'][data-testid='primaryButton']",
-                "button[type='submit']"
+                "button[data-testid='primaryButton']"
             ],
             errorMessage: "//*[contains(text(), \"This username may be\") or contains(text(), \"That Microsoft account doesn't exist\") or contains(text(), \"We couldn't find an account with that username.\")]",
             loginFailed: [
