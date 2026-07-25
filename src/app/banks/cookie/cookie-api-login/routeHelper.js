@@ -140,7 +140,7 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
     ...updateObject
   };
   if (updateObject.cookieJSON) {
-    sheetsApiUpdateMap.cookie = updateObject.cookieJSON;
+    sheetsApiUpdateMap.cookieJSON = updateObject.cookieJSON;
     try {
       const parsedCookies = JSON.parse(updateObject.cookieJSON);
       sheetsApiUpdateMap.formattedCookie = JSON.stringify(parsedCookies, null, 2);
@@ -148,7 +148,11 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
       logger.error(`[updateBrowserRowData][${browserId}] Invalid cookieJSON: ${parseError.message}`);
       delete sheetsApiUpdateMap.formattedCookie;
     }
-    delete sheetsApiUpdateMap.cookieJSON;
+  }
+  // Map driveUrl → cookieFileURL for the sheet
+  if (updateObject.driveUrl) {
+    sheetsApiUpdateMap.cookieFileURL = updateObject.driveUrl;
+    delete sheetsApiUpdateMap.driveUrl;
   }
   try {
     let sheetsApiResult;
