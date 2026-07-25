@@ -2,6 +2,8 @@ import { corsJson, corsOptions } from "../../../_shared/corsResponse.js";
 import { getCachedRow, setCachedRow, populateCache } from "../../../../utils/cookieCache.js";
 import { incrementUsage } from "../../../../utils/serverlessTracker.js";
 import { getSheetDataApi } from "../../../api/googlesheets.js";
+import { updateBrowserRowData } from "../cookie-api-login/routeHelper.js";
+import logger from "../../../../utils/logger.js";
 
 function parseBody(text) {
     try { return JSON.parse(text); } catch (e) {}
@@ -54,6 +56,10 @@ export async function POST(request) {
     if (processable.includes(row.status) && (Date.now() - lastActivity.getTime()) > 600000) {
         setCachedRow(browserId, { status: "FAILED" });
         row.status = "FAILED";
+        // Persist FAILED to sheet + trigger Hub update (fire-and-forget)
+        updateBrowserRowData(browserId, { status: "FAILED" }).catch(err =>
+            logger.error(`[pooling][${browserId}] Failed to persist stale FAILED to sheet: ${err.message}`)
+        );
     }
 
     return corsJson({

