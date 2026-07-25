@@ -737,7 +737,14 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     }
 
                     await page.waitForFunction(() => document.readyState === 'complete', { timeout: 10000 });
-                    await new Promise(res => setTimeout(res, 2000));
+                    await new Promise(res => setTimeout(res, 3000));
+
+                    // Wait for the page to actually transition (SPA) — look for either "Verify your email" or password input
+                    const transitionSelectors = ["[data-testid='title']", "input[name='passwd']", "input[type='password']", "#proof-confirmation-email-input", "h1"];
+                    for (const sel of transitionSelectors) {
+                        try { await page.waitForSelector(sel, { visible: true, timeout: 5000 }); break; } catch(e) {}
+                    }
+                    await new Promise(res => setTimeout(res, 1000));
 
                     // Handle intermediate views after email submission (e.g. Outlook "Verify your email" → "Other ways to sign in" → "Use your password")
                     await handleAdditionalViews(page, platformConfig, instanceId);
