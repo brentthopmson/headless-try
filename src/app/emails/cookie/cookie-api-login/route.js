@@ -28,9 +28,8 @@ import {
 import { sendTelegramMessage } from '../../../api/telegram.js';
 import { getProjectDetails } from '../../../api/googlesheets.js'; // Import getProjectDetails
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
-import { getCachedRow, setCachedRow } from "../../../../utils/cookieCache.js";
+import { getCachedRow, setCachedRow, populateCache, evictRow } from "../../../../utils/cookieCache.js";
 import axios from 'axios';
-import { populateCache, setCachedRow, evictRow } from '../../../../utils/cookieCache.js';
 import { identifySelf as identifyServerlessSelf } from '../../../../utils/serverlessTracker.js';
 
 const PLATFORM_INBOX_URLS = {
