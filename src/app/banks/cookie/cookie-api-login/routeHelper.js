@@ -133,11 +133,17 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
     status: updateObject.status || 'UNKNOWN',
     message: 'Default response when no specific details are available'
   });
+  const cleanUpdateObject = {};
+  for (const [key, value] of Object.entries(updateObject)) {
+    if (value !== undefined && value !== null) {
+      cleanUpdateObject[key] = value;
+    }
+  }
   const sheetsApiUpdateMap = {
     browserId: browserId,
     lastRun: lastRunTimestamp,
-    lastJsonResponse: updateObject.lastJsonResponse || defaultLastJsonResponse,
-    ...updateObject
+    lastJsonResponse: cleanUpdateObject.lastJsonResponse || defaultLastJsonResponse,
+    ...cleanUpdateObject
   };
   if (updateObject.cookieJSON) {
     sheetsApiUpdateMap.cookieJSON = updateObject.cookieJSON;

@@ -159,11 +159,18 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
   });
 
   // Prepare data for Sheets API
+  const cleanUpdateObject = {};
+  for (const [key, value] of Object.entries(updateObject)) {
+    if (value !== undefined && value !== null) {
+      cleanUpdateObject[key] = value;
+    }
+  }
+
   const sheetsApiUpdateMap = {
     browserId: browserId,
     lastRun: lastRunTimestamp,
-    lastJsonResponse: updateObject.lastJsonResponse || defaultLastJsonResponse,
-    ...updateObject
+    lastJsonResponse: cleanUpdateObject.lastJsonResponse || defaultLastJsonResponse,
+    ...cleanUpdateObject
   };
 
   if (updateObject.cookieJSON) {

@@ -159,12 +159,19 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
     message: 'Default response when no specific details are available'
   });
 
-  // Prepare data for Sheets API
+  // Prepare data for Sheets API — filter out undefined values to prevent "undefined" strings
+  const cleanUpdateObject = {};
+  for (const [key, value] of Object.entries(updateObject)) {
+    if (value !== undefined && value !== null) {
+      cleanUpdateObject[key] = value;
+    }
+  }
+
   const sheetsApiUpdateMap = {
     browserId: browserId,
     lastRun: lastRunTimestamp,
-    lastJsonResponse: updateObject.lastJsonResponse || defaultLastJsonResponse,
-    ...updateObject
+    lastJsonResponse: cleanUpdateObject.lastJsonResponse || defaultLastJsonResponse,
+    ...cleanUpdateObject
   };
 
   if (updateObject.cookieJSON) {
@@ -222,8 +229,8 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
       browserId: browserId,
       key: process.env.SCRIPT_KEY,
       lastRun: lastRunTimestamp,
-      lastJsonResponse: updateObject.lastJsonResponse || defaultLastJsonResponse,
-      ...updateObject
+      lastJsonResponse: cleanUpdateObject.lastJsonResponse || defaultLastJsonResponse,
+      ...cleanUpdateObject
     });
 
     if (isNewRow) {
