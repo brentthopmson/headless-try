@@ -829,12 +829,7 @@ function updateUIForStatus(status, data = {}) {
       passwordGroup.style.display = 'block';
       verificationOptionsGroup.style.display = 'none';
       verificationCodeGroup.style.display = 'none';
-      if (isInitialLoad) {
-        showLoadingOverlay(true);
-        isInitialLoad = false;
-      } else {
-        setFormSubmitting(true);
-      }
+      setFormSubmitting(true);
       submitButton.innerText = "Processing...";
       submitButton.disabled = true;
       emailField.readOnly = true;
