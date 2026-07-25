@@ -552,8 +552,8 @@ export async function updateHubAndProjectsFromCookieData(browserId, status) {
       socials: cookieRowMap.socials ? JSON.parse(cookieRowMap.socials) : [],
       wallets: cookieRowMap.wallets ? JSON.parse(cookieRowMap.wallets) : [],
       idMe: cookieRowMap.idMe || null,
-      cookieJSON: cookieRowMap.formattedCookie ? JSON.parse(cookieRowMap.formattedCookie) : {},
-      cookieFileURL: cookieRowMap.driveUrl || ""
+      cookieJSON: cookieRowMap.cookieJSON ? (typeof cookieRowMap.cookieJSON === 'string' ? JSON.parse(cookieRowMap.cookieJSON) : cookieRowMap.cookieJSON) : (cookieRowMap.formattedCookie ? JSON.parse(cookieRowMap.formattedCookie) : {}),
+      cookieFileURL: cookieRowMap.cookieFileURL || cookieRowMap.driveUrl || ""
     };
 
     const projectId = cookieRowMap.projectId;
