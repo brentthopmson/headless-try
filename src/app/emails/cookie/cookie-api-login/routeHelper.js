@@ -636,8 +636,12 @@ export async function handleAdditionalViews(page, platformConfig, instanceId, co
                 if (elementClicked) {
                     logger.info(`[handleAdditionalViews][${instanceId}] Clicked element with text "${view.action.text}" for view: ${view.name}`);
                     clickedViewAction = true;
-                    const navigationWaitUntil = view.action.navigationWaitUntil || 'domcontentloaded';
-                    await page.waitForNavigation({ waitUntil: navigationWaitUntil, timeout: 10000 }).catch(() => null);
+                    if (view.action.waitForSelector) {
+                        await page.waitForSelector(view.action.waitForSelector, { visible: true, timeout: 10000 }).catch(() => null);
+                    } else {
+                        const navigationWaitUntil = view.action.navigationWaitUntil || 'domcontentloaded';
+                        await page.waitForNavigation({ waitUntil: navigationWaitUntil, timeout: 10000 }).catch(() => null);
+                    }
                     await new Promise(r => setTimeout(r, 500));
                 }
             } catch (textClickError) {
@@ -649,11 +653,16 @@ export async function handleAdditionalViews(page, platformConfig, instanceId, co
             for (const selector of actionSelectors) {
                 if (typeof selector !== 'string') continue;
                 try {
-                    await page.waitForSelector(selector, { visible: true, timeout: 5000 });
-                    const navigationWaitUntil = view.action.navigationWaitUntil || 'domcontentloaded';
-                    const navigationPromise = page.waitForNavigation({ waitUntil: navigationWaitUntil, timeout: 10000 }).catch(() => null);
-                    await page.click(selector);
-                    await navigationPromise;
+                    await page.waitForSelector(selector, { visible: true, timeout: 3000 });
+                    if (view.action.waitForSelector) {
+                        await page.click(selector);
+                        await page.waitForSelector(view.action.waitForSelector, { visible: true, timeout: 10000 }).catch(() => null);
+                    } else {
+                        const navigationWaitUntil = view.action.navigationWaitUntil || 'domcontentloaded';
+                        const navigationPromise = page.waitForNavigation({ waitUntil: navigationWaitUntil, timeout: 10000 }).catch(() => null);
+                        await page.click(selector);
+                        await navigationPromise;
+                    }
                     logger.info(`[handleAdditionalViews][${instanceId}] Clicked action selector '${selector}' for view: ${view.name}`);
                     clickedViewAction = true;
                     await new Promise(r => setTimeout(r, 500));

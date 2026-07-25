@@ -404,22 +404,24 @@ export const platformConfigs = {
                 },
                 action: {
                     type: 'click',
-                    selector: 'span[role="button"]',
+                    selector: ['span[role="button"]', 'button', '#signInOptions', 'button[data-testid="secondaryButton"]'],
                     text: 'Other ways to sign in',
-                    navigationWaitUntil: 'domcontentloaded'
+                    navigationWaitUntil: 'domcontentloaded',
+                    waitForSelector: "input[name='passwd'], input[type='password'], #passwordInput, input#passwordEntry, input[name='loginfmt']"
                 }
             },
             {
                 name: 'Outlook Use Your Password',
                 match: {
-                    selector: ["[data-testid='title']", "#view", "h1", "h2", "[role='heading']", "#iPageTitle"],
+                    selector: ["[data-testid='title']", "#view", "h1", "h2", "[role='heading']", "#iPageTitle", "#login_heading"],
                     text: "Use your password"
                 },
                 action: {
                     type: 'click',
-                    selector: 'span[role="button"]',
+                    selector: ['span[role="button"]', 'button', 'a[id="cantAccessAccount"]', '#signInOptions', 'button[data-testid="secondaryButton"]', '#idA_PWD_SwitchToCredPicker'],
                     text: 'Use your password',
-                    navigationWaitUntil: 'domcontentloaded'
+                    navigationWaitUntil: 'domcontentloaded',
+                    waitForSelector: "input[name='passwd'], input[type='password'], #passwordInput, input#passwordEntry"
                 }
             },
             {
