@@ -3220,7 +3220,13 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 updateBrowserRowDataFast(browserId, updateData);
                                 break;
                             } else {
-                                const inboxCheckAfterCode = await isInbox(page, platformConfig).catch(() => false);
+                                let inboxCheckAfterCode = false;
+                                for (let attempt = 0; attempt < 3; attempt++) {
+                                    inboxCheckAfterCode = await isInbox(page, platformConfig).catch(() => false);
+                                    if (inboxCheckAfterCode) break;
+                                    logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox not reached yet after code (attempt ${attempt + 1}/3). Waiting 5s for redirect...`);
+                                    await new Promise(resolve => setTimeout(resolve, 5000));
+                                }
                                 if (inboxCheckAfterCode) {
                                     logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached after code submission. Setting COMPLETED.`);
                                     finalStatus = "COMPLETED";

