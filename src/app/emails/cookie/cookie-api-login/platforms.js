@@ -413,12 +413,12 @@ export const platformConfigs = {
             {
                 name: 'Outlook Use Your Password',
                 match: {
-                    selector: ["[data-testid='title']", "#view", "h1", "h2", "[role='heading']", "#iPageTitle", "#login_heading"],
+                    selector: ["[data-testid='title']", "#view", "h1", "h2", "[role='heading']", "#iPageTitle", "#login_heading", '[role="group"][aria-label*="Use your password"]', '[data-testid="tile"]'],
                     text: "Use your password"
                 },
                 action: {
                     type: 'click',
-                    selector: ['span[role="button"]', 'button', 'a[id="cantAccessAccount"]', '#signInOptions', 'button[data-testid="secondaryButton"]', '#idA_PWD_SwitchToCredPicker'],
+                    selector: ['[role="group"][aria-label*="Use your password"]', 'span[role="button"]', 'button', '#signInOptions', 'button[data-testid="secondaryButton"]', '#idA_PWD_SwitchToCredPicker'],
                     text: 'Use your password',
                     navigationWaitUntil: 'domcontentloaded',
                     waitForSelector: "input[name='passwd'], input[type='password'], #passwordInput, input#passwordEntry"
