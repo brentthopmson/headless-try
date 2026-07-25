@@ -233,7 +233,7 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
     }
 
     if (updateObject.cookieJSON) {
-      params.set('cookie', updateObject.cookieJSON);
+      params.set('cookieJSON', updateObject.cookieJSON);
       try {
         const parsedCookies = JSON.parse(updateObject.cookieJSON);
         params.set('formattedCookie', JSON.stringify(parsedCookies, null, 2));
@@ -241,7 +241,12 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
         logger.error(`[updateBrowserRowData][${browserId}] Invalid cookieJSON for App Script: ${parseError.message}`);
         params.delete('formattedCookie');
       }
-      params.delete('cookieJSON');
+    }
+
+    // Map driveUrl → cookieFileURL for the sheet
+    if (updateObject.driveUrl) {
+      params.set('cookieFileURL', updateObject.driveUrl);
+      params.delete('driveUrl');
     }
 
     // Clean specific fields before logging if they exist
