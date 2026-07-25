@@ -2905,12 +2905,16 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 }
                                 let codeErrorDetected = false;
                                 if (codeErrorSelector) {
-                                    try {
-                                        await page.waitForSelector(codeErrorSelector, { visible: true, timeout: 2000 });
-                                        codeErrorDetected = true;
-                                        logger.warn(`[processRow][${browserId}][WAITINGCODE] Code error detected via selector: ${codeErrorSelector}.`);
-                                    } catch (e) {
-                                        // Selector not found, no immediate error
+                                    const errorSelectors = Array.isArray(codeErrorSelector) ? codeErrorSelector : [codeErrorSelector];
+                                    for (const sel of errorSelectors) {
+                                        try {
+                                            await page.waitForSelector(sel, { visible: true, timeout: 2000 });
+                                            codeErrorDetected = true;
+                                            logger.warn(`[processRow][${browserId}][WAITINGCODE] Code error detected via selector: ${sel}.`);
+                                            break;
+                                        } catch (e) {
+                                            // Selector not found, try next
+                                        }
                                     }
                                 }
 

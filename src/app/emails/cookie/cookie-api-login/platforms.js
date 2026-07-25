@@ -228,7 +228,7 @@ export const platformConfigs = {
             // Selectors for the "Enter code" (Authenticator app OTP) page
             authenticatorCodeInput: "#idTxtBx_SAOTCC_OTC",
             authenticatorCodeSubmit: "#idSubmit_SAOTCC_Continue",
-            authenticatorCodeError: "#idDiv_SAOTCC_Error"
+            authenticatorCodeError: ["#idDiv_SAOTCC_ErrorMsg_OTC", "#idSpan_SAOTCC_Error_OTC", "#idTxtBx_SAOTCC_OTC.has-error"]
         },
         extractVerificationOptions: async (page, platformConfig, viewName) => {
             const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
