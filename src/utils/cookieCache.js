@@ -1,7 +1,12 @@
 import logger from './logger.js';
 
-const cookieCache = new Map();
-const pendingSync = new Map();
+// Use globalThis so ALL route modules (engine, pooling-operator, update-process)
+// share the same cache instance even in Next.js dev mode where webpack may
+// create separate module scopes per route.
+if (!globalThis.__cookieCache) globalThis.__cookieCache = new Map();
+if (!globalThis.__pendingSync) globalThis.__pendingSync = new Map();
+const cookieCache = globalThis.__cookieCache;
+const pendingSync = globalThis.__pendingSync;
 let syncRunning = false;
 let syncTimer = null;
 
