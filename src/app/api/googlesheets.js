@@ -253,6 +253,27 @@ export async function appendSheetRowApi(sheetName, headerAndValueMap) {
     }
     const headers = headersResult.headers;
 
+    // Collect missing headers and add them to the sheet
+    const missingHeaders = [];
+    Object.entries(headerAndValueMap).forEach(([header, value]) => {
+      if (header.toLowerCase() === 'rowId') return;
+      if (!headers.includes(header)) {
+        missingHeaders.push(header);
+      }
+    });
+
+    // Extend headers with any new columns
+    if (missingHeaders.length > 0) {
+      const newHeaderRange = `${sheetName}!${column_index_to_letter(headers.length)}:${column_index_to_letter(headers.length + missingHeaders.length - 1)}`;
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SPREADSHEET_ID,
+        range: newHeaderRange,
+        valueInputOption: 'RAW',
+        resource: { values: [missingHeaders] },
+      });
+      headers.push(...missingHeaders);
+    }
+
     // Initialize newRowData with nulls, so empty cells are truly empty and don't interfere with formulas
     const newRowData = Array(headers.length).fill(null);
     Object.entries(headerAndValueMap).forEach(([header, value]) => {
@@ -263,10 +284,8 @@ export async function appendSheetRowApi(sheetName, headerAndValueMap) {
       const headerIndex = headers.indexOf(header);
       if (headerIndex !== -1) {
         newRowData[headerIndex] = value;
-      } else {
       }
     });
-
 
     const lastColLetter = column_index_to_letter(headers.length - 1);
     const range = `${sheetName}!A:${lastColLetter}`;

@@ -54,6 +54,11 @@ export function getSelfId() {
     return selfServerlessId;
 }
 
+export function getSelfUrl() {
+    const url = selfRow?.severlessURL;
+    return url ? url.replace(/\/+$/, '') : null;
+}
+
 export function incrementUsage() {
     if (!selfServerlessId) return;
 

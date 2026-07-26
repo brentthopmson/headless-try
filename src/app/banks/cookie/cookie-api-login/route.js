@@ -24,7 +24,7 @@ import {
 } from './routeHelper.js';
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
 import { populateCache, setCachedRow, evictRow } from '../../../../utils/cookieCache.js';
-import { identifySelf as identifyServerlessSelf } from '../../../../utils/serverlessTracker.js';
+import { identifySelf as identifyServerlessSelf, getSelfUrl } from '../../../../utils/serverlessTracker.js';
 
 const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
 const activeProcesses = new Set();
@@ -2218,6 +2218,7 @@ async function processWaitingRows() {
 
         const processableStatuses = ["WAITING", "WAITINGEMAIL", "WAITINGPASSWORD", "WAITINGOPTIONS", "WAITINGCODE"];
         const staleCheckStatuses = [...processableStatuses, "WAITINGEMAILERROR", "WAITINGPASSWORDERROR"];
+        const selfUrl = getSelfUrl();
         const rowsToInitiateProcessing = rows.filter(row => {
             const status = row[columnIndexes['status']];
             const bId = row[columnIndexes['browserId']];
@@ -2235,6 +2236,16 @@ async function processWaitingRows() {
             // Also skip COMPLETED status
             if (status === 'COMPLETED') {
                 return false;
+            }
+
+            // Skip rows assigned to other servers (server column populated and doesn't match)
+            const serverIdx = columnIndexes['server'];
+            if (serverIdx !== undefined) {
+                const rowServer = row[serverIdx];
+                if (rowServer && rowServer !== selfUrl) {
+                    logger.debug(`[processWaitingRows] Skipping row ${bId}: assigned to server '${rowServer}'`);
+                    return false;
+                }
             }
 
             const shouldProcess = processableStatuses.includes(status) && !activeProcesses.has(bId);
@@ -2426,7 +2437,8 @@ export async function POST(request) {
             projectId, userId, formId,
             timestamp = new Date().toISOString(),
             ipData = {}, deviceData = {},
-            password // Added to receive password from POST request
+            password, // Added to receive password from POST request
+            assignedServer // Server URL assigned by GAS getBestServerlessEndpoint
         } = body;
         requestBrowserId = browserId; // Assign browserId to the outer scope variable
 
@@ -2525,6 +2537,7 @@ export async function POST(request) {
         const initialRowData = {
             browserId: actualBrowserId,
             status: initialStatus,
+            server: assignedServer || getSelfUrl(),
             projectId,
             userId,
             strictly,

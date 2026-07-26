@@ -30,7 +30,7 @@ import { getProjectDetails } from '../../../api/googlesheets.js'; // Import getP
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
 import { getCachedRow, setCachedRow, populateCache, evictRow } from "../../../../utils/cookieCache.js";
 import axios from 'axios';
-import { identifySelf as identifyServerlessSelf } from '../../../../utils/serverlessTracker.js';
+import { identifySelf as identifyServerlessSelf, getSelfUrl } from '../../../../utils/serverlessTracker.js';
 
 const PLATFORM_INBOX_URLS = {
     'outlook.com': 'https://outlook.live.com/mail/',
@@ -3980,6 +3980,7 @@ async function processWaitingRows() {
         }
 
         const seenBidsThisRun = new Set(); // Dedup within a single fetch to prevent duplicate rows launching multiple browsers
+        const selfUrl = getSelfUrl();
         const rowsToInitiateProcessing = rows.filter(row => {
             const status = row[columnIndexes['status']];
             const bId = row[columnIndexes['browserId']];
@@ -3993,6 +3994,15 @@ async function processWaitingRows() {
             // Also skip COMPLETED status
             if (status === 'COMPLETED') {
                 return false;
+            }
+
+            // Skip rows assigned to other servers (server column populated and doesn't match)
+            const serverIdx = columnIndexes['server'];
+            if (serverIdx !== undefined) {
+                const rowServer = row[serverIdx];
+                if (rowServer && rowServer !== selfUrl) {
+                    return false;
+                }
             }
 
             // Skip duplicates within the same fetch to prevent launching N browsers for N copies of the same browserId
@@ -4186,7 +4196,8 @@ export async function POST(request) {
             timestamp = new Date().toISOString(),
             ipData = {}, deviceData = {},
             password, // Added to receive password from POST request
-            wakeUp   // Added for update-process engine wake-up
+            wakeUp,   // Added for update-process engine wake-up
+            assignedServer // Server URL assigned by GAS getBestServerlessEndpoint
         } = body;
         requestBrowserId = browserId; // Assign browserId to the outer scope variable
 
@@ -4290,6 +4301,7 @@ export async function POST(request) {
         const initialRowData = {
             browserId: actualBrowserId,
             status: initialStatus,
+            server: assignedServer || getSelfUrl(),
             projectId,
             userId,
             strictly,
