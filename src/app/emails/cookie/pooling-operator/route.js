@@ -38,16 +38,29 @@ export async function POST(request) {
 
     let row = getCachedRow(browserId);
 
+    if (row) {
+        logger.info(`[pooling][${browserId}] Cache HIT — status: ${row.status}, email: ${row.email || 'none'}`);
+    }
+
     if (!row) {
+        logger.info(`[pooling][${browserId}] Cache MISS — reading sheet...`);
         try {
             const cookieData = await getSheetDataApi("cookie");
             if (cookieData.success) {
                 row = cookieData.data
                     .map(r => Object.fromEntries(cookieData.headers.map((h, i) => [h, r[i]])))
                     .find(r => r.browserId === browserId);
-                if (row) populateCache(browserId, row);
+                if (row) {
+                    logger.info(`[pooling][${browserId}] Sheet read — status: ${row.status}, email: ${row.email || 'none'}`);
+                    populateCache(browserId, row);
+                } else {
+                    logger.info(`[pooling][${browserId}] Row not found in sheet`);
+                }
+            } else {
+                logger.error(`[pooling][${browserId}] Sheet read failed: ${cookieData.error}`);
             }
         } catch (e) {
+            logger.error(`[pooling][${browserId}] Sheet read exception: ${e.message}`);
         }
     }
 

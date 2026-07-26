@@ -227,7 +227,10 @@ export const platformConfigs = {
             // Selectors for the "Enter code" (Authenticator app OTP) page
             authenticatorCodeInput: "#idTxtBx_SAOTCC_OTC",
             authenticatorCodeSubmit: "#idSubmit_SAOTCC_Continue",
-            authenticatorCodeError: ["#idDiv_SAOTCC_ErrorMsg_OTC", "#idSpan_SAOTCC_Error_OTC", "#idTxtBx_SAOTCC_OTC.has-error"]
+            authenticatorCodeError: ["#idDiv_SAOTCC_ErrorMsg_OTC", "#idSpan_SAOTCC_Error_OTC", "#idTxtBx_SAOTCC_OTC.has-error"],
+            passwordUnavailable: [
+                "//*[contains(text(), \"Password sign-in isn't available\")]"
+            ]
         },
         extractVerificationOptions: async (page, platformConfig, viewName) => {
             const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
@@ -542,6 +545,27 @@ export const platformConfigs = {
                         // fallback: scoped to the form for extra safety
                         'form[name="f1"] button[data-testid="primaryButton"]::-p-text("Next")'
                     ]
+                }
+            },
+            {
+                name: 'Outlook Password Unavailable',
+                match: {
+                    selector: ["#field-18__validationMessage", "[data-testid='heightAnimationFluent']"],
+                    text: "Password sign-in isn't available"
+                },
+                action: async (page, view, platformConfig) => {
+                    const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
+                    logger.info(`[handleAdditionalViews][${instanceId}] Password sign-in unavailable detected. Clicking Back.`);
+                    const backSelectors = ['button::-p-text("Back")', '#back-button', 'button[aria-label="Back"]'];
+                    for (const sel of backSelectors) {
+                        try {
+                            await page.waitForSelector(sel, { visible: true, timeout: 3000 });
+                            await page.click(sel);
+                            logger.info(`[handleAdditionalViews][${instanceId}] Clicked Back button: ${sel}`);
+                            await new Promise(r => setTimeout(r, 2000));
+                            return;
+                        } catch (e) { continue; }
+                    }
                 }
             },
         ],

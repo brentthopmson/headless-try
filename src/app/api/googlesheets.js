@@ -331,7 +331,7 @@ export async function updateSheetRowApi(sheetName, searchColumn, searchValue, he
 
     const requests = [];
     Object.entries(headerAndValueMap).forEach(([header, value]) => {
-      if (header.toLowerCase() === 'id') { // Skip 'id' column to let formula auto-populate
+      if (header.toLowerCase() === 'id' || header.toLowerCase() === 'end') { // Skip 'id' and 'end' columns to protect formulas
         return;
       }
       const headerIndex = headers.indexOf(header);

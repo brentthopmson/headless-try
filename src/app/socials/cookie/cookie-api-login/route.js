@@ -567,6 +567,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     let instanceId = `PROC-SETUP-${browserId}`;
     let isReusingBrowser = false;
 
+    // Populate cache with full row data so intermediate writes (status etc.) preserve email/password
+    const initialRowData = Object.fromEntries(
+        Object.entries(columnIndexes).map(([key, idx]) => [key, row[idx]])
+    );
+    populateCache(browserId, initialRowData);
+
     // Set initialCheckResult from lastJsonResponse if available
     if (row && row[columnIndexes['lastJsonResponse']]) {
         try {
@@ -2084,10 +2090,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         }
 
         const finalSheetUpdate = { ...updateData };
-        // Ensure FAILED status includes the latest email and password
+        // Always include email and password in final write so sheet never loses them
+        if (email) finalSheetUpdate.email = email;
+        if (password) finalSheetUpdate.password = password;
         if (finalSheetUpdate.status === "FAILED") {
-            finalSheetUpdate.email = email || finalSheetUpdate.email;
-            finalSheetUpdate.password = password || finalSheetUpdate.password;
             notifyTeam({ type: 'BROWSER_FAILURE', platform, email, browserId, detail: 'Socials process ended with FAILED status', url: page ? page.url() : undefined });
         }
         // Removed explicit clearing of verification fields as per user request

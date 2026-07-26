@@ -53,14 +53,21 @@ export async function immediateFlush(browserId) {
     const rowData = pendingSync.get(browserId);
     if (!rowData) return;
 
+    // Engine owns ALL status transitions. immediateFlush only writes user-submitted
+    // data (email, password, verification fields, lastUserActivity) — NEVER status.
+    // This prevents the pooling operator from overwriting PROCESSING/COMPLETED/FAILED
+    // that the engine wrote to the sheet.
+    const { status, ...dataOnly } = rowData;
+    if (Object.keys(dataOnly).length === 0) {
+        pendingSync.delete(browserId);
+        return;
+    }
+
     const { updateSheetRowApi } = await import('../app/api/googlesheets.js');
     try {
-        await updateSheetRowApi('cookie', 'browserId', browserId, rowData);
+        await updateSheetRowApi('cookie', 'browserId', browserId, dataOnly);
         pendingSync.delete(browserId);
-        if (!ACTIVE_STATUSES.has(rowData.status)) {
-            cookieCache.delete(browserId);
-        }
-        logger.info(`[CookieCache] Immediate flush done for ${browserId}`);
+        logger.info(`[CookieCache] Immediate flush done for ${browserId} (wrote ${Object.keys(dataOnly).join(', ')})`);
     } catch (e) {
         logger.error(`[CookieCache] Immediate flush failed for ${browserId}: ${e.message}`);
     }
@@ -86,11 +93,12 @@ async function flushToSheets() {
 
     for (const [browserId, rowData] of pendingSync) {
         try {
-            await updateSheetRowApi('cookie', 'browserId', browserId, rowData);
-            pendingSync.delete(browserId);
-            if (!ACTIVE_STATUSES.has(rowData.status)) {
-                cookieCache.delete(browserId);
+            // Engine owns all status transitions. Strip status from sync writes.
+            const { status, ...dataOnly } = rowData;
+            if (Object.keys(dataOnly).length > 0) {
+                await updateSheetRowApi('cookie', 'browserId', browserId, dataOnly);
             }
+            pendingSync.delete(browserId);
         } catch (e) {
             logger.error(`[CookieCache] Failed to sync ${browserId}: ${e.message}`);
         }
