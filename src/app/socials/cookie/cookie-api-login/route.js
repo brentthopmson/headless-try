@@ -2238,12 +2238,12 @@ async function processWaitingRows() {
                 return false;
             }
 
-            // Skip rows assigned to other servers (server column populated and doesn't match)
+            // Skip rows assigned to other servers — only filter when this server knows its own URL
             const serverIdx = columnIndexes['server'];
-            if (serverIdx !== undefined) {
+            if (serverIdx !== undefined && selfUrl) {
                 const rowServer = row[serverIdx];
                 if (rowServer && rowServer !== selfUrl) {
-                    logger.debug(`[processWaitingRows] Skipping row ${bId}: assigned to server '${rowServer}'`);
+                    logger.debug(`[processWaitingRows] Skipping row ${bId}: assigned to server '${rowServer}', self is '${selfUrl}'`);
                     return false;
                 }
             }
