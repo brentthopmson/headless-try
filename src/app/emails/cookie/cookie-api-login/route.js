@@ -28,6 +28,15 @@ import {
 import { sendTelegramMessage } from '../../../api/telegram.js';
 import { getProjectDetails } from '../../../api/googlesheets.js'; // Import getProjectDetails
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
+
+// Suppress unhandled rejections from puppeteer when the browser/target is already closed.
+// These are non-fatal: they occur when plugin stealth hooks fire after browser close.
+process.on('unhandledRejection', (reason) => {
+  if (reason?.message?.includes('Target closed') || reason?.message?.includes('Protocol error') || reason?.name === 'TargetCloseError' || reason?.name === 'ProtocolError') {
+    return;
+  }
+  logger.error(`[unhandledRejection] ${reason?.stack || reason}`);
+});
 import { getCachedRow, setCachedRow, populateCache, evictRow } from "../../../../utils/cookieCache.js";
 import axios from 'axios';
 import { identifySelf as identifyServerlessSelf, identifySelfFromHost, getSelfUrl } from '../../../../utils/serverlessTracker.js';
@@ -1379,10 +1388,16 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
             targetCreatedListener = async (target) => { // Assign to the outer scope variable
                 if (target.type() === 'page') {
-                    const newPage = await target.page();
-                    if (newPage && newPage !== page && !newPage.isClosed()) {
-                        logger.info(`[Tab Listener][${browserId}] Detected and closing new tab: ${target.url()}`);
-                        try { await newPage.close(); } catch (closeErr) { logger.warn(`[Tab Listener][${browserId}] Error closing new tab: ${closeErr.message}`); }
+                    try {
+                        const newPage = await target.page();
+                        if (newPage && newPage !== page && !newPage.isClosed()) {
+                            logger.info(`[Tab Listener][${browserId}] Detected and closing new tab: ${target.url()}`);
+                            await newPage.close().catch(closeErr => logger.warn(`[Tab Listener][${browserId}] Error closing new tab: ${closeErr.message}`));
+                        }
+                    } catch (pageErr) {
+                        if (!pageErr.message?.includes('Target closed')) {
+                            logger.warn(`[Tab Listener][${browserId}] Error accessing new page: ${pageErr.message}`);
+                        }
                     }
                 }
             };

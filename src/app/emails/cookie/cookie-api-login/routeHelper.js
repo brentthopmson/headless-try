@@ -349,12 +349,18 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
     }
   }
   // If we reached here, it means either Sheets API succeeded or App Script fallback succeeded.
-  // Sync cache so updateBrowserRowDataFast merges don't lose fields not in cache (e.g. verificationChoice)
+  // Sync cookieCache so updateBrowserRowDataFast merges don't lose fields not in cache (e.g. verificationChoice)
   setCachedRow(browserId, {
     ...cleanUpdateObject,
     lastRun: lastRunTimestamp,
     lastJsonResponse: cleanUpdateObject.lastJsonResponse || defaultLastJsonResponse
   });
+  // Invalidate appScriptDataCache on terminal status so processWaitingRows gets fresh data
+  // and doesn't re-process a row that was just marked FAILED or COMPLETED.
+  if (updateObject.status === "FAILED" || updateObject.status === "COMPLETED") {
+    appScriptDataCache = null;
+    lastCacheUpdateTime = 0;
+  }
   // Return a success indicator or the last successful result.
   return { success: true };
 }
