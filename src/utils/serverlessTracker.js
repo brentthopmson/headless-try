@@ -10,11 +10,12 @@ let usageHistory = [];
 let usageDirty = false;
 let usageSyncRunning = false;
 let usageSyncTimer = null;
+let autoDetectAttempted = false;
 
 export async function identifySelf() {
     const SELF_ID = process.env.SERVERLESS_ID;
     if (!SELF_ID) {
-        logger.warn('[ServerlessTracker] SERVERLESS_ID not set. Self-identification disabled.');
+        logger.warn('[ServerlessTracker] SERVERLESS_ID not set. Will auto-detect from first incoming request.');
         return null;
     }
 
@@ -48,6 +49,52 @@ export async function identifySelf() {
 
     logger.info(`[ServerlessTracker] Identified self: ${selfServerlessId} (${selfRow.severlessURL})`);
     return selfRow;
+}
+
+export async function identifySelfFromHost(hostHeader) {
+    if (selfServerlessId) return selfRow;
+    if (autoDetectAttempted) return selfRow;
+    autoDetectAttempted = true;
+
+    if (!hostHeader) {
+        logger.warn('[ServerlessTracker] No Host header provided for auto-detection.');
+        return null;
+    }
+
+    const { getSheetDataApi } = await import('../app/api/googlesheets.js');
+    const links = await getSheetDataApi('links');
+
+    if (!links.success || !links.data) {
+        logger.error('[ServerlessTracker] Failed to read links sheet for auto-detection.');
+        return null;
+    }
+
+    const rows = links.data.map(row => Object.fromEntries(links.headers.map((h, i) => [h, row[i]])));
+    const requestHost = hostHeader.split(':')[0].toLowerCase();
+    const requestPort = hostHeader.includes(':') ? hostHeader.split(':')[1] : null;
+
+    for (const row of rows) {
+        if (!row.severlessURL) continue;
+        const url = row.severlessURL.replace(/\/+$/, '').toLowerCase();
+        const urlHost = new URL(url).hostname;
+        if (urlHost === requestHost) {
+            selfServerlessId = row.severlessId;
+            selfRow = row;
+            currentRph = parseInt(row.serverlessRphUsage || '0');
+            currentRpd = parseInt(row.serverlessRpdUsage || '0');
+            usageHistory = JSON.parse(row.severlessHistory || '[]');
+            if (usageHistory.length > 0) {
+                const last = usageHistory[usageHistory.length - 1];
+                lastRphReset = new Date(last.timestamp).getTime();
+                lastRpdReset = new Date(last.timestamp).getTime();
+            }
+            logger.info(`[ServerlessTracker] Auto-identified self: ${selfServerlessId} (${url}) via Host header`);
+            return selfRow;
+        }
+    }
+
+    logger.info('[ServerlessTracker] Host header did not match any registered server. Running in local/dev mode — will process all rows.');
+    return null;
 }
 
 export function getSelfId() {

@@ -30,7 +30,7 @@ import { getProjectDetails } from '../../../api/googlesheets.js'; // Import getP
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
 import { getCachedRow, setCachedRow, populateCache, evictRow } from "../../../../utils/cookieCache.js";
 import axios from 'axios';
-import { identifySelf as identifyServerlessSelf, getSelfUrl } from '../../../../utils/serverlessTracker.js';
+import { identifySelf as identifyServerlessSelf, identifySelfFromHost, getSelfUrl } from '../../../../utils/serverlessTracker.js';
 
 const PLATFORM_INBOX_URLS = {
     'outlook.com': 'https://outlook.live.com/mail/',
@@ -4173,6 +4173,8 @@ export async function POST(request) {
     let updateData = {}, finalStatusDetails = {};
     let instanceIdForPOST = '';
     try {
+        // Auto-detect server identity from incoming request Host header (no need for SERVERLESS_ID env)
+        await identifySelfFromHost(request.headers.get('host'));
         logger.debug(`[POST] Incoming request headers: ${inspect(Object.fromEntries(request.headers.entries()))}`);
         // Clone the request to prevent the "body disturbed" error
         const clonedRequest = request.clone();
