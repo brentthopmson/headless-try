@@ -191,6 +191,26 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
     delete sheetsApiUpdateMap.driveUrl;
   }
 
+  // Race-condition guard: never overwrite COMPLETED with FAILED (another server may have already succeeded)
+  if (updateObject.status === "FAILED" && !isNewRow) {
+    try {
+      const existingData = await getSheetDataApi("cookie");
+      if (existingData.success && Array.isArray(existingData.data)) {
+        const statusIdx = existingData.headers.indexOf('status');
+        const browserIdIdx = existingData.headers.indexOf('browserId');
+        if (statusIdx !== -1 && browserIdIdx !== -1) {
+          const existingRow = existingData.data.find(r => r[browserIdIdx] === browserId);
+          if (existingRow && existingRow[statusIdx] === "COMPLETED") {
+            logger.warn(`[updateBrowserRowData][${browserId}] Row already COMPLETED in sheet. Skipping FAILED overwrite to preserve the COMPLETED status.`);
+            return { success: true, skipped: true, reason: 'Row already COMPLETED' };
+          }
+        }
+      }
+    } catch (readError) {
+      logger.warn(`[updateBrowserRowData][${browserId}] Pre-check read failed, proceeding with FAILED write: ${readError.message}`);
+    }
+  }
+
   // --- Attempt Sheets API first ---
   try {
     let sheetsApiResult;
