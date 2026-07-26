@@ -5,6 +5,7 @@ import { promisify } from 'util';
 import logger from "../../../../utils/logger.js";
 import aiService from "../../../../utils/aiService.js";
 import { getSheetDataApi, appendSheetRowApi, updateSheetRowApi, updateHubAndProjectsFromCookieData } from '../../../api/googlesheets.js';
+import { setCachedRow } from '../../../../utils/cookieCache.js';
 
 // --- Original App Script Data Cache and Fetchers ---
 let appScriptDataCache = null;
@@ -348,6 +349,12 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
     }
   }
   // If we reached here, it means either Sheets API succeeded or App Script fallback succeeded.
+  // Sync cache so updateBrowserRowDataFast merges don't lose fields not in cache (e.g. verificationChoice)
+  setCachedRow(browserId, {
+    ...cleanUpdateObject,
+    lastRun: lastRunTimestamp,
+    lastJsonResponse: cleanUpdateObject.lastJsonResponse || defaultLastJsonResponse
+  });
   // Return a success indicator or the last successful result.
   return { success: true };
 }
