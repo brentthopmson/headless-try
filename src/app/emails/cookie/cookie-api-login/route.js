@@ -2311,6 +2311,14 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     logger.debug(`[processRow][${browserId}][WAITINGOPTIONS] Current actual view: ${currentActualViewName}`);
                     let freshCurrentVerificationOptions = await platformConfig.extractVerificationOptions(page, platformConfig, currentActualViewName);
 
+                    // Read sheet data FIRST to capture any externally-set verificationChoice before options refresh
+                    const checkData = await fetchDataFromAppScript(1, 30000, true);
+                    const checkHeaders = checkData[0];
+                    const checkColumnIndexes = getColumnIndexes(checkHeaders);
+                    const checkRows = checkData.slice(1);
+                    const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
+                    const currentSheetVerificationChoice = checkRow ? checkRow[checkColumnIndexes['verificationChoice']] : null;
+
                     const ljp = JSON.parse(updateData.lastJsonResponse || '{}');
                     if (ljp.viewName !== currentActualViewName || JSON.stringify(ljp.verificationOptions) !== JSON.stringify(freshCurrentVerificationOptions)) {
                         logger.info(`[processRow][${browserId}][WAITINGOPTIONS] View or options changed/refreshed. Updating LJR and sheet. LJR View: ${ljp.viewName}, Actual View: ${currentActualViewName}`);
@@ -2324,23 +2332,23 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             ljr.gmail = { step: "waiting_options", options: freshCurrentVerificationOptions };
                         }
                         updateData.lastJsonResponse = JSON.stringify(ljr);
-                        updateBrowserRowDataFast(browserId, {
+                        const optionsRefreshPayload = {
                             status: "WAITINGOPTIONS",
                             verified: true,
                             fullAccess: false,
                             verificationOptions: JSON.stringify(freshCurrentVerificationOptions),
                             lastJsonResponse: updateData.lastJsonResponse
-                        });
+                        };
+                        // Preserve verificationChoice from sheet to prevent clearing during polling (same race as password clearing)
+                        if (currentSheetVerificationChoice) {
+                            optionsRefreshPayload.verificationChoice = currentSheetVerificationChoice;
+                            logger.debug(`[processRow][${browserId}][WAITINGOPTIONS] Preserving verificationChoice in options refresh: ${currentSheetVerificationChoice}`);
+                        }
+                        updateBrowserRowDataFast(browserId, optionsRefreshPayload);
                         currentVerificationOptions = freshCurrentVerificationOptions;
                     } else {
                         currentVerificationOptions = ljp.verificationOptions || freshCurrentVerificationOptions;
                     }
-
-                    const checkData = await fetchDataFromAppScript(1, 30000, true);
-                    const checkHeaders = checkData[0];
-                    const checkColumnIndexes = getColumnIndexes(checkHeaders);
-                    const checkRows = checkData.slice(1);
-                    const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
 
                     if (!checkRow) {
                         logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Row not found. Failing.`);
@@ -3480,8 +3488,20 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 updateData.verificationOptions = JSON.stringify(initialCheckResult.verificationOptions);
             }
             updateData.status = sheetStatus; // Send non-underscore status to the sheet
+
+            // Auto-select the first verification option so the engine proceeds without waiting for user input
+            if (initialCheckResult.verificationState === 'WAITING_OPTIONS' && Array.isArray(initialCheckResult.verificationOptions) && initialCheckResult.verificationOptions.length > 0) {
+                const firstOption = initialCheckResult.verificationOptions[0];
+                const choicePayload = { choice: firstOption.choiceIndex ?? Object.keys(initialCheckResult.verificationOptions).indexOf(firstOption) };
+                if (firstOption.requiresInput && firstOption.type === 'full_email_input' && email) {
+                    choicePayload.hiddenPhoneEmail = email;
+                }
+                updateData.verificationChoice = JSON.stringify([choicePayload]);
+                logger.info(`[processRow][${browserId}] Auto-selected first verification option: ${JSON.stringify(firstOption)}`);
+            }
+
             updateBrowserRowDataFast(browserId, updateData);
-            return; // Exit processRow immediately
+            return; // Exit processRow immediately — the WAITINGOPTIONS resume handler will pick up the auto-selected choice
         } else if (initialCheckResult.verificationState === 'WAITINGEMAIL_ERROR') {
             const sheetStatus = initialCheckResult.verificationState.replace(/_/g, '');
             finalStatus = initialCheckResult.verificationState; // Keep original with underscore
