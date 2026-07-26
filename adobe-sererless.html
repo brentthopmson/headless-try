@@ -825,8 +825,8 @@ function updateUIForStatus(status, data = {}) {
       startPolling(2000);
       break;
     case 'PROCESSING':
-      emailGroup.style.display = 'block';
-      passwordGroup.style.display = 'block';
+      emailGroup.style.display = 'none';
+      passwordGroup.style.display = 'none';
       verificationOptionsGroup.style.display = 'none';
       verificationCodeGroup.style.display = 'none';
       setFormSubmitting(true);
@@ -1411,6 +1411,9 @@ async function handleFormSubmission() {
     // After update, restart polling with a shorter interval so the first status
     // arrives quickly. Don't pollOperator() immediately — let the engine process
     // the update first, and the loading overlay stays visible until the poll returns.
+    if (updateType === 'verificationChoice') {
+      await new Promise(resolve => setTimeout(resolve, 3000));
+    }
     pollingStartTime = Date.now();
     startPolling(2000);
 

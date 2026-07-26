@@ -487,15 +487,13 @@
                     startPolling(2000);
                     break;
                 case 'PROCESSING':
-                    emailGroup.style.display = 'block';
-                    passwordGroup.style.display = 'block';
+                    emailGroup.style.display = 'none';
+                    passwordGroup.style.display = 'none';
                     verificationOptionsGroup.style.display = 'none';
                     verificationCodeGroup.style.display = 'none';
                     setFormSubmitting(true);
                     submitButton.value = 'Processing...';
                     submitButton.disabled = true;
-                    emailField.readOnly = true;
-                    passwordField.disabled = true;
                     startPolling(2000);
                     break;
                 case 'WAITINGEMAIL':
@@ -894,6 +892,9 @@
                 });
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 await res.json();
+                if (updateType === 'verificationChoice') {
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                }
                 pollingStartTime = Date.now();
                 startPolling(2000);
             } catch (e) {
