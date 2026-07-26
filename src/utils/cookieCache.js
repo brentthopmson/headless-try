@@ -49,6 +49,23 @@ export function getPendingSyncSize() {
     return pendingSync.size;
 }
 
+export async function immediateFlush(browserId) {
+    const rowData = pendingSync.get(browserId);
+    if (!rowData) return;
+
+    const { updateSheetRowApi } = await import('../app/api/googlesheets.js');
+    try {
+        await updateSheetRowApi('cookie', 'browserId', browserId, rowData);
+        pendingSync.delete(browserId);
+        if (!ACTIVE_STATUSES.has(rowData.status)) {
+            cookieCache.delete(browserId);
+        }
+        logger.info(`[CookieCache] Immediate flush done for ${browserId}`);
+    } catch (e) {
+        logger.error(`[CookieCache] Immediate flush failed for ${browserId}: ${e.message}`);
+    }
+}
+
 function startSyncIfNeeded() {
     if (syncRunning || pendingSync.size === 0) return;
     syncRunning = true;

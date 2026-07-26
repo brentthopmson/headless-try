@@ -1,5 +1,5 @@
 import { corsJson, corsOptions } from "../../../_shared/corsResponse.js";
-import { getCachedRow, setCachedRow, populateCache } from "../../../../utils/cookieCache.js";
+import { getCachedRow, setCachedRow, populateCache, immediateFlush } from "../../../../utils/cookieCache.js";
 import { incrementUsage } from "../../../../utils/serverlessTracker.js";
 import { getSheetDataApi } from "../../../api/googlesheets.js";
 import { updateBrowserRowData } from "../cookie-api-login/routeHelper.js";
@@ -31,6 +31,9 @@ export async function POST(request) {
         if (verificationChoice) updates.verificationChoice = verificationChoice;
         if (verificationCode) updates.verificationCode = verificationCode;
         setCachedRow(browserId, updates);
+        immediateFlush(browserId).catch(err =>
+            logger.error(`[pooling][${browserId}] Immediate flush failed: ${err.message}`)
+        );
     }
 
     let row = getCachedRow(browserId);
