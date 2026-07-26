@@ -201,10 +201,10 @@ export const platformConfigs = {
                 "#idSIButton9",
                 "button[data-testid='primaryButton']"
             ],
-            errorMessage: "//*[contains(text(), \"This username may be\") or contains(text(), \"That Microsoft account doesn't exist\") or contains(text(), \"We couldn't find an account with that username.\")]",
+            errorMessage: "//*[contains(., \"This username may be\") or contains(., \"That Microsoft account doesn't exist\") or contains(., \"We couldn't find an account with that username.\")]",
             loginFailed: [
-                "//*[contains(text(), \"Your account or password is incorrect\") or contains(text(), \"Your account or password\") or contains(text(), \"That password is incorrect\")]",
-                "//*[contains(text(), \"You've tried to sign in too many times with an incorrect account or password.\")]"
+                "//*[contains(., \"Your account or password is incorrect\") or contains(., \"Your account or password\") or contains(., \"That password is incorrect\")]",
+                "//*[contains(., \"You've tried to sign in too many times with an incorrect account or password.\")]"
             ],
             proofListSelector: "#iProofList", 
             emailProofInput: "#iProofEmail", 
@@ -229,7 +229,7 @@ export const platformConfigs = {
             authenticatorCodeSubmit: "#idSubmit_SAOTCC_Continue",
             authenticatorCodeError: ["#idDiv_SAOTCC_ErrorMsg_OTC", "#idSpan_SAOTCC_Error_OTC", "#idTxtBx_SAOTCC_OTC.has-error"],
             passwordUnavailable: [
-                "//*[contains(text(), \"Password sign-in isn't available\")]"
+                "//*[contains(., \"Password sign-in isn't available\")]"
             ]
         },
         extractVerificationOptions: async (page, platformConfig, viewName) => {
