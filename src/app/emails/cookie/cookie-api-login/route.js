@@ -2208,6 +2208,28 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 }
             }
 
+            // FIX: If loop broke because sheet changed to PROCESSING during password retry
+            // (e.g., password unavailable retry), keep browser open and restore WAITINGPASSWORD
+            // so the interval re-picks the row for another attempt.
+            if (finalStatus === "PROCESSING" && !passwordProvidedAndProcessed) {
+                logger.info(`[processRow][${browserId}] Password retry in progress (loop broke on PROCESSING). Restoring WAITINGPASSWORD for next pick-up.`);
+                finalStatus = "WAITINGPASSWORD";
+                updateData.status = "WAITINGPASSWORD";
+                updateData.lastJsonResponse = JSON.stringify({
+                    ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                    status: "WAITINGPASSWORD",
+                    engineRetrying: true,
+                    message: "Retrying password. Please wait."
+                });
+                updateBrowserRowDataFast(browserId, {
+                    status: "WAITINGPASSWORD",
+                    verified: true,
+                    fullAccess: false,
+                    lastJsonResponse: updateData.lastJsonResponse
+                });
+                return;
+            }
+
             if (!passwordProvidedAndProcessed && finalStatus === "WAITINGPASSWORD") {
                 logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Polling for password timed out. Setting status to FAILED.`);
                 finalStatus = "FAILED";
@@ -3153,14 +3175,17 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     ljp.verified = true;
                                     ljp.fullAccess = false;
                                     ljp.message = "Incorrect verification code entered. Please try again.";
-                                    updateBrowserRowDataFast(browserId, {
+                                    // FIX: Await the write to prevent race condition where while loop
+                                    // re-reads sheet before WAITINGCODE is written (sees stale PROCESSING)
+                                    await updateBrowserRowDataFast(browserId, {
                                         status: "WAITINGCODE",
                                         verificationCode: '',
                                         verified: true,
                                         fullAccess: false,
                                         lastJsonResponse: JSON.stringify(ljp)
                                     });
-                                    continue; // Continue the WAITING_CODE polling loop
+                                    finalStatus = "WAITINGCODE";
+                                    break; // Break the inner code-entry try; outer while loop will re-poll
                                 }
 
                                 // If no code error, then wait 10 seconds and proceed with existing checks
@@ -3394,6 +3419,29 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 if (finalStatus === "WAITINGCODE" && !codeSuccessfullyProcessed) {
                     await new Promise(resolve => setTimeout(resolve, 5000)); // Reduced polling interval from 10000 to 5000
                 }
+            }
+
+            // FIX: If loop broke because sheet changed to PROCESSING during code entry
+            // (e.g., incorrect code retry), keep browser open and restore WAITINGCODE
+            // so the interval re-picks the row for another attempt.
+            if (finalStatus === "PROCESSING" && !codeSuccessfullyProcessed) {
+                logger.info(`[processRow][${browserId}] Code retry in progress (loop broke on PROCESSING). Restoring WAITINGCODE for next pick-up.`);
+                finalStatus = "WAITINGCODE";
+                updateData.status = "WAITINGCODE";
+                updateData.lastJsonResponse = JSON.stringify({
+                    ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                    status: "WAITINGCODE",
+                    engineRetrying: true,
+                    message: "Incorrect code. Waiting for new code."
+                });
+                updateBrowserRowDataFast(browserId, {
+                    status: "WAITINGCODE",
+                    verificationCode: '',
+                    verified: true,
+                    fullAccess: false,
+                    lastJsonResponse: updateData.lastJsonResponse
+                });
+                return;
             }
 
             if (finalStatus === "WAITINGCODE" && !codeSuccessfullyProcessed) {

