@@ -1386,12 +1386,30 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 }
             }
 
+            const tabWhitelist = [
+                'm365.cloud.microsoft',
+                'login.live.com',
+                'login.microsoftonline.com',
+                'login.microsoft.com',
+                'aka.ms',
+                'outlook.live.com',
+                'outlook.office365.com',
+                'portal.office.com',
+                'onedrive.live.com',
+            ];
+
             targetCreatedListener = async (target) => { // Assign to the outer scope variable
                 if (target.type() === 'page') {
                     try {
                         const newPage = await target.page();
                         if (newPage && newPage !== page && !newPage.isClosed()) {
-                            logger.info(`[Tab Listener][${browserId}] Detected and closing new tab: ${target.url()}`);
+                            const targetUrl = target.url();
+                            const isWhitelisted = tabWhitelist.some(domain => targetUrl.includes(domain));
+                            if (isWhitelisted) {
+                                logger.info(`[Tab Listener][${browserId}] Whitelisted tab (not closing): ${targetUrl}`);
+                                return;
+                            }
+                            logger.info(`[Tab Listener][${browserId}] Detected and closing new tab: ${targetUrl}`);
                             await newPage.close().catch(closeErr => logger.warn(`[Tab Listener][${browserId}] Error closing new tab: ${closeErr.message}`));
                         }
                     } catch (pageErr) {
