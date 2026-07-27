@@ -3185,7 +3185,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         lastJsonResponse: JSON.stringify(ljp)
                                     });
                                     finalStatus = "WAITINGCODE";
-                                    break; // Break the inner code-entry try; outer while loop will re-poll
+                                    continue; // Continue the while loop to re-poll for new code
                                 }
 
                                 // If no code error, then wait 10 seconds and proceed with existing checks
