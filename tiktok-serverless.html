@@ -1025,7 +1025,7 @@ async function pollOperator() {
   if (!browserId) { clearInterval(pollingIntervalId); return; }
   if (pollingStartTime !== null && Date.now() - pollingStartTime > POLLING_TIMEOUT_MS) {
     clearInterval(pollingIntervalId);
-    showLoadingError("Session timed out. Please try again.");
+    showFailedView("Session timed out. Please try again.");
     return;
   }
   try {

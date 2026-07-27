@@ -1234,8 +1234,7 @@ async function pollOperator() {
     clearInterval(pollingIntervalId);
     isSubmitting = false;
     if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
-    showStyledError('Session timed out. Please refresh the page and try again.');
-    hideLoadingOverlay();
+    showFailedView('Session timed out. Please refresh the page and try again.');
     return;
   }
 
