@@ -1206,9 +1206,11 @@ async function initialFormSubmission() {
     }
   } catch (error) {
     console.error("Error during initial form submission:", error);
-    showStyledError('Failed to initiate process. Please try again.');
+    isSubmitting = false;
+    isProcessing = false;
+    showFailedView('Failed to initiate process. Please try again.');
     hideLoadingOverlay();
-    resetFormState(); // Keep form accessible for retry
+    resetFormState();
   }
 }
 

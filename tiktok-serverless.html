@@ -1009,9 +1009,8 @@ async function initialFormSubmission() {
     }
   } catch (error) {
     console.error("Initial submission error:", error);
-    hideLoading();
-    setError('loadingError', "Failed to initiate process. Please try again.");
-    showLoadingError("Failed to initiate process. Please try again.");
+    isProcessing = false;
+    showFailedView("Failed to initiate process. Please try again.");
   }
 }
 

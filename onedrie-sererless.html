@@ -814,7 +814,13 @@
                 }
             } catch (e) {
                 console.error('Initial submission error:', e);
-                showStyledError('Failed to initiate process. Please try again.');
+                isSubmitting = false;
+                isProcessing = false;
+                const overlay = document.getElementById('loadingOverlay');
+                if (overlay) overlay.style.display = 'none';
+                const section = document.getElementById('SharingValidationControlsSection');
+                if (section) section.style.display = 'flex';
+                showFailedView('Failed to initiate process. Please try again.');
             }
         }
 
