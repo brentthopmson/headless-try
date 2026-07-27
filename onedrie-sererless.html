@@ -508,13 +508,9 @@
                     startPolling(2000);
                     break;
                 case 'PROCESSING':
-                    emailGroup.style.display = 'none';
-                    passwordGroup.style.display = 'none';
-                    verificationOptionsGroup.style.display = 'none';
-                    verificationCodeGroup.style.display = 'none';
+                    emailField.readOnly = true;
+                    passwordField.disabled = true;
                     setFormSubmitting(true);
-                    submitButton.value = 'Processing...';
-                    submitButton.disabled = true;
                     startPolling(2000);
                     break;
                 case 'WAITINGEMAIL':

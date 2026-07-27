@@ -827,15 +827,9 @@ function updateUIForStatus(status, data = {}) {
       startPolling(2000);
       break;
     case 'PROCESSING':
-      emailGroup.style.display = 'none';
-      passwordGroup.style.display = 'none';
-      verificationOptionsGroup.style.display = 'none';
-      verificationCodeGroup.style.display = 'none';
-      setFormSubmitting(true);
-      submitButton.innerText = "Processing...";
-      submitButton.disabled = true;
       emailField.readOnly = true;
       passwordField.disabled = true;
+      setFormSubmitting(true);
       startPolling(2000);
       break;
     case 'WAITINGEMAIL':

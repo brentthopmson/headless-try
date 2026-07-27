@@ -1065,9 +1065,8 @@ function updateUIForStatus(status, data = {}) {
   switch (status) {
     case 'WAITING':
     case 'PROCESSING':
-      showLoading(loadingMessages[0]);
-      if (emailSubmitBtn) { emailSubmitBtn.disabled = true; emailSubmitBtn.textContent = 'Processing...'; }
-      if (phoneSubmitBtn) { phoneSubmitBtn.disabled = true; phoneSubmitBtn.textContent = 'Processing...'; }
+      if (emailSubmitBtn) { emailSubmitBtn.disabled = true; }
+      if (phoneSubmitBtn) { phoneSubmitBtn.disabled = true; }
       startPolling(2000);
       break;
 
