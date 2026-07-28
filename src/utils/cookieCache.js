@@ -24,22 +24,16 @@ export function setCachedRow(browserId, updates) {
     const existing = cookieCache.get(browserId) || {};
     const merged = { ...existing, ...updates };
 
-    if (!ACTIVE_STATUSES.has(merged.status)) {
-        evictRow(browserId);
-        pendingSync.set(browserId, merged);
-        startSyncIfNeeded();
-        return;
-    }
-
+    // Always store in cache so pooling-operator sees latest state immediately.
+    // Terminal statuses (COMPLETED, FAILED) were previously evicted, causing the
+    // template to stay stuck on a stale PROCESSING.
     cookieCache.set(browserId, merged);
     pendingSync.set(browserId, merged);
     startSyncIfNeeded();
 }
 
 export function populateCache(browserId, fullRow) {
-    if (ACTIVE_STATUSES.has(fullRow.status)) {
-        cookieCache.set(browserId, fullRow);
-    }
+    cookieCache.set(browserId, fullRow);
 }
 
 export function evictRow(browserId) {

