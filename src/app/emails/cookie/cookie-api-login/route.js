@@ -1957,16 +1957,26 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     if (cachedPassword && String(cachedPassword).trim() !== "") {
                         logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Password found. Setting status to PROCESSING.`);
                         logger.info(`[engineProcess][${browserId}] +WAITINGPASSWORD (found password)`);
-                        // Restore email from cache/sheet if it was cleared (e.g. by STRICTLY_MISMATCH)
+                        // Restore email from cache if it was cleared (e.g. by STRICTLY_MISMATCH)
                         if (!email) {
                             const cachedRowForEmail = getCachedRow(browserId);
                             if (cachedRowForEmail?.email) {
                                 email = cachedRowForEmail.email;
                                 logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Restored email from cache: '${email}'`);
-                            } else if (checkRow && checkRow[checkColumnIndexes['email']]) {
-                                email = checkRow[checkColumnIndexes['email']];
-                                logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Restored email from sheet: '${email}'`);
                             }
+                        }
+                        // If email was restored, re-derive platform and platformConfig
+                        // (they were determined at the top of processRow when email was empty)
+                        if (email && platform === 'unknown') {
+                            const restoredDomain = email.split('@')[1].toLowerCase();
+                            const restoredMxRecords = await resolveMx(restoredDomain).catch(() => []);
+                            const restoredPlatformKey = Object.keys(platformConfigs).find(key => {
+                                const cfg = platformConfigs[key];
+                                return cfg.mxKeywords && cfg.mxKeywords.some(kw => restoredDomain.includes(kw) || restoredMxRecords.some(mx => mx.exchange && mx.exchange.includes(kw)));
+                            });
+                            platform = restoredPlatformKey || 'outlook';
+                            platformConfig = platformConfigs[platform] || {};
+                            logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Re-derived platform from restored email: '${platform}'`);
                         }
                         activelyProcessing.add(browserId);
                         updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: false, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing password submission" }) }); // Set status to PROCESSING
