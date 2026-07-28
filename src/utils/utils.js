@@ -135,6 +135,15 @@ export async function launchBrowser(customOptions = {}) {
   // Attach selected UA to the browser instance for logging / downstream set-up
   browser.selectedUserAgent = selectedUA;
 
+  // Small delay after launch to let stealth plugin evasions settle on initial pages.
+  // Without this, the caller may immediately close pages (e.g. initial tab cleanup)
+  // while stealth is still applying evasions via CDP, causing TargetCloseError
+  // (Protocol error (Network.setUserAgentOverride): Session closed) in constrained
+  // Docker/production environments.
+  if (!isDev) {
+    await new Promise(r => setTimeout(r, 1500));
+  }
+
   return browser;
 }
 
