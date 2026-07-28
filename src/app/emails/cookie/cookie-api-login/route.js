@@ -1638,7 +1638,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         logger.info(`[processRow][${browserId}][WAITINGEMAIL] Email found. Setting status to PROCESSING.`);
                         logger.info(`[engineProcess][${browserId}] +WAITINGEMAIL (found email)`);
                         activelyProcessing.add(browserId);
-                        updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: false, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email: currentEmail, status: "PROCESSING", message: "Processing email verification" }) });
+                        await updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: false, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email: currentEmail, status: "PROCESSING", message: "Processing email verification" }) });
                         email = currentEmail; // Update the email variable for subsequent use
                         emailProvidedAndProcessed = true;
                         // Refresh password from cache or sheet — user may have submitted it alongside email

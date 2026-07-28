@@ -231,9 +231,13 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
     }
   }
     // If we reached here, it means either Sheets API succeeded or App Script fallback succeeded.
-    // Sync cookieCache so updateBrowserRowDataFast merges don't lose fields not in cache (e.g. verificationChoice)
+    // Sync cookieCache with data fields only — NEVER overwrite status.
+    // The caller (updateBrowserRowDataFast or finally block) already set the correct status in cache.
+    // Without this guard, a concurrent slow write (e.g. PROCESSING) can overwrite a newer status
+    // (e.g. WAITINGEMAIL, FAILED) that was set by a later call, causing the template to lock.
+    const { status: _ignoredStatus, ...dataFields } = cleanUpdateObject;
     setCachedRow(browserId, {
-        ...cleanUpdateObject,
+        ...dataFields,
         lastRun: lastRunTimestamp,
         lastJsonResponse: cleanUpdateObject.lastJsonResponse || defaultLastJsonResponse
     });
