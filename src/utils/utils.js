@@ -34,7 +34,29 @@ async function getPuppeteerExtra() {
     if (_puppeteerExtra) return _puppeteerExtra;
     const { default: pptrExtra } = await import('puppeteer-extra');
     const { default: StealthPlugin } = await import('puppeteer-extra-plugin-stealth');
-    pptrExtra.use(StealthPlugin());
+    const stealth = StealthPlugin();
+
+    // Wrap _onTargetCreated to suppress TargetCloseError / ProtocolError from
+    // short-lived pages (e.g. redirect targets, popups that open and close before
+    // stealth evasions finish applying). The base plugin's handler is async and
+    // called fire-and-forget from the targetcreated event, so rejections become
+    // unhandled and can crash the process in constrained environments.
+    const _origOnTargetCreated = stealth._onTargetCreated.bind(stealth);
+    stealth._onTargetCreated = async (target) => {
+        try {
+            await _origOnTargetCreated(target);
+        } catch (e) {
+            if (e?.name === 'TargetCloseError' ||
+                e?.name === 'ProtocolError' ||
+                e?.message?.includes('Session closed') ||
+                e?.message?.includes('Target closed')) {
+                return;
+            }
+            throw e;
+        }
+    };
+
+    pptrExtra.use(stealth);
     _puppeteerExtra = pptrExtra;
     return _puppeteerExtra;
 }
