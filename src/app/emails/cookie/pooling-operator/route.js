@@ -1,7 +1,7 @@
 import { corsJson, corsOptions } from "../../../_shared/corsResponse.js";
 import { getCachedRow, setCachedRow, populateCache, immediateFlush } from "../../../../utils/cookieCache.js";
 import { incrementUsage } from "../../../../utils/serverlessTracker.js";
-import { fetchDataFromAppScript, updateBrowserRowData, activelyProcessing } from "../cookie-api-login/routeHelper.js";
+import { fetchDataFromAppScript, updateBrowserRowData, activelyProcessing, lastPollTime } from "../cookie-api-login/routeHelper.js";
 import logger from "../../../../utils/logger.js";
 
 // Local cache for terminal rows (COMPLETED/FAILED) — never changes, serve from memory
@@ -113,6 +113,8 @@ export async function POST(request) {
             }
         }
     }
+    // Record poll time for template liveliness tracking
+    lastPollTime.set(browserId, Date.now());
     logger.info(`[pooling][${browserId}] Returning status: ${row.status} | engineProcessing: ${engineProcessing}`);
     return corsJson({
         success: true,

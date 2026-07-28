@@ -15,6 +15,45 @@ export const stopAppScriptDataBackgroundUpdater = _sharedStopUpdater;
 // Set of browserIds the engine is actively processing (typing, navigating, checking)
 export const activelyProcessing = new Set();
 
+// Map of browserId → last poll timestamp (Date.now()). Updated by pooling-operator
+// on every poll request. Used by the engine to detect when a template has stopped
+// polling (user closed tab, network lost), so it can close the browser to save resources.
+export const lastPollTime = new Map();
+
+// Check if the template is still polling for this browserId.
+// Returns true if no data yet (assume alive), false if last poll was > maxAgeMs ago.
+export function isTemplateAlive(browserId, maxAgeMs = 180000) {
+    const lastTime = lastPollTime.get(browserId);
+    if (!lastTime) return true; // No data yet — assume alive
+    return (Date.now() - lastTime) < maxAgeMs;
+}
+
+// Verify that a critical element still exists on the page. Used before engine actions
+// to detect pages that have navigated away or closed in the background.
+export async function verifyPageStillValid(page, platformConfig, phase) {
+    const selectors = phase === 'password'
+        ? platformConfig?.selectors?.passwordInput
+        : (phase === 'code'
+            ? platformConfig?.selectors?.verificationCodeInput
+            : (phase === 'email'
+                ? platformConfig?.selectors?.input
+                : null));
+    if (!selectors) return true; // Can't verify, assume valid
+
+    const selectorArray = Array.isArray(selectors) ? selectors : [selectors].filter(Boolean);
+    for (const sel of selectorArray) {
+        if (typeof sel !== 'string') continue;
+        try {
+            await page.waitForSelector(sel, { timeout: 5000 });
+            return true; // Element found — page is valid
+        } catch (e) {
+            continue; // Try next selector
+        }
+    }
+    // No matching element found — page may have navigated or closed
+    return false;
+}
+
 // Helper function to get column indexes
 export function getColumnIndexes(headers) {
   const columnIndexes = headers.reduce((acc, header, index) => {
