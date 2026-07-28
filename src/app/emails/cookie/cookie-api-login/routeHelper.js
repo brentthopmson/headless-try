@@ -650,7 +650,7 @@ export async function handleAdditionalViews(page, platformConfig, instanceId, co
                     await new Promise(r => setTimeout(r, 500));
                     break;
                 } catch (modalClickError) {
-                    logger.warn(`[handleAdditionalViews][${instanceId}] Action selector '${selector}' not found or clickable for view ${view.name}. Trying next if available.`);
+                    logger.debug(`[handleAdditionalViews][${instanceId}] Action selector '${selector}' not found or clickable for view ${view.name}. Trying next if available.`);
                 }
             }
             if (!clickedViewAction) {

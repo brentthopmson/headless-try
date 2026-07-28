@@ -293,7 +293,7 @@ async function handleAdditionalViews(page, platformConfig, instanceId, context =
                     await new Promise(r => setTimeout(r, 500));
                     break;
                 } catch (modalClickError) {
-                    logger.warn(`[handleAdditionalViews][${instanceId}] Action selector '${selector}' not found or clickable for view ${view.name}. Trying next if available.`);
+                    logger.debug(`[handleAdditionalViews][${instanceId}] Action selector '${selector}' not found or clickable for view ${view.name}. Trying next if available.`);
                 }
             }
             if (!clickedViewAction) {
@@ -755,7 +755,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                 clicked = true;
                                 break;
                             } catch (e) {
-                                logger.warn(`[checkAccountAccess][${instanceId}] Next button selector not found or clickable: ${sel}`);
+                                logger.debug(`[checkAccountAccess][${instanceId}] Next button selector not found or clickable: ${sel}`);
                             }
                         }
                     }
@@ -941,7 +941,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                             passwordNextClicked = true;
                                             break;
                                         } catch (e) {
-                                            logger.warn(`[checkAccountAccess][${instanceId}] Password next button not found or clickable: ${sel}`);
+                                            logger.debug(`[checkAccountAccess][${instanceId}] Password next button not found or clickable: ${sel}`);
                                         }
                                     }
                                 }
@@ -4082,7 +4082,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 try {
                     browser.off('targetcreated', sessionTargetListener);
                 } catch (offError) {
-                    logger.warn(`[processRow][${browserId}] Error removing targetcreated listener: ${offError.message}`);
+                    logger.debug(`[processRow][${browserId}] Error removing targetcreated listener: ${offError.message}`);
                 }
             }
 
@@ -4104,7 +4104,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 try {
                     session.browser.off('targetcreated', session.targetCreatedListener);
                 } catch (offError) {
-                    logger.warn(`[processRow][${browserId}] Error removing targetcreated listener from reused session: ${offError.message}`);
+                    logger.debug(`[processRow][${browserId}] Error removing targetcreated listener from reused session: ${offError.message}`);
                 }
             }
             // Update cache with final status BEFORE closing browser so template sees it immediately
