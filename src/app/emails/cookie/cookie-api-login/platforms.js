@@ -579,6 +579,38 @@ export const platformConfigs = {
                     }
                 }
             },
+            {
+                name: 'Microsoft OAuth Authorization',
+                match: {
+                    url: ['oauth20_authorize.srf']
+                },
+                action: async (page, view, platformConfig) => {
+                    const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
+                    logger.info(`[handleAdditionalViews][${instanceId}] Microsoft OAuth authorization page detected. Clicking Yes/Accept.`);
+                    const consentSelectors = [
+                        "input[type='submit'][value='Yes']",
+                        "#idBtn_Accept",
+                        "button::-p-text('Yes')",
+                        "button::-p-text('Accept')",
+                        "input[type='submit'][value='Accept']",
+                        "button[type='submit']"
+                    ];
+                    for (const sel of consentSelectors) {
+                        try {
+                            await page.waitForSelector(sel, { visible: true, timeout: 3000 });
+                            const navPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => null);
+                            await page.click(sel);
+                            logger.info(`[handleAdditionalViews][${instanceId}] Clicked OAuth consent button: ${sel}`);
+                            await navPromise;
+                            await new Promise(r => setTimeout(r, 2000));
+                            return;
+                        } catch (e) { continue; }
+                    }
+                    logger.warn(`[handleAdditionalViews][${instanceId}] Could not find OAuth consent button. Navigating to inbox directly.`);
+                    await page.goto('https://outlook.live.com/mail/', { waitUntil: 'networkidle0', timeout: 30000 }).catch(() => null);
+                    await new Promise(r => setTimeout(r, 3000));
+                }
+            },
         ],
         verificationScreens: [
             {
