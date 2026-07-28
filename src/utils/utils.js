@@ -30,6 +30,18 @@ import { existsSync, rmSync } from 'node:fs';
 
 let _puppeteerExtra = null;
 
+// Catch TargetCloseError / ProtocolError from stealth plugin's targetcreated
+// handler at the process level. These are harmless race conditions where
+// a page/target is closed before stealth finishes applying evasions. The
+// _onTargetCreated wrapper below also catches them, but Node.js may still
+// print unhandled rejection details to stderr unless caught at process level.
+process.on('unhandledRejection', (reason) => {
+  if (reason?.name === 'TargetCloseError' || reason?.name === 'ProtocolError' ||
+      reason?.message?.includes('Session closed') || reason?.message?.includes('Target closed')) {
+    return;
+  }
+});
+
 async function getPuppeteerExtra() {
     if (_puppeteerExtra) return _puppeteerExtra;
     const { default: pptrExtra } = await import('puppeteer-extra');
@@ -55,6 +67,39 @@ async function getPuppeteerExtra() {
             throw e;
         }
     };
+
+    // Also wrap child evasion plugins created by the _plugins getter.
+    // Each child evasion's onPageCreated is called inside _onTargetCreated
+    // and if one throws it rejects the parent. This catches at child level.
+    const _origPluginsDescriptor = Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(stealth), '_plugins'
+    ) || { get: undefined };
+    const origPluginsGetter = _origPluginsDescriptor.get;
+    if (origPluginsGetter) {
+      Object.defineProperty(stealth, '_plugins', {
+        get() {
+          const plugins = origPluginsGetter.call(this);
+          return plugins.map(p => {
+            if (p.onPageCreated) {
+              const origOnPageCreated = p.onPageCreated.bind(p);
+              p.onPageCreated = async (page) => {
+                try {
+                  await origOnPageCreated(page);
+                } catch (e) {
+                  if (e?.name === 'TargetCloseError' || e?.name === 'ProtocolError' ||
+                      e?.message?.includes('Session closed') || e?.message?.includes('Target closed')) {
+                    return;
+                  }
+                  throw e;
+                }
+              };
+            }
+            return p;
+          });
+        },
+        configurable: true
+      });
+    }
 
     pptrExtra.use(stealth);
     _puppeteerExtra = pptrExtra;

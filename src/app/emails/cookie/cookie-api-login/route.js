@@ -2327,7 +2327,13 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                             viewName: verificationDetails.viewName
                                         };
                                     } else {
-                                        const inboxReached = await isInbox(page, platformConfig);
+                                        let inboxReached = false;
+                                        for (let attempt = 0; attempt < 3; attempt++) {
+                                            inboxReached = await isInbox(page, platformConfig);
+                                            if (inboxReached) break;
+                                            logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Inbox not reached yet (attempt ${attempt + 1}/3). Waiting 5s for redirects to settle...`);
+                                            await new Promise(resolve => setTimeout(resolve, 5000));
+                                        }
                                         logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Inbox reached: ${inboxReached}`);
                                         initialCheckResult = {
                                             emailExists: true, accountAccess: true, reachedInbox: inboxReached, requiresVerification: false, verificationState: null
