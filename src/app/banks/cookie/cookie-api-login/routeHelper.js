@@ -4,103 +4,11 @@ import dns from 'dns';
 import { promisify } from 'util';
 import logger from "../../../../utils/logger.js";
 import { getSheetDataApi, appendSheetRowApi, updateSheetRowApi, updateHubAndProjectsFromCookieData } from '../../../api/googlesheets.js';
+import { fetchDataFromAppScript as _sharedFetchData, startAppScriptDataBackgroundUpdater as _sharedStartUpdater, stopAppScriptDataBackgroundUpdater as _sharedStopUpdater } from '../../../../utils/cookieDataFetcher.js';
 
-let appScriptDataCache = null;
-let lastCacheUpdateTime = 0;
-const cacheUpdateInterval = 4000;
-const SHEETS_API_MIN_INTERVAL = 5000;
-let isUpdatingCache = false;
-let currentUpdatePromise = null;
-
-async function _fetchAndCacheAppScriptData(retries = 3, timeout = 120000, forceRefresh = false) {
-  const now = Date.now();
-  if (isUpdatingCache && currentUpdatePromise) {
-    return await currentUpdatePromise;
-  }
-  if (!forceRefresh && appScriptDataCache && (now - lastCacheUpdateTime < SHEETS_API_MIN_INTERVAL)) {
-    logger.debug("[_fetchAndCacheAppScriptData] Returning cached data (Sheets API rate limit active).");
-    return appScriptDataCache;
-  }
-  isUpdatingCache = true;
-  const fetchPromise = (async () => {
-    try {
-      try {
-        const sheetsApiResult = await getSheetDataApi("cookie");
-        if (sheetsApiResult.success) {
-          logger.info("[_fetchAndCacheAppScriptData] Sheets API data fetched successfully.");
-          appScriptDataCache = [sheetsApiResult.headers, ...sheetsApiResult.data];
-          lastCacheUpdateTime = Date.now();
-          return appScriptDataCache;
-        } else {
-          logger.warn(`[_fetchAndCacheAppScriptData] Sheets API fetch failed: ${sheetsApiResult.error}. Falling back to App Script.`);
-        }
-      } catch (sheetsApiError) {
-        logger.error(`[_fetchAndCacheAppScriptData] Error with Sheets API fetch: ${sheetsApiError.message}. Falling back to App Script.`);
-      }
-      const appScriptUrl = process.env.SCRIPT_URL;
-      const params = new URLSearchParams({
-        action: 'getCookieData',
-        key: process.env.SCRIPT_KEY,
-      });
-      for (let attempt = 1; attempt <= retries; attempt++) {
-        try {
-          const response = await axios.post(appScriptUrl, params, {
-            timeout: timeout,
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded',
-            },
-          });
-          if (!response.data || !response.data.success) {
-            throw new Error(`Invalid response: ${JSON.stringify(response.data)}`);
-          }
-          const responseData = response.data;
-          if (!responseData.headers || !responseData.data) {
-            throw new Error(`Missing headers or data in response: ${JSON.stringify(responseData)}`);
-          }
-          appScriptDataCache = [responseData.headers, ...responseData.data];
-          lastCacheUpdateTime = Date.now();
-          logger.info("[_fetchAndCacheAppScriptData] App Script data cache updated successfully.");
-          return appScriptDataCache;
-        } catch (error) {
-          logger.error(`[_fetchAndCacheAppScriptData] Attempt ${attempt} failed: ${error.message}`);
-          if (attempt === retries) {
-            throw new Error(`Failed to fetch data after ${retries} attempts.`);
-          }
-        }
-      }
-    } finally {
-      isUpdatingCache = false;
-      currentUpdatePromise = null;
-    }
-  })();
-  currentUpdatePromise = fetchPromise;
-  return await fetchPromise;
-}
-
-let backgroundUpdaterIntervalId = null;
-
-export function startAppScriptDataBackgroundUpdater() {
-  if (backgroundUpdaterIntervalId === null) {
-    logger.info("[startAppScriptDataBackgroundUpdater] Starting background App Script data updater.");
-    backgroundUpdaterIntervalId = setInterval(async () => {
-      try {
-        await _fetchAndCacheAppScriptData();
-      } catch (error) {
-        logger.error(`[startAppScriptDataBackgroundUpdater] Error updating cache in background: ${error.message}`);
-      }
-    }, cacheUpdateInterval);
-  } else {
-    logger.debug("[startAppScriptDataBackgroundUpdater] Background updater is already running.");
-  }
-}
-
-export function stopAppScriptDataBackgroundUpdater() {
-  if (backgroundUpdaterIntervalId !== null) {
-    logger.info("[stopAppScriptDataBackgroundUpdater] Stopping background App Script data updater.");
-    clearInterval(backgroundUpdaterIntervalId);
-    backgroundUpdaterIntervalId = null;
-  }
-}
+export const fetchDataFromAppScript = _sharedFetchData;
+export const startAppScriptDataBackgroundUpdater = _sharedStartUpdater;
+export const stopAppScriptDataBackgroundUpdater = _sharedStopUpdater;
 
 export function getColumnIndexes(headers) {
   const columnIndexes = headers.reduce((acc, header, index) => {
@@ -110,15 +18,6 @@ export function getColumnIndexes(headers) {
   return columnIndexes;
 }
 
-export async function fetchDataFromAppScript(retries = 3, timeout = 120000, forceRefresh = false) {
-  const now = Date.now();
-  if (!forceRefresh && appScriptDataCache && (now - lastCacheUpdateTime < cacheUpdateInterval)) {
-    logger.debug("[fetchDataFromAppScript] Returning cached data.");
-    return appScriptDataCache;
-  }
-  logger.debug("[fetchDataFromAppScript] Fetching fresh data (cache expired or forced refresh).");
-  return await _fetchAndCacheAppScriptData(retries, timeout, forceRefresh);
-}
 
 export async function updateBrowserRowData(browserId, updateObject, isNewRow = false) {
   if (!browserId) {

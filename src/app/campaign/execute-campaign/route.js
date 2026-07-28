@@ -263,7 +263,7 @@ export async function POST(request) {
     // Update campaign status to running
     await updateSheetRowApi("campaigns", "campaignId", campaignId, {
       status: "running",
-      updatedOn: new Date().toLocaleString()
+      updatedOn: new Date().toLocaleString('en-US')
     });
 
     if (channel === "email") {
@@ -475,7 +475,7 @@ export async function POST(request) {
             settings.lastProcessedRow = i + 1;
             await updateSheetRowApi("campaigns", "campaignId", campaignId, {
               settings: JSON.stringify(settings),
-              updatedOn: new Date().toLocaleString()
+              updatedOn: new Date().toLocaleString('en-US')
             });
           } catch (cpErr) {
             logger.warn(`[Execute Campaign] Checkpoint save failed at row ${i + 1}: ${cpErr.message}`);
@@ -510,7 +510,7 @@ export async function POST(request) {
       await updateSheetRowApi("campaigns", "campaignId", campaignId, {
         settings: JSON.stringify(settings),
         status: finalStatus,
-        updatedOn: new Date().toLocaleString()
+        updatedOn: new Date().toLocaleString('en-US')
       });
 
       return NextResponse.json({
@@ -752,7 +752,7 @@ export async function POST(request) {
       await updateSheetRowApi("campaigns", "campaignId", campaignId, {
         settings: JSON.stringify(settings),
         status: finalStatus,
-        updatedOn: new Date().toLocaleString()
+        updatedOn: new Date().toLocaleString('en-US')
       });
 
       return NextResponse.json({

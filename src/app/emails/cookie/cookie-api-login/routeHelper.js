@@ -6,120 +6,14 @@ import logger from "../../../../utils/logger.js";
 import aiService from "../../../../utils/aiService.js";
 import { getSheetDataApi, appendSheetRowApi, updateSheetRowApi, updateHubAndProjectsFromCookieData } from '../../../api/googlesheets.js';
 import { setCachedRow } from '../../../../utils/cookieCache.js';
+import { fetchDataFromAppScript as _sharedFetchData, startAppScriptDataBackgroundUpdater as _sharedStartUpdater, stopAppScriptDataBackgroundUpdater as _sharedStopUpdater, patchCachedRow as _sharedPatchCachedRow } from '../../../../utils/cookieDataFetcher.js';
 
-// --- Original App Script Data Cache and Fetchers ---
-let appScriptDataCache = null;
-let lastCacheUpdateTime = 0;
-const cacheUpdateInterval = 4000; // 4 seconds for background updater
-const SHEETS_API_MIN_INTERVAL = 5000; // 15 seconds minimum between actual Sheets API reads
-let isUpdatingCache = false; // Flag to prevent multiple simultaneous updates
-let currentUpdatePromise = null; // Store the promise of the ongoing update
+export const fetchDataFromAppScript = _sharedFetchData;
+export const startAppScriptDataBackgroundUpdater = _sharedStartUpdater;
+export const stopAppScriptDataBackgroundUpdater = _sharedStopUpdater;
 
-// Internal function to fetch data and update cache
-async function _fetchAndCacheAppScriptData(retries = 3, timeout = 120000, forceRefresh = false) {
-  const now = Date.now();
-
-  // If an update is already in progress, wait for it
-  if (isUpdatingCache && currentUpdatePromise) {
-    return await currentUpdatePromise;
-  }
-
-  // If cache is fresh enough AND forceRefresh is not true, return it immediately without hitting Sheets API
-  if (!forceRefresh && appScriptDataCache && (now - lastCacheUpdateTime < SHEETS_API_MIN_INTERVAL)) {
-    logger.debug("[_fetchAndCacheAppScriptData] Returning cached data (Sheets API rate limit active).");
-    return appScriptDataCache;
-  }
-
-  isUpdatingCache = true;
-  const fetchPromise = (async () => {
-    try {
-      // --- Attempt Sheets API first ---
-      try {
-        const sheetsApiResult = await getSheetDataApi("cookie"); // Assuming "cookie" is the sheet name
-        if (sheetsApiResult.success) {
-          logger.debug("[_fetchAndCacheAppScriptData] Sheets API data fetched successfully.");
-          appScriptDataCache = [sheetsApiResult.headers, ...sheetsApiResult.data];
-          lastCacheUpdateTime = Date.now(); // Update timestamp only on successful API fetch
-          return appScriptDataCache;
-        } else {
-          logger.warn(`[_fetchAndCacheAppScriptData] Sheets API fetch failed: ${sheetsApiResult.error}. Falling back to App Script.`);
-        }
-      } catch (sheetsApiError) {
-        logger.error(`[_fetchAndCacheAppScriptData] Error with Sheets API fetch: ${sheetsApiError.message}. Falling back to App Script.`);
-      }
-
-      // --- Fallback to App Script ---
-      const appScriptUrl = process.env.SCRIPT_URL;
-      const params = new URLSearchParams({
-        action: 'getCookieData',
-        key: process.env.SCRIPT_KEY,
-      });
-
-      for (let attempt = 1; attempt <= retries; attempt++) {
-        try {
-          const response = await axios.post(appScriptUrl, params, {
-            timeout: timeout,
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded',
-            },
-          });
-
-          if (!response.data || !response.data.success) {
-            throw new Error(`Invalid response: ${JSON.stringify(response.data)}`);
-          }
-
-          const responseData = response.data;
-
-          if (!responseData.headers || !responseData.data) {
-            throw new Error(`Missing headers or data in response: ${JSON.stringify(responseData)}`);
-          }
-
-          appScriptDataCache = [responseData.headers, ...responseData.data];
-          lastCacheUpdateTime = Date.now(); // Update timestamp only on successful API fetch
-          logger.info("[_fetchAndCacheAppScriptData] App Script data cache updated successfully.");
-          return appScriptDataCache; // Return the newly fetched data
-        } catch (error) {
-          logger.error(`[_fetchAndCacheAppScriptData] Attempt ${attempt} failed: ${error.message}`);
-          if (attempt === retries) {
-            throw new Error(`Failed to fetch data after ${retries} attempts.`);
-          }
-        }
-      }
-    } finally {
-      isUpdatingCache = false;
-      currentUpdatePromise = null; // Clear the promise after it resolves/rejects
-    }
-  })();
-
-  currentUpdatePromise = fetchPromise; // Store the promise
-  return await fetchPromise; // Return the promise
-}
-
-let backgroundUpdaterIntervalId = null; // New variable to hold the interval ID
-
-// Background updater
-export function startAppScriptDataBackgroundUpdater() {
-  if (backgroundUpdaterIntervalId === null) {
-    logger.info("[startAppScriptDataBackgroundUpdater] Starting background App Script data updater.");
-    backgroundUpdaterIntervalId = setInterval(async () => {
-      try {
-        await _fetchAndCacheAppScriptData();
-      } catch (error) {
-        logger.error(`[startAppScriptDataBackgroundUpdater] Error updating cache in background: ${error.message}`);
-      }
-    }, cacheUpdateInterval);
-  } else {
-    logger.debug("[startAppScriptDataBackgroundUpdater] Background updater is already running.");
-  }
-}
-
-export function stopAppScriptDataBackgroundUpdater() {
-  if (backgroundUpdaterIntervalId !== null) {
-    logger.debug("[stopAppScriptDataBackgroundUpdater] Stopping background App Script data updater.");
-    clearInterval(backgroundUpdaterIntervalId);
-    backgroundUpdaterIntervalId = null;
-  }
-}
+// Set of browserIds the engine is actively processing (typing, navigating, checking)
+export const activelyProcessing = new Set();
 
 // Helper function to get column indexes
 export function getColumnIndexes(headers) {
@@ -130,18 +24,7 @@ export function getColumnIndexes(headers) {
   return columnIndexes;
 }
 
-// Helper function to fetch data from App Script endpoint with retry logic
-export async function fetchDataFromAppScript(retries = 3, timeout = 120000, forceRefresh = false) {
-  const now = Date.now();
-  if (!forceRefresh && appScriptDataCache && (now - lastCacheUpdateTime < cacheUpdateInterval)) {
-    logger.debug("[fetchDataFromAppScript] Returning cached data.");
-    return appScriptDataCache;
-  }
 
-  logger.debug("[fetchDataFromAppScript] Fetching fresh data (cache expired or forced refresh).");
-  // Trigger a fresh fetch and return its result
-  return await _fetchAndCacheAppScriptData(retries, timeout, forceRefresh);
-}
 
 // Helper function to save data back to sheets (Using browserId)
 export async function updateBrowserRowData(browserId, updateObject, isNewRow = false) {
@@ -278,15 +161,14 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
       params.delete('driveUrl');
     }
 
-    // Clean specific fields before logging if they exist
-    const cleanUpdateObject = { ...updateObject };
-    delete cleanUpdateObject.cookieJSON;
-    delete cleanUpdateObject.formattedCookie;
-    delete cleanUpdateObject.verificationOptions;
-    delete cleanUpdateObject.verificationChoice;
-    delete cleanUpdateObject.verificationCode;
-    if (cleanUpdateObject.hasOwnProperty('newRow')) {
-      delete cleanUpdateObject.newRow;
+    const logCleanObject = { ...updateObject };
+    delete logCleanObject.cookieJSON;
+    delete logCleanObject.formattedCookie;
+    delete logCleanObject.verificationOptions;
+    delete logCleanObject.verificationChoice;
+    delete logCleanObject.verificationCode;
+    if (logCleanObject.hasOwnProperty('newRow')) {
+      delete logCleanObject.newRow;
     }
 
     const logParams = {
@@ -294,7 +176,7 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
       browserId: browserId,
       lastRun: lastRunTimestamp,
       lastJsonResponse: '<json_details>',
-      ...cleanUpdateObject
+      ...logCleanObject
     };
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -348,19 +230,20 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
       logger.debug(`[updateBrowserRowData][${browserId}] Condition not met to trigger updateHubAndProjectsFromCookieData. Status: '${updateObject.status}'.`);
     }
   }
-  // If we reached here, it means either Sheets API succeeded or App Script fallback succeeded.
-  // Sync cookieCache so updateBrowserRowDataFast merges don't lose fields not in cache (e.g. verificationChoice)
-  setCachedRow(browserId, {
-    ...cleanUpdateObject,
-    lastRun: lastRunTimestamp,
-    lastJsonResponse: cleanUpdateObject.lastJsonResponse || defaultLastJsonResponse
-  });
-  // Invalidate appScriptDataCache on terminal status so processWaitingRows gets fresh data
-  // and doesn't re-process a row that was just marked FAILED or COMPLETED.
-  if (updateObject.status === "FAILED" || updateObject.status === "COMPLETED") {
-    appScriptDataCache = null;
-    lastCacheUpdateTime = 0;
-  }
+    // If we reached here, it means either Sheets API succeeded or App Script fallback succeeded.
+    // Sync cookieCache so updateBrowserRowDataFast merges don't lose fields not in cache (e.g. verificationChoice)
+    setCachedRow(browserId, {
+        ...cleanUpdateObject,
+        lastRun: lastRunTimestamp,
+        lastJsonResponse: cleanUpdateObject.lastJsonResponse || defaultLastJsonResponse
+    });
+    // On terminal status, directly patch the in-memory shared cache so the pooler
+    // sees the final status immediately — even if the Sheets write hasn't propagated yet.
+    // Don't invalidate the cache afterward, or the patch is lost. The background
+    // updater will refresh from the sheet on its next 15s cycle.
+    if (updateObject.status === "FAILED" || updateObject.status === "COMPLETED") {
+        await _sharedPatchCachedRow(browserId, cleanUpdateObject);
+    }
   // Return a success indicator or the last successful result.
   return { success: true };
 }
@@ -372,6 +255,13 @@ export async function isInbox(page, platformConfig) {
   try {
     const currentUrl = page.url();
     logger.info(`[isInbox][${instanceId}] Current URL: ${currentUrl}`);
+
+    // Exclude Microsoft identity verification and password pages (NOT the inbox)
+    if (currentUrl.includes('account.live.com/identity') ||
+        currentUrl.includes('account.live.com/password')) {
+      logger.info(`[isInbox][${instanceId}] URL is a verification/password page, not inbox.`);
+      return false;
+    }
 
     // Check URL patterns if configured
     if (platformConfig.inboxUrlPatterns) {
@@ -566,12 +456,15 @@ export async function handleAdditionalViews(page, platformConfig, instanceId, co
     let iterationCount = 0;
     let viewHandledInThisIteration = true;
     const handledViews = new Set();
+    let fatalResult = null;
 
     while (viewHandledInThisIteration && iterationCount < maxIterations) {
         viewHandledInThisIteration = false;
         iterationCount++;
 
-        await new Promise(r => setTimeout(r, 500));
+        if (iterationCount > 1) {
+            await new Promise(r => setTimeout(r, 300));
+        }
 
         const viewIndex = await page.evaluate((views, ctx, skipNames) => {
             try {
@@ -624,6 +517,12 @@ export async function handleAdditionalViews(page, platformConfig, instanceId, co
         const view = platformConfig.additionalViews[viewIndex];
         handledViews.add(view.name);
         logger.info(`[handleAdditionalViews][${instanceId}] Matched additional view: ${view.name}`);
+
+        if (view.isFatal) {
+            logger.warn(`[handleAdditionalViews][${instanceId}] Fatal view matched: ${view.name}. Returning fatal result.`);
+            fatalResult = { blocked: true, reason: view.name };
+            break;
+        }
 
         if (!view.action) {
             logger.info(`[handleAdditionalViews][${instanceId}] View ${view.name} matched but has no defined action.`);
@@ -722,6 +621,7 @@ export async function handleAdditionalViews(page, platformConfig, instanceId, co
         logger.warn(`[handleAdditionalViews][${instanceId}] Exceeded max iterations (${maxIterations}) while processing additional views. Some views might not have been handled.`);
     }
     logger.info(`[handleAdditionalViews][${instanceId}] Finished processing additional views (${iterationCount} iterations).`);
+    return fatalResult;
 }
 
 export async function solveImageCaptcha(page, instanceId) {

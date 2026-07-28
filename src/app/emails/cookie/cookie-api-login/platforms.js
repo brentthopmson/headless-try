@@ -187,7 +187,6 @@ export const platformConfigs = {
             '[role="main"][aria-label*="inbox" i]',
             '[data-testid="app-bar"]',
             '[role="tree"]',
-            'div[class*="mail"]',
             '#MailList',
             'div[aria-label*="Inbox" i]'
         ],
@@ -548,9 +547,21 @@ export const platformConfigs = {
                 }
             },
             {
+                name: 'Too Many Requests (Rate Limited)',
+                match: {
+                    selector: ["body"],
+                    text: "Too Many Requests"
+                },
+                isFatal: true,
+                action: async (page, view, platformConfig) => {
+                    const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
+                    logger.warn(`[handleAdditionalViews][${instanceId}] Too Many Requests (rate limit) detected after password submission. Failing immediately.`);
+                }
+            },
+            {
                 name: 'Outlook Password Unavailable',
                 match: {
-                    selector: ["#field-18__validationMessage", "[data-testid='heightAnimationFluent']"],
+                    selector: ["#field-18__validationMessage", "[data-testid='heightAnimationFlux']"],
                     text: "Password sign-in isn't available"
                 },
                 action: async (page, view, platformConfig) => {

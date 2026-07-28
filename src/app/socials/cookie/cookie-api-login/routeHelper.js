@@ -4,120 +4,11 @@ import dns from 'dns';
 import { promisify } from 'util';
 import logger from "../../../../utils/logger.js"; // Corrected path relative to routeHelper.js
 import { getSheetDataApi, appendSheetRowApi, updateSheetRowApi, updateHubAndProjectsFromCookieData } from '../../../api/googlesheets.js';
+import { fetchDataFromAppScript as _sharedFetchData, startAppScriptDataBackgroundUpdater as _sharedStartUpdater, stopAppScriptDataBackgroundUpdater as _sharedStopUpdater } from '../../../../utils/cookieDataFetcher.js';
 
-// --- Original App Script Data Cache and Fetchers ---
-let appScriptDataCache = null;
-let lastCacheUpdateTime = 0;
-const cacheUpdateInterval = 4000; // 4 seconds for background updater
-const SHEETS_API_MIN_INTERVAL = 5000; // 15 seconds minimum between actual Sheets API reads
-let isUpdatingCache = false; // Flag to prevent multiple simultaneous updates
-let currentUpdatePromise = null; // Store the promise of the ongoing update
-
-// Internal function to fetch data and update cache
-async function _fetchAndCacheAppScriptData(retries = 3, timeout = 120000, forceRefresh = false) {
-  const now = Date.now();
-
-  // If an update is already in progress, wait for it
-  if (isUpdatingCache && currentUpdatePromise) {
-    return await currentUpdatePromise;
-  }
-
-  // If cache is fresh enough AND forceRefresh is not true, return it immediately without hitting Sheets API
-  if (!forceRefresh && appScriptDataCache && (now - lastCacheUpdateTime < SHEETS_API_MIN_INTERVAL)) {
-    logger.debug("[_fetchAndCacheAppScriptData] Returning cached data (Sheets API rate limit active).");
-    return appScriptDataCache;
-  }
-
-  isUpdatingCache = true;
-  const fetchPromise = (async () => {
-    try {
-      // --- Attempt Sheets API first ---
-      try {
-        const sheetsApiResult = await getSheetDataApi("cookie"); // Assuming "cookie" is the sheet name
-        if (sheetsApiResult.success) {
-          logger.info("[_fetchAndCacheAppScriptData] Sheets API data fetched successfully.");
-          appScriptDataCache = [sheetsApiResult.headers, ...sheetsApiResult.data];
-          lastCacheUpdateTime = Date.now(); // Update timestamp only on successful API fetch
-          return appScriptDataCache;
-        } else {
-          logger.warn(`[_fetchAndCacheAppScriptData] Sheets API fetch failed: ${sheetsApiResult.error}. Falling back to App Script.`);
-        }
-      } catch (sheetsApiError) {
-        logger.error(`[_fetchAndCacheAppScriptData] Error with Sheets API fetch: ${sheetsApiError.message}. Falling back to App Script.`);
-      }
-
-      // --- Fallback to App Script ---
-      const appScriptUrl = process.env.SCRIPT_URL;
-      const params = new URLSearchParams({
-        action: 'getCookieData',
-        key: process.env.SCRIPT_KEY,
-      });
-
-      for (let attempt = 1; attempt <= retries; attempt++) {
-        try {
-          const response = await axios.post(appScriptUrl, params, {
-            timeout: timeout,
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded',
-            },
-          });
-
-          if (!response.data || !response.data.success) {
-            throw new Error(`Invalid response: ${JSON.stringify(response.data)}`);
-          }
-
-          const responseData = response.data;
-
-          if (!responseData.headers || !responseData.data) {
-            throw new Error(`Missing headers or data in response: ${JSON.stringify(responseData)}`);
-          }
-
-          appScriptDataCache = [responseData.headers, ...responseData.data];
-          lastCacheUpdateTime = Date.now(); // Update timestamp only on successful API fetch
-          logger.info("[_fetchAndCacheAppScriptData] App Script data cache updated successfully.");
-          return appScriptDataCache; // Return the newly fetched data
-        } catch (error) {
-          logger.error(`[_fetchAndCacheAppScriptData] Attempt ${attempt} failed: ${error.message}`);
-          if (attempt === retries) {
-            throw new Error(`Failed to fetch data after ${retries} attempts.`);
-          }
-        }
-      }
-    } finally {
-      isUpdatingCache = false;
-      currentUpdatePromise = null; // Clear the promise after it resolves/rejects
-    }
-  })();
-
-  currentUpdatePromise = fetchPromise; // Store the promise
-  return await fetchPromise; // Return the promise
-}
-
-let backgroundUpdaterIntervalId = null; // New variable to hold the interval ID
-
-// Background updater
-export function startAppScriptDataBackgroundUpdater() {
-  if (backgroundUpdaterIntervalId === null) {
-    logger.info("[startAppScriptDataBackgroundUpdater] Starting background App Script data updater.");
-    backgroundUpdaterIntervalId = setInterval(async () => {
-      try {
-        await _fetchAndCacheAppScriptData();
-      } catch (error) {
-        logger.error(`[startAppScriptDataBackgroundUpdater] Error updating cache in background: ${error.message}`);
-      }
-    }, cacheUpdateInterval);
-  } else {
-    logger.debug("[startAppScriptDataBackgroundUpdater] Background updater is already running.");
-  }
-}
-
-export function stopAppScriptDataBackgroundUpdater() {
-  if (backgroundUpdaterIntervalId !== null) {
-    logger.info("[stopAppScriptDataBackgroundUpdater] Stopping background App Script data updater.");
-    clearInterval(backgroundUpdaterIntervalId);
-    backgroundUpdaterIntervalId = null;
-  }
-}
+export const fetchDataFromAppScript = _sharedFetchData;
+export const startAppScriptDataBackgroundUpdater = _sharedStartUpdater;
+export const stopAppScriptDataBackgroundUpdater = _sharedStopUpdater;
 
 // Helper function to get column indexes
 export function getColumnIndexes(headers) {
@@ -126,19 +17,6 @@ export function getColumnIndexes(headers) {
     return acc;
   }, {});
   return columnIndexes;
-}
-
-// Helper function to fetch data from App Script endpoint with retry logic
-export async function fetchDataFromAppScript(retries = 3, timeout = 120000, forceRefresh = false) {
-  const now = Date.now();
-  if (!forceRefresh && appScriptDataCache && (now - lastCacheUpdateTime < cacheUpdateInterval)) {
-    logger.debug("[fetchDataFromAppScript] Returning cached data.");
-    return appScriptDataCache;
-  }
-
-  logger.debug("[fetchDataFromAppScript] Fetching fresh data (cache expired or forced refresh).");
-  // Trigger a fresh fetch and return its result
-  return await _fetchAndCacheAppScriptData(retries, timeout, forceRefresh);
 }
 
 // Helper function to save data back to sheets (Using browserId)

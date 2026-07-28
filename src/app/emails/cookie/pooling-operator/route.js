@@ -1,9 +1,11 @@
 import { corsJson, corsOptions } from "../../../_shared/corsResponse.js";
 import { getCachedRow, setCachedRow, populateCache, immediateFlush } from "../../../../utils/cookieCache.js";
 import { incrementUsage } from "../../../../utils/serverlessTracker.js";
-import { getSheetDataApi } from "../../../api/googlesheets.js";
-import { updateBrowserRowData } from "../cookie-api-login/routeHelper.js";
+import { fetchDataFromAppScript, updateBrowserRowData, activelyProcessing } from "../cookie-api-login/routeHelper.js";
 import logger from "../../../../utils/logger.js";
+
+// Local cache for terminal rows (COMPLETED/FAILED) — never changes, serve from memory
+const terminalRowCache = new Map();
 
 function parseBody(text) {
     try { return JSON.parse(text); } catch (e) {}
@@ -42,30 +44,45 @@ export async function POST(request) {
         logger.info(`[pooling][${browserId}] Cache HIT — status: ${row.status}, email: ${row.email || 'none'}`);
     }
 
+    // Check terminal row cache (COMPLETED/FAILED never change)
     if (!row) {
-        logger.info(`[pooling][${browserId}] Cache MISS — reading sheet...`);
+        row = terminalRowCache.get(browserId);
+        if (row) {
+            logger.info(`[pooling][${browserId}] Terminal cache HIT — status: ${row.status}`);
+        }
+    }
+
+    if (!row) {
+        logger.info(`[pooling][${browserId}] Cache MISS — reading from shared cache...`);
         try {
-            const cookieData = await getSheetDataApi("cookie");
-            if (cookieData.success) {
-                row = cookieData.data
-                    .map(r => Object.fromEntries(cookieData.headers.map((h, i) => [h, r[i]])))
+            const cookieData = await fetchDataFromAppScript(1, 30000, false);
+            if (Array.isArray(cookieData) && cookieData.length > 0) {
+                const headers = cookieData[0];
+                const rows = cookieData.slice(1);
+                row = rows
+                    .map(r => Object.fromEntries(headers.map((h, i) => [h, r[i]])))
                     .find(r => r.browserId === browserId);
                 if (row) {
-                    logger.info(`[pooling][${browserId}] Sheet read — status: ${row.status}, email: ${row.email || 'none'}`);
+                    logger.info(`[pooling][${browserId}] Shared cache read — status: ${row.status}, email: ${row.email || 'none'}`);
                     populateCache(browserId, row);
                 } else {
                     logger.info(`[pooling][${browserId}] Row not found in sheet`);
                 }
             } else {
-                logger.error(`[pooling][${browserId}] Sheet read failed: ${cookieData.error}`);
+                logger.error(`[pooling][${browserId}] Shared cache returned invalid data`);
             }
         } catch (e) {
-            logger.error(`[pooling][${browserId}] Sheet read exception: ${e.message}`);
+            logger.error(`[pooling][${browserId}] Shared cache read exception: ${e.message}`);
         }
     }
 
     if (!row) {
         return corsJson({ success: false, error: "Session not found" }, 404);
+    }
+
+    // Cache terminal rows locally — they never change, no need to read sheet again
+    if (["COMPLETED", "FAILED"].includes(row.status)) {
+        terminalRowCache.set(browserId, row);
     }
 
     const lastActivity = new Date(row.lastUserActivity || row.lastRun || row.timestamp);
@@ -79,9 +96,12 @@ export async function POST(request) {
         );
     }
 
+    const engineProcessing = activelyProcessing.has(browserId);
+    logger.info(`[pooling][${browserId}] Returning status: ${row.status} | engineProcessing: ${engineProcessing}`);
     return corsJson({
         success: true,
         currentStatus: row.status,
+        engineProcessing,
         data: row
     });
 }
