@@ -934,7 +934,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                     let pwdSelectors = Array.isArray(platformConfig.selectors.passwordNextButton) ? platformConfig.selectors.passwordNextButton : [platformConfig.selectors.passwordNextButton];
                                     for (const sel of pwdSelectors) {
                                         try {
-                                            await page.waitForSelector(sel, { visible: true, timeout: 5000 });
+                                            await page.waitForSelector(sel, { visible: true, timeout: 2000 });
                                             const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => null);
                                             await page.click(sel);
                                             await navigationPromise;
