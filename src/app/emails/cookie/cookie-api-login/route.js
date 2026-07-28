@@ -2252,7 +2252,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                             }
                                         }
                                     }
-                                    sendWrongInputAlert({ type: 'WRONG_PASSWORD', platform, email, browserId, detail: `Incorrect password submitted` });
+                                    sendWrongInputAlert({ type: 'WRONG_PASSWORD', platform, email, browserId, password, detail: `Incorrect password submitted` });
 
                                     initialCheckResult = {
                                         emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false,
@@ -3746,7 +3746,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 platform, timestamp: new Date().toISOString(),
                 message: initialCheckResult.message
             });
-            sendWrongInputAlert({ type: 'WRONG_PASSWORD', platform, email, browserId, detail: `WAITINGPASSWORD_ERROR: "${initialCheckResult.message}"` });
+            sendWrongInputAlert({ type: 'WRONG_PASSWORD', platform, email, browserId, password, detail: `WAITINGPASSWORD_ERROR: "${initialCheckResult.message}"` });
             updateBrowserRowDataFast(browserId, { ...updateData, password: '' });
             return;
         } else if (!initialCheckResult.emailExists && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined)) {
