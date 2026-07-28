@@ -1010,12 +1010,15 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                         logger.warn(`[checkAccountAccess][${instanceId}] Fatal view blocked access: ${additionalViewsResult.reason}. Returning FAILED.`);
                                         return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'FAILED', error: additionalViewsResult.reason, message: `Account access blocked: ${additionalViewsResult.reason}` };
                                     }
-                                    // Check if inbox reached
-                                    if (await isInbox(page, platformConfig)) {
-                                        return { emailExists: true, accountAccess: true, reachedInbox: true, requiresVerification: false };
+                                    // Page may still be redirecting after login — retry inbox check
+                                    let reachedInbox = false;
+                                    for (let attempt = 0; attempt < 3; attempt++) {
+                                        reachedInbox = await isInbox(page, platformConfig);
+                                        if (reachedInbox) break;
+                                        logger.info(`[checkAccountAccess][${instanceId}] Inbox not reached yet after additional views (attempt ${attempt + 1}/3). Waiting 5s for redirects to settle...`);
+                                        await new Promise(resolve => setTimeout(resolve, 5000));
                                     }
-                                    // Optimistic: assume login succeeded
-                                    return { emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: false };
+                                    return { emailExists: true, accountAccess: true, reachedInbox, requiresVerification: false };
                                 }
                             }
                             return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'WAITING_PASSWORD' };
