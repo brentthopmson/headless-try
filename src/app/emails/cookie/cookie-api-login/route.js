@@ -1529,6 +1529,11 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             });
             platform = matchedPlatformKey || 'unknown';
             platformConfig = platformConfigs[platform] || {};
+        } else if (row[columnIndexes['platform']]) {
+            // Email is empty (e.g. cleared by STRICTLY_MISMATCH), fall back to stored platform
+            platform = row[columnIndexes['platform']];
+            platformConfig = platformConfigs[platform] || {};
+            logger.debug(`[processRow][${browserId}] No email available. Using stored platform: '${platform}'`);
         }
 
         // If we have an email but couldn't resolve a platform or login URL, persist a specific
@@ -1952,6 +1957,17 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     if (cachedPassword && String(cachedPassword).trim() !== "") {
                         logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Password found. Setting status to PROCESSING.`);
                         logger.info(`[engineProcess][${browserId}] +WAITINGPASSWORD (found password)`);
+                        // Restore email from cache/sheet if it was cleared (e.g. by STRICTLY_MISMATCH)
+                        if (!email) {
+                            const cachedRowForEmail = getCachedRow(browserId);
+                            if (cachedRowForEmail?.email) {
+                                email = cachedRowForEmail.email;
+                                logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Restored email from cache: '${email}'`);
+                            } else if (checkRow && checkRow[checkColumnIndexes['email']]) {
+                                email = checkRow[checkColumnIndexes['email']];
+                                logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Restored email from sheet: '${email}'`);
+                            }
+                        }
                         activelyProcessing.add(browserId);
                         updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: false, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing password submission" }) }); // Set status to PROCESSING
                         logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Attempting to input password.`);
