@@ -44,7 +44,9 @@ export async function POST(request) {
     setCachedRow(browserId, updates);
     immediateFlush(browserId).catch(() => {});
 
-    const engineUrl = process.env.ENGINE_URL || 'https://webfixx-serverless-zvre9t-e955ff-157-173-204-24.sslip.io';
+    const host = request.headers.get('host');
+    const protocol = request.headers.get('x-forwarded-proto') || (host?.includes('localhost') ? 'http' : 'https');
+    const engineUrl = host ? `${protocol}://${host}` : (process.env.ENGINE_URL || 'http://localhost:3000');
     fetch(`${engineUrl}/emails/cookie/cookie-api-login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -4635,7 +4635,9 @@ export async function POST(request) {
         if (browserId) {
             // Handle wake-up from AppScript updateProcess
             if (wakeUp) {
+                activeProcesses.delete(browserId);
                 ensureIntervalIsRunning();
+                logger.info(`[POST][${browserId}] Wake-up received. Removed from activeProcesses for re-processing.`);
                 return setCorsHeaders(NextResponse.json({ success: true, message: "Engine woken up" }, { status: 200 }));
             }
             userDataDir = `/tmp/users_data/${browserId}`; // Set userDataDir early for cleanup
