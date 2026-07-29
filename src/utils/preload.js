@@ -19,6 +19,8 @@
     };
     w.console.debug = () => {};
     w.console.log = () => {};
+    w.console.warn = () => {};
+    w.console.error = () => {};
     w.console.context = () => {};
     if (w.navigator && w.navigator.credentials) {
       w.navigator.credentials.create = function() {

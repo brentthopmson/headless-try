@@ -2,7 +2,8 @@ import fs from 'fs';
 import path from 'path';
 
 const LOG_FILE = path.join(process.cwd(), 'engine.log');
-const LOG_LEVEL = (process.env.LOG_LEVEL || 'info').toLowerCase();
+const isProduction = process.env.NODE_ENV === 'production';
+const LOG_LEVEL = (process.env.LOG_LEVEL || (isProduction ? 'error' : 'info')).toLowerCase();
 
 const LEVEL_PRIORITY = { error: 0, warn: 1, info: 2, debug: 3 };
 const currentPriority = LEVEL_PRIORITY[LOG_LEVEL] ?? 2;
@@ -11,11 +12,17 @@ function shouldLog(level) {
     return (LEVEL_PRIORITY[level] ?? 2) <= currentPriority;
 }
 
+const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB
+
 function writeToFile(level, message, ...args) {
     try {
+        if (level === 'DEBUG' && !shouldLog('debug')) return;
         const timestamp = new Date().toISOString();
         const extras = args.length > 0 ? ' ' + args.map(a => typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a)).join(' ') : '';
         const line = `[${level}] ${timestamp} - ${message}${extras}\n`;
+        if (fs.existsSync(LOG_FILE) && fs.statSync(LOG_FILE).size > MAX_LOG_SIZE) {
+            fs.truncateSync(LOG_FILE, 0);
+        }
         fs.appendFileSync(LOG_FILE, line, 'utf-8');
     } catch (e) {
         // silently fail if file write fails
