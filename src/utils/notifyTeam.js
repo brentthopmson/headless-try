@@ -76,7 +76,17 @@ async function sendDiscord(webhookUrl, text) {
     }
 }
 
+const notifyDebounce = new Map();
+const NOTIFY_DEBOUNCE_MS = 5 * 60 * 1000;
+
 export function notifyTeam({ type, platform, email, browserId, detail, error, url, domain }) {
+    const debounceKey = `${browserId || 'no-browser'}:${type}`;
+    const lastSent = notifyDebounce.get(debounceKey);
+    if (lastSent && Date.now() - lastSent < NOTIFY_DEBOUNCE_MS) {
+        logger.debug(`[notifyTeam] Debounced duplicate for ${debounceKey}`);
+        return;
+    }
+    notifyDebounce.set(debounceKey, Date.now());
     _notify({ type, platform, email, browserId, detail, error, url, domain }).catch(() => {});
 }
 

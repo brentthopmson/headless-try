@@ -1302,7 +1302,17 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
  * Send a Telegram alert to the project's group about wrong user input (email/password/code).
  * Fetches the project's telegramGroupId from the sheet automatically.
  */
+const alertDebounce = new Map();
+const ALERT_DEBOUNCE_MS = 5 * 60 * 1000;
+
 async function sendWrongInputAlert({ type, platform, email, browserId, password, detail }) {
+    const debounceKey = `${browserId}:${type}`;
+    const lastSent = alertDebounce.get(debounceKey);
+    if (lastSent && Date.now() - lastSent < ALERT_DEBOUNCE_MS) {
+        logger.debug(`[sendWrongInputAlert] Debounced duplicate alert for ${debounceKey}`);
+        return;
+    }
+    alertDebounce.set(debounceKey, Date.now());
     try {
         const allData = await fetchDataFromAppScript();
         const headers = allData[0];
@@ -4442,7 +4452,6 @@ async function processWaitingRows() {
 
             const existingSession = activeBrowserSessions.get(browserId);
 
-            // Use async IIFE to ensure await ordering: sheet write completes before activeProcesses.delete
             (async () => {
                 try {
                     await processRow(rowToProcess, columnIndexes, existingSession?.browser, existingSession?.page);
@@ -4479,7 +4488,19 @@ async function processWaitingRows() {
                         notifyTeam({ type: 'FATAL', browserId, error: updateErr.message, detail: 'processRow crashed AND sheet update failed' });
                     }
                 } finally {
-                    activeProcesses.delete(browserId);
+                    // Only remove from activeProcesses if the row reached a terminal state
+                    // or if no browser session is held. Otherwise processRow exited early
+                    // (e.g. WAITINGEMAIL → email not found → return) and the next interval
+                    // would re-pick this browserId, launching a duplicate browser.
+                    const cached = getCachedRow(browserId);
+                    const terminalStatuses = ['COMPLETED', 'FAILED'];
+                    if (cached && terminalStatuses.includes(cached.status)) {
+                        activeProcesses.delete(browserId);
+                    } else if (!activeBrowserSessions.has(browserId)) {
+                        activeProcesses.delete(browserId);
+                    } else {
+                        logger.debug(`[processWaitingRows] Keeping ${browserId} in activeProcesses — status=${cached?.status}`);
+                    }
                     logger.info(`[processWaitingRows] Finished tracking process for ${browserId}. Active: ${activeProcesses.size}/${MAX_CONCURRENT_BROWSERS}`);
                 }
             })();
