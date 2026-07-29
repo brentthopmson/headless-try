@@ -46,6 +46,37 @@ async function getPuppeteerExtra() {
     if (_puppeteerExtra) return _puppeteerExtra;
     const { default: pptrExtra } = await import('puppeteer-extra');
     const { default: StealthPlugin } = await import('puppeteer-extra-plugin-stealth');
+
+    // Patch PuppeteerExtraPlugin.prototype._onTargetCreated BEFORE any evasions
+    // are registered. Each evasion plugin inherits from PuppeteerExtraPlugin and
+    // its onPageCreated is called from the base _onTargetCreated, which catches
+    // all errors and prints them via console.error(err) at line 500 of the base
+    // class. This is the direct source of the stderr noise when a page is closed
+    // mid-evasion — the incoming catcher in the base class prevents propagation
+    // so our stealth-level wrapper never sees the TargetCloseError.
+    const { PuppeteerExtraPlugin } = await import('puppeteer-extra-plugin');
+    PuppeteerExtraPlugin.prototype._onTargetCreated = async function(target) {
+        if (this.onTargetCreated)
+            await this.onTargetCreated(target);
+        if (target.type() === 'page') {
+            try {
+                const page = await target.page();
+                if (!page) return;
+                const validPage = 'isClosed' in page && !page.isClosed();
+                if (this.onPageCreated && validPage) {
+                    await this.onPageCreated(page);
+                }
+            } catch (err) {
+                const msg = err?.message || '';
+                if (err?.name === 'TargetCloseError' || err?.name === 'ProtocolError' ||
+                    msg.includes('Session closed') || msg.includes('Target closed')) {
+                    return;
+                }
+                console.error(err);
+            }
+        }
+    };
+
     const stealth = StealthPlugin();
 
     // Wrap _onTargetCreated to suppress TargetCloseError / ProtocolError from
@@ -67,39 +98,6 @@ async function getPuppeteerExtra() {
             throw e;
         }
     };
-
-    // Also wrap child evasion plugins created by the _plugins getter.
-    // Each child evasion's onPageCreated is called inside _onTargetCreated
-    // and if one throws it rejects the parent. This catches at child level.
-    const _origPluginsDescriptor = Object.getOwnPropertyDescriptor(
-      Object.getPrototypeOf(stealth), '_plugins'
-    ) || { get: undefined };
-    const origPluginsGetter = _origPluginsDescriptor.get;
-    if (origPluginsGetter) {
-      Object.defineProperty(stealth, '_plugins', {
-        get() {
-          const plugins = origPluginsGetter.call(this);
-          return plugins.map(p => {
-            if (p.onPageCreated) {
-              const origOnPageCreated = p.onPageCreated.bind(p);
-              p.onPageCreated = async (page) => {
-                try {
-                  await origOnPageCreated(page);
-                } catch (e) {
-                  if (e?.name === 'TargetCloseError' || e?.name === 'ProtocolError' ||
-                      e?.message?.includes('Session closed') || e?.message?.includes('Target closed')) {
-                    return;
-                  }
-                  throw e;
-                }
-              };
-            }
-            return p;
-          });
-        },
-        configurable: true
-      });
-    }
 
     pptrExtra.use(stealth);
     _puppeteerExtra = pptrExtra;
