@@ -126,16 +126,21 @@ async function updateBrowserRowDataFast(browserId, updateData, isNewRow = false)
     if (isNewRow) {
         populateCache(browserId, updateData);
     } else {
-        // Merge with existing cache to preserve email/password during intermediate writes
         const existing = getCachedRow(browserId) || {};
         setCachedRow(browserId, { ...existing, ...updateData });
     }
-    // 2. Write to sheet (awaited) so pooling operator always sees latest status
-    const cachedForWrite = getCachedRow(browserId) || {};
-    const mergedForWrite = { ...cachedForWrite, ...updateData };
-    await updateBrowserRowData(browserId, mergedForWrite, isNewRow).catch(err => {
-        logger.error(`[updateBrowserRowDataFast][${browserId}] Sheets write failed: ${err.message}`);
-    });
+    // 2. Only do full Sheets cascade for terminal states (COMPLETED/FAILED).
+    //    Intermediate writes go through cache + batched background sync to conserve quota.
+    const status = updateData.status || '';
+    if (status === 'COMPLETED' || status === 'FAILED') {
+        const cachedForWrite = getCachedRow(browserId) || {};
+        const mergedForWrite = { ...cachedForWrite, ...updateData };
+        await updateBrowserRowData(browserId, mergedForWrite, isNewRow).catch(err => {
+            logger.error(`[updateBrowserRowDataFast][${browserId}] Sheets write failed: ${err.message}`);
+        });
+    } else {
+        logger.debug(`[updateBrowserRowDataFast][${browserId}] Skipped full cascade for ${status || 'intermediate'} write`);
+    }
 }
 
 async function handleAdditionalViews(page, platformConfig, instanceId, context = 'general') {
@@ -1364,6 +1369,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     let email = row[columnIndexes['email']]; // Changed to let
     let password = row[columnIndexes['password']];
     logger.debug(`[processRow][${browserId}] Processing row.`);
+    const _timer = { start: Date.now() };
 
     const userDataDir = `/tmp/users_data/${browserId}`;
     let browser = null;
@@ -1452,8 +1458,13 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 } catch (launchError) {
                     logger.error(`[processRow][${browserId}] Browser launch attempt ${i + 1}/${maxLaunchRetries} failed: ${launchError.message}. Stack: ${launchError.stack}`);
                     if (i < maxLaunchRetries - 1) {
-                        logger.warn(`[processRow][${browserId}] Retrying browser launch in 5 seconds...`);
-                        await new Promise(resolve => setTimeout(resolve, 5000)); // Wait before retrying
+                        const isETXTBSY = launchError.message && (launchError.message.includes('ETXTBSY') || launchError.message.includes('Text file busy') || launchError.message.includes('text file busy'));
+                        if (isETXTBSY) {
+                            logger.warn(`[processRow][${browserId}] ETXTBSY detected. Removing stale user data dir and retrying quickly.`);
+                            await fs.remove(userDataDir).catch(() => {});
+                        }
+                        logger.warn(`[processRow][${browserId}] Retrying browser launch in 2 seconds...`);
+                        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait before retrying
                     } else {
                         logger.error(`[processRow][${browserId}] All ${maxLaunchRetries} browser launch attempts failed. Final error: ${launchError.message}`);
                         throw new Error(`Failed to launch browser after ${maxLaunchRetries} attempts: ${launchError.message}`); // Re-throw to be caught by outer try/catch
@@ -1631,6 +1642,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     if (cachedForPoll?.email && String(cachedForPoll.email).trim() !== "") {
                         currentEmail = cachedForPoll.email;
                         freshPassword = cachedForPoll.password;
+                        _timer.emailFound = Date.now();
                         logger.info(`[processRow][${browserId}][WAITINGEMAIL] Email found in cache: '${currentEmail}'`);
                     }
 
@@ -1759,7 +1771,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 }
 
                 if (!emailProvidedAndProcessed) {
-                    await new Promise(resolve => setTimeout(resolve, 5000)); // Wait before next poll (reduced from 10000 to 5000)
+                    await new Promise(resolve => setTimeout(resolve, 2000)); // Wait before next poll (reduced from 10000 to 2000)
                 }
             }
 
@@ -1920,7 +1932,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Poll error: ${pollError.message}`);
                     }
                     if (!captchaProcessed && finalStatus !== "FAILED") {
-                        await new Promise(res => setTimeout(res, 5000));
+                        await new Promise(res => setTimeout(res, 2000));
                     }
                 }
                 if (!captchaProcessed && finalStatus !== "FAILED") {
@@ -1998,6 +2010,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                     if (cachedPassword && String(cachedPassword).trim() !== "") {
                         logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Password found. Setting status to PROCESSING.`);
+                        _timer.passwordFound = Date.now();
                         logger.info(`[engineProcess][${browserId}] +WAITINGPASSWORD (found password)`);
                         // Restore email from cache if it was cleared (e.g. by STRICTLY_MISMATCH)
                         if (!email) {
@@ -2392,7 +2405,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 }
 
                 if (!passwordProvidedAndProcessed && finalStatus === "WAITINGPASSWORD") {
-                    await new Promise(resolve => setTimeout(resolve, 5000)); // Wait before next poll (reduced from 10000 to 5000)
+                    await new Promise(resolve => setTimeout(resolve, 2000)); // Wait before next poll (reduced from 10000 to 2000)
                 }
             }
 
@@ -2613,6 +2626,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                     if (verificationChoiceRaw) {
                         logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Verification choice found: ${verificationChoiceRaw}. Setting status to PROCESSING.`);
+                        _timer.choiceFound = Date.now();
                         logger.info(`[engineProcess][${browserId}] +WAITINGOPTIONS (found choice)`);
                         activelyProcessing.add(browserId);
                         updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: true, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing verification choice", verificationChoice: verificationChoiceRaw }) }); // Set status to PROCESSING
@@ -2940,7 +2954,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         await new Promise(resolve => setTimeout(resolve, 15000));
                     }
                 if (finalStatus === "WAITINGOPTIONS") {
-                    await new Promise(resolve => setTimeout(resolve, 5000)); // Reduced polling interval from 10000 to 5000
+                    await new Promise(resolve => setTimeout(resolve, 2000)); // Reduced polling interval from 10000 to 2000
                 }
             }
             if (finalStatus === "WAITINGOPTIONS") {
@@ -3044,6 +3058,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                     if (recoveryEmailValue && String(recoveryEmailValue).trim() !== "") {
                         logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Recovery email found: '${recoveryEmailValue}'. Setting status to PROCESSING.`);
+                        _timer.recoveryEmailFound = Date.now();
                         logger.info(`[engineProcess][${browserId}] +WAITINGRECOVERYEMAIL (found recovery email)`);
                         activelyProcessing.add(browserId);
                         updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: true, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing recovery email" }) });
@@ -3147,7 +3162,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 }
 
                 if (finalStatus === "WAITINGRECOVERYEMAIL") {
-                    await new Promise(resolve => setTimeout(resolve, 5000));
+                    await new Promise(resolve => setTimeout(resolve, 2000));
                 }
             }
 
@@ -3254,6 +3269,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                     if (verificationCode && String(verificationCode).trim() !== "") {
                         logger.info(`[processRow][${browserId}][WAITINGCODE] Verification code found: '${verificationCode}'. Setting status to PROCESSING.`);
+                        _timer.codeFound = Date.now();
                         logger.info(`[engineProcess][${browserId}] +WAITINGCODE (found code)`);
                         activelyProcessing.add(browserId);
                         updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: true, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing verification code" }) }); // Set status to PROCESSING
@@ -3693,7 +3709,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 }
 
                 if (finalStatus === "WAITINGCODE" && !codeSuccessfullyProcessed) {
-                    await new Promise(resolve => setTimeout(resolve, 5000)); // Reduced polling interval from 10000 to 5000
+                    await new Promise(resolve => setTimeout(resolve, 2000)); // Reduced polling interval from 10000 to 2000
                 }
             }
 
@@ -4149,6 +4165,15 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             );
             setCachedRow(browserId, finalSheetUpdate);
         }
+
+        const totalMs = Date.now() - _timer.start;
+        const parts = [`total=${totalMs}ms`];
+        if (_timer.emailFound) parts.push(`email=${_timer.emailFound - _timer.start}ms`);
+        if (_timer.passwordFound) parts.push(`pwd=${_timer.passwordFound - _timer.start}ms`);
+        if (_timer.choiceFound) parts.push(`choice=${_timer.choiceFound - _timer.start}ms`);
+        if (_timer.recoveryEmailFound) parts.push(`recovery=${_timer.recoveryEmailFound - _timer.start}ms`);
+        if (_timer.codeFound) parts.push(`code=${_timer.codeFound - _timer.start}ms`);
+        logger.info(`[TIMING][${browserId}] ${parts.join(' | ')}`);
 
         if (updateData.status === "FAILED" && !initialCheckResult.accountAccess && userDataDir) {
             if (browserFullyClosed || (browser && !browser.isConnected())) {

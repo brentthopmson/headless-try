@@ -107,7 +107,7 @@ export async function POST(request) {
         if (waitingStatuses.has(row.status)) {
             const recentActivity = new Date(row.lastUserActivity || row.lastRun || row.timestamp);
             const age = Date.now() - recentActivity.getTime();
-            if (age < 25000) {
+            if (age < 8000) {
                 engineProcessing = true;
                 logger.info(`[pooling][${browserId}] Recent user activity (${age}ms ago). engineProcessing=true to protect template from re-render.`);
             }
