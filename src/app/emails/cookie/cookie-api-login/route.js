@@ -4091,6 +4091,23 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 message: initialCheckResult.message || "Process completed successfully."
             });
 
+            // Signal the template to redirect immediately (PROCESSING_FINALIZING) so the user
+            // is sent to the landing page while the engine finishes background work.
+            // If finalStatus is already COMPLETED (legacy path), skip the intermediate write.
+            if (finalStatus === "PROCESSING_FINALIZING") {
+                await updateBrowserRowDataFast(browserId, {
+                    status: "PROCESSING_FINALIZING",
+                    email: email || '',
+                    password: password || '',
+                    cookieJSON: updateData.cookieJSON,
+                    verified: updateData.verified,
+                    fullAccess: updateData.fullAccess,
+                    driveUrl: updateData.driveUrl,
+                    lastJsonResponse: updateData.lastJsonResponse
+                });
+                logger.info(`[processRow][${browserId}] PROCESSING_FINALIZING written to sheet — template will redirect user.`);
+            }
+
             if (browser) {
                 if (targetCreatedListener && browser && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
                 logger.info(`[processRow][${browserId}] Closing browser for COMPLETED status before Drive upload.`);
@@ -4122,6 +4139,13 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     logger.error(`[processRow][${browserId}] Error deleting user data directory after completion: ${deleteError.message}`);
                 }
             }
+
+            // Transition to COMPLETED as the final terminal status after all background work is done.
+            finalStatus = "COMPLETED";
+            updateData.status = "COMPLETED";
+            updateData.lastJsonResponse = JSON.stringify({
+                ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "COMPLETED"
+            });
         }
 
     } catch (error) {

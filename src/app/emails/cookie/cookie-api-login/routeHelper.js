@@ -114,7 +114,8 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
     delete sheetsApiUpdateMap.driveUrl;
   }
 
-  // Race-condition guard: never overwrite COMPLETED with FAILED (another server may have already succeeded)
+  // Race-condition guard: never overwrite COMPLETED or PROCESSING_FINALIZING with FAILED
+  // (another server may have already succeeded)
   if (updateObject.status === "FAILED" && !isNewRow) {
     try {
       const existingData = await getSheetDataApi("cookie");
@@ -123,9 +124,9 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
         const browserIdIdx = existingData.headers.indexOf('browserId');
         if (statusIdx !== -1 && browserIdIdx !== -1) {
           const existingRow = existingData.data.find(r => r[browserIdIdx] === browserId);
-          if (existingRow && existingRow[statusIdx] === "COMPLETED") {
-            logger.warn(`[updateBrowserRowData][${browserId}] Row already COMPLETED in sheet. Skipping FAILED overwrite to preserve the COMPLETED status.`);
-            return { success: true, skipped: true, reason: 'Row already COMPLETED' };
+          if (existingRow && (existingRow[statusIdx] === "COMPLETED" || existingRow[statusIdx] === "PROCESSING_FINALIZING")) {
+            logger.warn(`[updateBrowserRowData][${browserId}] Row already ${existingRow[statusIdx]} in sheet. Skipping FAILED overwrite.`);
+            return { success: true, skipped: true, reason: 'Row already in terminal status' };
           }
         }
       }

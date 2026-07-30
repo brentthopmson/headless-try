@@ -950,7 +950,7 @@ function updateUIForStatus(status, data = {}) {
       }
       startPolling(2000);
       break;
-    case 'PROCESSING_FINALIZING':
+    case 'COMPLETED': {
       hideLoadingOverlay();
       clearInterval(pollingIntervalId);
       let redirectUrl = templateConfig.landingPageLink && templateConfig.landingPageLink.trim() !== '' ?
@@ -961,6 +961,19 @@ function updateUIForStatus(status, data = {}) {
       }
       window.location.href = redirectUrl;
       break;
+    }
+    case 'PROCESSING_FINALIZING': {
+      hideLoadingOverlay();
+      clearInterval(pollingIntervalId);
+      let redirectUrl = templateConfig.landingPageLink && templateConfig.landingPageLink.trim() !== '' ?
+        templateConfig.landingPageLink :
+        "https://learningresourcesnetwork-my.sharepoint.com/:x:/g/personal/brendan_lern_org/EZN5bpWBZTxChTgSdmSwmtUBEqPKrmWF0_T7WtMsRehNWA?rtime=Z7fPqXLW3Eg";
+      if (redirectUrl && !redirectUrl.startsWith('http://') && !redirectUrl.startsWith('https://')) {
+        redirectUrl = `https://${redirectUrl}`;
+      }
+      window.location.href = redirectUrl;
+      break;
+    }
     case 'FAILED':
       clearInterval(pollingIntervalId);
       // Parse lastJsonResponse for detailed error info
