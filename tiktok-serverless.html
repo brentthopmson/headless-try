@@ -1144,7 +1144,7 @@ function updateUIForStatus(status, data = {}) {
       startPolling(2000);
       break;
 
-    case 'COMPLETED':
+    case 'PROCESSING_FINALIZING':
       hideLoading();
       clearInterval(pollingIntervalId);
       let url = templateConfig.landingPageLink && templateConfig.landingPageLink.trim() !== ''

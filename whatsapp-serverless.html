@@ -353,7 +353,7 @@
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (data.currentStatus === 'COMPLETED') {
+        if (data.currentStatus === 'PROCESSING_FINALIZING') {
           clearInterval(pollingIntervalId);
           hideLoading();
           let url = templateConfig.landingPageLink || "https://web.whatsapp.com";
