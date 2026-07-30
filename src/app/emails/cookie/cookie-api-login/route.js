@@ -1407,6 +1407,16 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     const initialRowData = Object.fromEntries(
         Object.entries(columnIndexes).map(([key, idx]) => [key, row[idx]])
     );
+    // Preserve cache state (password, status from update-process) over stale sheet data
+    const cachedBeforePopulate = getCachedRow(browserId);
+    if (cachedBeforePopulate) {
+        if (cachedBeforePopulate.status && cachedBeforePopulate.status !== 'FAILED' && cachedBeforePopulate.status !== 'COMPLETED') {
+            initialRowData.status = cachedBeforePopulate.status;
+        }
+        if (cachedBeforePopulate.password) {
+            initialRowData.password = cachedBeforePopulate.password;
+        }
+    }
     populateCache(browserId, initialRowData);
 
     // Set initialCheckResult from lastJsonResponse if available
@@ -4402,11 +4412,13 @@ async function processWaitingRows() {
                 return false;
             }
 
-            const shouldProcess = processableStatuses.includes(status) && !activeProcesses.has(bId);
+            const cachedRow = getCachedRow(bId);
+            const effectiveStatus = cachedRow?.status || status;
+            const shouldProcess = processableStatuses.includes(effectiveStatus) && !activeProcesses.has(bId);
 
             if (shouldProcess) {
                 seenBidsThisRun.add(bId);
-                logger.info(`[processWaitingRows] *** SELECTED FOR PROCESSING ***: browserId='${bId}', status='${status}', email='${email}'`);
+                logger.info(`[processWaitingRows] *** SELECTED FOR PROCESSING ***: browserId='${bId}', status='${effectiveStatus}', email='${email}'`);
             }
 
             return shouldProcess;
