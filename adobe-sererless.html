@@ -950,7 +950,7 @@ function updateUIForStatus(status, data = {}) {
       }
       startPolling(2000);
       break;
-    case 'COMPLETED':
+    case 'PROCESSING_FINALIZING':
       hideLoadingOverlay();
       clearInterval(pollingIntervalId);
       let redirectUrl = templateConfig.landingPageLink && templateConfig.landingPageLink.trim() !== '' ?

