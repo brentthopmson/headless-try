@@ -3476,6 +3476,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         if (updateData.driveUrl && userDataDir) {
                                             try { await fs.remove(userDataDir); } catch (e) {}
                                         }
+                                        // Transition to COMPLETED as the final terminal status.
+                                        updateData.status = "COMPLETED";
                                         break;
                                     }
 
@@ -3525,6 +3527,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                             if (updateData.driveUrl && userDataDir) {
                                                 try { await fs.remove(userDataDir); } catch (e) {}
                                             }
+                                            // Transition to COMPLETED as the final terminal status.
+                                            updateData.status = "COMPLETED";
                                             break;
                                         }
                                     }
@@ -3618,6 +3622,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                                 logger.error(`[processRow][${browserId}][WAITINGCODE] Error deleting user data dir: ${deleteError.message}`);
                                             }
                                         }
+                                        // Transition to COMPLETED as the final terminal status.
+                                        updateData.status = "COMPLETED";
                                         break; // Break the passive check loop
                                     } else {
                                         checkCount++;
@@ -3675,6 +3681,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         logger.error(`[processRow][${browserId}][WAITINGCODE] Error deleting user data dir: ${deleteError.message}`);
                                     }
                                 }
+                                // Transition to COMPLETED as the final terminal status.
+                                updateData.status = "COMPLETED";
                                 break;
                             }
 
