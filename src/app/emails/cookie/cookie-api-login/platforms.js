@@ -174,6 +174,7 @@ export const platformConfigs = {
     },
     outlook: {
         inboxUrlPatterns: [
+            /account\.microsoft\.com\//, // Post-login landing for login.srf flows
             /m365\.cloud\.microsoft\//,
             /office\.com\//,
             /outlook\.office\.com\/mail/,
