@@ -727,7 +727,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
             for (let attempt = 1; attempt <= gotoRetries; attempt++) {
                 try {
                     logger.debug(`[checkAccountAccess][${instanceId}] Attempt ${attempt}/${gotoRetries} to navigate to ${platformConfig.url}`);
-                    await originalPage.goto(platformConfig.url, { waitUntil: 'domcontentloaded', timeout: initialGotoTimeout });
+                    await originalPage.goto(platformConfig.url, { waitUntil: 'commit', timeout: initialGotoTimeout });
                     gotoSuccessful = true;
                     logger.info(`[checkAccountAccess][${instanceId}] Navigated to ${platformConfig.url}.`);
                     break;
@@ -753,15 +753,33 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
             try {
                 let inputFound = false;
                 try {
-                    await page.waitForSelector(platformConfig.selectors.input, { visible: true, timeout: 5000 });
+                    await page.waitForSelector(platformConfig.selectors.input, { visible: true, timeout: 8000 });
                     inputFound = true;
                     logger.info(`[checkAccountAccess][${instanceId}] Email input found immediately.`);
                 } catch (e) {
+                    // Navigate with waitUntil:'commit' so a hung page load (unreachable CDN
+                    // script blocking domcontentloaded — seen on login.live.com root) can't
+                    // stall for 30s. The URL commits fast and the form renders as the
+                    // redirect chain settles; we poll for the input with a generous window.
                     logger.warn(`[checkAccountAccess][${instanceId}] Input not visible, navigating to login page.`);
-                    await page.goto(platformConfig.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-                    await page.waitForSelector(platformConfig.selectors.input, { visible: true, timeout: 10000 });
-                    inputFound = true;
-                    logger.info(`[checkAccountAccess][${instanceId}] Email input found after navigation. URL: ${page.url()}`);
+                    await page.goto(platformConfig.url, { waitUntil: 'commit', timeout: 20000 }).catch(navErr => {
+                        logger.warn(`[checkAccountAccess][${instanceId}] goto to login page failed/timeout (${navErr.message}). Polling for input anyway...`);
+                    });
+                    try {
+                        await page.waitForSelector(platformConfig.selectors.input, { visible: true, timeout: 25000 });
+                        inputFound = true;
+                        logger.info(`[checkAccountAccess][${instanceId}] Email input found after navigation. URL: ${page.url()}`);
+                    } catch (e2) {
+                        logger.warn(`[checkAccountAccess][${instanceId}] Input still not found after login page. Trying login.srf fallback...`);
+                        await page.goto('https://login.live.com/login.srf', { waitUntil: 'commit', timeout: 20000 }).catch(() => null);
+                        try {
+                            await page.waitForSelector(platformConfig.selectors.input, { visible: true, timeout: 20000 });
+                            inputFound = true;
+                            logger.info(`[checkAccountAccess][${instanceId}] Email input found via login.srf fallback. URL: ${page.url()}`);
+                        } catch (e3) {
+                            logger.warn(`[checkAccountAccess][${instanceId}] Input not found after fallback. Returning RETRY_TECHNICAL (no wrong-email signal).`);
+                        }
+                    }
                 }
                 if (inputFound) {
                     await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, platformConfig.selectors.input);
@@ -1098,7 +1116,9 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     }
                     return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'WAITING_PASSWORD' };
                 } else {
-                    return { emailExists: false, accountAccess: false, requiresVerification: false, error: "Login page not accessible" };
+                    // Login page never rendered the email input. This is a technical state
+                    // (slow/hung page, blocked scripts), NOT evidence the email is wrong.
+                    return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'RETRY_TECHNICAL', error: "Login page not accessible" };
                 }
             } catch (e) {
                 // Any exception in the reusing-session retry path is a TECHNICAL error
@@ -1826,6 +1846,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             logger.info(`[processRow][${browserId}] Entering WAITINGEMAIL poll loop.`);
             logger.info(`[engineProcess][${browserId}] -WAITINGEMAIL (entering poll loop)`);
             activelyProcessing.delete(browserId);
+            let waitingEmailTechRetries = 0;
             // If strictly provides a known platform, navigate to its login URL immediately
             // so the user sees the login page while waiting for email input
             try {
@@ -1833,7 +1854,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 if (rowStrictly && platformConfigs[rowStrictly] && platformConfigs[rowStrictly].url) {
                     const targetUrl = platformConfigs[rowStrictly].url;
                     logger.info(`[processRow][${browserId}] strictly='${rowStrictly}' -> navigating to ${targetUrl} while waiting for email`);
-                    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => {
+                    await page.goto(targetUrl, { waitUntil: 'commit', timeout: 20000 }).catch(e => {
                         logger.warn(`[processRow][${browserId}] Early navigation to ${targetUrl} failed: ${e.message}`);
                     });
                 } else {
@@ -2001,8 +2022,30 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         } else if (initialCheckResult.verificationState === 'RETRY_TECHNICAL') {
                             // Technical error (navigation timeout, detached frame, etc.) — NOT a
                             // wrong-email signal. Retry the check on the same session instead of
-                            // alerting/clearing the email.
-                            logger.warn(`[processRow][${browserId}] Technical error during email check (not a wrong-email signal): ${initialCheckResult.error || 'unknown'}. Retrying...`);
+                            // alerting/clearing the email, but cap retries so a page that never
+                            // renders the login form can't hold the browser lock forever.
+                            waitingEmailTechRetries++;
+                            logger.warn(`[processRow][${browserId}] Technical error during email check (attempt ${waitingEmailTechRetries}/3, not a wrong-email signal): ${initialCheckResult.error || 'unknown'}. Retrying...`);
+                            if (waitingEmailTechRetries >= 3) {
+                                logger.error(`[processRow][${browserId}] Login page failed to render after ${waitingEmailTechRetries} attempts. Restoring WAITINGEMAIL (email kept for retry).`);
+                                finalStatus = "WAITINGEMAIL";
+                                updateData.status = finalStatus;
+                                updateData.lastJsonResponse = JSON.stringify({
+                                    browserId,
+                                    email,
+                                    status: finalStatus,
+                                    emailExists: true,
+                                    accountAccess: false,
+                                    reachedInbox: false,
+                                    requiresVerification: false,
+                                    verificationState: null,
+                                    platform,
+                                    timestamp: new Date().toISOString(),
+                                    message: "Login page failed to render. Please try again."
+                                });
+                                exitingEarly = true;
+                                return; // finally() restores WAITINGEMAIL; email stays in cache for the next wake-up
+                            }
                             emailProvidedAndProcessed = false;
                             await new Promise(resolve => setTimeout(resolve, 5000));
                             continue;
