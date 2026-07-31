@@ -194,7 +194,7 @@ export const platformConfigs = {
         url: "https://login.live.com/login.srf",
         mxKeywords: ['outlook', 'hotmail', 'microsoft'],
         selectors: {
-            input: "input[name='loginfmt']",
+            input: "#usernameEntry, input[name='loginfmt']", // New Fluent login page uses #usernameEntry; legacy pages use loginfmt
             nextButton: ["#idSIButton9", "button[type='submit'][data-testid='primaryButton']"],
             passwordInput: ["input[name='passwd']", "input[type='password']", "#passwordInput", "input#passwordEntry"],
             passwordNextButton: [
@@ -408,7 +408,7 @@ export const platformConfigs = {
                     selector: ['span[role="button"]', 'button', '#signInOptions', 'button[data-testid="secondaryButton"]'],
                     text: 'Other ways to sign in',
                     navigationWaitUntil: 'domcontentloaded',
-                    waitForSelector: "input[name='passwd'], input[type='password'], #passwordInput, input#passwordEntry, input[name='loginfmt']"
+                    waitForSelector: "input[name='passwd'], input[type='password'], #passwordInput, input#passwordEntry, #usernameEntry, input[name='loginfmt']"
                 }
             },
             {
