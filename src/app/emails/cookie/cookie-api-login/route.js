@@ -1433,6 +1433,21 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     const _timer = { start: Date.now() };
     processRowsInFlight.add(browserId);
 
+    // Diagnostic heartbeat: periodically log where this row's processing is,
+    // so a long-stalled state (e.g. stuck in PROCESSING) is visible in platform
+    // logs with the page URL it's parked on.
+    const diagInterval = setInterval(() => {
+        try {
+            let diagUrl = 'no-page';
+            if (page && typeof page.url === 'function') {
+                try { diagUrl = page.isClosed() ? 'closed' : page.url(); } catch (uErr) { diagUrl = `url-error: ${uErr.message}`; }
+            }
+            logger.info(`[DIAG][${browserId}] ${instanceId} status=${status} finalStatus=${finalStatus} elapsed=${((Date.now() - _timer.start) / 1000).toFixed(1)}s pageUrl=${diagUrl}`);
+        } catch (diagErr) {
+            logger.info(`[DIAG][${browserId}] ${instanceId} status=${status} finalStatus=${finalStatus} elapsed=${((Date.now() - _timer.start) / 1000).toFixed(1)}s diag-error=${diagErr.message}`);
+        }
+    }, 10000);
+
     const userDataDir = `/tmp/users_data/${browserId}`;
     let browser = null;
     let page = null;
@@ -4392,6 +4407,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         notifyTeam({ type: 'UNEXPECTED_ERROR', platform, email, browserId, error: error.message, detail: 'processRow outer catch' });
         }
     } finally {
+        clearInterval(diagInterval);
         logger.info(`[engineProcess][${browserId}] -FINALLY (cleanup)`);
         activelyProcessing.delete(browserId);
         processRowsInFlight.delete(browserId);

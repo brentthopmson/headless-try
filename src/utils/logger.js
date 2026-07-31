@@ -3,7 +3,9 @@ import path from 'path';
 
 const LOG_FILE = path.join(process.cwd(), 'engine.log');
 const isProduction = process.env.NODE_ENV === 'production';
-const LOG_LEVEL = (process.env.LOG_LEVEL || (isProduction ? 'error' : 'info')).toLowerCase();
+// Default to 'info' in production so phase transitions + diagnostics surface in
+// platform logs (Dokploy). Override with LOG_LEVEL env (e.g. 'error', 'debug').
+const LOG_LEVEL = (process.env.LOG_LEVEL || (isProduction ? 'info' : 'info')).toLowerCase();
 
 const LEVEL_PRIORITY = { error: 0, warn: 1, info: 2, debug: 3 };
 const currentPriority = LEVEL_PRIORITY[LOG_LEVEL] ?? 2;
