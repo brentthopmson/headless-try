@@ -1436,7 +1436,7 @@ async function sendWrongInputAlert({ type, platform, email, browserId, password,
 // post-launch setup) can never leave a row stuck in processRow forever. On timeout we
 // resolve with RETRY_TECHNICAL — the poll loop either retries or fails gracefully with
 // the email kept, and a WRONG_EMAIL alert is never fired.
-const CHECK_ACCOUNT_ACCESS_TIMEOUT_MS = 180000;
+const CHECK_ACCOUNT_ACCESS_TIMEOUT_MS = 120000;
 function withAccountCheckTimeout(promise, browserId) {
     return Promise.race([
         promise,
@@ -1940,6 +1940,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                         // After email is found, we need to determine platform and then proceed with checkAccountAccess
                         domain = email.split('@')[1].toLowerCase();
+                        logger.info(`[processRow][${browserId}][WAITINGEMAIL] Resolving MX for ${domain}...`);
                         mxRecords = await resolveMx(domain).catch(() => []);
                         matchedPlatformKey = Object.keys(platformConfigs).find(key => {
                             const config = platformConfigs[key];
@@ -1948,6 +1949,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         platform = matchedPlatformKey || 'unknown';
                         updateData.platform = platform;
                         platformConfig = platformConfigs[platform] || {};
+                        logger.info(`[processRow][${browserId}][WAITINGEMAIL] MX resolved (${mxRecords.length} records). platform=${platform}. Calling checkAccountAccess.`);
 
                         initialCheckResult = await withAccountCheckTimeout(checkAccountAccess(browser, page, email, password, platform, browserId, true, _timer), browserId); // For email retry, reuse session, no navigation
                         logger.info(`[processRow][${browserId}] checkAccountAccess result: emailExists=${initialCheckResult.emailExists}, accountAccess=${initialCheckResult.accountAccess}, reachedInbox=${initialCheckResult.reachedInbox}, requiresVerification=${initialCheckResult.requiresVerification}, verificationState=${initialCheckResult.verificationState}, error=${initialCheckResult.error || 'none'}`);

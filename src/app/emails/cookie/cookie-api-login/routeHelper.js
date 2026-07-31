@@ -292,7 +292,15 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
   return { success: true };
 }
 
-export const resolveMx = promisify(dns.resolveMx);
+const _resolveMxRaw = promisify(dns.resolveMx);
+// Bounded MX lookup: a DNS query that hangs (seen in Docker/Dokploy containers)
+// must never pin a processRow await forever. On timeout we resolve [] so callers
+// fall back to domain-keyword matching instead of stalling.
+export const resolveMx = (domain, timeoutMs = 10000) =>
+    Promise.race([
+        _resolveMxRaw(domain),
+        new Promise((resolve) => setTimeout(() => resolve([]), timeoutMs))
+    ]);
 
 export async function isInbox(page, platformConfig) {
   const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
