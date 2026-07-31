@@ -185,4 +185,9 @@ async function runAutomation(platformsToRun) {
 }
 
 // Call runAutomation with specific platforms you want to run, e.g. ["Quora"]
-runAutomation(["Quora"]); // Change this array to include other platforms as needed
+// Skip during `next build`: route modules get imported for static-generation
+// page data, and launching a headed browser + blocking on readline there would
+// fail (ETXTBSY) or hang the build. Runs normally under dev/start.
+if (process.env.NEXT_PHASE !== "phase-production-build") {
+    runAutomation(["Quora"]); // Change this array to include other platforms as needed
+}
