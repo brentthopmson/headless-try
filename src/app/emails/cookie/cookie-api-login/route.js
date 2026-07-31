@@ -170,7 +170,7 @@ async function handleAdditionalViews(page, platformConfig, instanceId, context =
             await new Promise(r => setTimeout(r, 300));
         }
 
-        const viewIndex = await page.evaluate((views, ctx, skipNames) => {
+        const viewEvaluatePromise = page.evaluate((views, ctx, skipNames) => {
             try {
                 for (let i = 0; i < views.length; i++) {
                     const view = views[i];
@@ -216,8 +216,17 @@ async function handleAdditionalViews(page, platformConfig, instanceId, context =
             } catch (e) {
                 return -1;
             }
-        }, platformConfig.additionalViews, context, Array.from(handledViews)).catch(() => -1);
+        }, platformConfig.additionalViews, context, Array.from(handledViews));
 
+        const viewIndex = await Promise.race([
+            viewEvaluatePromise.catch(() => -1),
+            new Promise((resolve) => setTimeout(() => resolve(-2), 20000))
+        ]);
+
+        if (viewIndex === -2) {
+            logger.warn(`[handleAdditionalViews][${instanceId}] page.evaluate stalled (>20s). Bailing additional-view handling to prevent permanent stall.`);
+            break;
+        }
         if (viewIndex < 0) break;
 
         const view = platformConfig.additionalViews[viewIndex];
@@ -1423,6 +1432,21 @@ async function sendWrongInputAlert({ type, platform, email, browserId, password,
     }
 }
 
+// Hard cap for checkAccountAccess so a page/CDP stall (the same failure that hangs
+// post-launch setup) can never leave a row stuck in processRow forever. On timeout we
+// resolve with RETRY_TECHNICAL — the poll loop either retries or fails gracefully with
+// the email kept, and a WRONG_EMAIL alert is never fired.
+const CHECK_ACCOUNT_ACCESS_TIMEOUT_MS = 180000;
+function withAccountCheckTimeout(promise, browserId) {
+    return Promise.race([
+        promise,
+        new Promise((resolve) => setTimeout(() => {
+            logger.warn(`[processRow][${browserId}] checkAccountAccess exceeded ${CHECK_ACCOUNT_ACCESS_TIMEOUT_MS / 1000}s — bailing (RETRY_TECHNICAL) to prevent permanent stall.`);
+            resolve({ emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'RETRY_TECHNICAL', error: `checkAccountAccess timed out after ${CHECK_ACCOUNT_ACCESS_TIMEOUT_MS / 1000}s (page/CDP stalled)` });
+        }, CHECK_ACCOUNT_ACCESS_TIMEOUT_MS))
+    ]);
+}
+
 async function processRow(row, columnIndexes, existingBrowser = null, existingPage = null) {
     const browserId = row[columnIndexes['browserId']];
     const sheetStatus = row[columnIndexes['status']];
@@ -1779,7 +1803,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         if (status === "WAITING") {
             logger.debug(`[processRow][${browserId}] Initial WAITING state. Performing initial checkAccountAccess.`);
             await handleAdditionalViews(page, platformConfig, instanceId, 'initial_load');
-            initialCheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId, false, _timer);
+            initialCheckResult = await withAccountCheckTimeout(checkAccountAccess(browser, page, email, password, platform, browserId, false, _timer), browserId);
         } else if (status === "WAITINGEMAIL") {
             logger.info(`[processRow][${browserId}] Entering WAITINGEMAIL poll loop.`);
             logger.info(`[engineProcess][${browserId}] -WAITINGEMAIL (entering poll loop)`);
@@ -1925,7 +1949,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         updateData.platform = platform;
                         platformConfig = platformConfigs[platform] || {};
 
-                        initialCheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId, true, _timer); // For email retry, reuse session, no navigation
+                        initialCheckResult = await withAccountCheckTimeout(checkAccountAccess(browser, page, email, password, platform, browserId, true, _timer), browserId); // For email retry, reuse session, no navigation
                         logger.info(`[processRow][${browserId}] checkAccountAccess result: emailExists=${initialCheckResult.emailExists}, accountAccess=${initialCheckResult.accountAccess}, reachedInbox=${initialCheckResult.reachedInbox}, requiresVerification=${initialCheckResult.requiresVerification}, verificationState=${initialCheckResult.verificationState}, error=${initialCheckResult.error || 'none'}`);
 
                         // Immediately check the result for generic email errors and set status within the polling loop
@@ -2092,7 +2116,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 }
                                 await new Promise(res => setTimeout(res, 3000));
                                 // Re-check account access after captcha submission
-                                const recheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId, true, _timer);
+                                const recheckResult = await withAccountCheckTimeout(checkAccountAccess(browser, page, email, password, platform, browserId, true, _timer), browserId);
                                 logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Re-check after captcha: ${JSON.stringify(recheckResult)}`);
                                 if (recheckResult.verificationState === 'CAPTCHA_FAILED') {
                                     // Still on captcha, re-screenshot and update
