@@ -1634,65 +1634,91 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
             instanceId = `PROC-${browserId}-${browser.process()?.pid || 'unknownPID'}`;
 
-            const allPages = await browser.pages();
-            page = allPages[0];
+            // Post-launch setup with a hard timeout. A freshly-launched browser can
+            // be unresponsive (CDP stalls) so browser.pages()/setUserAgent etc.
+            // never resolve, leaving this row stuck forever with page=null while
+            // holding the per-browser in-flight lock. On timeout/reject we kill the
+            // browser, restore the WAITING status, and bail so the next wake-up
+            // launches a fresh session.
+            let postLaunchError = null;
+            const postLaunchSetup = (async () => {
+                const allPages = await browser.pages();
+                page = allPages[0];
+                if (!page) { throw new Error('browser.pages() returned no pages'); }
 
-            for (let i = 1; i < allPages.length; i++) {
-                if (!allPages[i].isClosed()) {
-                    try { await allPages[i].close(); } catch (closeErr) { logger.warn(`[Initial Tab Cleanup][${browserId}] Error closing tab: ${closeErr.message}`); }
-                }
-            }
-
-            const tabWhitelist = [
-                'm365.cloud.microsoft',
-                'login.live.com',
-                'login.microsoftonline.com',
-                'login.microsoft.com',
-                'aka.ms',
-                'outlook.live.com',
-                'outlook.office365.com',
-                'portal.office.com',
-                'onedrive.live.com',
-            ];
-
-            targetCreatedListener = async (target) => { // Assign to the outer scope variable
-                if (target.type() === 'page') {
-                    try {
-                        const newPage = await target.page();
-                        if (newPage && newPage !== page && !newPage.isClosed()) {
-                            const targetUrl = target.url();
-                            const isWhitelisted = tabWhitelist.some(domain => targetUrl.includes(domain));
-                            if (isWhitelisted) {
-                                logger.info(`[Tab Listener][${browserId}] Whitelisted tab (not closing): ${targetUrl}`);
-                                return;
-                            }
-                            logger.info(`[Tab Listener][${browserId}] Detected and closing new tab: ${targetUrl}`);
-                            await newPage.close().catch(closeErr => logger.warn(`[Tab Listener][${browserId}] Error closing new tab: ${closeErr.message}`));
-                        }
-                    } catch (pageErr) {
-                        if (!pageErr.message?.includes('Target closed')) {
-                            logger.warn(`[Tab Listener][${browserId}] Error accessing new page: ${pageErr.message}`);
-                        }
+                for (let i = 1; i < allPages.length; i++) {
+                    if (!allPages[i].isClosed()) {
+                        try { await allPages[i].close(); } catch (closeErr) { logger.warn(`[Initial Tab Cleanup][${browserId}] Error closing tab: ${closeErr.message}`); }
                     }
                 }
-            };
-            browser.on('targetcreated', targetCreatedListener);
 
-            // Store session immediately after launch so wake-up handler can detect running browser
-            // and skip redundant processRow instead of killing this browser
-            activeBrowserSessions.set(browserId, { browser, page, targetCreatedListener });
+                const tabWhitelist = [
+                    'm365.cloud.microsoft',
+                    'login.live.com',
+                    'login.microsoftonline.com',
+                    'login.microsoft.com',
+                    'aka.ms',
+                    'outlook.live.com',
+                    'outlook.office365.com',
+                    'portal.office.com',
+                    'onedrive.live.com',
+                ];
 
-            await page.setUserAgent(browser.selectedUserAgent);
-            await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
+                targetCreatedListener = async (target) => { // Assign to the outer scope variable
+                    if (target.type() === 'page') {
+                        try {
+                            const newPage = await target.page();
+                            if (newPage && newPage !== page && !newPage.isClosed()) {
+                                const targetUrl = target.url();
+                                const isWhitelisted = tabWhitelist.some(domain => targetUrl.includes(domain));
+                                if (isWhitelisted) {
+                                    logger.info(`[Tab Listener][${browserId}] Whitelisted tab (not closing): ${targetUrl}`);
+                                    return;
+                                }
+                                logger.info(`[Tab Listener][${browserId}] Detected and closing new tab: ${targetUrl}`);
+                                await newPage.close().catch(closeErr => logger.warn(`[Tab Listener][${browserId}] Error closing new tab: ${closeErr.message}`));
+                            }
+                        } catch (pageErr) {
+                            if (!pageErr.message?.includes('Target closed')) {
+                                logger.warn(`[Tab Listener][${browserId}] Error accessing new page: ${pageErr.message}`);
+                            }
+                        }
+                    }
+                };
+                browser.on('targetcreated', targetCreatedListener);
 
-            await page.evaluateOnNewDocument(() => {
-                const style = document.createElement('style');
-                style.innerHTML = `
-                html, body { overflow: auto !important; }
-                ::-webkit-scrollbar { display: block !important; }
-            `;
-                document.head.appendChild(style);
-            });
+                // Store session immediately after launch so wake-up handler can detect running browser
+                // and skip redundant processRow instead of killing this browser
+                activeBrowserSessions.set(browserId, { browser, page, targetCreatedListener });
+
+                await page.setUserAgent(browser.selectedUserAgent);
+                await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
+
+                await page.evaluateOnNewDocument(() => {
+                    const style = document.createElement('style');
+                    style.innerHTML = `
+                    html, body { overflow: auto !important; }
+                    ::-webkit-scrollbar { display: block !important; }
+                `;
+                    document.head.appendChild(style);
+                });
+            })().catch((setupErr) => { postLaunchError = setupErr; throw setupErr; });
+
+            const postLaunchSetupSucceeded = await Promise.race([
+                postLaunchSetup.then(() => true).catch(() => false),
+                new Promise((resolve) => setTimeout(() => resolve(false), 25000))
+            ]);
+
+            if (!postLaunchSetupSucceeded) {
+                logger.error(`[processRow][${browserId}] Post-launch setup failed: ${postLaunchError?.message || `timed out after 25s (browser unresponsive, PID ${browser.process()?.pid})`}. Killing browser and restoring ${status || 'WAITINGEMAIL'}.`);
+                try { browser.process()?.kill('SIGKILL'); } catch (_) {}
+                try { await browser.close().catch(() => {}); } catch (_) {}
+                browserFullyClosed = true;
+                updateData.status = status || 'WAITINGEMAIL';
+                exitingEarly = true;
+                return;
+            }
+            logger.info(`[processRow][${browserId}] Post-launch setup complete. page=${page?.url?.() || 'none'} (PID ${browser.process()?.pid}).`);
             } // end else (active browser session reuse)
         }
 
