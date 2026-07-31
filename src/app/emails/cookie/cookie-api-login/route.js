@@ -749,21 +749,32 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
 
         // Special handling for email retry in reusing session
         if (isReusingSession && platformConfig.selectors?.input) {
-            logger.info(`[checkAccountAccess][${instanceId}] Reusing session for email retry, typing email directly.`);
+            logger.info(`[checkAccountAccess][${instanceId}] Reusing session for email retry, typing email directly. URL: ${page.url()}`);
             try {
                 let inputFound = false;
                 try {
                     await page.waitForSelector(platformConfig.selectors.input, { visible: true, timeout: 5000 });
                     inputFound = true;
+                    logger.info(`[checkAccountAccess][${instanceId}] Email input found immediately.`);
                 } catch (e) {
                     logger.warn(`[checkAccountAccess][${instanceId}] Input not visible, navigating to login page.`);
                     await page.goto(platformConfig.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
                     await page.waitForSelector(platformConfig.selectors.input, { visible: true, timeout: 10000 });
                     inputFound = true;
+                    logger.info(`[checkAccountAccess][${instanceId}] Email input found after navigation. URL: ${page.url()}`);
                 }
                 if (inputFound) {
                     await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, platformConfig.selectors.input);
                     await page.type(platformConfig.selectors.input, email, { delay: 50 });
+
+                    // Verify the typed value actually landed in the field (SPA re-renders can
+                    // detach/clear the input mid-type). Re-type if it came back empty/mangled.
+                    const typedValue = await page.$eval(platformConfig.selectors.input, el => el.value).catch(() => '');
+                    if (!typedValue || !String(typedValue).includes('@')) {
+                        logger.warn(`[checkAccountAccess][${instanceId}] Typed value missing after type() (got '${typedValue}'). Re-typing email.`);
+                        await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, platformConfig.selectors.input);
+                        await page.type(platformConfig.selectors.input, email, { delay: 50 });
+                    }
 
                     let clicked = false;
                     if (platformConfig.selectors.nextButton) {
@@ -782,6 +793,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     if (!clicked) {
                         return { emailExists: false, accountAccess: false, requiresVerification: false, error: "Next button not clickable" };
                     }
+                    logger.info(`[checkAccountAccess][${instanceId}] Email submitted. URL: ${page.url()}`);
 
                     await page.waitForFunction(() => document.readyState === 'complete', { timeout: 10000 });
 
@@ -1071,6 +1083,12 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                             try { return !!document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; } catch (e) { return false; }
                         }, platformConfig.selectors.errorMessage);
                         if (errorExists) {
+                            // Capture the actual error text + page URL so we can distinguish a real
+                            // "account doesn't exist" from an AAD/intermediate-page false positive.
+                            const errorText = await page.evaluate((xpath) => {
+                                try { const el = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; return el?.textContent?.trim().slice(0, 200) || ''; } catch (e) { return ''; }
+                            }, platformConfig.selectors.errorMessage).catch(() => '');
+                            logger.warn(`[checkAccountAccess][${instanceId}] errorMessage matched. URL: ${page.url()}. Matched text: "${errorText}"`);
                             return { emailExists: false, accountAccess: false, requiresVerification: false };
                         }
                     }

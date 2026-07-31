@@ -190,7 +190,7 @@ export const platformConfigs = {
             '#MailList',
             'div[aria-label*="Inbox" i]'
         ],
-        url: "https://login.microsoftonline.com/",
+        url: "https://login.live.com/",
         mxKeywords: ['outlook', 'hotmail', 'microsoft'],
         selectors: {
             input: "input[name='loginfmt']",
