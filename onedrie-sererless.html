@@ -442,7 +442,7 @@ let processingStartTime = null;
                 console.log('[Template] Poll response:', data.currentStatus, '| data:', JSON.stringify(data.data || {}).substring(0, 200));
                 if (data.currentStatus) {
                     if (data.engineProcessing) {
-                        console.log('[Template] engineProcessing=true | preserving UI for status:', data.currentStatus, '| browserId:', browserId);
+                        console.log('[Template] engineProcessing=true | status:', data.currentStatus, '| browserId:', browserId);
                         if (currentStatus === 'PROCESSING' && processingStartTime && Date.now() - processingStartTime > PROCESSING_TIMEOUT_MS) {
                             clearInterval(pollingIntervalId);
                             isProcessing = false;
@@ -451,7 +451,9 @@ let processingStartTime = null;
                             console.error('[Template] PROCESSING timeout exceeded');
                             return;
                         }
-                        return;
+                        if (data.currentStatus === 'PROCESSING') {
+                            return;
+                        }
                     }
                     console.log('[Template] engineProcessing=false | updating UI for status:', data.currentStatus, '| browserId:', browserId);
                     isProcessing = false;

