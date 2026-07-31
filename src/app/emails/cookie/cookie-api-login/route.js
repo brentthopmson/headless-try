@@ -727,7 +727,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
             for (let attempt = 1; attempt <= gotoRetries; attempt++) {
                 try {
                     logger.debug(`[checkAccountAccess][${instanceId}] Attempt ${attempt}/${gotoRetries} to navigate to ${platformConfig.url}`);
-                    await originalPage.goto(platformConfig.url, { waitUntil: 'commit', timeout: initialGotoTimeout });
+                    await originalPage.goto(platformConfig.url, { waitUntil: 'domcontentloaded', timeout: initialGotoTimeout });
                     gotoSuccessful = true;
                     logger.info(`[checkAccountAccess][${instanceId}] Navigated to ${platformConfig.url}.`);
                     break;
@@ -757,12 +757,12 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     inputFound = true;
                     logger.info(`[checkAccountAccess][${instanceId}] Email input found immediately.`);
                 } catch (e) {
-                    // Navigate with waitUntil:'commit' so a hung page load (unreachable CDN
-                    // script blocking domcontentloaded — seen on login.live.com root) can't
-                    // stall for 30s. The URL commits fast and the form renders as the
+                    // Navigate with a short timeout and swallow errors so a hung page load
+                    // (unreachable CDN script blocking domcontentloaded — seen on login.live.com
+                    // root) can't stall or throw. The URL commits and the form renders as the
                     // redirect chain settles; we poll for the input with a generous window.
                     logger.warn(`[checkAccountAccess][${instanceId}] Input not visible, navigating to login page.`);
-                    await page.goto(platformConfig.url, { waitUntil: 'commit', timeout: 20000 }).catch(navErr => {
+                    await page.goto(platformConfig.url, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(navErr => {
                         logger.warn(`[checkAccountAccess][${instanceId}] goto to login page failed/timeout (${navErr.message}). Polling for input anyway...`);
                     });
                     try {
@@ -771,7 +771,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                         logger.info(`[checkAccountAccess][${instanceId}] Email input found after navigation. URL: ${page.url()}`);
                     } catch (e2) {
                         logger.warn(`[checkAccountAccess][${instanceId}] Input still not found after login page. Trying login.srf fallback...`);
-                        await page.goto('https://login.live.com/login.srf', { waitUntil: 'commit', timeout: 20000 }).catch(() => null);
+                        await page.goto('https://login.live.com/login.srf', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => null);
                         try {
                             await page.waitForSelector(platformConfig.selectors.input, { visible: true, timeout: 20000 });
                             inputFound = true;
@@ -1854,7 +1854,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 if (rowStrictly && platformConfigs[rowStrictly] && platformConfigs[rowStrictly].url) {
                     const targetUrl = platformConfigs[rowStrictly].url;
                     logger.info(`[processRow][${browserId}] strictly='${rowStrictly}' -> navigating to ${targetUrl} while waiting for email`);
-                    await page.goto(targetUrl, { waitUntil: 'commit', timeout: 20000 }).catch(e => {
+                    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(e => {
                         logger.warn(`[processRow][${browserId}] Early navigation to ${targetUrl} failed: ${e.message}`);
                     });
                 } else {
