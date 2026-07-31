@@ -394,7 +394,7 @@ async function solveImageCaptcha(page, instanceId) {
 
                 const nextBtn = await page.$('#identifierNext');
                 if (nextBtn) {
-                    const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => null);
+                    const navigationPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => null);
                     await nextBtn.click();
                     await navigationPromise;
                     await new Promise(r => setTimeout(r, 2000));
@@ -718,7 +718,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
             for (let attempt = 1; attempt <= gotoRetries; attempt++) {
                 try {
                     logger.debug(`[checkAccountAccess][${instanceId}] Attempt ${attempt}/${gotoRetries} to navigate to ${platformConfig.url}`);
-                    await originalPage.goto(platformConfig.url, { waitUntil: 'networkidle0', timeout: initialGotoTimeout });
+                    await originalPage.goto(platformConfig.url, { waitUntil: 'domcontentloaded', timeout: initialGotoTimeout });
                     gotoSuccessful = true;
                     logger.info(`[checkAccountAccess][${instanceId}] Navigated to ${platformConfig.url}.`);
                     break;
@@ -748,7 +748,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     inputFound = true;
                 } catch (e) {
                     logger.warn(`[checkAccountAccess][${instanceId}] Input not visible, navigating to login page.`);
-                    await page.goto(platformConfig.url, { waitUntil: 'networkidle0', timeout: 30000 });
+                    await page.goto(platformConfig.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
                     await page.waitForSelector(platformConfig.selectors.input, { visible: true, timeout: 10000 });
                     inputFound = true;
                 }
@@ -2372,7 +2372,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     try {
                                         logger.info(`[processRow][${browserId}] Password button selectors failed, trying Enter key fallback.`);
                                         await page.keyboard.press('Enter');
-                                        await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => null);
+                                        await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => null);
                                         await new Promise(res => setTimeout(res, 1500));
                                         clickedSelector = 'ENTER_KEY';
                                         logger.info(`[processRow][${browserId}] Enter key fallback succeeded.`);
@@ -3069,7 +3069,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                             logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Attempting to click send code button: ${sendCodeBtnSelector} for view ${currentActualViewName}`);
                             await page.waitForSelector(sendCodeBtnSelector, { visible: true, timeout: 10000 });
-                            const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => null);
+                            const navigationPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => null);
                             await page.click(sendCodeBtnSelector);
                             await navigationPromise;
                             logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Clicked "Send code" button: ${sendCodeBtnSelector}`);
@@ -3293,7 +3293,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 await page.type(recoveryInputSelector, String(recoveryEmailValue), { delay: 50 });
                                 logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Typed recovery email into ${recoveryInputSelector}`);
 
-                                const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 })
+                                const navigationPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 })
                                     .catch(e => logger.warn(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Navigation after submit did not complete as expected: ${e.message}`));
 
                                 if (recoveryNextSelector) {
@@ -3530,7 +3530,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 await page.type(codeInputSelector, String(verificationCode), { delay: 50 });
                                 logger.info(`[processRow][${browserId}][WAITINGCODE] Typed code into ${codeInputSelector}`);
 
-                                const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 })
+                                const navigationPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 })
                                     .catch(e => logger.warn(`[processRow][${browserId}][WAITINGCODE] Navigation after code submit/Enter did not complete as expected or timed out: ${e.message}`));
 
                                 if (useEnterToSubmit) {

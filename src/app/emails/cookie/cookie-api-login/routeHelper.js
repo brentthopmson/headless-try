@@ -741,7 +741,7 @@ export async function solveImageCaptcha(page, instanceId) {
 
                 const nextBtn = await page.$('#identifierNext');
                 if (nextBtn) {
-                    const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => null);
+                    const navigationPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => null);
                     await nextBtn.click();
                     await navigationPromise;
                     await new Promise(r => setTimeout(r, 2000));
