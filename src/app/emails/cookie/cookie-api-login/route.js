@@ -1603,12 +1603,13 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     logger.error(`[processRow][${browserId}] Browser launch attempt ${i + 1}/${maxLaunchRetries} failed: ${launchError.message}. Stack: ${launchError.stack}`);
                     if (i < maxLaunchRetries - 1) {
                         const isETXTBSY = launchError.message && (launchError.message.includes('ETXTBSY') || launchError.message.includes('Text file busy') || launchError.message.includes('text file busy'));
+                        const retryDelayMs = isETXTBSY ? 8000 : 2000;
                         if (isETXTBSY) {
-                            logger.warn(`[processRow][${browserId}] ETXTBSY detected. Removing stale user data dir and retrying quickly.`);
+                            logger.warn(`[processRow][${browserId}] ETXTBSY detected. Removing stale user data dir and retrying in ${retryDelayMs}ms (file-write race backoff).`);
                             await fs.remove(userDataDir).catch(() => {});
                         }
-                        logger.warn(`[processRow][${browserId}] Retrying browser launch in 2 seconds...`);
-                        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait before retrying
+                        logger.warn(`[processRow][${browserId}] Retrying browser launch in ${retryDelayMs}ms...`);
+                        await new Promise(resolve => setTimeout(resolve, retryDelayMs)); // Wait before retrying
                     } else {
                         logger.error(`[processRow][${browserId}] All ${maxLaunchRetries} browser launch attempts failed. Final error: ${launchError.message}`);
                         throw new Error(`Failed to launch browser after ${maxLaunchRetries} attempts: ${launchError.message}`); // Re-throw to be caught by outer try/catch

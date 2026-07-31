@@ -112,8 +112,12 @@ async function getPuppeteerExtra() {
 let _chromiumCacheCleaned = false;
 
 export async function launchBrowser(customOptions = {}) {
-  // Clean stale chromium binary from Docker layer cache (once per process)
-  if (!isDev && !_chromiumCacheCleaned) {
+  // Clean stale chromium binary from Docker layer cache (once per process).
+  // Skipped when the image pre-installed the browser at build time
+  // (Dockerfile sets CHROMIUM_PREINSTALLED=true) so /tmp/chromium is reused
+  // instead of forcing a runtime re-download/re-extract on first request
+  // (the source of concurrent `spawn ETXTBSY` races).
+  if (!isDev && !_chromiumCacheCleaned && !process.env.CHROMIUM_PREINSTALLED) {
     _chromiumCacheCleaned = true;
     if (existsSync('/tmp/chromium')) {
       try { rmSync('/tmp/chromium', { recursive: true }); } catch (_) {}
