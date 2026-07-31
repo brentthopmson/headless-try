@@ -27,11 +27,15 @@ COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev
 
 # Download the Chromium pack, extract it, and brotli-inflate to
-# /tmp/chromium (binary) + /tmp/fonts, then verify the binary runs.
+# /tmp/chromium (binary) + /tmp/fonts, then verify the binary is executable
+# and all its shared-library dependencies resolve. (Running `--version` here
+# can hang the build: without --disable-gpu the gpu-process blocks on slim
+# builders. At runtime the app launches with --disable-gpu/--no-sandbox.)
 # URL matches `remoteExecutablePath` in src/utils/utils.js.
 RUN node -e "require('@sparticuz/chromium-min').executablePath('https://github.com/Sparticuz/chromium/releases/download/v123.0.1/chromium-v123.0.1-pack.tar').then(p=>console.log('Chromium installed at '+p)).catch(e=>{console.error(e);process.exit(1)})" \
   && test -x /tmp/chromium \
-  && /tmp/chromium --no-sandbox --version
+  && sh -c 'if ldd /tmp/chromium 2>&1 | grep -q "not found"; then echo "Missing Chromium shared libraries:"; ldd /tmp/chromium 2>&1 | grep "not found"; exit 1; fi' \
+  && echo "Chromium binary verified at build time"
 
 FROM node:20-slim AS build
 
