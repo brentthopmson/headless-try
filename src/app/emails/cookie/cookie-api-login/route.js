@@ -770,12 +770,12 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                         inputFound = true;
                         logger.info(`[checkAccountAccess][${instanceId}] Email input found after navigation. URL: ${page.url()}`);
                     } catch (e2) {
-                        logger.warn(`[checkAccountAccess][${instanceId}] Input still not found after login page. Trying login.srf fallback...`);
-                        await page.goto('https://login.live.com/login.srf', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => null);
+                        logger.warn(`[checkAccountAccess][${instanceId}] Input still not found after login page. Trying outlook.live.com fallback...`);
+                        await page.goto('https://outlook.live.com/mail/', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => null);
                         try {
                             await page.waitForSelector(platformConfig.selectors.input, { visible: true, timeout: 20000 });
                             inputFound = true;
-                            logger.info(`[checkAccountAccess][${instanceId}] Email input found via login.srf fallback. URL: ${page.url()}`);
+                            logger.info(`[checkAccountAccess][${instanceId}] Email input found via outlook.live.com fallback. URL: ${page.url()}`);
                         } catch (e3) {
                             logger.warn(`[checkAccountAccess][${instanceId}] Input not found after fallback. Returning RETRY_TECHNICAL (no wrong-email signal).`);
                         }

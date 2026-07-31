@@ -190,10 +190,8 @@ export const platformConfigs = {
             '#MailList',
             'div[aria-label*="Inbox" i]'
         ],
-        // login.live.com/ root (and login.microsoftonline.com/) can stall on domcontentloaded
-        // in restricted networks and never render the loginfmt form. The oauth20_authorize.srf
-        // endpoint reliably renders the email-entry page, so land there directly.
-        url: "https://login.live.com/oauth20_authorize.srf?client_id=4765445b-32c6-49b0-83e6-1d93765276ca&redirect_uri=https%3A%2F%2Fwww.office.com%2Flandingv2&response_type=code%20id_token&scope=openid%20profile%20https%3A%2F%2Fwww.office.com%2Fv2%2FOfficeHome.All&response_mode=form_post",
+        // Direct consumer login page — reliably renders the loginfmt email form.
+        url: "https://login.live.com/login.srf",
         mxKeywords: ['outlook', 'hotmail', 'microsoft'],
         selectors: {
             input: "input[name='loginfmt']",
