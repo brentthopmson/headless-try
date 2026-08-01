@@ -5,7 +5,7 @@ import { promisify } from 'util';
 import logger from "../../../../utils/logger.js";
 import aiService from "../../../../utils/aiService.js";
 import { getSheetDataApi, appendSheetRowApi, updateSheetRowApi, updateHubAndProjectsFromCookieData } from '../../../api/googlesheets.js';
-import { setCachedRow } from '../../../../utils/cookieCache.js';
+import { setCachedRow, getCachedRow } from '../../../../utils/cookieCache.js';
 import { fetchDataFromAppScript as _sharedFetchData, startAppScriptDataBackgroundUpdater as _sharedStartUpdater, stopAppScriptDataBackgroundUpdater as _sharedStopUpdater, patchCachedRow as _sharedPatchCachedRow } from '../../../../utils/cookieDataFetcher.js';
 
 export const fetchDataFromAppScript = _sharedFetchData;
@@ -262,8 +262,11 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
     // Trigger updateHubAndProjectsFromCookieData if status is COMPLETED or FAILED
     if (updateObject.status && (updateObject.status === "COMPLETED" || updateObject.status === "FAILED")) {
       logger.info(`[updateBrowserRowData][${browserId}] Triggering updateHubAndProjectsFromCookieData with status: ${updateObject.status}`);
-      // Do not await this call to avoid blocking the current response
-      updateHubAndProjectsFromCookieData(browserId, updateObject.status).catch(error => {
+      // Do not await this call to avoid blocking the current response.
+      // Pass the cached row so the FAILED/COMPLETED Telegram is built from cache
+      // (email/password) instead of a fresh sheet read — a quota failure or cleared
+      // sheet cell must never drop the password from the notification.
+      updateHubAndProjectsFromCookieData(browserId, updateObject.status, getCachedRow(browserId) || null).catch(error => {
         logger.error(`[updateBrowserRowData][${browserId}] Error triggering updateHubAndProjectsFromCookieData: ${error.message}`);
       });
     } else {

