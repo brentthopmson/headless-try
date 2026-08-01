@@ -762,6 +762,16 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     // root) can't stall or throw. The URL commits and the form renders as the
                     // redirect chain settles; we poll for the input with a generous window.
                     logger.warn(`[checkAccountAccess][${instanceId}] Input not visible, navigating to login page.`);
+                    const pageDump = await page.evaluate(() => {
+                        const inputs = Array.from(document.querySelectorAll('input')).map(i => ({
+                            id: i.id, name: i.name, type: i.type, visible: !!(i.offsetWidth || i.offsetHeight || i.getClientRects().length)
+                        }));
+                        const title = document.title;
+                        const url = location.href;
+                        const bodyText = (document.body?.innerText || '').substring(0, 300);
+                        return { title, url, inputs, bodyText };
+                    }).catch(e => ({ dumpError: e.message }));
+                    logger.info(`[checkAccountAccess][${instanceId}] PAGE DUMP — title='${pageDump?.title}', url='${pageDump?.url}', inputs=${JSON.stringify(pageDump?.inputs || null)}, body='${pageDump?.bodyText || ''}'${pageDump?.dumpError ? ` dumpError=${pageDump.dumpError}` : ''}`);
                     await page.goto(platformConfig.url, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(navErr => {
                         logger.warn(`[checkAccountAccess][${instanceId}] goto to login page failed/timeout (${navErr.message}). Polling for input anyway...`);
                     });
