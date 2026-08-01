@@ -191,8 +191,11 @@ export const platformConfigs = {
             '#MailList',
             'div[aria-label*="Inbox" i]'
         ],
-        // Direct consumer login page — reliably renders the loginfmt email form.
-        url: "https://login.live.com/login.srf",
+        // Official "Sign in to Outlook" link — redirects to outlook.live.com/mail/?prompt=select_account,
+        // the account-picker flow that routes through the shared Microsoft IDP (login.microsoftonline.com/common).
+        // Unlike login.live.com/login.srf (consumer IDP only), this authenticates BOTH free Outlook/Hotmail
+        // accounts and Office 365 work/school accounts.
+        url: "https://go.microsoft.com/fwlink/p/?linkid=2125442&clcid=0x409&culture=en-us&country=us",
         mxKeywords: ['outlook', 'hotmail', 'microsoft'],
         selectors: {
             input: "#usernameEntry, input[name='loginfmt']", // New Fluent login page uses #usernameEntry; legacy pages use loginfmt
