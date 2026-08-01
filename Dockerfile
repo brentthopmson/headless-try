@@ -1,41 +1,9 @@
 # syntax=docker/dockerfile:1
 
-# Chromium for puppeteer is installed + verified at BUILD time instead of on
-# first request. At runtime `chromium.executablePath(remoteExecutablePath)`
-# short-circuits on an existing /tmp/chromium (see index.js existsSync check),
-# so no download / write happens after boot -- eliminating the concurrent
-# extraction race that produced `spawn ETXTBSY`.
-
-FROM node:20-slim AS deps
-
-WORKDIR /app
-
-ENV NODE_ENV=production
-
-# Runtime libraries for the @sparticuz/chromium-min headless shell
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-     ca-certificates \
-     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
-     libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
-     libgbm1 libasound2 libatspi2.0-0 libcairo2 libcairo-gobject2 \
-     libpango-1.0-0 libpangocairo-1.0-0 libxcursor1 libx11-xcb1 \
-     fonts-liberation \
-  && rm -rf /var/lib/apt/lists/*
-
-COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev
-
-# Download the Chromium pack, extract it, and brotli-inflate to
-# /tmp/chromium (binary) + /tmp/fonts, then verify the binary is executable
-# and all its shared-library dependencies resolve. (Running `--version` here
-# can hang the build: without --disable-gpu the gpu-process blocks on slim
-# builders. At runtime the app launches with --disable-gpu/--no-sandbox.)
-# URL matches `remoteExecutablePath` in src/utils/utils.js.
-RUN node -e "require('@sparticuz/chromium-min').executablePath('https://github.com/Sparticuz/chromium/releases/download/v123.0.1/chromium-v123.0.1-pack.tar').then(p=>console.log('Chromium installed at '+p)).catch(e=>{console.error(e);process.exit(1)})" \
-  && test -x /tmp/chromium \
-  && sh -c 'if ldd /tmp/chromium 2>&1 | grep -q "not found"; then echo "Missing Chromium shared libraries:"; ldd /tmp/chromium 2>&1 | grep "not found"; exit 1; fi' \
-  && echo "Chromium binary verified at build time"
+# FULL Chromium is installed via apt (not @sparticuz/chromium-min "chrome-headless-shell").
+# The stripped headless shell never fires domcontentloaded on modern heavy JS pages
+# (login.live.com/login.srf), leaving rows stuck in WAITINGEMAIL/PROCESSING. Full
+# Chromium renders them like a real browser (this is what the Nixpacks deployment used).
 
 FROM node:20-slim AS build
 
@@ -53,24 +21,19 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV PORT=3000
-# Tell utils.js the browser is pre-installed so it never deletes /tmp/chromium
-# (which would force a runtime re-download + re-extract on first request).
-ENV CHROMIUM_PREINSTALLED=true
-ENV FONTCONFIG_PATH=/tmp/fonts
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
      ca-certificates \
+     chromium \
+     fonts-liberation \
      libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
      libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
      libgbm1 libasound2 libatspi2.0-0 libcairo2 libcairo-gobject2 \
      libpango-1.0-0 libpangocairo-1.0-0 libxcursor1 libx11-xcb1 \
-     fonts-liberation \
-  && rm -rf /var/lib/apt/lists/*
-
-# Pre-installed browser binary + fonts (baked at build time, copied across stages)
-COPY --from=deps /tmp/chromium /tmp/chromium
-COPY --from=deps /tmp/fonts /tmp/fonts
+  && rm -rf /var/lib/apt/lists/* \
+  && test -x /usr/bin/chromium \
+  && echo "Full Chromium verified at /usr/bin/chromium"
 
 # App (non-standalone build: full node_modules + next start)
 COPY --from=build /app/package.json /app/package-lock.json ./

@@ -4,6 +4,15 @@ export const localExecutablePath =
     : process.platform === "linux"
     ? "/usr/bin/google-chrome"
     : "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+// Production uses FULL Chromium (installed via apt in the Dockerfile) rather than
+// the @sparticuz/chromium-min "chrome-headless-shell". The stripped headless shell
+// never fires domcontentloaded on modern heavy JS pages (login.live.com/login.srf),
+// leaving rows stuck in WAITINGEMAIL/PROCESSING. Full Chromium renders them like a
+// real browser (this is what the Nixpacks deployment used, which worked).
+export const fullChromiumExecutablePath = process.env.CHROME_PATH || "/usr/bin/chromium";
+// NOTE: remoteExecutablePath stays as the sparticuz pack URL — other routes still
+// call chromium.executablePath(remoteExecutablePath), which expects the brotli pack
+// location, not a bare binary path.
 export const remoteExecutablePath =
   "https://github.com/Sparticuz/chromium/releases/download/v123.0.1/chromium-v123.0.1-pack.tar";
 
@@ -25,8 +34,6 @@ export function getRandomUserAgent() {
 export const userAgent = getRandomUserAgent(); // Maintain legacy export just in case downstream modules reference it
 
 import puppeteer from "puppeteer-core";
-import chromium from "@sparticuz/chromium-min";
-import { existsSync, rmSync } from 'node:fs';
 
 let _puppeteerExtra = null;
 
@@ -109,20 +116,7 @@ async function getPuppeteerExtra() {
  * Automatically randomizes User-Agent while keeping the physical layout
  * locked to standard widescreen dimensions (1920x1080) for automation safety.
  */
-let _chromiumCacheCleaned = false;
-
 export async function launchBrowser(customOptions = {}) {
-  // Clean stale chromium binary from Docker layer cache (once per process).
-  // Skipped when the image pre-installed the browser at build time
-  // (Dockerfile sets CHROMIUM_PREINSTALLED=true) so /tmp/chromium is reused
-  // instead of forcing a runtime re-download/re-extract on first request
-  // (the source of concurrent `spawn ETXTBSY` races).
-  if (!isDev && !_chromiumCacheCleaned && !process.env.CHROMIUM_PREINSTALLED) {
-    _chromiumCacheCleaned = true;
-    if (existsSync('/tmp/chromium')) {
-      try { rmSync('/tmp/chromium', { recursive: true }); } catch (_) {}
-    }
-  }
 
   // 1. Resolve User-Agent (dynamic random selection by default)
   const selectedUA = customOptions.userAgent || getRandomUserAgent();
@@ -131,13 +125,9 @@ export async function launchBrowser(customOptions = {}) {
   const defaultViewport = { width: 1920, height: 1080, deviceScaleFactor: 1 };
 
   const baseArgs = [
-    ...(isDev
-      ? [
-          "--disable-blink-features=AutomationControlled",
-          "--disable-features=site-per-process",
-          "--disable-site-isolation-trials"
-        ]
-      : [...chromium.args.filter(a => !a.startsWith('--headless')), "--disable-blink-features=AutomationControlled"]),
+    "--disable-blink-features=AutomationControlled",
+    "--disable-features=site-per-process",
+    "--disable-site-isolation-trials",
     `--user-agent=${selectedUA}`,
     '--window-size=1920,1080',
     '--force-device-scale-factor=1',
@@ -179,7 +169,7 @@ export async function launchBrowser(customOptions = {}) {
     args: baseArgs,
     dumpio: false,
     defaultViewport,
-    executablePath: isDev ? localExecutablePath : await chromium.executablePath(remoteExecutablePath),
+    executablePath: isDev ? localExecutablePath : fullChromiumExecutablePath,
     headless: "new",
     timeout: 60000,
   };
