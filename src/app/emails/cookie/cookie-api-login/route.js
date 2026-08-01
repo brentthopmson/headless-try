@@ -1507,8 +1507,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
     // Diagnostic heartbeat: periodically log where this row's processing is,
     // so a long-stalled state (e.g. stuck in PROCESSING) is visible in platform
-    // logs with the page URL it's parked on.
-    const diagInterval = setInterval(() => {
+    // logs with the page URL it's parked on. Only started when info logging is
+    // enabled (skipped in production where LOG_LEVEL defaults to warn).
+    const diagInterval = logger.infoEnabled() ? setInterval(() => {
         try {
             let diagUrl = 'no-page';
             if (page && typeof page.url === 'function') {
@@ -1518,7 +1519,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         } catch (diagErr) {
             logger.info(`[DIAG][${browserId}] ${instanceId} status=${status} finalStatus=${finalStatus} elapsed=${((Date.now() - _timer.start) / 1000).toFixed(1)}s diag-error=${diagErr.message}`);
         }
-    }, 10000);
+    }, 10000) : null;
 
     const userDataDir = `/tmp/users_data/${browserId}`;
     let browser = null;
@@ -4992,7 +4993,7 @@ export async function OPTIONS() {
 }
 
 export async function POST(request) {
-    console.log("--- POST function entered ---"); // Log at the very beginning of POST
+    if (logger.infoEnabled()) console.log("--- POST function entered ---"); // Debug marker, suppressed in production
     let requestBrowserId = null; // Added for finally block access
     // Handle preflight request
     if (request.method === 'OPTIONS') {

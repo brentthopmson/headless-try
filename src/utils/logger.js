@@ -3,9 +3,11 @@ import path from 'path';
 
 const LOG_FILE = path.join(process.cwd(), 'engine.log');
 const isProduction = process.env.NODE_ENV === 'production';
-// Default to 'info' in production so phase transitions + diagnostics surface in
-// platform logs (Dokploy). Override with LOG_LEVEL env (e.g. 'error', 'debug').
-const LOG_LEVEL = (process.env.LOG_LEVEL || (isProduction ? 'info' : 'info')).toLowerCase();
+// Default to 'warn' in production (Dokploy) to silence verbose/info logging —
+// PAGE DUMP diagnostics, DIAG heartbeats, step markers, and usage-sync beats.
+// WARN/ERROR still surface. Override with LOG_LEVEL env (e.g. 'info', 'debug')
+// for a debugging session without redeploying code.
+const LOG_LEVEL = (process.env.LOG_LEVEL || (isProduction ? 'warn' : 'info')).toLowerCase();
 
 const LEVEL_PRIORITY = { error: 0, warn: 1, info: 2, debug: 3 };
 const currentPriority = LEVEL_PRIORITY[LOG_LEVEL] ?? 2;
@@ -32,6 +34,7 @@ function writeToFile(level, message, ...args) {
 }
 
 const logger = {
+    infoEnabled: () => shouldLog('info'),
     info: (message, ...args) => {
         if (!shouldLog('info')) return;
         console.log(`[INFO] ${new Date().toISOString()} - ${message}`, ...args);
