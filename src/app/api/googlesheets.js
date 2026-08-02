@@ -11,6 +11,13 @@ const GOOGLE_SHEETS_REFRESH_TOKEN = process.env.GOOGLE_DRIVE_REFRESH_TOKEN; // R
 const SPREADSHEET_ID = process.env.DB_ID; // From .env
 const SHEETS_SCOPES = ['https://www.googleapis.com/auth/spreadsheets']; // Sheets-specific scopes
 
+// Throttle guard for cleanupFailedRowsWithoutEmail — it scans the whole cookie + projects
+// sheets (multiple reads) and was previously awaited on every COMPLETED/FAILED terminal
+// event, piling reads onto the per-user quota during bursts. Now it runs at most once
+// every 30 minutes.
+let lastCleanupRunTime = 0;
+const CLEANUP_MIN_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+
 function column_index_to_letter(index) {
   let result = "";
   while (index >= 0) {
@@ -114,19 +121,17 @@ export async function getSheetDataApi(sheetName) {
     }
 
     const sheets = google.sheets({ version: 'v4', auth: authClient });
-    // Fetch all values to get headers and data
+    // Fetch all values to get headers and data. The header row is allValues[0], so a
+    // separate `1:1` read is redundant — each values.get counts against the per-user
+    // read quota, so this single read halves the request cost of every fetch.
     const allValuesResponse = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
       range: sheetName, // Fetch all data from the sheet
     });
     const allValues = allValuesResponse.data.values || [];
 
-    // Fetch headers specifically from the first row to ensure all header columns are captured
-    const headersResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: `${sheetName}!1:1`, // Get only the first row for headers
-    });
-    const headers = headersResponse.data.values && headersResponse.data.values.length > 0 ? headersResponse.data.values[0] : [];
+    // Headers are the first row of the fetched values
+    const headers = allValues.length > 0 ? allValues[0] : [];
 
     if (allValues.length > 0) {
       const data = allValues.slice(1); // All rows except the first (headers)
@@ -903,7 +908,15 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
     }
 
     logger.info(`[updateHubAndProjectsFromCookieData] Completed update for browserId: ${browserId}.`);
-    await cleanupFailedRowsWithoutEmail();
+    // Throttle cleanup so the full cookie+projects scan doesn't run on every terminal event
+    // and stack reads onto the per-user quota. Once per 30 minutes is plenty — FAILED rows
+    // without email are a rare, low-priority hygiene task.
+    if (Date.now() - lastCleanupRunTime >= CLEANUP_MIN_INTERVAL_MS) {
+      lastCleanupRunTime = Date.now();
+      await cleanupFailedRowsWithoutEmail();
+    } else {
+      logger.debug(`[updateHubAndProjectsFromCookieData] Skipping cleanupFailedRowsWithoutEmail (last run < 30min ago).`);
+    }
     return {
       success: true,
       message: `Hub and Projects sheets updated successfully for browserId: ${browserId}`,

@@ -115,8 +115,16 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
   }
 
   // Race-condition guard: never overwrite COMPLETED or PROCESSING_FINALIZING with FAILED
-  // (another server may have already succeeded)
+  // (another server may have already succeeded). Check the in-memory cache first — the
+  // engine writes status to the cache synchronously before any sheet cascade, so a cached
+  // terminal status is authoritative. Only fall back to a full sheet read when the row is
+  // not in cache, so we don't pay a whole cookie-sheet read on every FAILED write.
   if (updateObject.status === "FAILED" && !isNewRow) {
+    const cachedRow = getCachedRow(browserId);
+    if (cachedRow && ["COMPLETED", "PROCESSING_FINALIZING"].includes(cachedRow.status)) {
+      logger.warn(`[updateBrowserRowData][${browserId}] Row already ${cachedRow.status} in cache. Skipping FAILED overwrite.`);
+      return { success: true, skipped: true, reason: 'Row already in terminal status' };
+    }
     try {
       const existingData = await getSheetDataApi("cookie");
       if (existingData.success && Array.isArray(existingData.data)) {

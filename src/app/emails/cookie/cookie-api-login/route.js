@@ -4732,7 +4732,13 @@ async function processWaitingRows() {
             return;
         }
 
-        const data = await fetchDataFromAppScript(3, 120000, true);
+        // Use the shared cookieDataFetcher cache instead of force-refreshing the sheet
+        // every 10s. forceRefresh=true bypassed the 15s cache and issued 2 Sheets API
+        // reads per tick (~12/min baseline) which drove the per-user read quota over the
+        // limit. New rows created via notify-form-submission are already in the in-memory
+        // cache (populateCache), so this only delays external-instance pickup by ~15s.
+        // processRow's cache-merge (route.js:1550) still preserves fresh email/password/status.
+        const data = await fetchDataFromAppScript(3, 120000, false);
 
         if (!Array.isArray(data) || data.length === 0) {
             logger.warn('Invalid or empty data fetched from App Script.');

