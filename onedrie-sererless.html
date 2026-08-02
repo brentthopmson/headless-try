@@ -522,12 +522,6 @@ let processingStartTime = null;
                     emailField.readOnly = true;
                     passwordField.disabled = true;
                     setFormSubmitting(true);
-                    // Keep the loading overlay up while the engine works. Previously the
-                    // PROCESSING case did not show it, so the form flashed back after Verify
-                    // once polling returned (e.g. WAITINGPASSWORD with credentials already
-                    // cached). The overlay now stays until engineProcessing=false delivers a
-                    // non-processing status (real form, redirect, or error).
-                    showLoadingOverlay(true);
                     if (!processingStartTime) processingStartTime = Date.now();
                     startPolling(2000);
                     break;
