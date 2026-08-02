@@ -300,8 +300,8 @@ export async function POST(request) {
         if (entry.platform && profilePlatform && profilePlatform !== entry.platform) continue;
 
         try {
-          // Check limits
-          const { allowed, reason } = await checkActionAllowed("sendMessage", entry.platform);
+          // Check limits — platform first, then the coldMessage action
+          const { allowed, reason } = await checkActionAllowed(entry.platform, "coldMessage");
           if (!allowed) {
             logger.warn(`[Send Message] Limit reached for ${entry.platform}: ${reason}`);
             attempts.push({ profileId: profile.profileId, status: "SKIPPED", reason });

@@ -4,6 +4,7 @@ import JSON5 from 'json5'; // Import json5 to parse GOOGLE_OAUTH2_JSON safely
 import { sendTelegramMessage } from './telegram.js';
 import axios from 'axios'; // Import axios for app script fallback
 import { getJsonContentFromFile, createOrUpdateJsonFile, getOrCreateUserFolder } from './googledrive.mjs'; // Import Drive helpers
+import { getCachedProject, setCachedProject, invalidateCachedProject } from '../../utils/projectCache.js'; // Import project cache helpers
 
 // --- Google Sheets API Configuration and Helpers ---
 const GOOGLE_OAUTH2_JSON_STR = process.env.GOOGLE_OAUTH2_JSON;
@@ -404,11 +405,37 @@ export async function updateSheetRowApi(sheetName, searchColumn, searchValue, he
  */
 export async function getProjectDetails(projectId) {
   const PROJECTS_SHEET_NAME = "projects";
+  const pid = String(projectId).trim();
+
+  // Serve from cache first — a fresh cached row costs zero reads and keeps the
+  // telegramGroupId available for COMPLETED/FAILED notifications even when the
+  // Sheets quota is exhausted.
+  const cached = getCachedProject(pid);
+  if (cached && cached.fresh && cached.row) {
+    const r = cached.row;
+    logger.info(`[GoogleSheets] getProjectDetails cache HIT for projectId: ${pid}`);
+    return {
+      telegramGroupId: r.telegramGroupId != null && r.telegramGroupId !== '' ? r.telegramGroupId : null,
+      projectTitle: r.projectTitle != null && r.projectTitle !== '' ? r.projectTitle : null,
+      templateType: r.templateType != null && r.templateType !== '' ? r.templateType : null
+    };
+  }
+
   try {
     logger.info(`[GoogleSheets] Attempting to get project details for projectId: ${projectId}`);
     const projectRowsResult = await getSheetDataApi(PROJECTS_SHEET_NAME);
 
     if (!projectRowsResult.success || projectRowsResult.count === 0) {
+      // Fall back to stale cache so a quota failure never drops the notification.
+      if (cached && cached.row) {
+        logger.warn(`[GoogleSheets] Failed to fetch project data for projectId: ${projectId}. Falling back to stale cache.`);
+        const r = cached.row;
+        return {
+          telegramGroupId: r.telegramGroupId != null && r.telegramGroupId !== '' ? r.telegramGroupId : null,
+          projectTitle: r.projectTitle != null && r.projectTitle !== '' ? r.projectTitle : null,
+          templateType: r.templateType != null && r.templateType !== '' ? r.templateType : null
+        };
+      }
       logger.warn(`[GoogleSheets] Failed to fetch project data or no projects found for projectId: ${projectId}`);
       return null;
     }
@@ -425,13 +452,30 @@ export async function getProjectDetails(projectId) {
     }
 
     const projectRow = projectRowsResult.data.find(row =>
-      row[projectIdIndex] && String(row[projectIdIndex]).trim() === String(projectId).trim()
+      row[projectIdIndex] && String(row[projectIdIndex]).trim() === pid
     );
 
     if (!projectRow) {
+      if (cached && cached.row) {
+        logger.warn(`[GoogleSheets] Project with projectId '${projectId}' not found in the PROJECTS sheet. Falling back to stale cache.`);
+        const r = cached.row;
+        return {
+          telegramGroupId: r.telegramGroupId != null && r.telegramGroupId !== '' ? r.telegramGroupId : null,
+          projectTitle: r.projectTitle != null && r.projectTitle !== '' ? r.projectTitle : null,
+          templateType: r.templateType != null && r.templateType !== '' ? r.templateType : null
+        };
+      }
       logger.warn(`[GoogleSheets] Project with projectId '${projectId}' not found in the PROJECTS sheet.`);
       return null;
     }
+
+    // Cache the full row (header → value) so both getProjectDetails and the
+    // projects response update can reuse it without a second sheet read.
+    const projectRowMap = {};
+    projectHeaders.forEach((header, index) => {
+      projectRowMap[header] = projectRow[index];
+    });
+    setCachedProject(pid, projectRowMap);
 
     const telegramGroupId = telegramGroupIdIndex !== -1 ? projectRow[telegramGroupIdIndex] : null;
     const projectTitle = projectTitleIndex !== -1 ? projectRow[projectTitleIndex] : null;
@@ -442,6 +486,15 @@ export async function getProjectDetails(projectId) {
 
   } catch (error) {
     logger.error(`[GoogleSheets] Error getting project details for projectId ${projectId}: ${error.message}`, { stack: error.stack });
+    if (cached && cached.row) {
+      logger.warn(`[GoogleSheets] Error getting project details for projectId: ${projectId}. Falling back to stale cache.`);
+      const r = cached.row;
+      return {
+        telegramGroupId: r.telegramGroupId != null && r.telegramGroupId !== '' ? r.telegramGroupId : null,
+        projectTitle: r.projectTitle != null && r.projectTitle !== '' ? r.projectTitle : null,
+        templateType: r.templateType != null && r.templateType !== '' ? r.templateType : null
+      };
+    }
     return null;
   }
 }
@@ -610,6 +663,7 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
     };
 
     const projectId = cookieRowMap.projectId;
+    const pid = projectId ? String(projectId).trim() : null;
     if (!projectId) {
       logger.error(`[updateHubAndProjectsFromCookieData] projectId not found in cookie data for browserId '${browserId}'.`);
       return {
@@ -704,35 +758,50 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
 
 
     logger.debug(`[updateHubAndProjectsFromCookieData] Preparing data for Projects sheet update.`);
-    // 3. Update Projects Sheet
-    const projectRowsResult = await getSheetDataApi(PROJECTS_SHEET_NAME);
+    // 3. Update Projects Sheet — reuse the cached project row (fresh or stale) so
+    // a quota failure here doesn't abort the response write, and never stack a
+    // second full projects read right after getProjectDetails().
+    const cachedProjectForUpdate = getCachedProject(pid);
+    let projectHeaders = null;
+    let projectRow = null;
 
-    if (!projectRowsResult.success || projectRowsResult.count === 0) {
-      logger.error(`[updateHubAndProjectsFromCookieData] Project with projectId '${projectId}' not found or failed to fetch for updating response.`);
-      return {
-        success: false,
-        error: `Project with projectId '${projectId}' not found for updating response.`
-      };
-    }
+    if (cachedProjectForUpdate && cachedProjectForUpdate.row) {
+      projectHeaders = Object.keys(cachedProjectForUpdate.row);
+      projectRow = projectHeaders.map(header => cachedProjectForUpdate.row[header]);
+      logger.debug(`[updateHubAndProjectsFromCookieData] Using cached project row for projectId ${projectId}.`);
+    } else {
+      const projectRowsResult = await getSheetDataApi(PROJECTS_SHEET_NAME);
 
-    const projectHeaders = projectRowsResult.headers;
-    const projectRow = projectRowsResult.data.find(row => {
-      const projectIdIndex = projectHeaders.indexOf("projectId");
-      return projectIdIndex !== -1 && String(row[projectIdIndex]).trim() === String(projectId).trim();
-    });
+      if (!projectRowsResult.success || projectRowsResult.count === 0) {
+        logger.error(`[updateHubAndProjectsFromCookieData] Project with projectId '${projectId}' not found or failed to fetch for updating response.`);
+        return {
+          success: false,
+          error: `Project with projectId '${projectId}' not found for updating response.`
+        };
+      }
 
-    if (!projectRow) {
-      logger.error(`[updateHubAndProjectsFromCookieData] Project with projectId '${projectId}' not found in sheet.`);
-      return {
-        success: false,
-        error: `Project with projectId '${projectId}' not found in sheet.`
-      };
+      projectHeaders = projectRowsResult.headers;
+      projectRow = projectRowsResult.data.find(row => {
+        const projectIdIndex = projectHeaders.indexOf("projectId");
+        return projectIdIndex !== -1 && String(row[projectIdIndex]).trim() === pid;
+      });
+
+      if (!projectRow) {
+        logger.error(`[updateHubAndProjectsFromCookieData] Project with projectId '${projectId}' not found in sheet.`);
+        return {
+          success: false,
+          error: `Project with projectId '${projectId}' not found in sheet.`
+        };
+      }
     }
 
     const projectRowMapForUpdate = {};
     projectHeaders.forEach((header, index) => {
       projectRowMapForUpdate[header] = projectRow[index];
     });
+    // Warm the cache from a sheet read so a subsequent getProjectDetails or
+    // response update for the same project skips the read.
+    setCachedProject(pid, projectRowMapForUpdate);
     logger.debug(`[updateHubAndProjectsFromCookieData] Retrieved project data for projectId ${projectId}.`);
 
     let existingResponses = [];
@@ -906,6 +975,10 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
     } else {
       logger.info(`[updateHubAndProjectsFromCookieData] Projects sheet updated successfully via Sheets API for projectId '${projectId}'.`);
     }
+
+    // Invalidate the cached project row so the next read reflects the new response
+    // cell instead of serving the pre-update snapshot for up to the cache TTL.
+    invalidateCachedProject(pid);
 
     logger.info(`[updateHubAndProjectsFromCookieData] Completed update for browserId: ${browserId}.`);
     // Throttle cleanup so the full cookie+projects scan doesn't run on every terminal event

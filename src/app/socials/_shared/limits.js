@@ -1,58 +1,98 @@
 import logger from "../../../utils/logger.js";
 import { getSheetDataApi } from '../../api/googlesheets.js';
 
+// Shared Limits sheet cache. Uses globalThis so ALL route modules (socials,
+// campaign engine) share the same instance even in Next.js dev mode where
+// webpack may create separate module scopes per route. One read every TTL with
+// stale fallback, so platform action limits and campaign caps stay available
+// even when the Sheets quota is exhausted.
+if (!globalThis.__limitsCacheState) {
+  globalThis.__limitsCacheState = {
+    headers: null,
+    data: null,
+    fetchedAt: 0,
+    inFlight: null,
+  };
+}
+const state = globalThis.__limitsCacheState;
+
+const LIMITS_SHEET_NAME = "Limits";
+const LIMITS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 const ACTION_TYPES = [
     "likeOnStory", "likesOnPost", "likesOnComment",
     "commentOnComment", "commentOnStory", "commentOnPost",
     "follow", "unfollow", "coldMessage"
 ];
 
-let limitsCache = null;
-let lastFetch = 0;
-const CACHE_TTL = 30000;
-
-async function fetchPlatformLimits(forceRefresh = false) {
+/**
+ * Returns the Limits sheet rows ({ headers, data }), reading the sheet at most
+ * once per TTL. On a failed read it falls back to stale cache so callers never
+ * get nothing. Single in-flight promise prevents read stampedes.
+ * @param {boolean} forceRefresh - bypass the TTL and re-read the sheet.
+ * @returns {Promise<{ headers: string[], data: string[][] } | null>}
+ */
+async function getLimitsSheet(forceRefresh = false) {
     const now = Date.now();
-    if (!forceRefresh && limitsCache && (now - lastFetch < CACHE_TTL)) return limitsCache;
+    if (!forceRefresh && state.data && state.headers && (now - state.fetchedAt < LIMITS_CACHE_TTL_MS)) {
+        logger.debug('[limits] Returning cached Limits data.');
+        return { headers: state.headers, data: state.data };
+    }
 
-    try {
-        const result = await getSheetDataApi("Limits");
-        if (!result.success) {
-            logger.warn(`[limits] Failed to fetch Limits sheet: ${result.error}`);
-            return limitsCache || {};
+    if (state.inFlight) {
+        return await state.inFlight;
+    }
+
+    state.inFlight = (async () => {
+        try {
+            const result = await getSheetDataApi(LIMITS_SHEET_NAME);
+            if (result.success && result.headers && result.data) {
+                state.headers = result.headers;
+                state.data = result.data;
+                state.fetchedAt = Date.now();
+                logger.info(`[limits] Limits data loaded (${result.data.length} rows).`);
+                return { headers: state.headers, data: state.data };
+            }
+            logger.warn(`[limits] Failed to fetch Limits sheet: ${result.error || 'unknown error'}. Falling back to stale cache.`);
+        } catch (e) {
+            logger.error(`[limits] Error fetching Limits: ${e.message}. Falling back to stale cache.`);
+        } finally {
+            state.inFlight = null;
         }
+        return (state.data && state.headers) ? { headers: state.headers, data: state.data } : null;
+    })();
 
-        const headers = result.headers;
-        const rows = result.data;
-        const limits = {};
+    return await state.inFlight;
+}
 
-        for (const row of rows) {
-            const platform = String(row[headers.indexOf("platform")] || "").toUpperCase().trim();
-            if (!platform) continue;
+async function fetchPlatformLimits() {
+    const sheet = await getLimitsSheet();
+    if (!sheet) return {};
 
-            limits[platform] = {};
-            for (const action of ACTION_TYPES) {
-                const colIdx = headers.indexOf(action);
-                if (colIdx !== -1 && row[colIdx]) {
-                    try {
-                        limits[platform][action] = JSON.parse(row[colIdx]);
-                    } catch (e) {
-                        limits[platform][action] = { hourly: "0", daily: "0", monthly: "0", cap: "" };
-                    }
-                } else {
+    const headers = sheet.headers;
+    const rows = sheet.data;
+    const limits = {};
+
+    for (const row of rows) {
+        const platform = String(row[headers.indexOf("platform")] || "").toUpperCase().trim();
+        if (!platform) continue;
+
+        limits[platform] = {};
+        for (const action of ACTION_TYPES) {
+            const colIdx = headers.indexOf(action);
+            if (colIdx !== -1 && row[colIdx]) {
+                try {
+                    limits[platform][action] = JSON.parse(row[colIdx]);
+                } catch (e) {
                     limits[platform][action] = { hourly: "0", daily: "0", monthly: "0", cap: "" };
                 }
+            } else {
+                limits[platform][action] = { hourly: "0", daily: "0", monthly: "0", cap: "" };
             }
         }
-
-        limitsCache = limits;
-        lastFetch = now;
-        logger.info(`[limits] Fetched limits for ${Object.keys(limits).length} platforms`);
-        return limits;
-    } catch (e) {
-        logger.error(`[limits] Error fetching limits: ${e.message}`);
-        return limitsCache || {};
     }
+
+    return limits;
 }
 
 export async function getPlatformLimits(platform) {
@@ -94,34 +134,38 @@ export async function checkActionAllowed(platform, action, accountUsage = {}) {
 }
 
 export async function getCampaignLimits() {
-    try {
-        const result = await getSheetDataApi("Limits");
-        if (!result.success) return { shootContactsLimit: Infinity, interactionLimit: Infinity };
+    const sheet = await getLimitsSheet();
+    if (!sheet) return { shootContactsLimit: Infinity, interactionLimit: Infinity };
 
-        const headers = result.headers;
-        const categoryIdx = headers.indexOf("category");
-        const shootIdx = headers.indexOf("shootContactsLimit");
-        const interactIdx = headers.indexOf("interactionLimit");
+    const headers = sheet.headers;
+    const categoryIdx = headers.indexOf("category");
+    const shootIdx = headers.indexOf("shootContactsLimit");
+    const interactIdx = headers.indexOf("interactionLimit");
 
-        if (categoryIdx === -1) return { shootContactsLimit: Infinity, interactionLimit: Infinity };
+    if (categoryIdx === -1) return { shootContactsLimit: Infinity, interactionLimit: Infinity };
 
-        const campaignRow = result.data.find(r => String(r[categoryIdx]).trim().toLowerCase() === "campaign");
-        if (!campaignRow) return { shootContactsLimit: Infinity, interactionLimit: Infinity };
+    const campaignRow = sheet.data.find(r => String(r[categoryIdx]).trim().toLowerCase() === "campaign");
+    if (!campaignRow) return { shootContactsLimit: Infinity, interactionLimit: Infinity };
 
-        const parseLimit = (val) => {
-            if (!val) return Infinity;
-            const n = parseInt(val, 10);
-            return (!isNaN(n) && n >= 0) ? n : Infinity;
-        };
+    const parseLimit = (val) => {
+        if (!val) return Infinity;
+        const n = parseInt(val, 10);
+        return (!isNaN(n) && n >= 0) ? n : Infinity;
+    };
 
-        return {
-            shootContactsLimit: parseLimit(shootIdx !== -1 ? campaignRow[shootIdx] : null),
-            interactionLimit: parseLimit(interactIdx !== -1 ? campaignRow[interactIdx] : null),
-        };
-    } catch (e) {
-        logger.warn(`[getCampaignLimits] Error: ${e.message}`);
-        return { shootContactsLimit: Infinity, interactionLimit: Infinity };
-    }
+    return {
+        shootContactsLimit: parseLimit(shootIdx !== -1 ? campaignRow[shootIdx] : null),
+        interactionLimit: parseLimit(interactIdx !== -1 ? campaignRow[interactIdx] : null),
+    };
+}
+
+export function getLimitsCacheStats() {
+    return {
+        hasData: !!(state.data && state.headers),
+        rows: state.data ? state.data.length : 0,
+        ageMs: state.fetchedAt ? Date.now() - state.fetchedAt : null,
+        ttlMs: LIMITS_CACHE_TTL_MS
+    };
 }
 
 export { ACTION_TYPES };

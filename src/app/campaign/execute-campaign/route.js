@@ -9,6 +9,7 @@ import { processPageInteractTask } from "../../socials/page-interact/route.js";
 import { processInboxInteractTask } from "../../socials/inbox-interact/route.js";
 import { processActivitiesInteractTask } from "../../socials/activities-interact/route.js";
 import { POST as sendMessageHandler } from "../../socials/send-message/route.js";
+import { getCampaignLimits } from "../../socials/_shared/limits.js";
 
 const STANDARD_88_COLUMNS = [
   'FIRSTNAME', 'LASTNAME', 'EMAIL', 'ADDRESS', 'CITY', 'STATE', 'COUNTRY', 'ZIPCODE', 'PHONE', 'SEX',
@@ -338,22 +339,11 @@ export async function POST(request) {
         }
       }
 
-      // Step 3b: Fetch plan limit (shootContactsLimit) from limits sheet
+      // Step 3b: Fetch plan limit (shootContactsLimit) from the cached Limits sheet
       let shootContactsLimit = Infinity;
       try {
-        const limitsResult = await getSheetDataApi("Limits");
-        if (limitsResult.success) {
-          const lHeaders = limitsResult.headers;
-          const categoryIdx = lHeaders.indexOf("category");
-          const limitValueIdx = lHeaders.indexOf("shootContactsLimit");
-          if (categoryIdx !== -1 && limitValueIdx !== -1) {
-            const limitRow = limitsResult.data.find(r => String(r[categoryIdx]).trim().toLowerCase() === "campaign");
-            if (limitRow && limitRow[limitValueIdx]) {
-              shootContactsLimit = parseInt(limitRow[limitValueIdx], 10);
-              if (isNaN(shootContactsLimit) || shootContactsLimit < 0) shootContactsLimit = Infinity;
-            }
-          }
-        }
+        const campaignLimits = await getCampaignLimits();
+        shootContactsLimit = campaignLimits.shootContactsLimit;
       } catch (limitErr) {
         logger.warn(`[Execute Campaign] Failed to fetch limits, proceeding without limit: ${limitErr.message}`);
       }
@@ -553,30 +543,13 @@ export async function POST(request) {
         }
       }
 
-      // Step 4b: Fetch both shootContactsLimit and interactionLimit from limits sheet
+      // Step 4b: Fetch both shootContactsLimit and interactionLimit from the cached Limits sheet
       let shootContactsLimit = Infinity;
       let interactionLimit = Infinity;
       try {
-        const limitsResult = await getSheetDataApi("Limits");
-        if (limitsResult.success) {
-          const lHeaders = limitsResult.headers;
-          const categoryIdx = lHeaders.indexOf("category");
-          const shootIdx = lHeaders.indexOf("shootContactsLimit");
-          const interactIdx = lHeaders.indexOf("interactionLimit");
-          if (categoryIdx !== -1) {
-            const limitRow = limitsResult.data.find(r => String(r[categoryIdx]).trim().toLowerCase() === "campaign");
-            if (limitRow) {
-              if (shootIdx !== -1 && limitRow[shootIdx]) {
-                const val = parseInt(limitRow[shootIdx], 10);
-                if (!isNaN(val) && val >= 0) shootContactsLimit = val;
-              }
-              if (interactIdx !== -1 && limitRow[interactIdx]) {
-                const val = parseInt(limitRow[interactIdx], 10);
-                if (!isNaN(val) && val >= 0) interactionLimit = val;
-              }
-            }
-          }
-        }
+        const campaignLimits = await getCampaignLimits();
+        shootContactsLimit = campaignLimits.shootContactsLimit;
+        interactionLimit = campaignLimits.interactionLimit;
       } catch (limitErr) {
         logger.warn(`[Execute Campaign] Failed to fetch social limits: ${limitErr.message}`);
       }

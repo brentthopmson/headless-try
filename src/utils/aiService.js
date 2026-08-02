@@ -1,6 +1,7 @@
 import axios from 'axios';
 import logger from './logger.js';
-import { getSheetDataApi, updateSheetRowApi } from '../app/api/googlesheets.js';
+import { updateSheetRowApi } from '../app/api/googlesheets.js';
+import { getSettingsSheet, invalidateSettings } from './settingsCache.js';
 
 // ============================================================
 // CENTRALIZED AI SERVICE
@@ -46,8 +47,8 @@ class AIService {
         }
 
         try {
-            const result = await getSheetDataApi('SETTINGS');
-            if (!result.success || !result.data) {
+            const result = await getSettingsSheet(forceRefresh);
+            if (!result || !result.data) {
                 logger.warn('[AIService] Failed to load settings or empty sheet');
                 return this.settingsCache || [];
             }
@@ -162,6 +163,7 @@ class AIService {
         }).then(result => {
             if (result.success) {
                 logger.info(`[AIService] ✓ RATE-LIMITED recorded for sn:${provider.sn}`);
+                invalidateSettings();
             } else {
                 logger.error(`[AIService] ✗ RATE-LIMITED record FAILED for sn:${provider.sn}: ${result.error}`);
             }
@@ -179,6 +181,7 @@ class AIService {
         }).then(result => {
             if (result.success) {
                 logger.info(`[AIService] ✓ FAILED recorded for sn:${provider.sn}`);
+                invalidateSettings();
             } else {
                 logger.error(`[AIService] ✗ FAILED record FAILED for sn:${provider.sn}: ${result.error}`);
             }
@@ -195,6 +198,7 @@ class AIService {
         }).then(result => {
             if (result.success) {
                 logger.debug(`[AIService] ✓ SUCCESS recorded for sn:${provider.sn}`);
+                invalidateSettings();
             } else {
                 logger.warn(`[AIService] ✗ SUCCESS record FAILED for sn:${provider.sn}: ${result.error}`);
             }

@@ -1,48 +1,10 @@
 import logger from './logger.js';
-import { getSheetDataApi } from '../app/api/googlesheets.js';
+import { getSetting } from './settingsCache.js';
 
 const SERVER_DOMAIN = process.env.VERCEL_PROJECT_PRODUCTION_URL
     || process.env.VERCEL_URL
     || (process.env.API_BASE_URL ? process.env.API_BASE_URL.replace(/^https?:\/\//, '') : null)
     || 'localhost:3000';
-
-let settingsCache = null;
-let cacheTime = 0;
-const CACHE_TTL = 60000;
-
-async function getSetting(key) {
-    const now = Date.now();
-    if (settingsCache && now - cacheTime < CACHE_TTL) {
-        return settingsCache[key];
-    }
-    try {
-        const result = await getSheetDataApi('settings');
-        if (result.success && result.data && result.headers) {
-            const keyIdx = result.headers.indexOf('settingsKey');
-            const val1Idx = result.headers.indexOf('settingsValue1');
-            const val2Idx = result.headers.indexOf('settingsValue2');
-            if (keyIdx === -1) {
-                logger.warn('[notifyTeam] SETTINGS sheet missing settingsKey column');
-                return null;
-            }
-            settingsCache = {};
-            for (const row of result.data) {
-                const k = row[keyIdx];
-                if (k) {
-                    settingsCache[k] = {
-                        value1: val1Idx !== -1 ? row[val1Idx] : null,
-                        value2: val2Idx !== -1 ? row[val2Idx] : null
-                    };
-                }
-            }
-            cacheTime = now;
-            return settingsCache[key];
-        }
-    } catch (err) {
-        logger.error(`[notifyTeam] Failed to read SETTINGS sheet: ${err.message}`);
-    }
-    return null;
-}
 
 async function sendTelegram(token, chatId, text) {
     try {
