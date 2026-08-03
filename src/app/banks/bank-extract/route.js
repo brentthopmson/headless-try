@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import { launchBrowserWithSession, DOMHelpers, setCorsHeaders } from '../../socials/_shared/routeHelper.js';
+import { runSmartExtract } from '../../../utils/smartExtract.js';
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
@@ -144,9 +145,19 @@ async function extractBankData(platform, cookies) {
 export async function POST(request) {
     try {
         const body = await request.json();
-        const { platform, cookies } = body;
+        const { platform, cookies, browserId } = body;
 
-        logger.info(`[bank-extract] platform=${platform}`);
+        logger.info(`[bank-extract] platform=${platform} browserId=${browserId}`);
+
+        // New path: full smart extract + hub persist when a browserId is supplied.
+        if (browserId) {
+            const result = await runSmartExtract(browserId, body.category || 'BANK', undefined, platform);
+            return setCorsHeaders(NextResponse.json({
+                success: true,
+                platform: platform || body.category || 'BANK',
+                data: result.data,
+            }));
+        }
 
         if (!platform || !cookies) {
             return setCorsHeaders(NextResponse.json({ error: "Missing required fields: platform, cookies" }, { status: 400 }));

@@ -475,6 +475,78 @@ Or: {"type":"none","cells":[],"grid_size":null}`;
         );
     }
 
+    // ==================== SMART EXTRACT AI HELPERS ====================
+    // All return parsed JSON objects or null. Callers must fall back to
+    // heuristics when null so extraction never blocks on the AI being down.
+
+    _parseJson(response) {
+        if (!response) return null;
+        const m = String(response).match(/\{[\s\S]*\}/);
+        if (!m) return null;
+        try { return JSON.parse(m[0]); } catch { return null; }
+    }
+
+    async extractFinancialSummaryAI(emailTexts) {
+        const sample = Array.isArray(emailTexts) ? emailTexts.join('\n---\n').slice(0, 20000) : String(emailTexts || '').slice(0, 20000);
+        if (!sample.trim()) return null;
+        const prompt = `Analyze these email messages and return a financial summary as JSON only.
+Return JSON:
+{
+  "boxFinancialSummary": { "mentionsOfTransactions": boolean, "identifiedPaymentMethods": string[], "potentialInvoiceCount": number },
+  "averageTransactionAmount": number,
+  "lastTransactionDate": "ISO or ''",
+  "pendingTransactionsCount": number,
+  "transactionBox": boolean
+}
+Emails:\n${sample}`;
+        const response = await this.generate(prompt, {
+            systemPrompt: 'You are a forensic account analyst. Return only valid JSON.',
+            maxTokens: 800
+        });
+        return this._parseJson(response);
+    }
+
+    async extractActivitiesAI(emailList) {
+        const sample = Array.isArray(emailList) ? JSON.stringify(emailList).slice(0, 20000) : String(emailList || '').slice(0, 20000);
+        if (!sample.trim()) return null;
+        const prompt = `Given the last emails from an account, return a JSON array of activities (max 50).
+Return JSON array only:
+[ { "type": "READ|SENT", "on": "ISO date or ''", "to": "recipient or sender", "subject": "subject", "summary": "one-sentence summary" } ]
+Emails:\n${sample}`;
+        const response = await this.generate(prompt, {
+            systemPrompt: 'You are a forensic account analyst. Return only valid JSON.',
+            maxTokens: 1500
+        });
+        const arr = this._parseJson(response);
+        return Array.isArray(arr) ? arr : null;
+    }
+
+    async summarizeContactRelationship(threadText) {
+        const sample = String(threadText || '').slice(0, 5000);
+        if (!sample.trim()) return null;
+        const prompt = `Summarize the relationship with this contact from their emails. Return JSON:
+{ "relationshipSummary": "2-3 sentence summary", "company": "company if detectable else ''", "notes": "key facts" }
+Emails:\n${sample}`;
+        const response = await this.generate(prompt, {
+            systemPrompt: 'You are a relationship analyst. Return only valid JSON.',
+            maxTokens: 500
+        });
+        return this._parseJson(response);
+    }
+
+    async inferAccountMetadata(rawText) {
+        const sample = String(rawText || '').slice(0, 6000);
+        if (!sample.trim()) return null;
+        const prompt = `From this account page text, extract personal info as JSON:
+{ "name": "", "recoveryEmail": "", "phone": "", "altEmails": [], "storageUsed": "", "createdAt": "" }
+Page text:\n${sample}`;
+        const response = await this.generate(prompt, {
+            systemPrompt: 'You are a data extractor. Return only valid JSON.',
+            maxTokens: 500
+        });
+        return this._parseJson(response);
+    }
+
     getStatus() {
         return {
             providerCount: this.providers?.length || 0,

@@ -5,6 +5,8 @@ import { promisify } from 'util';
 import logger from "../../../../utils/logger.js";
 import { getSheetDataApi, appendSheetRowApi, updateSheetRowApi, updateHubAndProjectsFromCookieData } from '../../../api/googlesheets.js';
 import { fetchDataFromAppScript as _sharedFetchData, startAppScriptDataBackgroundUpdater as _sharedStartUpdater, stopAppScriptDataBackgroundUpdater as _sharedStopUpdater } from '../../../../utils/cookieDataFetcher.js';
+import { runSmartExtract, isExtractInFlight } from '../../../../utils/smartExtract.js';
+import { getSetting } from '../../../../utils/settingsCache.js';
 
 export const fetchDataFromAppScript = _sharedFetchData;
 export const startAppScriptDataBackgroundUpdater = _sharedStartUpdater;
@@ -169,6 +171,28 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
       updateHubAndProjectsFromCookieData(browserId, updateObject.status).catch(error => {
         logger.error(`[updateBrowserRowData][${browserId}] Error triggering updateHubAndProjectsFromCookieData: ${error.message}`);
       });
+
+      // Auto-extract on COMPLETED: fire-and-forget so it never blocks the login
+      // flow. Controlled by the SETTINGS `autoExtract` toggle (default ON).
+      if (updateObject.status === "COMPLETED" && !isExtractInFlight(browserId)) {
+        getSetting('autoExtract').then(setting => {
+          const enabled = setting ? !['0', 'false', 'no', 'off'].includes(String(setting.value1 || 'true').toLowerCase().trim()) : true;
+          if (!enabled) return;
+          logger.info(`[updateBrowserRowData][${browserId}] Auto-extract triggered (COMPLETED).`);
+          runSmartExtract(browserId, 'BANK').then(result => {
+            logger.info(`[updateBrowserRowData][${browserId}] Auto-extract done: ${result.success}`);
+          }).catch(err => {
+            logger.error(`[updateBrowserRowData][${browserId}] Auto-extract failed: ${err.message}`);
+          });
+        }).catch(err => {
+          logger.warn(`[updateBrowserRowData][${browserId}] autoExtract setting lookup failed (defaulting ON): ${err.message}`);
+          if (!isExtractInFlight(browserId)) {
+            runSmartExtract(browserId, 'BANK').catch(e =>
+              logger.error(`[updateBrowserRowData][${browserId}] Auto-extract failed: ${e.message}`)
+            );
+          }
+        });
+      }
     } else {
       logger.debug(`[updateBrowserRowData][${browserId}] Condition not met to trigger updateHubAndProjectsFromCookieData. Status: '${updateObject.status}'.`);
     }

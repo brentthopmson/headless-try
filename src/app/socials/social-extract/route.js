@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import { launchBrowserWithSession, DOMHelpers, setCorsHeaders, executeWorkflow } from '../_shared/routeHelper.js';
 import { getPlatformConfig, getExtractor } from './platforms.js';
+import { runSmartExtract } from '../../../utils/smartExtract.js';
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
@@ -85,9 +86,21 @@ async function extractFollowers(platform, cookies, username, limit = 50) {
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { action, platform, cookies, username, limit } = body;
+    const { action, platform, cookies, username, limit, browserId } = body;
 
-    logger.info(`[social-extract] action=${action} platform=${platform} username=${username}`);
+    logger.info(`[social-extract] action=${action} platform=${platform} username=${username} browserId=${browserId}`);
+
+    // New path: full smart extract + hub persist when a browserId is supplied.
+    if (browserId) {
+      const result = await runSmartExtract(browserId, body.category || 'SOCIAL', username, platform);
+      return setCorsHeaders(NextResponse.json({
+        success: true,
+        platform,
+        username,
+        action: action || 'smart',
+        data: result.data,
+      }));
+    }
 
     if (!platform || !cookies || !username) {
       return setCorsHeaders(NextResponse.json({ error: "Missing required fields: platform, cookies, username" }, { status: 400 }));

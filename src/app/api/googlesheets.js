@@ -399,6 +399,60 @@ export async function updateSheetRowApi(sheetName, searchColumn, searchValue, he
 }
 
 /**
+ * Appends any missing column headers to a sheet so updateSheetRowApi can find
+ * them. updateSheetRowApi silently skips headers that don't exist, so new
+ * columns (e.g. wireExtract / bankExtract / socialExtract) must be added before
+ * writing. Only appends; never touches existing headers.
+ * @param {string} sheetName - e.g. 'hub'
+ * @param {string[]} columns - header names to ensure exist.
+ * @returns {Promise<{ success: boolean, error?: string, added: string[] }>}
+ */
+export async function ensureSheetColumns(sheetName, columns) {
+  if (!SPREADSHEET_ID) {
+    return { success: false, error: "SPREADSHEET_ID is not defined.", added: [] };
+  }
+  const wanted = (columns || []).filter(Boolean);
+  if (wanted.length === 0) {
+    return { success: true, added: [] };
+  }
+  try {
+    const authClient = await getSheetsAuthClient();
+    if (!authClient) {
+      return { success: false, error: "Failed to get Sheets API authentication client.", added: [] };
+    }
+
+    const sheets = google.sheets({ version: 'v4', auth: authClient });
+    const headersResponse = await sheets.spreadsheets.values.get({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${sheetName}!1:1`,
+    });
+    const headers = headersResponse.data.values?.[0] || [];
+
+    const missing = wanted.filter(h => !headers.includes(h));
+    if (missing.length === 0) {
+      return { success: true, added: [] };
+    }
+
+    // Write the missing headers starting at the first empty column after the
+    // last existing header.
+    const startColumnIndex = headers.length;
+    const missingRange = `${sheetName}!${column_index_to_letter(startColumnIndex)}1`;
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: missingRange,
+      valueInputOption: 'RAW',
+      resource: { values: [missing] },
+    });
+
+    logger.info(`[ensureSheetColumns] ${sheetName} — appended headers: ${missing.join(', ')}`);
+    return { success: true, added: missing };
+  } catch (error) {
+    logger.error(`[ensureSheetColumns] ${sheetName} error: ${error.message}`);
+    return { success: false, error: error.message, added: [] };
+  }
+}
+
+/**
  * Fetches specific details for a given projectId from the PROJECTS sheet.
  * @param {string} projectId - The projectId to search for.
  * @returns {Object|null} An object containing project details (telegramGroupId, projectTitle, templateType) if found, otherwise null.
