@@ -1868,6 +1868,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         } else if (status === "WAITINGEMAIL") {
             logger.info(`[processRow][${browserId}] Entering WAITINGEMAIL poll loop.`);
             logger.info(`[engineProcess][${browserId}] -WAITINGEMAIL (entering poll loop)`);
+            const waitingEmailStart = Date.now();
+            logger.info(`[processRow][${browserId}][SPEED] WAITINGEMAIL poll loop entered at t0.`);
             activelyProcessing.delete(browserId);
             let waitingEmailTechRetries = 0;
             // If strictly provides a known platform, navigate to its login URL immediately
@@ -1926,6 +1928,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         freshPassword = cachedForPoll.password;
                         _timer.emailFound = Date.now();
                         logger.info(`[processRow][${browserId}][WAITINGEMAIL] Email found in cache: '${currentEmail}'`);
+                        logger.info(`[processRow][${browserId}][SPEED] WAITINGEMAIL: email found in CACHE at +${Date.now() - waitingEmailStart}ms`);
                     }
 
                     // Fall back to sheet read if cache doesn't have email
@@ -1951,6 +1954,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         currentEmail = checkRow[checkColumnIndexes['email']];
                         freshPassword = checkRow[checkColumnIndexes['password']];
                         logger.debug(`[processRow][${browserId}][WAITINGEMAIL] Fetched email from sheet: '${currentEmail}'`);
+                        if (currentEmail && String(currentEmail).trim() !== "") {
+                            logger.info(`[processRow][${browserId}][SPEED] WAITINGEMAIL: email found via SHEET at +${Date.now() - waitingEmailStart}ms`);
+                        }
                     }
 
                     if (currentEmail && String(currentEmail).trim() !== "") {
@@ -2003,6 +2009,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         // After email is found, we need to determine platform and then proceed with checkAccountAccess
                         domain = email.split('@')[1].toLowerCase();
                         logger.info(`[processRow][${browserId}][WAITINGEMAIL] Resolving MX for ${domain}...`);
+                        const mxResolveStart = Date.now();
                         mxRecords = await resolveMx(domain).catch(() => []);
                         matchedPlatformKey = Object.keys(platformConfigs).find(key => {
                             const config = platformConfigs[key];
@@ -2012,8 +2019,11 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         updateData.platform = platform;
                         platformConfig = platformConfigs[platform] || {};
                         logger.info(`[processRow][${browserId}][WAITINGEMAIL] MX resolved (${mxRecords.length} records). platform=${platform}. Calling checkAccountAccess.`);
+                        logger.info(`[processRow][${browserId}][SPEED] WAITINGEMAIL: MX resolved in ${Date.now() - mxResolveStart}ms at +${Date.now() - waitingEmailStart}ms`);
 
+                        const caaStart = Date.now();
                         initialCheckResult = await withAccountCheckTimeout(checkAccountAccess(browser, page, email, password, platform, browserId, true, _timer), browserId); // For email retry, reuse session, no navigation
+                        logger.info(`[processRow][${browserId}][SPEED] WAITINGEMAIL: checkAccountAccess done in ${Date.now() - caaStart}ms at +${Date.now() - waitingEmailStart}ms -> verificationState=${initialCheckResult.verificationState}`);
                         logger.info(`[processRow][${browserId}] checkAccountAccess result: emailExists=${initialCheckResult.emailExists}, accountAccess=${initialCheckResult.accountAccess}, reachedInbox=${initialCheckResult.reachedInbox}, requiresVerification=${initialCheckResult.requiresVerification}, verificationState=${initialCheckResult.verificationState}, error=${initialCheckResult.error || 'none'}`);
 
                         // Immediately check the result for generic email errors and set status within the polling loop
@@ -2090,6 +2100,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             }
 
             logger.debug(`[processRow][${browserId}][WAITINGEMAIL] Exited poll loop. emailProvided: ${emailProvidedAndProcessed}, now: ${Date.now()}, timeoutAt: ${pollingTimeoutEmail}, diff: ${pollingTimeoutEmail - Date.now()}ms`);
+            logger.info(`[processRow][${browserId}][SPEED] WAITINGEMAIL: total phase duration ${Date.now() - waitingEmailStart}ms (emailProvided=${emailProvidedAndProcessed})`);
 
             if (emailProvidedAndProcessed) {
                 logger.info(`[processRow][${browserId}] Email found. checkAccountAccess: emailExists=${initialCheckResult.emailExists}, accountAccess=${initialCheckResult.accountAccess}, reachedInbox=${initialCheckResult.reachedInbox}, verificationState=${initialCheckResult.verificationState}`);
@@ -2486,52 +2497,137 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                                 logger.debug(`[processRow][${browserId}] Submitting password via Enter key on the password input.`);
                                 let clickedSelector = null;
+                                let submitMethod = null;
                                 const urlBeforePwSubmit = page.url();
 
-                                // Pressing Enter in the password field submits the form — more reliable and
-                                // faster than hunting for the submit button. Fluent UI renders the button in a
-                                // container that Puppeteer's { visible: true } heuristic can reject (briefly
-                                // display:none / zero-size), which caused false timeouts even though the button
-                                // was on the page. Enter works on both the legacy (#idSIButton9) and Fluent flows.
+                                // =====================================================================
+                                // ORIGINAL BUTTON-PRIMARY IMPLEMENTATION (preserved for reference).
+                                // Superseded by the Enter-first strategy below: Microsoft's Fluent UI renders
+                                // the submit button in a container that Puppeteer's { visible: true } heuristic
+                                // rejects (briefly display:none / zero-size), causing false timeouts even when
+                                // the button is on the page. Enter works on both the legacy (#idSIButton9) and
+                                // Fluent flows. Kept for reference only — do not delete.
+                                // =====================================================================
+                                /*
+                                logger.debug(`[processRow][${browserId}] Attempting to click password next button and await navigation. Selectors: ${JSON.stringify(passwordNextButtonSelector)}`);
+                                let selectorsToAttempt = Array.isArray(passwordNextButtonSelector) ? passwordNextButtonSelector : [passwordNextButtonSelector];
+
+                                for (const selector of selectorsToAttempt) {
+                                    try {
+                                        // Allow more time for dynamic rendering
+                                        await page.waitForSelector(selector, { visible: true, timeout: 15000 });
+                                        await new Promise(res => setTimeout(res, 150)); // Small delay for stability
+
+                                        // Attempt a JS click which can be more reliable in some cases
+                                        try {
+                                            await page.$eval(selector, el => (el.click && el.click()) || el.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+                                        } catch (jsClickError) {
+                                            // Fallback to page.click if $eval fails
+                                            await page.click(selector);
+                                        }
+
+                                        // NOTE: waitForNavigation is set up AFTER the click, so it can't observe
+                                        // the navigation it targets. It also blocks for the full timeout on pages
+                                        // with background network activity (Microsoft's device-fingerprinting
+                                        // iframe keeps networkidle0 from ever firing), making the engine appear
+                                        // stuck after the button press. Page state (URL change / error message)
+                                        // is the real signal and is checked right after, so just settle briefly.
+                                        await new Promise(res => setTimeout(res, 2500));
+
+                                        clickedSelector = selector;
+                                        logger.info(`[processRow][${browserId}] Clicked password next button using selector: ${clickedSelector}`);
+                                        break; // Click attempted, exit loop
+                                    } catch (clickNavError) {
+                                        logger.warn(`[processRow][${browserId}] Click on selector '${selector}' failed or not clickable. Trying next if available. Error: ${clickNavError.message}`);
+                                    }
+                                }
+
+                                if (!clickedSelector) {
+                                    // Fallback: try pressing Enter to submit the form (handles Fluent UI buttons)
+                                    try {
+                                        logger.info(`[processRow][${browserId}] Password button selectors failed, trying Enter key fallback.`);
+                                        await page.keyboard.press('Enter');
+                                        await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => null);
+                                        await new Promise(res => setTimeout(res, 1500));
+                                        clickedSelector = 'ENTER_KEY';
+                                        logger.info(`[processRow][${browserId}] Enter key fallback succeeded.`);
+                                    } catch (enterError) {
+                                        logger.warn(`[processRow][${browserId}] Enter key fallback also failed: ${enterError.message}`);
+                                    }
+                                }
+                                */
+                                // =====================================================================
+                                // ACTIVE STRATEGY: ENTER FIRST, BUTTON AS FALLBACK
+                                // =====================================================================
+
+                                // 1) ENTER FIRST — press Enter in the password field to submit the form.
+                                // NOTE: no waitForNavigation — it blocks for the full timeout on pages with
+                                // background network activity (Microsoft's device-fingerprinting iframe keeps
+                                // networkidle0 from ever firing), making the engine appear stuck after the
+                                // keypress. Page state (URL change / error message) is the real signal and is
+                                // checked right after, so just settle briefly.
                                 try {
                                     await page.focus(foundSelector).catch(() => null);
                                     await page.keyboard.press('Enter');
-                                    // NOTE: no waitForNavigation — it blocks for the full timeout on pages with
-                                    // background network activity (Microsoft's device-fingerprinting iframe keeps
-                                    // networkidle0 from ever firing), making the engine appear stuck after the
-                                    // keypress. Page state (URL change / error message) is the real signal and is
-                                    // checked right after, so just settle briefly.
                                     await new Promise(res => setTimeout(res, 2500));
                                     clickedSelector = 'ENTER_KEY';
-                                    logger.info(`[processRow][${browserId}] Password submitted via Enter key on password input.`);
+                                    submitMethod = 'ENTER_KEY';
+                                    logger.info(`[processRow][${browserId}][SPEED] Password submitted via Enter key on password input. Elapsed since WAITINGPASSWORD handler: ${Date.now() - (_timer.waitingPasswordHandler || _timer.start)}ms`);
                                 } catch (enterSubmitError) {
                                     logger.warn(`[processRow][${browserId}] Enter key submission failed: ${enterSubmitError.message}`);
                                 }
 
-                                if (!clickedSelector) {
-                                    // Persist WAITINGPASSWORD so user can re-submit instead of failing immediately
-                                    logger.info(`[processRow][${browserId}] Could not click any password next selectors. Persisting WAITINGPASSWORD and clearing password so user can retry.`);
-                                    finalStatus = "WAITINGPASSWORD";
-                                    updateData.status = finalStatus;
-                                    updateData.lastJsonResponse = JSON.stringify({
-                                        browserId, email, status: finalStatus,
-                                        emailExists: initialCheckResult.emailExists,
-                                        accountAccess: initialCheckResult.accountAccess,
-                                        reachedInbox: initialCheckResult.reachedInbox,
-                                        requiresVerification: initialCheckResult.requiresVerification,
-                                        verificationState: initialCheckResult.verificationState,
-                                        verificationOptions: initialCheckResult.verificationOptions || [],
-                                        platform, timestamp: new Date().toISOString(),
-                                        message: "Failed to submit password: button not found or not clickable. Please provide a new password."
-                                    });
-                                    notifyTeam({ type: 'PASSWORD_SUBMIT_FAILED', platform, email, browserId, detail: 'Could not click password next button' });
-                                    // Clear the password field and persist the WAITINGPASSWORD state
-                                    logger.debug(`[processRow][${browserId}] Clearing password. Returning to WAITINGPASSWORD state.`);
-                                    updateBrowserRowDataFast(browserId, { ...updateData, password: '', verified: false, fullAccess: false });
-                                    return; // Exit processRow so no later logic overwrites status
+                                // 2) VERIFY ENTER WORKED — poll briefly for a page state change. Microsoft
+                                // resolves the submit asynchronously (device fingerprinting, redirects), so
+                                // give it a bounded window before concluding it failed.
+                                if (submitMethod === 'ENTER_KEY') {
+                                    const enterCheckStart = Date.now();
+                                    let enterChangedPage = false;
+                                    while (Date.now() - enterCheckStart < 10000) {
+                                        const urlNow = page.url();
+                                        const pwVisibleNow = await page.evaluate((sels) => {
+                                            for (const s of sels) { try { if (document.querySelector(s)) return true; } catch(e){} }
+                                            return false;
+                                        }, passwordInputSelectors).catch(() => false);
+                                        if (urlNow !== urlBeforePwSubmit || !pwVisibleNow) { enterChangedPage = true; break; }
+                                        await new Promise(res => setTimeout(res, 1000));
+                                    }
+                                    logger.info(`[processRow][${browserId}][SPEED] Enter submit verification: changed=${enterChangedPage}, waited=${Date.now() - enterCheckStart}ms`);
+
+                                    // 3) BUTTON FALLBACK — only if Enter did not navigate the page.
+                                    if (!enterChangedPage) {
+                                        logger.info(`[processRow][${browserId}] Enter did not navigate the page. Falling back to password next button click.`);
+                                        const selectorsToAttempt = Array.isArray(passwordNextButtonSelector) ? passwordNextButtonSelector : [passwordNextButtonSelector];
+                                        for (const selector of selectorsToAttempt) {
+                                            try {
+                                                await page.waitForSelector(selector, { visible: true, timeout: 15000 });
+                                                await new Promise(res => setTimeout(res, 150)); // Small delay for stability
+                                                try {
+                                                    await page.$eval(selector, el => (el.click && el.click()) || el.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+                                                } catch (jsClickError) {
+                                                    await page.click(selector);
+                                                }
+                                                await new Promise(res => setTimeout(res, 2500));
+                                                clickedSelector = selector;
+                                                submitMethod = 'BUTTON:' + selector;
+                                                logger.info(`[processRow][${browserId}] Password next button fallback clicked using selector: ${selector}`);
+                                                break;
+                                            } catch (clickNavError) {
+                                                logger.warn(`[processRow][${browserId}] Button fallback click on selector '${selector}' failed or not clickable. Trying next if available. Error: ${clickNavError.message}`);
+                                            }
+                                        }
+                                    }
                                 }
 
-                                logger.info(`[processRow][${browserId}] Successfully processed password next button click and navigation.`);
+                                if (!clickedSelector) {
+                                    // Neither Enter nor the button worked. Do NOT revert to WAITINGPASSWORD —
+                                    // proceed to the next step; the PROCESSING_FINALIZING path navigates
+                                    // directly to the inbox if the login page is still showing.
+                                    logger.warn(`[processRow][${browserId}] Neither Enter nor password next button could submit the password. Continuing to the next step.`);
+                                } else {
+                                    logger.info(`[processRow][${browserId}] Successfully submitted password via ${submitMethod}.`);
+                                }
+
                                 await new Promise(res => setTimeout(res, 2000)); // Wait for page to settle
 
                                 // **CRITICAL**: Check for "Password sign-in isn't available" FIRST. This is a
@@ -2603,24 +2699,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     }
                                 }
 
-                                // Verify page actually changed — if URL is same and password input still visible, wrong button was clicked
-                                const urlAfterPwSubmit = page.url();
-                                const pwStillVisibleAfterSubmit = await page.evaluate((sels) => {
-                                    for (const s of sels) { try { if (document.querySelector(s)) return true; } catch(e){} }
-                                    return false;
-                                }, passwordInputSelectors).catch(() => false);
-                                if (!passwordFailedDetected && urlBeforePwSubmit === urlAfterPwSubmit && pwStillVisibleAfterSubmit) {
-                                    logger.warn(`[processRow][${browserId}] Password next button clicked but page did not change. Wrong button may have been clicked. Reverting to WAITINGPASSWORD.`);
-                                    finalStatus = "WAITINGPASSWORD";
-                                    updateData.status = finalStatus;
-                                    updateData.lastJsonResponse = JSON.stringify({
-                                        browserId, email, status: finalStatus,
-                                        message: "Password submit button did not navigate. Please try again."
-                                    });
-                                    notifyTeam({ type: 'PASSWORD_NO_NAVIGATION', platform, email, browserId, detail: 'Password button clicked but page did not navigate' });
-                                    updateBrowserRowDataFast(browserId, { ...updateData, password: '', verified: false, fullAccess: false });
-                                    return;
-                                }
+                                // NOTE: No "page did not change" revert here. After Enter (or the button
+                                // fallback) the submit was already verified above, and a still-visible
+                                // password input does NOT mean submission failed — Microsoft resolves the
+                                // auth asynchronously. Proceed to the next step (additionalViews ->
+                                // checkVerification -> inbox capture); PROCESSING_FINALIZING navigates
+                                // directly to the inbox if the login page is still showing.
 
                                 // Handle any additional views (like "Stay Signed In") that might appear after password submission
                                 const additionalViewsResult = await handleAdditionalViews(page, platformConfig, instanceId, 'post_password_submission');
