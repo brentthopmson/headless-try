@@ -854,7 +854,7 @@ let processingStartTime = null;
             let payload = { browserId: browserId, token: templateConfig.token };
             let updateType = '';
 
-            if (currentStatus === 'WAITINGEMAIL') {
+            if (currentStatus === 'WAITINGEMAIL' || currentStatus === 'WAITINGEMAILERROR') {
                 const email = emailField.value.trim();
                 if (!isValidEmail(email)) {
                     document.getElementById('InvalidEmail').style.display = 'block';
