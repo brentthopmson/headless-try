@@ -4,8 +4,7 @@ import { launchBrowser } from '../../../utils/utils.js';
 const BANK_URLS = [
   'https://www.chase.com/personal/dashboard',
   'https://secure.bankofamerica.com/login/sign-in/signOnV2',
-  'https://www.wellsfargo.com/accounts/',
-  'https://online banking portal'
+  'https://www.wellsfargo.com/accounts/'
 ];
 
 const INBOX_SELECTORS = [

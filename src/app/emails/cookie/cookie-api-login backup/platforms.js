@@ -90,7 +90,7 @@ export const platformConfigs = {
                 action: {
                     type: 'click',
                     selector: ['button::-p-text("Cancel")'],
-                    navigationWaitUntil: 'networkidle0'
+                    navigationWaitUntil: 'domcontentloaded'
                 }
             },
             {
@@ -102,7 +102,7 @@ export const platformConfigs = {
                 action: {
                     type: 'click',
                     selector: ['button::-p-text("Skip")'],
-                    navigationWaitUntil: 'networkidle0'
+                    navigationWaitUntil: 'domcontentloaded'
                 }
             }
             // If any other transient pop-ups appear, they would go here with an action.
@@ -174,6 +174,7 @@ export const platformConfigs = {
     },
     outlook: {
         inboxUrlPatterns: [
+            /account\.microsoft\.com\//, // Post-login landing for login.srf flows
             /m365\.cloud\.microsoft\//,
             /office\.com\//,
             /outlook\.office\.com\/mail/,
@@ -190,10 +191,14 @@ export const platformConfigs = {
             '#MailList',
             'div[aria-label*="Inbox" i]'
         ],
-        url: "https://login.microsoftonline.com/",
+        // Official "Sign in to Outlook" link — redirects to outlook.live.com/mail/?prompt=select_account,
+        // the account-picker flow that routes through the shared Microsoft IDP (login.microsoftonline.com/common).
+        // Unlike login.live.com/login.srf (consumer IDP only), this authenticates BOTH free Outlook/Hotmail
+        // accounts and Office 365 work/school accounts.
+        url: "https://go.microsoft.com/fwlink/p/?linkid=2125442&clcid=0x409&culture=en-us&country=us",
         mxKeywords: ['outlook', 'hotmail', 'microsoft'],
         selectors: {
-            input: "input[name='loginfmt']",
+            input: "#usernameEntry, input[name='loginfmt']", // New Fluent login page uses #usernameEntry; legacy pages use loginfmt
             nextButton: ["#idSIButton9", "button[type='submit'][data-testid='primaryButton']"],
             passwordInput: ["input[name='passwd']", "input[type='password']", "#passwordInput", "input#passwordEntry"],
             passwordNextButton: [
@@ -343,17 +348,16 @@ export const platformConfigs = {
                             await new Promise(r => setTimeout(r, 300));
                         }
                     } catch (e) { /* checkbox not found, continue */ }
-                    // Click Yes button
+                    // Click Yes button. A combined CSS selector list waits for whichever variant is
+                    // actually present (no 5s burn per stale selector), and domcontentloaded avoids the
+                    // fpt.live.com fingerprinting iframe that keeps networkidle0 from firing.
                     const yesSelectors = ["#idSIButton9", "button[aria-label='Yes'][type='submit']#acceptButton", "button.fui-Button.r1alrhcs.___jsyn8q0", "button[type='submit'].fui-Button"];
-                    for (const sel of yesSelectors) {
-                        try {
-                            await page.waitForSelector(sel, { visible: true, timeout: 5000 });
-                            const navPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => null);
-                            await page.click(sel);
-                            await navPromise;
-                            return;
-                        } catch (e) { continue; }
-                    }
+                    try {
+                        await page.waitForSelector(yesSelectors.join(', '), { visible: true, timeout: 3000 });
+                        const navPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => null);
+                        await page.click(yesSelectors.join(', '));
+                        await navPromise;
+                    } catch (e) { /* Yes button not found/clickable, fall through */ }
                 }
             },
             {
@@ -408,7 +412,7 @@ export const platformConfigs = {
                     selector: ['span[role="button"]', 'button', '#signInOptions', 'button[data-testid="secondaryButton"]'],
                     text: 'Other ways to sign in',
                     navigationWaitUntil: 'domcontentloaded',
-                    waitForSelector: "input[name='passwd'], input[type='password'], #passwordInput, input#passwordEntry, input[name='loginfmt']"
+                    waitForSelector: "input[name='passwd'], input[type='password'], #passwordInput, input#passwordEntry, #usernameEntry, input[name='loginfmt']"
                 }
             },
             {
@@ -457,7 +461,7 @@ export const platformConfigs = {
                     // Fallback 2: goBack if still on FIDO
                     if (page.url().includes('fido/')) {
                         logger.info(`[handleAdditionalViews][${instanceId}] Still on FIDO, going back`);
-                        await page.goBack({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => null);
+                        await page.goBack({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => null);
                         await new Promise(r => setTimeout(r, 2000));
                     }
                 }
@@ -497,7 +501,7 @@ export const platformConfigs = {
                 action: async (page, view, platformConfig) => {
                     const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
                     logger.info(`[handleAdditionalViews][${instanceId}] FIDO still present, navigating to inbox`);
-                    await page.goto('https://outlook.live.com/mail/', { waitUntil: 'networkidle0', timeout: 30000 }).catch(() => null);
+                    await page.goto('https://outlook.live.com/mail/', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
                     await new Promise(r => setTimeout(r, 3000));
                 }
             },
@@ -525,7 +529,7 @@ export const platformConfigs = {
                         } catch (e) { }
                     }
                     logger.info(`[handleAdditionalViews][${instanceId}] FIDO enrollment cancel not found, navigating to inbox`);
-                    await page.goto('https://outlook.live.com/mail/', { waitUntil: 'networkidle0', timeout: 30000 }).catch(() => null);
+                    await page.goto('https://outlook.live.com/mail/', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
                     await new Promise(r => setTimeout(r, 3000));
                 }
             },
@@ -598,7 +602,7 @@ export const platformConfigs = {
                     for (const sel of consentSelectors) {
                         try {
                             await page.waitForSelector(sel, { visible: true, timeout: 3000 });
-                            const navPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => null);
+                            const navPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => null);
                             await page.click(sel);
                             logger.info(`[handleAdditionalViews][${instanceId}] Clicked OAuth consent button: ${sel}`);
                             await navPromise;
@@ -607,7 +611,7 @@ export const platformConfigs = {
                         } catch (e) { continue; }
                     }
                     logger.warn(`[handleAdditionalViews][${instanceId}] Could not find OAuth consent button. Navigating to inbox directly.`);
-                    await page.goto('https://outlook.live.com/mail/', { waitUntil: 'networkidle0', timeout: 30000 }).catch(() => null);
+                    await page.goto('https://outlook.live.com/mail/', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
                     await new Promise(r => setTimeout(r, 3000));
                 }
             },
