@@ -285,6 +285,7 @@ async function collectEmailTexts(page, platform, maxEmails = 30) {
         try {
             await gotoRobust(page, financialSearchUrl(platform, term));
             await sleep(1500);
+            const hostname = platform === 'gmail' ? 'google.com' : 'outlook.live.com';
             const rows = await page.evaluate((host) => {
                 const selectors = host.includes('google')
                     ? ['tr[role="row"]', '.zA', '.zE', '[role="row"]']
@@ -303,7 +304,7 @@ async function collectEmailTexts(page, platform, maxEmails = 30) {
                     if (out.length >= 15) break;
                 }
                 return out;
-            }, window.location.hostname);
+            }, hostname);
 
             for (const r of rows) {
                 const key = r.slice(0, 120);
@@ -365,6 +366,7 @@ async function collectRecentEmails(page, platform, limit = 50) {
             await gotoRobust(page, url);
             await sleep(1500);
 
+            const hostname = platform === 'gmail' ? 'google.com' : 'outlook.live.com';
             const rows = await page.evaluate((host) => {
                 const selectors = host.includes('google')
                     ? ['tr[role="row"]', '.zA', '.zE']
@@ -378,7 +380,7 @@ async function collectRecentEmails(page, platform, limit = 50) {
                     });
                 }
                 return out.slice(0, 40);
-            }, window.location.hostname);
+            }, hostname);
 
             for (const r of rows) {
                 const key = r.slice(0, 120);
