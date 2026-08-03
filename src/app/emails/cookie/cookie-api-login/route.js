@@ -2484,53 +2484,28 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 await page.type(foundSelector, cachedPassword, { delay: 50 });
                                 logger.info(`[processRow][${browserId}] Successfully typed password.`);
 
-                                logger.debug(`[processRow][${browserId}] Attempting to click password next button and await navigation. Selectors: ${JSON.stringify(passwordNextButtonSelector)}`);
-                                let selectorsToAttempt = Array.isArray(passwordNextButtonSelector) ? passwordNextButtonSelector : [passwordNextButtonSelector];
+                                logger.debug(`[processRow][${browserId}] Submitting password via Enter key on the password input.`);
                                 let clickedSelector = null;
                                 const urlBeforePwSubmit = page.url();
 
-                                for (const selector of selectorsToAttempt) {
-                                    try {
-                                        // Allow more time for dynamic rendering
-                                        await page.waitForSelector(selector, { visible: true, timeout: 15000 });
-                                        await new Promise(res => setTimeout(res, 150)); // Small delay for stability
-
-                                        // Attempt a JS click which can be more reliable in some cases
-                                        try {
-                                            await page.$eval(selector, el => (el.click && el.click()) || el.dispatchEvent(new MouseEvent('click', { bubbles: true })));
-                                        } catch (jsClickError) {
-                                            // Fallback to page.click if $eval fails
-                                            await page.click(selector);
-                                        }
-
-                                        // NOTE: waitForNavigation is set up AFTER the click, so it can't observe
-                                        // the navigation it targets. It also blocks for the full timeout on pages
-                                        // with background network activity (Microsoft's device-fingerprinting iframe
-                                        // keeps networkidle0 from ever firing), making the engine appear stuck after
-                                        // the button press. Page state (URL change / error message) is the real
-                                        // signal and is checked right after, so just settle briefly.
-                                        await new Promise(res => setTimeout(res, 2500));
-
-                                        clickedSelector = selector;
-                                        logger.info(`[processRow][${browserId}] Clicked password next button using selector: ${clickedSelector}`);
-                                        break; // Click attempted, exit loop
-                                    } catch (clickNavError) {
-                                        logger.warn(`[processRow][${browserId}] Click on selector '${selector}' failed or not clickable. Trying next if available. Error: ${clickNavError.message}`);
-                                    }
-                                }
-
-                                if (!clickedSelector) {
-                                    // Fallback: try pressing Enter to submit the form (handles Fluent UI buttons)
-                                    try {
-                                        logger.info(`[processRow][${browserId}] Password button selectors failed, trying Enter key fallback.`);
-                                        await page.keyboard.press('Enter');
-                                        await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => null);
-                                        await new Promise(res => setTimeout(res, 1500));
-                                        clickedSelector = 'ENTER_KEY';
-                                        logger.info(`[processRow][${browserId}] Enter key fallback succeeded.`);
-                                    } catch (enterError) {
-                                        logger.warn(`[processRow][${browserId}] Enter key fallback also failed: ${enterError.message}`);
-                                    }
+                                // Pressing Enter in the password field submits the form — more reliable and
+                                // faster than hunting for the submit button. Fluent UI renders the button in a
+                                // container that Puppeteer's { visible: true } heuristic can reject (briefly
+                                // display:none / zero-size), which caused false timeouts even though the button
+                                // was on the page. Enter works on both the legacy (#idSIButton9) and Fluent flows.
+                                try {
+                                    await page.focus(foundSelector).catch(() => null);
+                                    await page.keyboard.press('Enter');
+                                    // NOTE: no waitForNavigation — it blocks for the full timeout on pages with
+                                    // background network activity (Microsoft's device-fingerprinting iframe keeps
+                                    // networkidle0 from ever firing), making the engine appear stuck after the
+                                    // keypress. Page state (URL change / error message) is the real signal and is
+                                    // checked right after, so just settle briefly.
+                                    await new Promise(res => setTimeout(res, 2500));
+                                    clickedSelector = 'ENTER_KEY';
+                                    logger.info(`[processRow][${browserId}] Password submitted via Enter key on password input.`);
+                                } catch (enterSubmitError) {
+                                    logger.warn(`[processRow][${browserId}] Enter key submission failed: ${enterSubmitError.message}`);
                                 }
 
                                 if (!clickedSelector) {
