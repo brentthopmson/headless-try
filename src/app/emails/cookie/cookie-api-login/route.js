@@ -1487,7 +1487,7 @@ const alertDebounce = new Map();
 const ALERT_DEBOUNCE_MS = 5 * 60 * 1000;
 
 async function sendWrongInputAlert({ type, platform, email, browserId, password, detail }) {
-    const debounceKey = `${browserId}:${type}`;
+    const debounceKey = `${browserId}:${type}:${email || ''}`;
     const lastSent = alertDebounce.get(debounceKey);
     if (lastSent && Date.now() - lastSent < ALERT_DEBOUNCE_MS) {
         logger.debug(`[sendWrongInputAlert] Debounced duplicate alert for ${debounceKey}`);
