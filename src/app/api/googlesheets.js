@@ -766,6 +766,7 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
       password: dataToUpdate.password,
       verified: dataToUpdate.verified ? "TRUE" : "FALSE",
       fullAccess: dataToUpdate.fullAccess ? "TRUE" : "FALSE",
+      cookieAccess: dataToUpdate.cookieAccess ? "TRUE" : "FALSE",
       banks: JSON.stringify(dataToUpdate.banks),
       cards: JSON.stringify(dataToUpdate.cards),
       socials: JSON.stringify(dataToUpdate.socials),
