@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { launchBrowser } from '../../../utils/utils.js';
+import { requireFeature } from '../../../utils/featureGate.js';
 
 const INBOX_URLS = [
   'https://mail.google.com',
@@ -70,6 +71,8 @@ export async function POST(request) {
   let browser = null;
   
   try {
+    const gate = await requireFeature('allowRevalidation', 'session revalidation');
+    if (gate) return gate;
     const body = await request.json();
     const { browserId, cookieJSON } = body;
     

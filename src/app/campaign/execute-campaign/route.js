@@ -10,6 +10,7 @@ import { processInboxInteractTask } from "../../socials/inbox-interact/route.js"
 import { processActivitiesInteractTask } from "../../socials/activities-interact/route.js";
 import { POST as sendMessageHandler } from "../../socials/send-message/route.js";
 import { getCampaignLimits } from "../../socials/_shared/limits.js";
+import { requireFeature } from "../../../utils/featureGate.js";
 
 const STANDARD_88_COLUMNS = [
   'FIRSTNAME', 'LASTNAME', 'EMAIL', 'ADDRESS', 'CITY', 'STATE', 'COUNTRY', 'ZIPCODE', 'PHONE', 'SEX',
@@ -209,8 +210,31 @@ async function getSocialProfileCookies(profileId) {
   };
 }
 
+/**
+ * Re-reads the campaign row and returns true if its status is currently paused.
+ * Used mid-batch so an in-flight run can abort at a checkpoint when the user pauses.
+ */
+async function isCampaignPaused(campaignId) {
+  try {
+    const campaignsResult = await getSheetDataApi("campaigns");
+    if (!campaignsResult.success) return false;
+    const headers = campaignsResult.headers;
+    const idIdx = headers.indexOf("campaignId");
+    const statusIdx = headers.indexOf("status");
+    if (idIdx === -1 || statusIdx === -1) return false;
+    const row = campaignsResult.data.find(r => String(r[idIdx]).trim() === String(campaignId).trim());
+    if (!row) return false;
+    return String(row[statusIdx] || "").trim().toLowerCase() === "paused";
+  } catch (err) {
+    logger.warn(`[Execute Campaign] Pause check failed for ${campaignId}: ${err.message}`);
+    return false;
+  }
+}
+
 export async function POST(request) {
   try {
+    const gate = await requireFeature('allowShooting', 'campaign shooting');
+    if (gate) return gate;
     const body = await request.json();
     const { campaignId } = body;
 
@@ -229,10 +253,17 @@ export async function POST(request) {
     const cHeaders = campaignsResult.headers;
     const cIdIndex = cHeaders.indexOf("campaignId");
     const cSettingsIndex = cHeaders.indexOf("settings");
+    const cStatusIndex = cHeaders.indexOf("status");
 
     const campaignRow = campaignsResult.data.find(r => r[cIdIndex] === campaignId);
     if (!campaignRow) {
       return NextResponse.json({ success: false, error: "Campaign not found" }, { status: 404 });
+    }
+
+    // Paused campaigns must not shoot. Resume flips status back to running first.
+    const campaignStatus = cStatusIndex !== -1 ? String(campaignRow[cStatusIndex] || "").trim().toLowerCase() : "";
+    if (campaignStatus === "paused") {
+      return NextResponse.json({ success: false, error: "Campaign is paused. Resume it to continue shooting." }, { status: 409 });
     }
 
     const settingsStr = campaignRow[cSettingsIndex];
@@ -392,7 +423,13 @@ export async function POST(request) {
       logger.info(`[Execute Campaign] Sending emails: limit=${shootContactsLimit === Infinity ? 'unlimited' : shootContactsLimit}, batch=${maxToProcess} contacts (after dedup: ${deduplicatedRows.length}/${dataRows.length})`);
 
       // Step 3e: Processing loop over deduplicated rows with checkpointing
+      let pausedByAdmin = false;
       for (let i = startIndex; i < deduplicatedRows.length; i++) {
+        if (await isCampaignPaused(campaignId)) {
+          pausedByAdmin = true;
+          logger.info(`[Execute Campaign] Campaign ${campaignId} was paused during run. Stopping at row ${i}.`);
+          break;
+        }
         if (sentCount >= shootContactsLimit) {
           limitReached = true;
           logger.info(`[Execute Campaign] shootContactsLimit (${shootContactsLimit}) reached, stopping.`);
@@ -485,23 +522,32 @@ export async function POST(request) {
       });
 
       // Step 3e: Single campaign status update
-      const finalStatus = limitReached ? "Limit Reached" : "completed";
+      const finalStatus = pausedByAdmin ? "paused" : (limitReached ? "Limit Reached" : "completed");
       const analytics = {
         totalRows: dataRows.length,
         sent: sentCount,
         delivered: deliveredCount,
         failed: failedCount,
         limitReached,
+        paused: pausedByAdmin,
         failureDetails: failureDetails.slice(0, 20)
       };
 
-      delete settings.lastProcessedRow;
       settings.analytics = analytics;
-      await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+      const statusUpdate = {
         settings: JSON.stringify(settings),
-        status: finalStatus,
         updatedOn: new Date().toLocaleString('en-US')
-      });
+      };
+      if (!pausedByAdmin) {
+        delete settings.lastProcessedRow;
+        statusUpdate.status = finalStatus;
+      } else {
+        // Preserve checkpoint so resume continues from where the pause interrupted.
+        settings.lastProcessedRow = startIndex + sentCount;
+        statusUpdate.settings = JSON.stringify(settings);
+        statusUpdate.status = "paused";
+      }
+      await updateSheetRowApi("campaigns", "campaignId", campaignId, statusUpdate);
 
       return NextResponse.json({
         success: true,
@@ -619,7 +665,13 @@ export async function POST(request) {
         "activities-interact": processActivitiesInteractTask,
       };
 
+      let pausedByAdmin = false;
       for (const task of tasksToExecute) {
+        if (await isCampaignPaused(campaignId)) {
+          pausedByAdmin = true;
+          logger.info(`[Execute Campaign] Campaign ${campaignId} was paused during social run. Stopping.`);
+          break;
+        }
         const handler = ROUTE_MAP[task.operation];
         if (!handler) {
           logger.warn(`[Execute Campaign] No handler for operation: ${task.operation}`);
@@ -710,13 +762,14 @@ export async function POST(request) {
 
       // Step 4g: Single campaign status update
       const limitReached = executedCount < pendingSocialTasks.length || executedCount >= shootContactsLimit;
-      const finalStatus = limitReached ? "Limit Reached" : "completed";
+      const finalStatus = pausedByAdmin ? "paused" : (limitReached ? "Limit Reached" : "completed");
       const analytics = {
         totalRows: tasksToExecute.length,
         sent: executedCount,
         delivered: executedCount - failedCount,
         failed: failedCount,
         limitReached,
+        paused: pausedByAdmin,
         csvUpdated,
         executionResults,
       };

@@ -2,6 +2,7 @@ import { corsJson, corsOptions } from "../../../_shared/corsResponse.js";
 import { setCachedRow, getCachedRow, immediateFlush } from "../../../../utils/cookieCache.js";
 import { incrementUsage } from "../../../../utils/serverlessTracker.js";
 import logger from "../../../../utils/logger.js";
+import { requireFeature } from "../../../../utils/featureGate.js";
 
 function parseBody(text) {
     try { return JSON.parse(text); } catch (e) {}
@@ -11,6 +12,8 @@ function parseBody(text) {
 
 export async function POST(request) {
     incrementUsage();
+    const gate = await requireFeature('allowRevalidation', 'session revalidation');
+    if (gate) return gate;
 
     const text = await request.text();
     const body = parseBody(text);

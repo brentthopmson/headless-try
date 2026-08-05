@@ -6,6 +6,7 @@ import { getPlatformConfig, getWorkflow, getTiming } from "./platforms.js";
 import { getBrowser, executeWorkflowSteps } from "../_shared/routeHelper.js";
 import { checkActionAllowed } from "../_shared/limits.js";
 import { updateAccountUsage } from "../_shared/hubUpdater.js";
+import { requireFeature } from "../../../utils/featureGate.js";
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
@@ -141,6 +142,8 @@ async function getCookieForProfile(profileId) {
 
 export async function POST(request) {
   try {
+    const gate = await requireFeature('allowShooting', 'message sending');
+    if (gate) return gate;
     const body = await request.json();
     const { campaignId, fileUrl, platform, messageText, sendToAll, profileId, accountIds } = body;
 

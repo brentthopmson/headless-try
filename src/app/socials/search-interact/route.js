@@ -17,6 +17,7 @@ import {
 import { checkActionAllowed, getPlatformLimits } from '../_shared/limits.js';
 import { getAccountUsage, updateAccountUsage, updateAccountStatus } from '../_shared/hubUpdater.js';
 import { fetchTaskData, updateTaskRow } from './routeHelper.js';
+import { requireFeature } from '../../../utils/featureGate.js';
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -162,6 +163,8 @@ async function processTask(taskRow, columnIndexes) {
 
 export async function POST(request) {
     try {
+        const gate = await requireFeature('allowInteraction', 'social interaction');
+        if (gate) return gate;
         const body = await request.json();
         const { action, taskId } = body;
 

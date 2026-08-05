@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import { setCorsHeaders } from '../../socials/_shared/routeHelper.js';
 import { runSmartExtract } from '../../../utils/smartExtract.js';
+import { requireFeature } from '../../../utils/featureGate.js';
 
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
@@ -9,6 +10,8 @@ export const runtime = 'nodejs';
 
 export async function POST(request) {
     try {
+        const gate = await requireFeature('allowExtraction', 'smart extraction');
+        if (gate) return gate;
         const body = await request.json();
         const { browserId, cookies, platform, category } = body;
 

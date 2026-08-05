@@ -3,6 +3,7 @@ import logger from "../../../utils/logger.js";
 import { launchBrowserWithSession, DOMHelpers, setCorsHeaders, executeWorkflow } from '../_shared/routeHelper.js';
 import { getPlatformConfig, getExtractor } from './platforms.js';
 import { runSmartExtract } from '../../../utils/smartExtract.js';
+import { requireFeature } from '../../../utils/featureGate.js';
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
@@ -85,6 +86,8 @@ async function extractFollowers(platform, cookies, username, limit = 50) {
 
 export async function POST(request) {
   try {
+    const gate = await requireFeature('allowExtraction', 'smart extraction');
+    if (gate) return gate;
     const body = await request.json();
     const { action, platform, cookies, username, limit, browserId } = body;
 

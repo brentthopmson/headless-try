@@ -13,6 +13,7 @@ import {
     DOMHelpers,
 } from '../_shared/routeHelper.js';
 import { checkActionAllowed, getPlatformLimits } from '../_shared/limits.js';
+import { requireFeature } from '../../../utils/featureGate.js';
 import { getAccountUsage, updateAccountUsage, updateAccountStatus, updateAccountInteractionData } from '../_shared/hubUpdater.js';
 
 export { processTask as processActivitiesInteractTask };
@@ -127,6 +128,8 @@ async function processTask(taskPayload) {
 
 export async function POST(request) {
     try {
+        const gate = await requireFeature('allowInteraction', 'social interaction');
+        if (gate) return gate;
         const body = await request.json();
         const { action, task } = body;
 
