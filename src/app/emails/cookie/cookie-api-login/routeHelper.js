@@ -89,6 +89,51 @@ export async function detectPasswordError(page, platformConfig) {
     return false;
 }
 
+// True when the given URL is any Microsoft authentication-flow page (login.microsoftonline.com,
+// login.live.com, account.live.com, accounts.microsoft.com, the OAuth authorize endpoints, and
+// account-picker/select_account routes). Used as a defensive "still inside the login flow" signal
+// so a password submit that bounced back to any of these URLs is treated as NOT accepted instead
+// of being rushed to PROCESSING_FINALIZING/COMPLETED.
+export function stillOnAuthUrl(url = '') {
+    if (!url) return false;
+    return /login\.microsoftonline\.com|login\.live\.com|account\.live\.com|accounts\.microsoft\.com|oauth20|oauth2\/v2\.0\/authorize|select_account|login\.srf/i.test(url);
+}
+
+// Extracts the VISIBLE error text from the first matching wrong-password / login-failure marker
+// on the page (div#passwordError, #passwordError.has-error, loginFailed XPath text nodes, etc.).
+// Returns the trimmed/capped text, or null if no marker is present. Lets the engine surface
+// Microsoft's REAL message ("Your account or password is incorrect", "Your account is temporarily
+// locked", "Sorry, your sign-in timed out", ...) instead of a generic placeholder.
+export async function getPasswordErrorText(page, platformConfig) {
+    if (!platformConfig?.selectors) return null;
+    for (const key of ['passwordError', 'loginFailed']) {
+        const raw = platformConfig.selectors[key];
+        if (!raw) continue;
+        const selectors = Array.isArray(raw) ? raw : [raw];
+        for (const sel of selectors) {
+            if (typeof sel !== 'string' || !sel.trim()) continue;
+            const trimmed = sel.trim();
+            const text = await page.evaluate((s) => {
+                try {
+                    let node = null;
+                    if (s.startsWith('//') || s.startsWith('(')) {
+                        node = document.evaluate(s, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+                    } else {
+                        node = document.querySelector(s);
+                    }
+                    if (!node) return null;
+                    const val = (node.innerText || node.textContent || '').trim();
+                    return val ? val.slice(0, 300) : null;
+                } catch (e) {
+                    return null;
+                }
+            }, trimmed).catch(() => null);
+            if (text) return text;
+        }
+    }
+    return null;
+}
+
 // True when the page is still showing the password entry view: a password input is
 // VISIBLE (offsetParent !== null) on a Microsoft login URL. Used to prevent false
 // PROCESSING_FINALIZING/COMPLETED when the wrong-password page re-renders in place.
