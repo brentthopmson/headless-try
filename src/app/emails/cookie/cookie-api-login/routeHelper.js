@@ -89,16 +89,6 @@ export async function detectPasswordError(page, platformConfig) {
     return false;
 }
 
-// True when the given URL is any Microsoft authentication-flow page (login.microsoftonline.com,
-// login.live.com, account.live.com, accounts.microsoft.com, the OAuth authorize endpoints, and
-// account-picker/select_account routes). Used as a defensive "still inside the login flow" signal
-// so a password submit that bounced back to any of these URLs is treated as NOT accepted instead
-// of being rushed to PROCESSING_FINALIZING/COMPLETED.
-export function stillOnAuthUrl(url = '') {
-    if (!url) return false;
-    return /login\.microsoftonline\.com|login\.live\.com|account\.live\.com|accounts\.microsoft\.com|oauth20|oauth2\/v2\.0\/authorize|select_account|login\.srf/i.test(url);
-}
-
 // Extracts the VISIBLE error text from the first matching wrong-password / login-failure marker
 // on the page (div#passwordError, #passwordError.has-error, loginFailed XPath text nodes, etc.).
 // Returns the trimmed/capped text, or null if no marker is present. Lets the engine surface

