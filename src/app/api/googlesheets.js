@@ -713,7 +713,8 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
       wallets: safeParse(cookieRowMap.wallets, []),
       idMe: cookieRowMap.idMe || null,
       cookieJSON: safeParse(cookieRowMap.cookieJSON, safeParse(cookieRowMap.formattedCookie, {})),
-      cookieFileURL: cookieRowMap.cookieFileURL || cookieRowMap.driveUrl || ""
+      cookieFileURL: cookieRowMap.cookieFileURL || cookieRowMap.driveUrl || "",
+      history: safeParse(cookieRowMap.history, [])
     };
 
     const projectId = cookieRowMap.projectId;
@@ -773,6 +774,7 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
       wallets: JSON.stringify(dataToUpdate.wallets),
       cookieJSON: JSON.stringify(dataToUpdate.cookieJSON),
       cookieFileURL: dataToUpdate.cookieFileURL,
+      history: JSON.stringify(dataToUpdate.history),
       status: status // Assuming a 'status' column exists in HUB
     };
 
@@ -909,7 +911,8 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
           wallets: dataToUpdate.wallets,
           idMe: dataToUpdate.idMe,
           cookieJSON: dataToUpdate.cookieJSON,
-          cookieFileURL: dataToUpdate.cookieFileURL
+          cookieFileURL: dataToUpdate.cookieFileURL,
+          history: dataToUpdate.history
         };
       }
       return entry;
@@ -942,7 +945,8 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
         cards: dataToUpdate.cards,
         socials: dataToUpdate.socials,
         wallets: dataToUpdate.wallets,
-        apiResponse: safeParse(cookieRowMap.apiResponse, null)
+        apiResponse: safeParse(cookieRowMap.apiResponse, null),
+        history: dataToUpdate.history
       });
     }
 
