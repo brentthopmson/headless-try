@@ -210,6 +210,18 @@ export const platformConfigs = {
                 "//*[contains(., \"Your account or password is incorrect\") or contains(., \"Your account or password\") or contains(., \"That password is incorrect\")]",
                 "//*[contains(., \"You've tried to sign in too many times with an incorrect account or password.\")]"
             ],
+            // Newer IEWS/Outlook login-paginated-password-view: wrong password renders an
+            // inline error (div#passwordError, has-error class on the passwd input) instead of
+            // navigating. These markers are polled after password submission before any
+            // PROCESSING_FINALIZING/COMPLETED write is allowed.
+            passwordError: [
+                "#passwordError",
+                "div#passwordError",
+                "#passwordError.has-error",
+                "input#i0118.has-error",
+                "input[name='passwd'].has-error",
+                "//*[contains(., \"Your account or password is incorrect\") or contains(., \"That password is incorrect\")]"
+            ],
             proofListSelector: "#iProofList", 
             emailProofInput: "#iProofEmail", 
             phoneProofInput: "#iProofPhone", 

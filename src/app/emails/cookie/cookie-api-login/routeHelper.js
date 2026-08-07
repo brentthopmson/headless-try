@@ -56,6 +56,60 @@ export async function verifyPageStillValid(page, platformConfig, phase) {
     return false;
 }
 
+// Evaluate a single selector that may be a CSS selector or an XPath expression.
+// Returns true if it matches, false otherwise. Never throws.
+export async function selectorMatches(page, selector) {
+    if (typeof selector !== 'string' || !selector.trim()) return false;
+    return page.evaluate((s) => {
+        const trimmed = s.trim();
+        try {
+            if (trimmed.startsWith('//') || trimmed.startsWith('(')) {
+                return !!document.evaluate(trimmed, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+            }
+            return !!document.querySelector(trimmed);
+        } catch (e) {
+            return false;
+        }
+    }, selector).catch(() => false);
+}
+
+// Detect wrong-password / login-failure markers on the current page. Checks the
+// new-page `passwordError` selectors (CSS + XPath) first, then the legacy `loginFailed`
+// selectors. Returns true if any marker is found.
+export async function detectPasswordError(page, platformConfig) {
+    if (!platformConfig?.selectors) return false;
+    for (const key of ['passwordError', 'loginFailed']) {
+        const raw = platformConfig.selectors[key];
+        if (!raw) continue;
+        const selectors = Array.isArray(raw) ? raw : [raw];
+        for (const sel of selectors) {
+            if (await selectorMatches(page, sel)) return true;
+        }
+    }
+    return false;
+}
+
+// True when the page is still showing the password entry view: a password input is
+// VISIBLE (offsetParent !== null) on a Microsoft login URL. Used to prevent false
+// PROCESSING_FINALIZING/COMPLETED when the wrong-password page re-renders in place.
+export async function stillOnPasswordPage(page, platformConfig) {
+    try {
+        const currentUrl = page.url() || '';
+        const onLoginUrl = currentUrl.includes('login.live.com') || currentUrl.includes('login.microsoftonline.com') || currentUrl.includes('account.live.com');
+        if (!onLoginUrl) return false;
+        const raw = platformConfig?.selectors?.passwordInput;
+        const selectors = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+        for (const sel of selectors) {
+            if (typeof sel !== 'string') continue;
+            const visible = await page.$eval(sel, el => el.offsetParent !== null).catch(() => false);
+            if (visible) return true;
+        }
+        return false;
+    } catch (e) {
+        return false;
+    }
+}
+
 // Helper function to get column indexes
 export function getColumnIndexes(headers) {
   const columnIndexes = headers.reduce((acc, header, index) => {

