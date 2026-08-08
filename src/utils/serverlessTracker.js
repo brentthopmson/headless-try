@@ -106,6 +106,44 @@ export function getSelfUrl() {
     return url ? url.replace(/\/+$/, '') : null;
 }
 
+/**
+ * Re-reads our own row from the links sheet so URL / limits / status edits
+ * made by the operator take effect WITHOUT a server restart. Called lazily:
+ * first resolution on the next call, then again only when the sheet timestamp
+ * or a secondary hint indicates the row changed.
+ */
+export async function refreshSelfRow() {
+    if (!selfServerlessId) return selfRow;
+
+    try {
+        const { getSheetDataApi } = await import('../app/api/googlesheets.js');
+        const links = await getSheetDataApi('links');
+        if (!links?.success || !links.data || !links.headers) return selfRow;
+
+        const idIdx = links.headers.indexOf('severlessId');
+        if (idIdx === -1) return selfRow;
+
+        const fresh = links.data
+            .map(row => Object.fromEntries(links.headers.map((h, i) => [h, row[i]])))
+            .find(r => r.severlessId === selfServerlessId);
+
+        if (!fresh) {
+            logger.warn(`[ServerlessTracker] refreshSelfRow: no row found for ${selfServerlessId} — keeping last known.`);
+            return selfRow;
+        }
+
+        const changed = JSON.stringify(selfRow) !== JSON.stringify(fresh);
+        selfRow = fresh;
+        if (changed) {
+            logger.info(`[ServerlessTracker] Self row refreshed: ${selfServerlessId} (${selfRow.severlessURL})`);
+        }
+    } catch (e) {
+        logger.error(`[ServerlessRefresh] Failed to refresh self row: ${e.message}`);
+    }
+
+    return selfRow;
+}
+
 export function incrementUsage() {
     if (!selfServerlessId) return;
 
@@ -158,17 +196,31 @@ async function flushUsageToSheet() {
     try {
         const { updateSheetRowApi } = await import('../app/api/googlesheets.js');
 
+        const updates = {
+            serverlessRpdUsage: String(currentRpd),
+            serverlessRphUsage: String(currentRph),
+            severlessHistory: JSON.stringify(usageHistory),
+        };
+
         const rphLimit = parseInt(selfRow?.serverlessRph || '999');
         const rpdLimit = parseInt(selfRow?.serverlessRpd || '999999');
-        let status = 'ACTIVE';
-        if (currentRph > rphLimit || currentRpd > rpdLimit) status = 'RATE-LIMITED';
+        const overLimit = currentRph > rphLimit || currentRpd > rpdLimit;
 
-        await updateSheetRowApi('links', 'severlessId', selfServerlessId, {
-            serverlessRphUsage: String(currentRph),
-            serverlessRpdUsage: String(currentRpd),
-            severlessStatus: status,
-            severlessHistory: JSON.stringify(usageHistory),
-        });
+        // severlessStatus is 100% operator-controlled. The engine may only self-manage
+        // into RATE-LIMITED when over budget, and must never resurrect a row the operator
+        // marked FAILED (or any other manual status) back to ACTIVE.
+        if (overLimit) {
+            // Pull fresh status first so a rate-limit write respects a manual FAILED.
+            await refreshSelfRow();
+            const currentStatus = String(selfRow?.severlessStatus || '').trim().toUpperCase();
+            if (currentStatus === 'FAILED') {
+                logger.info('[ServerlessTracker] Row is operator-marked FAILED — preserving status, not downgrading to RATE-LIMITED.');
+            } else {
+                updates.severlessStatus = 'RATE-LIMITED';
+            }
+        }
+
+        await updateSheetRowApi('links', 'severlessId', selfServerlessId, updates);
 
         usageDirty = false;
 
