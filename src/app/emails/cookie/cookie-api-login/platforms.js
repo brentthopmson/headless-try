@@ -602,14 +602,23 @@ export const platformConfigs = {
                 },
                 action: async (page, view, platformConfig) => {
                     const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
+                    // The same oauth20_authorize.srf URL also serves the LEGACY password
+                    // form (login.live.com/oauth20_authorize.srf?username=...&login_hint=...).
+                    // Auto-accepting an OAuth consent there is wrong: it can waste ~40s and
+                    // misfire the password submission. Only click consent when the platform
+                    // explicitly opts in via acceptOAuthConsent, and never via a bare
+                    // button[type='submit'] which could submit a login form.
+                    if (platformConfig?.acceptOAuthConsent !== true) {
+                        logger.info(`[handleAdditionalViews][${instanceId}] OAuth authorization page detected but acceptOAuthConsent is not enabled — skipping consent click (no re-entry into login flow).`);
+                        return;
+                    }
                     logger.info(`[handleAdditionalViews][${instanceId}] Microsoft OAuth authorization page detected. Clicking Yes/Accept.`);
                     const consentSelectors = [
                         "input[type='submit'][value='Yes']",
                         "#idBtn_Accept",
                         "button::-p-text('Yes')",
                         "button::-p-text('Accept')",
-                        "input[type='submit'][value='Accept']",
-                        "button[type='submit']"
+                        "input[type='submit'][value='Accept']"
                     ];
                     for (const sel of consentSelectors) {
                         try {

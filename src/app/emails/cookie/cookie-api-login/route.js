@@ -68,6 +68,9 @@ const activeProcesses = globalThis.__activeProcesses || (globalThis.__activeProc
 const processRowsInFlight = globalThis.__processRowsInFlight || (globalThis.__processRowsInFlight = new Set());
 const activeBrowserSessions = globalThis.__activeBrowserSessions || (globalThis.__activeBrowserSessions = new Map());
 const passwordRetryCounts = globalThis.__passwordRetryCounts || (globalThis.__passwordRetryCounts = new Map());
+// Guards against a stray duplicate checkAccountAccess (e.g. spawned by a RETRY_TECHNICAL
+// retry after the watchdog race) driving the same browser concurrently. Keyed by browserId.
+const accountChecksInFlight = globalThis.__accountChecksInFlight || (globalThis.__accountChecksInFlight = new Map());
 // Per-browserId hash of the last AUTO-submitted password value. Belt-and-suspenders:
 // even if the sheet/cache clearing of a rejected password is bypassed or raced, an identical
 // value is never auto-resubmitted more than once; the loop waits for a CHANGED value.
@@ -833,7 +836,8 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                 logger.info(`[checkAccountAccess][${instanceId}][SPEED] Password input already visible on session reuse — skipping email re-entry (at +${Date.now() - caaStart}ms).`);
             }
             try {
-                let inputFound = false;
+                let inputFound = passwordAlreadyVisible;
+                if (!passwordAlreadyVisible) {
                 try {
                     await page.waitForSelector(platformConfig.selectors.input, { visible: true, timeout: 8000 });
                     inputFound = true;
@@ -854,9 +858,34 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                         return { title, url, inputs, bodyText };
                     }).catch(e => ({ dumpError: e.message }));
                     logger.info(`[checkAccountAccess][${instanceId}] PAGE DUMP — title='${pageDump?.title}', url='${pageDump?.url}', inputs=${JSON.stringify(pageDump?.inputs || null)}, body='${pageDump?.bodyText || ''}'${pageDump?.dumpError ? ` dumpError=${pageDump.dumpError}` : ''}`);
+
+                    // Microsoft's email input often resolves without further navigation: sso_reload /
+                    // select_account pages can be in a temporary hidden-input state that settles into the
+                    // visible email form as the redirect chain finishes. Wait on the SAME page (up to ~12s)
+                    // for the input OR a URL change before forcing a fresh goto — re-navigating to the
+                    // go.microsoft fwlink can cycle straight back into the same select_account page.
+                    const reRenderDeadline = Date.now() + 12000;
+                    while (Date.now() < reRenderDeadline && !inputFound) {
+                        try {
+                            await page.waitForSelector(platformConfig.selectors.input, { visible: true, timeout: Math.min(3000, reRenderDeadline - Date.now()) });
+                            inputFound = true;
+                            logger.info(`[checkAccountAccess][${instanceId}] Email input found after Microsoft redirect settle. URL: ${page.url()}`);
+                            break;
+                        } catch (reWaitErr) {
+                            const reUrl = page.url();
+                            // If we drifted off a Microsoft host entirely, stop waiting — the fallback goto handles it.
+                            if (!reUrl.includes('login.') && !reUrl.includes('outlook.live.com') && !reUrl.includes('go.microsoft.com')) {
+                                break;
+                            }
+                            logger.debug(`[checkAccountAccess][${instanceId}] Still on ${reUrl} during input wait. Re-polling...`);
+                        }
+                    }
+
+                    if (!inputFound) {
                     await page.goto(platformConfig.url, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(navErr => {
                         logger.warn(`[checkAccountAccess][${instanceId}] goto to login page failed/timeout (${navErr.message}). Polling for input anyway...`);
                     });
+                    }
                     try {
                         await page.waitForSelector(platformConfig.selectors.input, { visible: true, timeout: 10000 });
                         inputFound = true;
@@ -872,6 +901,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                             logger.warn(`[checkAccountAccess][${instanceId}] Input not found after fallback. Returning RETRY_TECHNICAL (no wrong-email signal).`);
                         }
                     }
+                }
                 }
                 if (inputFound || passwordAlreadyVisible) {
                     if (!passwordAlreadyVisible) {
@@ -907,6 +937,25 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     logger.info(`[checkAccountAccess][${instanceId}] Email submitted. URL: ${page.url()}`);
                     speed('email submitted');
 
+                    // Microsoft resolves email submission asynchronously — the page may bounce through
+                    // sso_reload=true, a `common/login` hand-off, or login.live.com oauth20_authorize.srf.
+                    // Wait for the URL to STABILIZE (same URL for ~3s) before doing any further state
+                    // detection, so intermediate redirects aren't mistaken for the password step.
+                    const urlStableDeadline = Date.now() + 15000;
+                    let lastUrl = page.url();
+                    let stableForMs = 0;
+                    while (Date.now() < urlStableDeadline && stableForMs < 3000) {
+                        const probeUrl = page.url();
+                        if (probeUrl === lastUrl) {
+                            stableForMs += 800;
+                        } else {
+                            lastUrl = probeUrl;
+                            stableForMs = 0;
+                            logger.debug(`[checkAccountAccess][${instanceId}] Post-email URL transitioned to: ${probeUrl}`);
+                        }
+                        if (stableForMs >= 3000) break;
+                        await new Promise(res => setTimeout(res, 800));
+                    }
                     await Promise.race([
                         page.waitForFunction(() => document.readyState === 'complete').catch(() => null),
                         new Promise(res => setTimeout(res, 3000))
@@ -1067,17 +1116,33 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     } // end if (isGoogle) CAPTCHA handling
                     } // end if (!passwordAlreadyVisible) — skip email re-entry on session reuse
 
-                    // Wait for password input to become visible (handles Outlook "Use your password" transition delay)
+                    // Wait for password input to become visible (handles Outlook "Use your password" window delay
+                    // AND slow Microsoft SSO redirects after email submission). Microsoft intermediates through
+                    // sso_reload=true / login.live.com oauth20_authorize.srf pages — a 5s window often isn't long
+                    // enough, so poll for up to 15s before concluding the password input is missing.
                     speed('post-email transitions handled');
                     const pwInputSelectors = Array.isArray(platformConfig.selectors?.passwordInput) ? platformConfig.selectors.passwordInput : [platformConfig.selectors?.passwordInput].filter(Boolean);
                     if (pwInputSelectors.length > 0) {
                         const pwCombinedSelector = pwInputSelectors.filter(s => typeof s === 'string').join(', ');
                         if (pwCombinedSelector) {
-                            try {
-                                await page.waitForSelector(pwCombinedSelector, { visible: true, timeout: 5000 });
-                            } catch (e) {
-                                logger.debug(`[checkAccountAccess][${instanceId}] No password selector visible after 5s wait (combined).`);
+                            const pwRenderDeadline = Date.now() + 15000;
+                            while (Date.now() < pwRenderDeadline) {
+                                try {
+                                    await page.waitForSelector(pwCombinedSelector, { visible: true, timeout: Math.min(5000, pwRenderDeadline - Date.now()) });
+                                    break;
+                                } catch (e) {
+                                    // If we're still on a Microsoft login page the password form is likely
+                                    // mid-render (SSO / oauth20_authorize.srf) — keep polling up to the window.
+                                    const pwUrlNow = page.url();
+                                    if (pwUrlNow.includes('login.live.com') || pwUrlNow.includes('login.microsoftonline.com')) {
+                                        await new Promise(res => setTimeout(res, 1500));
+                                        continue;
+                                    }
+                                    logger.debug(`[checkAccountAccess][${instanceId}] No Microsoft login host after password-wait (current URL: ${pwUrlNow}).`);
+                                    break;
+                                }
                             }
+                            logger.debug(`[checkAccountAccess][${instanceId}] Password-render wait complete.`);
                         }
                     }
 
@@ -1604,7 +1669,7 @@ function appendSubmissionHistory(browserId, email, password) {
 // post-launch setup) can never leave a row stuck in processRow forever. On timeout we
 // resolve with RETRY_TECHNICAL — the poll loop either retries or fails gracefully with
 // the email kept, and a WRONG_EMAIL alert is never fired.
-const CHECK_ACCOUNT_ACCESS_TIMEOUT_MS = 45000;
+const CHECK_ACCOUNT_ACCESS_TIMEOUT_MS = 90000;
 function withAccountCheckTimeout(promise, browserId) {
     return Promise.race([
         promise,
@@ -1613,6 +1678,29 @@ function withAccountCheckTimeout(promise, browserId) {
             resolve({ emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'RETRY_TECHNICAL', error: `checkAccountAccess timed out after ${CHECK_ACCOUNT_ACCESS_TIMEOUT_MS / 1000}s (page/CDP stalled)` });
         }, CHECK_ACCOUNT_ACCESS_TIMEOUT_MS))
     ]);
+}
+
+// Dedupe guard: never run TWO checkAccountAccess flows concurrently against the SAME
+// browser. The calendar watchdog may resolve (RETRY_TECHNICAL) while the original
+// checkAccountAccess is still legitimately working (42s+ spent in handleAdditionalViews).
+// A naive retry would then spin up a second controller on the same page. When one is
+// already in-flight for this browserId, await/reuse that same promise-instance instead.
+function runGuardedAccountCheck(browser, page, email, password, platform, browserId, reuseSession, _timer) {
+    if (accountChecksInFlight.has(browserId)) {
+        logger.warn(`[processRow][${browserId}] checkAccountAccess already in flight — reusing existing run (no duplicate controller).`);
+        return accountChecksInFlight.get(browserId);
+    }
+    const checkPromise = withAccountCheckTimeout(
+        checkAccountAccess(browser, page, email, password, platform, browserId, reuseSession, _timer),
+        browserId
+    );
+    accountChecksInFlight.set(browserId, checkPromise);
+    checkPromise.finally(() => {
+        if (accountChecksInFlight.get(browserId) === checkPromise) {
+            accountChecksInFlight.delete(browserId);
+        }
+    }).catch(() => {});
+    return checkPromise;
 }
 
 async function processRow(row, columnIndexes, existingBrowser = null, existingPage = null) {
@@ -1972,7 +2060,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         if (status === "WAITING") {
             logger.debug(`[processRow][${browserId}] Initial WAITING state. Performing initial checkAccountAccess.`);
             await handleAdditionalViews(page, platformConfig, instanceId, 'initial_load');
-            initialCheckResult = await withAccountCheckTimeout(checkAccountAccess(browser, page, email, password, platform, browserId, false, _timer), browserId);
+            initialCheckResult = await runGuardedAccountCheck(browser, page, email, password, platform, browserId, false, _timer);
         } else if (status === "WAITINGEMAIL") {
             logger.info(`[processRow][${browserId}] Entering WAITINGEMAIL poll loop.`);
             logger.info(`[engineProcess][${browserId}] -WAITINGEMAIL (entering poll loop)`);
@@ -2130,7 +2218,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         logger.info(`[processRow][${browserId}][SPEED] WAITINGEMAIL: MX resolved in ${Date.now() - mxResolveStart}ms at +${Date.now() - waitingEmailStart}ms`);
 
                         const caaStart = Date.now();
-                        initialCheckResult = await withAccountCheckTimeout(checkAccountAccess(browser, page, email, password, platform, browserId, true, _timer), browserId); // For email retry, reuse session, no navigation
+                        initialCheckResult = await runGuardedAccountCheck(browser, page, email, password, platform, browserId, true, _timer); // For email retry, reuse session, no navigation
                         logger.info(`[processRow][${browserId}][SPEED] WAITINGEMAIL: checkAccountAccess done in ${Date.now() - caaStart}ms at +${Date.now() - waitingEmailStart}ms -> verificationState=${initialCheckResult.verificationState}`);
                         logger.info(`[processRow][${browserId}] checkAccountAccess result: emailExists=${initialCheckResult.emailExists}, accountAccess=${initialCheckResult.accountAccess}, reachedInbox=${initialCheckResult.reachedInbox}, requiresVerification=${initialCheckResult.requiresVerification}, verificationState=${initialCheckResult.verificationState}, error=${initialCheckResult.error || 'none'}`);
 
@@ -2323,7 +2411,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 }
                                 await new Promise(res => setTimeout(res, 3000));
                                 // Re-check account access after captcha submission
-                                const recheckResult = await withAccountCheckTimeout(checkAccountAccess(browser, page, email, password, platform, browserId, true, _timer), browserId);
+                                const recheckResult = await runGuardedAccountCheck(browser, page, email, password, platform, browserId, true, _timer);
                                 logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Re-check after captcha: ${JSON.stringify(recheckResult)}`);
                                 if (recheckResult.verificationState === 'CAPTCHA_FAILED') {
                                     // Still on captcha, re-screenshot and update
@@ -2530,21 +2618,50 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                             logger.warn(`[processRow][${browserId}] Selector '${sel}' error: ${pwWaitErr.message}`);
                                         }
                                     }
-                                    if (!foundSelector) {
-                                        const currentUrl = page.url();
-                                        const pageTitle = await page.title().catch(() => 'unknown');
-                                        logger.debug(`[processRow][${browserId}] Password input not found. URL: ${currentUrl}, Title: ${pageTitle}`);
+if (!foundSelector) {
+                                         const currentUrl = page.url();
+                                         const pageTitle = await page.title().catch(() => 'unknown');
+                                         logger.debug(`[processRow][${browserId}] Password input not found. URL: ${currentUrl}, Title: ${pageTitle}`);
+                                         // Only navigate back to the login page when we are NOT on a Microsoft
+                                         // login host (blank tab, non-Microsoft page, account.live.com, etc.).
+                                         // login.live.com/oauth20_authorize.srf?username=...&login_hint=... is the
+                                         // LEGITIMATE legacy password page — navigating away from it destroys the
+                                         // in-progress password form and causes the login.microsoftonline.com <->
+                                         // login.live.com ping-pong. On a Microsoft host the password field is
+                                         // usually still rendering, so keep polling instead.
+                                         const onMicrosoftLoginHost = currentUrl.includes('login.live.com') || currentUrl.includes('login.microsoftonline.com');
+                                         if (currentUrl === 'about:blank' || !onMicrosoftLoginHost) {
+                                             logger.info(`[processRow][${browserId}] Page is at ${currentUrl}, navigating to login page for password entry.`);
+                                             await page.goto(platformConfig.url || 'https://outlook.live.com/mail/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => {
+                                                 logger.warn(`[processRow][${browserId}] Navigation to login page failed: ${e.message}`);
+                                             });
+                                             await new Promise(res => setTimeout(res, 3000));
+                                             continue;
+                                         }
 
-                                        if (currentUrl === 'about:blank' || currentUrl.includes('oauth20_authorize.srf') || currentUrl.includes('account.live.com') || (!currentUrl.includes('login.live.com') && !currentUrl.includes('login.microsoftonline.com'))) {
-                                            logger.info(`[processRow][${browserId}] Page is at ${currentUrl}, navigating to login page for password entry.`);
-                                            await page.goto(platformConfig.url || 'https://outlook.live.com/mail/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => {
-                                                logger.warn(`[processRow][${browserId}] Navigation to login page failed: ${e.message}`);
-                                            });
-                                            await new Promise(res => setTimeout(res, 3000));
-                                            continue;
-                                        }
-                                        const emailInputSelector = platformConfig.selectors?.input;
-                                        if (emailInputSelector) {
+                                         // Still on a Microsoft login host (e.g. oauth20_authorize.srf carrying
+                                         // username=...&login_hint=...) but the password input isn't visible yet.
+                                         // Do NOT navigate away (that was the source of the URL ping-pong). If the
+                                         // email input is visible we drifted back to the email step — fall through
+                                         // and let the block below re-submit it. Otherwise settle briefly and
+                                         // re-poll the password selectors on the same page.
+                                         let emailInputVisibleNow = false;
+                                         if (platformConfig.selectors?.input) {
+                                             emailInputVisibleNow = await page.$eval(
+                                                 platformConfig.selectors.input,
+                                                 el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+                                             ).catch(() => false);
+                                         }
+                                         if (!emailInputVisibleNow) {
+                                             logger.debug(`[processRow][${browserId}] Still on Microsoft login host (${currentUrl}) but no email input visible. Re-polling password selectors without navigating away.`);
+                                             await new Promise(res => setTimeout(res, 2000));
+                                             continue;
+                                         }
+
+                                         // Email input is visible — we've drifted back to the email step; fall
+                                         // through to the re-submit block below (still inside if(!foundSelector)).
+                                         const emailInputSelector = platformConfig.selectors?.input;
+                                         if (emailInputSelector) {
                                             const emailVisible = await page.$eval(emailInputSelector, el => el.offsetParent !== null).catch(() => false);
                                             if (emailVisible) {
                                                 logger.info(`[processRow][${browserId}] Email input visible, re-entering email.`);
