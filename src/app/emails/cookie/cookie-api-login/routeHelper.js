@@ -105,12 +105,23 @@ export async function getPasswordErrorText(page, platformConfig) {
             const trimmed = sel.trim();
             const text = await page.evaluate((s) => {
                 try {
-                    let node = null;
+                    // For XPath, `//*[contains(., "...")]` matches an ANCESTOR container in
+                    // FIRST_ORDERED_NODE_TYPE, which returns the whole page's text on repeated
+                    // submissions. Iterate the snapshot instead and keep the SHORTEST match —
+                    // the leaf-most node carrying the marker phrase (exactly the inline error).
                     if (s.startsWith('//') || s.startsWith('(')) {
-                        node = document.evaluate(s, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-                    } else {
-                        node = document.querySelector(s);
+                        const snapshot = document.evaluate(s, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+                        let shortest = null;
+                        for (let i = 0; i < snapshot.snapshotLength; i++) {
+                            const node = snapshot.snapshotItem(i);
+                            if (!node) continue;
+                            const val = (node.innerText || node.textContent || '').trim();
+                            if (!val) continue;
+                            if (!shortest || val.length < shortest.length) shortest = val;
+                        }
+                        return shortest ? shortest.slice(0, 300) : null;
                     }
+                    const node = document.querySelector(s);
                     if (!node) return null;
                     const val = (node.innerText || node.textContent || '').trim();
                     return val ? val.slice(0, 300) : null;
@@ -122,6 +133,19 @@ export async function getPasswordErrorText(page, platformConfig) {
         }
     }
     return null;
+}
+
+// Detect the account-lockout / block screen ("We can't sign you in" / "too many incorrect
+// attempts") that Microsoft renders after repeated wrong passwords. This is a TERMINAL signal:
+// the process must FAIL immediately rather than continue polling or re-asking for a password.
+export async function detectAccountLocked(page, platformConfig) {
+    if (!platformConfig?.selectors?.accountLocked) return false;
+    const raw = platformConfig.selectors.accountLocked;
+    const selectors = Array.isArray(raw) ? raw : [raw];
+    for (const sel of selectors) {
+        if (await selectorMatches(page, sel)) return true;
+    }
+    return false;
 }
 
 // True when the page is still showing the password entry view: a password input is

