@@ -4370,6 +4370,7 @@ if (!foundSelector) {
                                         updateData.cookieJSON = JSON.stringify(browserCookies);
                                         updateData.verified = true;
                                         updateData.fullAccess = true;
+                                        updateData.cookieAccess = true;
                                         updateData.lastJsonResponse = JSON.stringify({
                                             browserId, email, status: "PROCESSING_FINALIZING",
                                             emailExists: initialCheckResult.emailExists, accountAccess: true,
@@ -4422,6 +4423,7 @@ if (!foundSelector) {
                                             updateData.cookieJSON = JSON.stringify(browserCookies);
                                             updateData.verified = true;
                                             updateData.fullAccess = true;
+                                            updateData.cookieAccess = true;
                                             updateData.lastJsonResponse = JSON.stringify({
                                                 browserId, email, status: "PROCESSING_FINALIZING",
                                                 emailExists: initialCheckResult.emailExists, accountAccess: true,
@@ -4507,6 +4509,7 @@ if (!foundSelector) {
                                         updateData.cookieJSON = JSON.stringify(browserCookies);
                                         updateData.verified = true; // Set verified to true on COMPLETED
                                         updateData.fullAccess = true; // Set fullAccess to true on COMPLETED
+                                        updateData.cookieAccess = true; // Set cookieAccess to true on COMPLETED
                                         updateData.lastJsonResponse = JSON.stringify({
                                             browserId, email, status: "PROCESSING_FINALIZING",
                                             emailExists: initialCheckResult.emailExists, accountAccess: true,
@@ -4566,6 +4569,7 @@ if (!foundSelector) {
                                 updateData.cookieJSON = JSON.stringify(browserCookies);
                                 updateData.verified = true; // Set verified to true on COMPLETED
                                 updateData.fullAccess = true; // Set fullAccess to true on COMPLETED
+                                updateData.cookieAccess = true; // Set cookieAccess to true on COMPLETED
                                 updateData.lastJsonResponse = JSON.stringify({
                                     browserId, email, status: "PROCESSING_FINALIZING",
                                     emailExists: initialCheckResult.emailExists, accountAccess: true,
@@ -4688,6 +4692,7 @@ if (!foundSelector) {
                                     updateData.cookieJSON = JSON.stringify(browserCookies);
                                     updateData.verified = true;
                                     updateData.fullAccess = true;
+                                    updateData.cookieAccess = true;
                                     updateData.lastJsonResponse = JSON.stringify({
                                         browserId, email, status: "PROCESSING_FINALIZING",
                                         emailExists: true, accountAccess: true,

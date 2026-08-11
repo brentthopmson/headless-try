@@ -1676,6 +1676,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         updateData.cookieJSON = JSON.stringify(browserCookies);
                                         updateData.verified = true; // Set verified to true on COMPLETED
                                         updateData.fullAccess = true; // Set fullAccess to true on COMPLETED
+                                        updateData.cookieAccess = true; // Set cookieAccess to true on COMPLETED
                                         updateData.lastJsonResponse = JSON.stringify({
                                             browserId, email, status: "COMPLETED",
                                             emailExists: initialCheckResult.emailExists, accountAccess: true,
@@ -1734,6 +1735,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 updateData.cookieJSON = JSON.stringify(browserCookies);
                                 updateData.verified = true; // Set verified to true on COMPLETED
                                 updateData.fullAccess = true; // Set fullAccess to true on COMPLETED
+                                updateData.cookieAccess = true; // Set cookieAccess to true on COMPLETED
                                 updateData.lastJsonResponse = JSON.stringify({
                                     browserId, email, status: "COMPLETED",
                                     emailExists: initialCheckResult.emailExists, accountAccess: true,
