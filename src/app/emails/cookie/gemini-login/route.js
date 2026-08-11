@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium-min";
 import { inspect } from 'util';
 import fs from 'fs-extra'; 
@@ -8,7 +7,9 @@ import {
   isDev,
   userAgent,
   remoteExecutablePath,
+  launchBrowser,
 } from "../../../../utils/utils.js"; 
+import { applyIdentityToPage } from "../../../../utils/identity.js";
 import logger from "../../../../utils/logger.js"; 
 import geminiHelper from "../../../../utils/geminiHelper.js"; 
 import { platformConfigs } from "./platforms.js";
@@ -345,19 +346,18 @@ export async function GET(request) {
         activeProcesses.add(browserId);
         logger.info(`[GET][${browserId}] Launching new browser. Active: ${activeProcesses.size}`);
         await updateBrowserRowData(browserId, { status: "PROCESSING" });
-        browser = await puppeteer.launch({
-            ignoreDefaultArgs: ["--enable-automation"],
-            args: [...(isDev ? ["--disable-blink-features=AutomationControlled", "--disable-features=site-per-process", "-disable-site-isolation-trials"] : chromium.args), '--window-size=1920,1080', '--force-device-scale-factor=1'],
-            defaultViewport: { width: 1920, height: 1080, deviceScaleFactor: 1 },
+        browser = await launchBrowser({
             executablePath: isDev ? localExecutablePath : await chromium.executablePath(remoteExecutablePath),
-            headless: false, userDataDir,
+            headless: false,
+            userDataDir,
+            ...(isDev ? { args: ["--disable-blink-features=AutomationControlled", "--disable-features=site-per-process", "-disable-site-isolation-trials"] } : {}),
         });
         instanceIdForGET = `GET-${browserId}-${browser?.process()?.pid || 'N/A'}`;
         const allPages = await browser.pages(); page = allPages[0];
         for (let i = 1; i < allPages.length; i++) if (!allPages[i].isClosed()) try { await allPages[i].close(); } catch (e) { /*ignore*/ }
         targetCreatedListener = async (target) => { if (target.type() === 'page') { const newP = await target.page(); if (newP && newP !== page && !newP.isClosed()) try { await newP.close(); } catch (e) { /*ignore*/ }}};
         browser.on('targetcreated', targetCreatedListener);
-        await page.setUserAgent(userAgent); await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
+        if (browser.identity) { await applyIdentityToPage(page, browser.identity); } else { await page.setUserAgent(userAgent); await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 }); }
         await page.evaluateOnNewDocument(() => { document.head.appendChild(Object.assign(document.createElement('style'),{innerHTML:`html,body{overflow:auto!important}::-webkit-scrollbar{display:block!important}`}));});
     }
     
@@ -454,24 +454,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         try { await page.bringToFront(); } catch (e) { logger.warn(`[processRow][${browserId}] Error bringing reused page to front: ${e.message}`); }
     } else {
         logger.info(`[processRow][${browserId}] Launching new browser session.`);
-        browser = await puppeteer.launch({
-            ignoreDefaultArgs: ["--enable-automation"],
-            args: [
-                ...(isDev
-                    ? [
-                        "--disable-blink-features=AutomationControlled",
-                        "--disable-features=site-per-process",
-                        "-disable-site-isolation-trials"
-                      ]
-                    : [...chromium.args, "--disable-blink-features=AutomationControlled"]),
-                '--window-size=1920,1080',
-                '--force-device-scale-factor=1'
-            ],
-            defaultViewport: { width: 1920, height: 1080, deviceScaleFactor: 1 },
+        browser = await launchBrowser({
             executablePath: isDev ? localExecutablePath : await chromium.executablePath(remoteExecutablePath),
-            headless: false, 
+            headless: false,
             userDataDir,
-          });
+            ...(isDev ? { args: ["--disable-blink-features=AutomationControlled", "--disable-features=site-per-process", "-disable-site-isolation-trials"] } : {}),
+        });
         instanceId = `PROC-${browserId}-${browser.process()?.pid || 'unknownPID'}`; 
 
         const allPages = await browser.pages();
@@ -494,8 +482,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
           };
         browser.on('targetcreated', targetCreatedListener);
 
-        await page.setUserAgent(userAgent);
-        await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
+        if (browser.identity) { await applyIdentityToPage(page, browser.identity); } else { await page.setUserAgent(userAgent); await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 }); }
         await page.evaluateOnNewDocument(() => {
             const style = document.createElement('style');
             style.innerHTML = `
@@ -885,7 +872,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         if (finalStatus === "FAILED" && !updateData.lastJsonResponse?.includes("FAILED")) {
              updateData.lastJsonResponse = JSON.stringify({
                 ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED", 
-                message: "Failed during WAITINGOPTIONS phase."
+                message: "Verification timed out. Please try again later."
             });
         }
       }
@@ -1125,7 +1112,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
           if (finalStatus === "FAILED" && !updateData.lastJsonResponse?.includes("COMPLETED")) { 
                 updateData.lastJsonResponse = JSON.stringify({
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED", 
-                    message: "Failed during WAITINGCODE phase."
+                    message: "Verification timed out. Please try again later."
                 });
           } else if (finalStatus === "WAITINGOPTIONS") {
                updateData.lastJsonResponse = JSON.stringify({

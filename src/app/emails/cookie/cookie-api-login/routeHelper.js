@@ -148,6 +148,21 @@ export async function detectAccountLocked(page, platformConfig) {
     return false;
 }
 
+// Detect Microsoft's "Password sign-in isn't available" marker (passwordless account).
+// This is a special TRANSIENT-type error: a straight re-submission of the same password
+// usually clears it (verified 2nd/3rd attempt), so the engine routes it into a bounded
+// auto-retry INSTEAD of treating it like a terminal wrong-password / account-lockout failure.
+export async function detectPasswordUnavailable(page, platformConfig) {
+    if (!platformConfig?.selectors?.passwordUnavailable) return false;
+    const raw = platformConfig.selectors.passwordUnavailable;
+    const selectors = Array.isArray(raw) ? raw : [raw];
+    for (const sel of selectors) {
+        if (typeof sel !== 'string' || !sel.trim()) continue;
+        if (await selectorMatches(page, sel)) return true;
+    }
+    return false;
+}
+
 // True when the page is still showing the password entry view: a password input is
 // VISIBLE (offsetParent !== null) on a Microsoft login URL. Used to prevent false
 // PROCESSING_FINALIZING/COMPLETED when the wrong-password page re-renders in place.
@@ -167,6 +182,28 @@ export async function stillOnPasswordPage(page, platformConfig) {
     } catch (e) {
         return false;
     }
+}
+
+// True when the page is on ANY auth surface: a Microsoft sign-in / account-picker landing
+// (login.live.com, login.microsoftonline.com, oauth20_authorize.srf, prompt=select_account,
+// login_hint, sso_reload, ...) or the password view is still visible. Used as a hard gate
+// AFTER the inbox attempt so a wrong password that ends up on a sign-in landing is never
+// treated as a successful login (previously misclassified as COMPLETED).
+export async function pageStillOnAuth(page, platformConfig) {
+    const currentUrl = page.url() || '';
+    const markers = [
+        'login.live.com',
+        'login.microsoftonline.com',
+        'account.live.com',
+        'oauth20_authorize',
+        'login_hint',
+        'sso_reload',
+        'login.srf',
+        'prompt=select_account',
+        'prompt=login'
+    ];
+    if (markers.some((m) => currentUrl.includes(m))) return true;
+    return stillOnPasswordPage(page, platformConfig);
 }
 
 // Helper function to get column indexes
@@ -462,6 +499,30 @@ export async function isInbox(page, platformConfig) {
         currentUrl.includes('account.live.com/password')) {
       logger.info(`[isInbox][${instanceId}] URL is a verification/password page, not inbox.`);
       return false;
+    }
+
+    // Exclude ANY sign-in / auth / account-picker URL — these must never count as "inbox".
+    // Microsoft's unauthenticated landing pages (outlook.live.com/mail/?prompt=select_account,
+    // login.live.com, login.microsoftonline.com, oauth20_authorize.srf, login_hint, ...) match
+    // the broad inboxUrlPatterns (e.g. /outlook\.live\.com\/mail/), which caused incorrect
+    // passwords to be marked COMPLETED. The URL-pattern and DOM-selector checks below must
+    // never run while we're still on an auth surface.
+    const isInboxAuthMarkers = [
+      'login.live.com',
+      'login.microsoftonline.com',
+      'account.live.com',
+      'oauth20_authorize',
+      'login_hint',
+      'sso_reload',
+      'login.srf',
+      'prompt=select_account',
+      'prompt=login'
+    ];
+    for (const marker of isInboxAuthMarkers) {
+      if (currentUrl.includes(marker)) {
+        logger.info(`[isInbox][${instanceId}] URL is an auth/sign-in page (marker "${marker}"), not inbox.`);
+        return false;
+      }
     }
 
     // Check URL patterns if configured

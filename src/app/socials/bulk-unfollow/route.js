@@ -1,5 +1,4 @@
-import puppeteer from "puppeteer-core";
-import chromium from "@sparticuz/chromium-min";
+﻿import chromium from "@sparticuz/chromium-min";
 import readlineSync from 'readline-sync';
 import axios from 'axios';
 import {
@@ -7,7 +6,9 @@ import {
   isDev,
   userAgent,
   remoteExecutablePath,
+  launchBrowser,
 } from "@/utils/utils";
+import { applyIdentityToPage } from "@/utils/identity";
 import fs from 'fs';
 import qs from 'qs';
 
@@ -18,37 +19,29 @@ let browser; // Declare a global browser variable
 let hasLoggedIn = false; // Flag to track if the user has logged in
 
 // Helper function for launching the browser with session persistence
-async function launchBrowser(cookieJson) {
-  const browser = await puppeteer.launch({
-    ignoreDefaultArgs: ["--enable-automation"],
-    args: isDev
-      ? [
-          "--disable-blink-features=AutomationControlled",
-          "--disable-features=site-per-process",
-          "-disable-site-isolation-trials",
-        ]
-      : [...chromium.args, "--disable-blink-features=AutomationControlled"],
-    executablePath: isDev
-      ? localExecutablePath
-      : await chromium.executablePath(remoteExecutablePath),
-    headless: false,
-  });
+async function launchLocalBrowser(cookieJson) {
+  const browser = await launchBrowser({
+    executablePath: isDev
+      ? localExecutablePath
+      : await chromium.executablePath(remoteExecutablePath),
+    headless: false,
+  });
 
-  const page = await browser.newPage();
-  await page.setUserAgent(userAgent); // Set the user agent
+  const page = await browser.newPage();
+  if (browser.identity) { await applyIdentityToPage(page, browser.identity); } else { await page.setUserAgent(userAgent); }
 
-  if (cookieJson) {
-    try {
-      const cookies = JSON.parse(cookieJson);
-      await page.setCookie(...cookies);
-      console.log("Cookies set successfully.");
-    } catch (error) {
-      console.error("Error setting cookies:", error);
-    }
-  }
-  await page.close(); // Close the temporary page
+  if (cookieJson) {
+    try {
+      const cookies = JSON.parse(cookieJson);
+      await page.setCookie(...cookies);
+      console.log("Cookies set successfully.");
+    } catch (error) {
+      console.error("Error setting cookies:", error);
+    }
+  }
+  await page.close(); // Close the temporary page
 
-  return browser;
+  return browser;
 }
 
 // Helper function to save cookies back to Google Sheets
@@ -103,10 +96,9 @@ async function logCookies(page, rowId, sheetCookieJson) {
 // Helper function to open and wait for manual login
 async function openPlatformPage(url) {
   const page = await browser.newPage();
-  await page.setViewport({ width: 1366, height: 768 });
-  await page.setUserAgent(
+  if (browser.identity) { await applyIdentityToPage(page, browser.identity); } else { await page.setViewport({ width: 1366, height: 768 }); await page.setUserAgent(
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'
-  );
+  ); }
 
   console.log(`Navigating to URL: ${url}`); // Debugging line
   await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
@@ -457,7 +449,7 @@ async function runAutomation(platformsToRun, postContent) {
       }
 
       console.log(`Processing platform: ${platformName}, URL: ${platformData.url}`);
-      browser = await launchBrowser(cookieJson); // Launch browser with cookies
+      browser = await launchLocalBrowser(cookieJson); // Launch browser with cookies
 
       // If the cookie is blank, pause the automation and wait for user to log in manually
       if (!cookieJson || cookieJson === "null" || cookieJson.trim() === "") {
@@ -467,11 +459,10 @@ async function runAutomation(platformsToRun, postContent) {
       }
 
       // Log cookies before processing platforms
-      const tempPage = await browser.newPage();
-      await tempPage.setViewport({ width: 1366, height: 768 });
-      await tempPage.setUserAgent(
+            const tempPage = await browser.newPage();
+      if (browser.identity) { await applyIdentityToPage(tempPage, browser.identity); } else { await tempPage.setViewport({ width: 1366, height: 768 }); await tempPage.setUserAgent(
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'
-      );
+      ); }
       // Make tempPage navigate to the platform URL as well
       console.log(`Navigating tempPage to URL: ${platformData.url}`);
       await tempPage.goto(platformData.url, { waitUntil: "networkidle2", timeout: 60000 });

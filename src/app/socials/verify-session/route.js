@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { launchBrowser } from '../../../utils/utils.js';
+import { applyIdentityToPage } from '../../../utils/identity.js';
 import { requireFeature } from '../../../utils/featureGate.js';
 
 const INBOX_URLS = [
@@ -19,6 +20,7 @@ const INBOX_SELECTORS = [
 
 async function checkSocialInbox(browser) {
   const page = await browser.newPage();
+  if (browser.identity) { await applyIdentityToPage(page, browser.identity); }
   
   try {
     for (const url of INBOX_URLS) {
@@ -91,6 +93,7 @@ export async function POST(request) {
     browser = await launchBrowser();
     
     const page = await browser.newPage();
+    if (browser.identity) { await applyIdentityToPage(page, browser.identity); }
     
     for (const cookie of cookies) {
       try {

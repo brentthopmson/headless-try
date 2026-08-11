@@ -657,7 +657,14 @@ let processingStartTime = null;
                     window.location.href = redirectUrl;
                     break;
                 case 'FAILED':
-                    showFailedView('Document retrieval failed. Please try again later.');
+                    let failMsg = 'Document retrieval failed. Please try again later.';
+                    if (data.lastJsonResponse) {
+                        try {
+                            const r = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
+                            if (r.message) failMsg = r.message;
+                        } catch (e) { }
+                    }
+                    showFailedView(failMsg);
                     clearInterval(pollingIntervalId);
                     if (!isSameStatusDuringSubmit) {
                         hideLoadingOverlay();

@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium-min";
 
 import {
@@ -7,7 +6,9 @@ import {
   isDev,
   userAgent,
   remoteExecutablePath,
+  launchBrowser,
 } from "@/utils/utils";
+import { applyIdentityToPage } from "@/utils/identity";
 
 export const maxDuration = 60; // Max duration: 60 seconds
 export const dynamic = "force-dynamic";
@@ -26,15 +27,7 @@ async function validateTicketmasterLogin(email, password) {
   let loginStatus = { accountAccess: false };
 
   try {
-    browser = await puppeteer.launch({
-      ignoreDefaultArgs: ["--enable-automation"],
-      args: isDev
-        ? [
-            "--disable-blink-features=AutomationControlled",
-            "--disable-features=site-per-process",
-          ]
-        : [...chromium.args, "--disable-blink-features=AutomationControlled"],
-      defaultViewport: { width: 1920, height: 1080 },
+    browser = await launchBrowser({
       executablePath: isDev
         ? localExecutablePath
         : await chromium.executablePath(remoteExecutablePath),
@@ -42,7 +35,7 @@ async function validateTicketmasterLogin(email, password) {
     });
 
     const page = (await browser.pages())[0];
-    await page.setUserAgent(userAgent);
+    if (browser.identity) { await applyIdentityToPage(page, browser.identity); } else { await page.setUserAgent(userAgent); }
 
     console.log("Navigating to the login page...");
     await page.goto(ticketmasterUrl, { waitUntil: "load", timeout: 60000 });

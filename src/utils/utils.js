@@ -18,6 +18,10 @@ export const remoteExecutablePath =
 
 export const isDev = process.env.NODE_ENV === "development";
 
+import logger from "./logger.js";
+import { generateIdentity, launchArgsForIdentity } from "./identity.js";
+import { resolveProxyForRun, maskProxy } from "./proxy.js";
+
 export const USER_AGENTS = [
   // Windows Chrome (matches actual browser environment)
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -118,50 +122,57 @@ async function getPuppeteerExtra() {
  */
 export async function launchBrowser(customOptions = {}) {
 
-  // 1. Resolve User-Agent (dynamic random selection by default)
-  const selectedUA = customOptions.userAgent || getRandomUserAgent();
+  // 1. Per-run browser identity (fingerprint): random UA, screen/viewport+DPR,
+  //    timezone, locale/lang, WebGL vendor/renderer, canvas/audio noise, and
+  //    hardware signals. Consistent within a single run, unique across runs.
+  const identity = customOptions.identity || generateIdentity();
+  if (customOptions.userAgent) identity.userAgent = customOptions.userAgent;
 
-  // 2. Lock physical viewport to standard widescreen
-  const defaultViewport = { width: 1920, height: 1080, deviceScaleFactor: 1 };
+  // 2. Per-run proxy (IP rotation). Optional — if none is configured we still
+  //    rotate the browser fingerprint, but IP correlation remains.
+  const proxy = await resolveProxyForRun();
+
+  // 3. Build launch args: identity + proxy args override the fixed defaults.
+  const identityArgs = launchArgsForIdentity(identity);
+  const proxyArgs = proxy ? [`--proxy-server=${proxy.url}`] : [];
+
+  const defaultViewport = identity.viewport;
 
   const baseArgs = [
+    ...identityArgs,
+    ...proxyArgs,
+    // Anti-detection flags
     "--disable-blink-features=AutomationControlled",
     "--disable-features=site-per-process",
     "--disable-site-isolation-trials",
-    `--user-agent=${selectedUA}`,
-    '--window-size=1920,1080',
-    '--force-device-scale-factor=1',
-    '--disable-dev-shm-usage', 
-    '--no-sandbox',
-    
-    // Anti-detection flags
-    '--disable-blink-features=AutomationControlled',
-    '--disable-features=AutomationControlled',
-    '--enable-features=NetworkService,NetworkServiceInProcess',
-    '--disable-background-timer-throttling',
-    '--disable-backgrounding-occluded-windows',
-    '--disable-renderer-backgrounding',
-    '--disable-ipc-flooding-protection',
-    '--disable-client-side-phishing-detection',
-    '--disable-default-apps',
-    '--disable-extensions',
-    '--disable-hang-monitor',
-    '--disable-popup-blocking',
-    '--disable-prompt-on-repost',
-    '--disable-sync',
-    '--disable-translate',
-    '--metrics-recording-only',
-    '--no-first-run',
-    '--mute-audio',
-    '--no-zygote',
-    '--disable-gpu',
+    "--disable-dev-shm-usage", 
+    "--no-sandbox",
+    "--disable-blink-features=AutomationControlled",
+    "--disable-features=AutomationControlled",
+    "--enable-features=NetworkService,NetworkServiceInProcess",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-ipc-flooding-protection",
+    "--disable-client-side-phishing-detection",
+    "--disable-default-apps",
+    "--disable-extensions",
+    "--disable-hang-monitor",
+    "--disable-popup-blocking",
+    "--disable-prompt-on-repost",
+    "--disable-sync",
+    "--disable-translate",
+    "--metrics-recording-only",
+    "--no-first-run",
+    "--mute-audio",
+    "--no-zygote",
+    "--disable-gpu",
     '--js-flags="--max-old-space-size=512"'
   ];
 
-  // Proxy support via environment variable (opt-in)
-  const proxyUrl = process.env.HTTP_PROXY || process.env.HTTPS_PROXY;
-  if (proxyUrl) {
-    baseArgs.push(`--proxy-server=${proxyUrl}`);
+  // Legacy proxy fallback via generic HTTP(S)_PROXY env vars (kept working)
+  if (!proxy && (process.env.HTTP_PROXY || process.env.HTTPS_PROXY)) {
+    baseArgs.push(`--proxy-server=${process.env.HTTP_PROXY || process.env.HTTPS_PROXY}`);
   }
 
   const defaultOptions = {
@@ -191,8 +202,16 @@ export async function launchBrowser(customOptions = {}) {
   const pptrExtra = await getPuppeteerExtra();
   const browser = await pptrExtra.launch(mergedOptions);
   
-  // Attach selected UA to the browser instance for logging / downstream set-up
-  browser.selectedUserAgent = selectedUA;
+  // Attach the selected identity + proxy for downstream set-up / logging.
+  browser.identity = identity;
+  browser.proxy = proxy;
+  browser.selectedUserAgent = identity.userAgent;
+
+  if (!proxy) {
+    logger.warn(`[launchBrowser] No IP rotation configured — browser fingerprint rotates per run, but outbound IP stays constant. Set PROXY_HOSTS / PROXY_LIST_URL / PROXY_PROVIDER_URL to enable IP rotation.`);
+  } else {
+    logger.info(`[launchBrowser] IP rotation enabled via ${proxy.mode} proxy ${maskProxy(proxy.url)}`);
+  }
 
   // Small delay after launch to let stealth plugin evasions settle on initial pages.
   // Without this, the caller may immediately close pages (e.g. initial tab cleanup)

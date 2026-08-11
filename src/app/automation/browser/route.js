@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import puppeteer from 'puppeteer-core';
 import aiHelper from '@/utils/aiHelper';
+import { launchBrowser } from '@/utils/utils';
+import { applyIdentityToPage } from '@/utils/identity';
 
 export async function POST(request) {
     try {
@@ -10,8 +11,9 @@ export async function POST(request) {
         const automationPlan = await aiHelper.generateBrowserActions(task);
 
         // Launch browser and execute the plan
-        const browser = await puppeteer.launch({ headless: "new" });
+        const browser = await launchBrowser({});
         const page = await browser.newPage();
+        if (browser.identity) { await applyIdentityToPage(page, browser.identity); }
         
         await page.goto(url);
 

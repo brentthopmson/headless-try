@@ -253,7 +253,9 @@ export const platformConfigs = {
             accountLocked: [
                 "//*[contains(., \"We can't sign you in\")]",
                 "//*[contains(., \"You've used an incorrect account or password too many times\")]",
-                "//*[contains(., \"temporarily locked\")]"
+                "//*[contains(., \"You've tried to sign in too many times with an incorrect account or password\")]",
+                "//*[contains(., \"temporarily locked\")]",
+                "//*[contains(@class, 'fui-Field__validationMessage') and @role='alert' and contains(., \"too many times with an incorrect account or password\")]"
             ]
         },
         extractVerificationOptions: async (page, platformConfig, viewName) => {

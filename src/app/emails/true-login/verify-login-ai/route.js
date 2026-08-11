@@ -1,5 +1,4 @@
-import { NextResponse } from "next/server";
-import puppeteer from "puppeteer-core";
+﻿import { NextResponse } from "next/server";
 import chromium from "@sparticuz/chromium-min";
 import dns from 'dns';
 import { promisify } from 'util';
@@ -8,7 +7,9 @@ import {
   isDev,
   userAgent,
   remoteExecutablePath,
+  launchBrowser,
 } from "@/utils/utils";
+import { applyIdentityToPage } from "@/utils/identity";
 import logger from "@/utils/logger";
 import geminiHelper from "@/utils/geminiHelper";
 import { platformConfigs } from "@/app/emails/true-login/verify-login-ai/platforms";
@@ -79,20 +80,7 @@ async function checkAccountAccess(email, password) {
             loginUrl = 'https://' + loginUrl;
         }
 
-        browser = await puppeteer.launch({
-            ignoreDefaultArgs: ["--enable-automation"],
-            args: [
-                ...(isDev
-                    ? [
-                        "--disable-blink-features=AutomationControlled",
-                        "--disable-features=site-per-process",
-                        "-disable-site-isolation-trials"
-                    ]
-                    : [...chromium.args, "--disable-blink-features=AutomationControlled"]),
-                '--window-size=1920,1080',
-                '--force-device-scale-factor=1'
-            ],
-            defaultViewport: { width: 1920, height: 1080, deviceScaleFactor: 1 },
+        browser = await launchBrowser({
             executablePath: isDev
                 ? localExecutablePath
                 : await chromium.executablePath(remoteExecutablePath),
@@ -100,8 +88,12 @@ async function checkAccountAccess(email, password) {
         });
 
         const page = (await browser.pages())[0];
-        await page.setUserAgent(userAgent);
-        await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
+        if (browser.identity) {
+            await applyIdentityToPage(page, browser.identity);
+        } else {
+            await page.setUserAgent(userAgent);
+            await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
+        }
         // Force scrollbars and fix overflow
         await page.evaluateOnNewDocument(() => {
             const style = document.createElement('style');

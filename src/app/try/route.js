@@ -7,13 +7,14 @@ import {
   isDev,
   userAgent,
   remoteExecutablePath,
+  launchBrowser,
 } from "@/utils/utils";
+import { applyIdentityToPage } from "@/utils/identity";
 
 export const maxDuration = 60; // This function can run for a maximum of 60 seconds (update by 2024-05-10)
 export const dynamic = "force-dynamic";
 
 const chromium = require("@sparticuz/chromium-min");
-const puppeteer = require("puppeteer-core");
 
 export async function GET(request) {
   const url = new URL(request.url);
@@ -27,16 +28,7 @@ export async function GET(request) {
 
   let browser = null;
   try {
-    browser = await puppeteer.launch({
-      ignoreDefaultArgs: ["--enable-automation"],
-      args: isDev
-        ? [
-            "--disable-blink-features=AutomationControlled",
-            "--disable-features=site-per-process",
-            "-disable-site-isolation-trials",
-          ]
-        : [...chromium.args, "--disable-blink-features=AutomationControlled"],
-      defaultViewport: { width: 1920, height: 1080 },
+    browser = await launchBrowser({
       executablePath: isDev
         ? localExecutablePath
         : await chromium.executablePath(remoteExecutablePath),
@@ -46,8 +38,7 @@ export async function GET(request) {
 
     const pages = await browser.pages();
     const page = pages[0];
-    await page.setUserAgent(userAgent);
-    await page.setViewport({ width: 1920, height: 1080 });
+    if (browser.identity) { await applyIdentityToPage(page, browser.identity); } else { await page.setUserAgent(userAgent); await page.setViewport({ width: 1920, height: 1080 }); }
     const preloadFile = fs.readFileSync(
       path.join(process.cwd(), "/src/utils/preload.js"),
       "utf8"

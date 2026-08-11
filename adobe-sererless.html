@@ -982,14 +982,18 @@ function updateUIForStatus(status, data = {}) {
       // Parse lastJsonResponse for detailed error info
       let emailExists = data.emailExists;
       let accountAccess = data.accountAccess;
+      let failMsg = '';
       if (data.lastJsonResponse) {
         try {
           const lastResp = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
           if (emailExists === undefined) emailExists = lastResp.emailExists;
           if (accountAccess === undefined) accountAccess = lastResp.accountAccess;
+          if (lastResp.message) failMsg = lastResp.message;
         } catch(e) {}
       }
-      if (emailExists === false) {
+      if (failMsg) {
+        showFailedView(failMsg);
+      } else if (emailExists === false) {
         document.getElementById('InvalidEmail').textContent = "Email does not exist. Please check your email.";
         document.getElementById('InvalidEmail').style.display = 'block';
       } else if (accountAccess === false) {

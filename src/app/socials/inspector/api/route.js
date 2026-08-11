@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium-min";
 import logger from "../../../../utils/logger.js";
-import { isDev, localExecutablePath, remoteExecutablePath } from "../../../../utils/utils.js";
+import { isDev, localExecutablePath, remoteExecutablePath, launchBrowser } from "../../../../utils/utils.js";
+import { applyIdentityToPage } from "../../../../utils/identity.js";
 
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
@@ -65,22 +65,7 @@ async function launchInspectorBrowser(sessionId, platform) {
 
   logger.info(`[inspector] Launching new browser for session: ${sessionId} platform: ${platform}`);
 
-  const browser = await puppeteer.launch({
-    ignoreDefaultArgs: ["--enable-automation"],
-    args: isDev
-      ? [
-          "--disable-blink-features=AutomationControlled",
-          "--disable-features=site-per-process",
-          "-disable-site-isolation-trials",
-          "--disable-dev-shm-usage",
-          "--no-sandbox",
-          "--window-size=1366,768",
-        ]
-      : [
-          ...chromium.args,
-          "--disable-blink-features=AutomationControlled",
-          "--window-size=1366,768",
-        ],
+  const browser = await launchBrowser({
     executablePath: isDev
       ? localExecutablePath
       : await chromium.executablePath(remoteExecutablePath),
@@ -91,10 +76,14 @@ async function launchInspectorBrowser(sessionId, platform) {
   const pages = await browser.pages();
   const page = pages[0] || await browser.newPage();
 
-  await page.setViewport({ width: 1366, height: 768 });
-  await page.setUserAgent(
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
-  );
+  if (browser.identity) {
+    await applyIdentityToPage(page, browser.identity);
+  } else {
+    await page.setViewport({ width: 1366, height: 768 });
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+    );
+  }
 
   await page.setRequestInterception(true);
   page.on('request', (req) => {

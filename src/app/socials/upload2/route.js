@@ -1,4 +1,3 @@
-import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium-min";
 import readlineSync from 'readline-sync';
 import {
@@ -6,19 +5,13 @@ import {
   isDev,
   userAgent,
   remoteExecutablePath,
+  launchBrowser,
 } from "@/utils/utils";
+import { applyIdentityToPage } from "@/utils/identity";
 
 // Helper function for launching the browser
-async function launchBrowser() {
-  const browser = await puppeteer.launch({
-    ignoreDefaultArgs: ["--enable-automation"],
-    args: isDev
-      ? [
-          "--disable-blink-features=AutomationControlled",
-          "--disable-features=site-per-process",
-          "-disable-site-isolation-trials",
-        ]
-      : [...chromium.args, "--disable-blink-features=AutomationControlled"],
+async function launchLocalBrowser() {
+  const browser = await launchBrowser({
     executablePath: isDev
       ? localExecutablePath
       : await chromium.executablePath(remoteExecutablePath),
@@ -30,7 +23,7 @@ async function launchBrowser() {
 // Helper function to open and wait for manual login
 async function openPlatformPage(browser, url) {
   const page = await browser.newPage();
-  await page.setUserAgent(userAgent);
+  if (browser.identity) { await applyIdentityToPage(page, browser.identity); } else { await page.setUserAgent(userAgent); }
   await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
   console.log(`Page loaded: ${url}`);
   return page;
@@ -109,7 +102,7 @@ async function handlePlatform(browser, platform) {
 
 // Function to run the whole process
 async function runAutomation(platformsToRun) {
-  const browser = await launchBrowser();
+  const browser = await launchLocalBrowser();
 
   // URLs and selectors for each platform
   const platforms = [

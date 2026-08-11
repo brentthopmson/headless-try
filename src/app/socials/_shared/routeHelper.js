@@ -1,9 +1,9 @@
-import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium-min";
 import axios from 'axios';
 import logger from "../../../utils/logger.js";
 import { getSheetDataApi, updateSheetRowApi, appendSheetRowApi } from '../../api/googlesheets.js';
-import { localExecutablePath, isDev, userAgent, remoteExecutablePath } from "../../../utils/utils.js";
+import { localExecutablePath, isDev, remoteExecutablePath, launchBrowser } from "../../../utils/utils.js";
+import { applyIdentityToPage } from "../../../utils/identity.js";
 
 // ==================== Browser Session Management ====================
 
@@ -19,18 +19,15 @@ export async function loadBrowserSession(cookieJSON) {
 
 export async function launchBrowserWithSession(cookieJSON, headless = true) {
     try {
-        const browser = await puppeteer.launch({
-            ignoreDefaultArgs: ["--enable-automation"],
-            args: isDev
-                ? ["--disable-blink-features=AutomationControlled", "--disable-features=site-per-process", "-disable-site-isolation-trials"]
-                : [...chromium.args, "--disable-blink-features=AutomationControlled"],
-            executablePath: isDev ? localExecutablePath : await chromium.executablePath(remoteExecutablePath),
+        const browser = await launchBrowser({
             headless,
+            executablePath: isDev ? localExecutablePath : await chromium.executablePath(remoteExecutablePath),
         });
 
         const page = await browser.newPage();
-        await page.setViewport({ width: 1366, height: 768 });
-        await page.setUserAgent(userAgent);
+        if (browser.identity) {
+            await applyIdentityToPage(page, browser.identity);
+        }
 
         const cookies = await loadBrowserSession(cookieJSON);
         await page.setCookie(...cookies);

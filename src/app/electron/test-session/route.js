@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getSheetDataApi } from '../../api/googlesheets.js';
-import { localExecutablePath } from '../../../utils/utils.js';
-import puppeteer from 'puppeteer-core';
+import { localExecutablePath, launchBrowser } from '../../../utils/utils.js';
+import { applyIdentityToPage } from '../../../utils/identity.js';
 import fs from 'fs-extra';
 import path from 'path';
 import https from 'https';
@@ -136,10 +136,9 @@ export async function POST(request) {
 
     const profileFiles = listFilesRecursive(destDir);
 
-    browser = await puppeteer.launch({
+    browser = await launchBrowser({
       headless: false,
       executablePath: localExecutablePath,
-      ignoreDefaultArgs: ['--enable-automation'],
       args: [
         `--user-data-dir=${destDir}`,
         '--no-first-run',
@@ -150,6 +149,7 @@ export async function POST(request) {
 
     const pages = await browser.pages();
     const page = pages[0] || (await browser.newPage());
+    if (browser.identity) { await applyIdentityToPage(page, browser.identity); }
 
     if (cookieJSON && cookieJSON.length > 0) {
       console.log(`[test-session] Injecting ${cookieJSON.length} cookies via page.setCookie`);

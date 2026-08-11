@@ -1,4 +1,3 @@
-import puppeteer from "puppeteer-core";
 import chromium from "@sparticuz/chromium-min";
 import readlineSync from 'readline-sync';
 import axios from 'axios';
@@ -7,7 +6,9 @@ import {
   isDev,
   userAgent,
   remoteExecutablePath,
+  launchBrowser,
 } from "@/utils/utils";
+import { applyIdentityToPage } from "@/utils/identity";
 import fs from 'fs';
 
 // Add a global variable to track if the process is running
@@ -16,17 +17,9 @@ let browser; // Declare a global browser variable
 let hasLoggedIn = false; // Flag to track if the user has logged in
 
 // Helper function for launching the browser with session persistence
-async function launchBrowser() {
+async function launchLocalBrowser() {
   const userDataDir = './user_data'; // Directory to save session data (cookies, localStorage, etc.)
-  const newBrowser = await puppeteer.launch({
-    ignoreDefaultArgs: ["--enable-automation"],
-    args: isDev
-      ? [
-          "--disable-blink-features=AutomationControlled",
-          "--disable-features=site-per-process",
-          "-disable-site-isolation-trials",
-        ]
-      : [...chromium.args, "--disable-blink-features=AutomationControlled"],
+  const newBrowser = await launchBrowser({
     executablePath: isDev
       ? localExecutablePath
       : await chromium.executablePath(remoteExecutablePath),
@@ -39,10 +32,7 @@ async function launchBrowser() {
 // Helper function to open and wait for manual login
 async function openPlatformPage(url) {
   const page = await browser.newPage();
-  await page.setViewport({ width: 1366, height: 768 });
-  await page.setUserAgent(
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'
-  );
+  if (browser.identity) { await applyIdentityToPage(page, browser.identity); } else { await page.setViewport({ width: 1366, height: 768 }); await page.setUserAgent(userAgent); }
 
   console.log(`Navigating to URL: ${url}`); // Debugging line
   await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
@@ -546,7 +536,7 @@ async function runAutomation(platformsToRun, postContent) {
   try {
     // If the browser is not initialized, launch it
     if (!browser) {
-      browser = await launchBrowser();
+      browser = await launchLocalBrowser();
     }
 
     const data = await fetchDataFromAppScript();
