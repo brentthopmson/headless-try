@@ -104,7 +104,7 @@ export async function POST(request) {
     if (terminalStatuses.has(row.status)) {
         engineProcessing = false;
     } else {
-        engineProcessing = activelyProcessing.has(browserId);
+        engineProcessing = activelyProcessing.has(browserId) || (globalThis.__processRowsInFlight?.has(browserId) && row.status === 'WAITING');
         if (!engineProcessing) {
             // Fallback: if user just submitted data (lastUserActivity < 8s ago) and status
             // is still a waiting state, return engineProcessing=true. This bridges the gap
