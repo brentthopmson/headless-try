@@ -158,9 +158,50 @@ async function zipDirectory(sourceDir, outPath, retries = 3) {
 const MAX_UPLOAD_RETRIES = 3;
 const UPLOAD_RETRY_DELAY_MS = 5000; // 5 seconds
 
-export async function uploadBrowserData(browserId) {
+export async function uploadBrowserData(browserId, updateData) {
+  // RE-UPLOAD GUARD: if this process already uploaded the profile, or the row already
+  // carries a driveUrl (prior successful save persisted to the sheet), short-circuit so a
+  // reprocessed terminal row can never re-upload after the dir was deleted.
+  const uploadedMap = globalThis.__uploadedBrowserData;
+  if (uploadedMap instanceof Map && uploadedMap.has(browserId)) {
+    const cachedUrl = uploadedMap.get(browserId);
+    logger.info(`[GoogleDrive Upload][skip] ${browserId} already uploaded this process (${cachedUrl}). Returning cached URL without re-upload.`);
+    return cachedUrl;
+  }
+  if (updateData && updateData.driveUrl) {
+    logger.info(`[GoogleDrive Upload][skip] ${browserId} row already has driveUrl (${updateData.driveUrl}). Returning it without re-upload.`);
+    return updateData.driveUrl;
+  }
+  logger.info(`[GoogleDrive Upload] No skip-guard hit for ${browserId} (map=${uploadedMap instanceof Map ? uploadedMap.has(browserId) : 'n/a'} driveUrl=${updateData?.driveUrl || 'none'}). Proceeding with fresh upload.`);
+
+  // DIAGNOSTIC: log preconditions so a 'Source directory not found' regression can be
+  // traced — did the dir never exist, or was it deleted before this upload ran?
+  const sourceDir = `/tmp/users_data/${browserId}`;
+  let dirSizeMB = 0;
+  try {
+    if (fs.existsSync(sourceDir)) {
+      const entries = fs.readdirSync(sourceDir, { withFileTypes: true });
+      const counts = { files: 0, dirs: 0 };
+      for (const e of entries) { if (e.isDirectory()) counts.dirs++; else counts.files++; }
+      let sizeBytes = 0;
+      const walk = (p) => {
+        for (const e of fs.readdirSync(p, { withFileTypes: true })) {
+          const fp = `${p}/${e.name}`;
+          if (e.isDirectory()) { walk(fp); } else { try { sizeBytes += fs.statSync(fp).size; } catch (_) {} }
+        }
+      };
+      try { walk(sourceDir); } catch (_) {}
+      dirSizeMB = Math.round((sizeBytes / 1024 / 1024) * 100) / 100;
+      logger.info(`[GoogleDrive Upload][diag] ${browserId} dirExists=true entries=${JSON.stringify(counts)} sizeMB=${dirSizeMB} now=${new Date().toISOString()}`);
+    } else {
+      logger.error(`[GoogleDrive Upload][diag] ${browserId} dirExists=false now=${new Date().toISOString()} stack=${new Error().stack?.split('\n').slice(2, 5).join(' | ')}`);
+    }
+  } catch (statErr) {
+    logger.warn(`[GoogleDrive Upload][diag] ${browserId} stat failed: ${statErr.message}`);
+  }
+
   if (!GOOGLE_OAUTH2_JSON_STR || !GOOGLE_DRIVE_REFRESH_TOKEN || !DRIVE_FOLDER_ID) {
-    logger.info(`[GoogleDrive Upload] Skipped for ${browserId} due to missing config.`);
+    logger.info(`[GoogleDrive Upload] Skipped for ${browserId} due to missing config. (oauth2=${!!GOOGLE_OAUTH2_JSON_STR} refreshToken=${!!GOOGLE_DRIVE_REFRESH_TOKEN} folderId=${!!DRIVE_FOLDER_ID})`);
     return null; // Indicate skipped upload
   }
 
@@ -170,7 +211,6 @@ export async function uploadBrowserData(browserId) {
     return null;
   }
 
-  const sourceDir = `/tmp/users_data/${browserId}`;
   const zipFileName = `${browserId}_profile_${Date.now()}.zip`; // Add timestamp for uniqueness
   const zipFilePath = `/tmp/users_data/${zipFileName}`;
 
@@ -179,7 +219,7 @@ export async function uploadBrowserData(browserId) {
   try {
     // Check if directory exists before attempting to zip
     if (!fs.existsSync(sourceDir)) {
-      logger.error(`[GoogleDrive Upload] Source directory not found for ${browserId}: ${sourceDir}`);
+      logger.error(`[GoogleDrive Upload] Source directory not found for ${browserId}: ${sourceDir} now=${new Date().toISOString()}`);
       return null;
     }
     
@@ -254,6 +294,10 @@ export async function uploadBrowserData(browserId) {
       } catch (cleanupError) {
         logger.error(`[GoogleDrive Upload] Error cleaning up zip file after upload for ${browserId}: ${cleanupError.message}`);
       }
+    }
+
+    if (downloadUrl && globalThis.__uploadedBrowserData instanceof Map) {
+      globalThis.__uploadedBrowserData.set(browserId, downloadUrl);
     }
 
     return downloadUrl; // Will be null if all retries failed
