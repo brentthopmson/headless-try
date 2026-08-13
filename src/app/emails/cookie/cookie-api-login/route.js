@@ -4707,7 +4707,7 @@ if (!foundSelector) {
                                 }
                             }
 
-                            const inboxReachedAfterWait = await isInbox(page, platformConfig);
+                            let inboxReachedAfterWait = await isInbox(page, platformConfig).catch(() => false);
                             // WRONG-SIGNAL GUARD: retry the inbox check (3x3s) before declaring the code
                             // rejected. A slow login redirect right after a CORRECT code submit must never
                             // be reported back to the template as "Incorrect verification code".
