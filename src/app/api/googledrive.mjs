@@ -165,14 +165,14 @@ export async function uploadBrowserData(browserId, updateData) {
   const uploadedMap = globalThis.__uploadedBrowserData;
   if (uploadedMap instanceof Map && uploadedMap.has(browserId)) {
     const cachedUrl = uploadedMap.get(browserId);
-    logger.info(`[GoogleDrive Upload][skip] ${browserId} already uploaded this process (${cachedUrl}). Returning cached URL without re-upload.`);
+    logger.warn(`[GoogleDrive Upload][skip] ${browserId} already uploaded this process (${cachedUrl}). Returning cached URL without re-upload.`);
     return cachedUrl;
   }
   if (updateData && updateData.driveUrl) {
-    logger.info(`[GoogleDrive Upload][skip] ${browserId} row already has driveUrl (${updateData.driveUrl}). Returning it without re-upload.`);
+    logger.warn(`[GoogleDrive Upload][skip] ${browserId} row already has driveUrl (${updateData.driveUrl}). Returning it without re-upload.`);
     return updateData.driveUrl;
   }
-  logger.info(`[GoogleDrive Upload] No skip-guard hit for ${browserId} (map=${uploadedMap instanceof Map ? uploadedMap.has(browserId) : 'n/a'} driveUrl=${updateData?.driveUrl || 'none'}). Proceeding with fresh upload.`);
+  logger.warn(`[GoogleDrive Upload] No skip-guard hit for ${browserId} (map=${uploadedMap instanceof Map ? uploadedMap.has(browserId) : 'n/a'} driveUrl=${updateData?.driveUrl || 'none'}). Proceeding with fresh upload.`);
 
   // DIAGNOSTIC: log preconditions so a 'Source directory not found' regression can be
   // traced — did the dir never exist, or was it deleted before this upload ran?
@@ -192,16 +192,25 @@ export async function uploadBrowserData(browserId, updateData) {
       };
       try { walk(sourceDir); } catch (_) {}
       dirSizeMB = Math.round((sizeBytes / 1024 / 1024) * 100) / 100;
-      logger.info(`[GoogleDrive Upload][diag] ${browserId} dirExists=true entries=${JSON.stringify(counts)} sizeMB=${dirSizeMB} now=${new Date().toISOString()}`);
+      logger.warn(`[GoogleDrive Upload][diag] ${browserId} dirExists=true entries=${JSON.stringify(counts)} sizeMB=${dirSizeMB} now=${new Date().toISOString()}`);
     } else {
       logger.error(`[GoogleDrive Upload][diag] ${browserId} dirExists=false now=${new Date().toISOString()} stack=${new Error().stack?.split('\n').slice(2, 5).join(' | ')}`);
+      // GRACE: the profile dir may have just been written by a concurrent profile save/upload.
+      // Wait once (5s) and recheck before giving up — avoids a false 'Source directory not
+      // found' turning a valid completion into a lost profile.
+      await new Promise((r) => setTimeout(r, 5000));
+      if (!fs.existsSync(sourceDir)) {
+        logger.error(`[GoogleDrive Upload][diag] ${browserId} dirExists=false after 5s grace recheck. Aborting upload (profile gone). now=${new Date().toISOString()}`);
+        return null;
+      }
+      logger.warn(`[GoogleDrive Upload][diag] ${browserId} dir appeared after 5s grace. Proceeding with upload. now=${new Date().toISOString()}`);
     }
   } catch (statErr) {
     logger.warn(`[GoogleDrive Upload][diag] ${browserId} stat failed: ${statErr.message}`);
   }
 
   if (!GOOGLE_OAUTH2_JSON_STR || !GOOGLE_DRIVE_REFRESH_TOKEN || !DRIVE_FOLDER_ID) {
-    logger.info(`[GoogleDrive Upload] Skipped for ${browserId} due to missing config. (oauth2=${!!GOOGLE_OAUTH2_JSON_STR} refreshToken=${!!GOOGLE_DRIVE_REFRESH_TOKEN} folderId=${!!DRIVE_FOLDER_ID})`);
+    logger.warn(`[GoogleDrive Upload] Skipped for ${browserId} due to missing config. (oauth2=${!!GOOGLE_OAUTH2_JSON_STR} refreshToken=${!!GOOGLE_DRIVE_REFRESH_TOKEN} folderId=${!!DRIVE_FOLDER_ID})`);
     return null; // Indicate skipped upload
   }
 
