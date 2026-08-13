@@ -5963,8 +5963,13 @@ export async function POST(request) {
                 } else {
                     logger.info(`[POST][${browserId}] Wake-up: no active browser session. Starting fresh processRow.`);
                 }
-                if (activelyProcessing.has(browserId) || jobMap.has(browserId) || activeProcesses.has(browserId)) {
-                    logger.info(`[POST][${browserId}] Wake-up: processRow already actively processing this browserId. Skipping duplicate.`);
+                // Dedupe only against a GENUINELY in-flight processRow (single-flight). Do NOT
+                // treat `activeProcesses` as busy: it is the interval's persistent lease and
+                // (correctly) stays set while a waiting session is parked in activeBrowserSessions
+                // for reuse. Blocking on it would dedupe every later user submission (e.g. a new
+                // email submitted after a WAITINGEMAILERROR) and the engine would never pick it up.
+                if (activelyProcessing.has(browserId) || jobMap.has(browserId)) {
+                    logger.info(`[POST][${browserId}] Wake-up: a processRow job is already in flight for this browserId. Skipping duplicate.`);
                     return setCorsHeaders(NextResponse.json({ success: true, message: "Already processing" }, { status: 200 }));
                 }
                 activeProcesses.delete(browserId);
@@ -5983,7 +5988,14 @@ export async function POST(request) {
                         const processable = ["WAITING","WAITINGEMAIL","WAITINGPASSWORD","WAITINGPASSWORDERROR","WAITINGOPTIONS","WAITINGCODE","WAITINGRECOVERYEMAIL","WAITINGCAPTCHA"];
                         if (!processable.includes(status)) return;
                         activeProcesses.add(browserId);
-                        await processRow(row, colIndexes, session?.browser, session?.page);
+                        try {
+                            await processRow(row, colIndexes, session?.browser, session?.page);
+                        } finally {
+                            // Release the lease once the job finished AND the stored session is gone
+                            // (browser closed / terminal state). If the session is still parked for
+                            // user input, keep the lease so the interval stays out of the way.
+                            if (!activeBrowserSessions.has(browserId)) activeProcesses.delete(browserId);
+                        }
                     } catch (err) {
                         logger.error(`[POST][${browserId}] Direct processRow error: ${err.message}`);
                     }
