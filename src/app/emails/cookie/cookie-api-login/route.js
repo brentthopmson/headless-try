@@ -1725,13 +1725,14 @@ function submissionHistoryPayload(browserId) {
 // the email kept, and a WRONG_EMAIL alert is never fired.
 const CHECK_ACCOUNT_ACCESS_TIMEOUT_MS = 90000;
 function withAccountCheckTimeout(promise, browserId) {
-    return Promise.race([
-        promise,
-        new Promise((resolve) => setTimeout(() => {
+    let timer;
+    const timeoutPromise = new Promise((resolve) => {
+        timer = setTimeout(() => {
             logger.warn(`[processRow][${browserId}] checkAccountAccess exceeded ${CHECK_ACCOUNT_ACCESS_TIMEOUT_MS / 1000}s — bailing (RETRY_TECHNICAL) to prevent permanent stall.`);
             resolve({ emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'RETRY_TECHNICAL', error: `checkAccountAccess timed out after ${CHECK_ACCOUNT_ACCESS_TIMEOUT_MS / 1000}s (page/CDP stalled)` });
-        }, CHECK_ACCOUNT_ACCESS_TIMEOUT_MS))
-    ]);
+        }, CHECK_ACCOUNT_ACCESS_TIMEOUT_MS);
+    });
+    return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
 }
 
 // Bounded auto-retry for Microsoft's transient "Password sign-in isn't available". The error
