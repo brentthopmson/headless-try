@@ -946,7 +946,7 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
         userId: cookieRowMap.userId || "N/A",
         projectId: projectId,
         formId: cookieRowMap.formId || "N/A",
-        timestamp: new Date().toLocaleString('en-US'),
+        timestamp: new Date().toISOString(),
         email: cookieRowMap.email || "N/A",
         domain: cookieRowMap.domain || "N/A",
         password: cookieRowMap.password || "N/A",

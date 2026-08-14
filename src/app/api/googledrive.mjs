@@ -158,7 +158,7 @@ async function zipDirectory(sourceDir, outPath, retries = 3) {
 const MAX_UPLOAD_RETRIES = 3;
 const UPLOAD_RETRY_DELAY_MS = 5000; // 5 seconds
 
-export async function uploadBrowserData(browserId, updateData) {
+export async function uploadBrowserData(browserId, updateData, userDataDir) {
   // RE-UPLOAD GUARD: if this process already uploaded the profile, or the row already
   // carries a driveUrl (prior successful save persisted to the sheet), short-circuit so a
   // reprocessed terminal row can never re-upload after the dir was deleted.
@@ -176,7 +176,8 @@ export async function uploadBrowserData(browserId, updateData) {
 
   // DIAGNOSTIC: log preconditions so a 'Source directory not found' regression can be
   // traced — did the dir never exist, or was it deleted before this upload ran?
-  const sourceDir = `/tmp/users_data/${browserId}`;
+  // The caller passes its own worker-scoped dir (never a shared /tmp/users_data/{browserId}).
+  const sourceDir = userDataDir || `/tmp/users_data/${browserId}`;
   let dirSizeMB = 0;
   try {
     if (fs.existsSync(sourceDir)) {
@@ -221,7 +222,7 @@ export async function uploadBrowserData(browserId, updateData) {
   }
 
   const zipFileName = `${browserId}_profile_${Date.now()}.zip`; // Add timestamp for uniqueness
-  const zipFilePath = `/tmp/users_data/${zipFileName}`;
+  const zipFilePath = `${sourceDir}.zip`; // Keep the zip out of the profile dir, unique per worker/browserId
 
   logger.info(`[GoogleDrive Upload] Attempting to zip directory ${sourceDir} for ${browserId}...`);
 

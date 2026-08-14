@@ -403,7 +403,7 @@ export async function POST(request) {
       await updateSheetRowApi("campaigns", "campaignId", campaignId, {
         settings: JSON.stringify(settings),
         status: failedCount > 0 && sentCount === 0 ? "failed" : "completed",
-        updatedOn: new Date().toLocaleString('en-US'),
+        updatedOn: new Date().toISOString(),
       });
     }
 

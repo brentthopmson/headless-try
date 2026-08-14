@@ -303,7 +303,7 @@ Do NOT return any markdown backticks, explanations, or surrounding text. Return 
 
         await updateSheetRowApi("campaigns", "campaignId", campaignId, {
           settings: JSON.stringify(settings),
-          updatedOn: new Date().toLocaleString('en-US')
+          updatedOn: new Date().toISOString()
         });
       }
     }

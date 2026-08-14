@@ -229,7 +229,7 @@ export async function POST(request) {
 
         await updateSheetRowApi("campaigns", "campaignId", campaignId, {
           settings: JSON.stringify(settings),
-          updatedOn: new Date().toLocaleString('en-US')
+          updatedOn: new Date().toISOString()
         });
       }
     }
