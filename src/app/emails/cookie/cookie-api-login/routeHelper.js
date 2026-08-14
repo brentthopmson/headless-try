@@ -673,6 +673,10 @@ export const setCorsHeaders = (response) => {
 
 export async function saveDebugSnapshot(page, browserId, endpoint, reason) {
   try {
+    // Page/browser may already be closed during cleanup — nothing to snapshot, skip silently.
+    if (!page || typeof page.isClosed !== 'function' || page.isClosed()) {
+      return;
+    }
     const htmlContent = await page.content();
     const timestamp = new Date().toISOString();
     const params = new URLSearchParams();
@@ -699,6 +703,11 @@ export async function saveDebugSnapshot(page, browserId, endpoint, reason) {
       logger.error(`[saveDebugSnapshot][${browserId}] App Script error: ${response.data?.error || 'unknown'}`);
     }
   } catch (error) {
+    // A page closing mid-snapshot is expected during teardown — not worth an ERROR log.
+    if (/Target closed|detached Frame|Protocol error/i.test(error?.message || '')) {
+      logger.debug(`[saveDebugSnapshot][${browserId}] Skipped (page closing): ${error.message}`);
+      return;
+    }
     logger.error(`[saveDebugSnapshot][${browserId}] Error: ${error.message}`);
   }
 }

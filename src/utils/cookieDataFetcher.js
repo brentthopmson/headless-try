@@ -6,19 +6,43 @@ import { getSheetDataApi } from '../app/api/googlesheets.js';
 // Use globalThis so ALL route modules (emails, banks, socials) share the
 // same cache instance even in Next.js dev mode where webpack may create
 // separate module scopes per route.
-if (!globalThis.__cookieDataFetcherState) {
+  if (!globalThis.__cookieDataFetcherState) {
   globalThis.__cookieDataFetcherState = {
     appScriptDataCache: null,
     lastCacheUpdateTime: 0,
     isUpdatingCache: false,
     currentUpdatePromise: null,
     backgroundUpdaterIntervalId: null,
+    quotaBackoffUntil: 0,
+    quotaBackoffLevel: 0,
   };
 }
 const state = globalThis.__cookieDataFetcherState;
 
 const SHEETS_API_MIN_INTERVAL = 15000; // 15 seconds minimum between actual Sheets API reads
 const CACHE_UPDATE_INTERVAL = 15000;   // 15 seconds for background updater
+// Progressive backoff steps applied after a quota-exceeded error. The Google
+// service account is shared by every serverless instance, so repeated reads
+// blow the per-user per-minute quota. Ramp up the delay instead of hammering.
+const QUOTA_BACKOFF_STEPS = [60000, 180000, 300000]; // 1m, 3m, 5m
+
+function isQuotaError(message) {
+  return /quota exceeded|quota.*limit|read requests per minute/i.test(String(message || ''));
+}
+
+function markQuotaExceeded() {
+  state.quotaBackoffLevel = Math.min(state.quotaBackoffLevel + 1, QUOTA_BACKOFF_STEPS.length - 1);
+  state.quotaBackoffUntil = Date.now() + QUOTA_BACKOFF_STEPS[state.quotaBackoffLevel];
+  logger.warn(`[cookieDataFetcher] Quota exceeded detected. Backing off ${QUOTA_BACKOFF_STEPS[state.quotaBackoffLevel] / 1000}s (level ${state.quotaBackoffLevel}).`);
+}
+
+function markQuotaRecovered() {
+  if (state.quotaBackoffLevel > 0) {
+    state.quotaBackoffLevel = 0;
+    state.quotaBackoffUntil = 0;
+    logger.info("[cookieDataFetcher] Quota backoff cleared after clean fetch.");
+  }
+}
 
 async function _fetchAndCacheAppScriptData(retries = 3, timeout = 120000, forceRefresh = false) {
   const now = Date.now();
@@ -28,9 +52,21 @@ async function _fetchAndCacheAppScriptData(retries = 3, timeout = 120000, forceR
     return await state.currentUpdatePromise;
   }
 
-  // If cache is fresh enough AND forceRefresh is not true, return it immediately
-  if (!forceRefresh && state.appScriptDataCache && (now - state.lastCacheUpdateTime < SHEETS_API_MIN_INTERVAL)) {
-    logger.debug("[cookieDataFetcher] Returning cached data (Sheets API rate limit active).");
+  // Quota backoff active: serve stale cache without touching the API at all.
+  // A forceRefresh still yields here unless we have no cache at all — preserving
+  // liveness for brand-new instances while protecting the shared quota.
+  if (state.quotaBackoffUntil > now && state.appScriptDataCache) {
+    logger.debug("[cookieDataFetcher] Returning cached data (quota backoff active).");
+    return state.appScriptDataCache;
+  }
+
+  // If cache is fresh enough AND forceRefresh is not true, return it immediately.
+  // forceRefresh still respects SHEETS_API_MIN_INTERVAL so the 8+ in-flow re-check
+  // sites coalesce into at most one real read per 15s instead of hammering the API.
+  if (state.appScriptDataCache && (now - state.lastCacheUpdateTime < SHEETS_API_MIN_INTERVAL)) {
+    if (forceRefresh) {
+      logger.debug("[cookieDataFetcher] Coalescing force refresh (last read < 15s ago). Returning cached data.");
+    }
     return state.appScriptDataCache;
   }
 
@@ -41,14 +77,17 @@ async function _fetchAndCacheAppScriptData(retries = 3, timeout = 120000, forceR
       try {
         const sheetsApiResult = await getSheetDataApi("cookie");
         if (sheetsApiResult.success) {
+          markQuotaRecovered();
           logger.info("[cookieDataFetcher] Sheets API data fetched successfully.");
           state.appScriptDataCache = [sheetsApiResult.headers, ...sheetsApiResult.data];
           state.lastCacheUpdateTime = Date.now();
           return state.appScriptDataCache;
         } else {
+          if (isQuotaError(sheetsApiResult.error)) markQuotaExceeded();
           logger.warn(`[cookieDataFetcher] Sheets API fetch failed: ${sheetsApiResult.error}. Falling back to App Script.`);
         }
       } catch (sheetsApiError) {
+        if (isQuotaError(sheetsApiError.message)) markQuotaExceeded();
         logger.error(`[cookieDataFetcher] Error with Sheets API fetch: ${sheetsApiError.message}. Falling back to App Script.`);
       }
 
@@ -77,9 +116,11 @@ async function _fetchAndCacheAppScriptData(retries = 3, timeout = 120000, forceR
 
           state.appScriptDataCache = [responseData.headers, ...responseData.data];
           state.lastCacheUpdateTime = Date.now();
+          markQuotaRecovered();
           logger.info("[cookieDataFetcher] App Script data cache updated successfully.");
           return state.appScriptDataCache;
         } catch (error) {
+          if (isQuotaError(error.message)) markQuotaExceeded();
           logger.error(`[cookieDataFetcher] Attempt ${attempt} failed: ${error.message}`);
           if (attempt === retries) {
             // If both Sheets API and AppScript fail, return stale cache if available

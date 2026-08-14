@@ -1249,16 +1249,46 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                     }
                                     break; // no error marker and password view left → submit accepted
                                 }
-                                    // Verify page actually changed after click — if URL is the same and password input still visible, wrong button was clicked
-                                    const urlAfterPasswordSubmit = page.url();
-                                    const pwStillVisible = await page.evaluate((sels) => {
-                                        for (const s of sels) { try { if (document.querySelector(s)) return true; } catch(e){} }
-                                        return false;
-                                    }, Array.isArray(platformConfig.selectors?.passwordInput) ? platformConfig.selectors.passwordInput : [platformConfig.selectors?.passwordInput].filter(Boolean)).catch(() => false);
-                                    const urlChanged = urlBeforePasswordSubmit !== urlAfterPasswordSubmit;
-                                    if (!urlChanged && pwStillVisible) {
-                                        logger.warn(`[checkAccountAccess][${instanceId}] Password next button clicked but page did not change (URL same, password input still visible). Wrong button may have been clicked.`);
-                                        return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'WAITING_PASSWORD', message: "Password submit button did not work. Please try again." };
+                                    // Verify page actually changed after click — if URL is the same and password
+                                    // input still visible, the click may have hit the wrong element or the page
+                                    // is still processing. Retry the submit up to 2 extra times before giving up:
+                                    // a transient slow render should not bounce the user into a WAITING_PASSWORD wait.
+                                    let wrongButtonRetries = 0;
+                                    while (true) {
+                                        const urlAfterPasswordSubmit = page.url();
+                                        const pwStillVisible = await page.evaluate((sels) => {
+                                            for (const s of sels) { try { if (document.querySelector(s)) return true; } catch(e){} }
+                                            return false;
+                                        }, Array.isArray(platformConfig.selectors?.passwordInput) ? platformConfig.selectors.passwordInput : [platformConfig.selectors?.passwordInput].filter(Boolean)).catch(() => false);
+                                        const urlChanged = urlBeforePasswordSubmit !== urlAfterPasswordSubmit;
+                                        if (!urlChanged && pwStillVisible) {
+                                            if (wrongButtonRetries < 2) {
+                                                wrongButtonRetries++;
+                                                logger.warn(`[checkAccountAccess][${instanceId}] Password submit did not change the page (retry ${wrongButtonRetries}/2). Re-typing password and retrying click...`);
+                                                await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, visiblePwSelector);
+                                                await page.type(visiblePwSelector, password, { delay: 50 });
+                                                let retried = false;
+                                                const pwdSelectors = Array.isArray(platformConfig.selectors.passwordNextButton) ? platformConfig.selectors.passwordNextButton : [platformConfig.selectors.passwordNextButton];
+                                                for (const sel of pwdSelectors) {
+                                                    try {
+                                                        await page.waitForSelector(sel, { visible: true, timeout: 2000 });
+                                                        const navigationPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => null);
+                                                        await page.click(sel);
+                                                        await navigationPromise;
+                                                        retried = true;
+                                                        break;
+                                                    } catch (e) {
+                                                        logger.debug(`[checkAccountAccess][${instanceId}] Password next button retry not found or clickable: ${sel}`);
+                                                    }
+                                                }
+                                                if (!retried) break;
+                                                await new Promise(resolve => setTimeout(resolve, 1500)); // let the page settle before re-checking
+                                                continue;
+                                            }
+                                            logger.warn(`[checkAccountAccess][${instanceId}] Password next button clicked but page did not change after retries (URL same, password input still visible). Wrong button may have been clicked.`);
+                                            return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'WAITING_PASSWORD', message: "Password submit button did not work. Please try again." };
+                                        }
+                                        break;
                                     }
                                     // Check for verification screens
                                     const verificationDetails = await checkVerification(page, platformConfig);
@@ -2308,7 +2338,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                     // Fall back to sheet read if cache doesn't have email
                     if (!currentEmail) {
-                        const checkData = await fetchDataFromAppScript(1, 30000, true); // Force refresh, rate-limited by _fetchAndCacheAppScriptData
+                        const checkData = await fetchDataFromAppScript(1, 30000, false); // Cached read; wake-up POST + patchCachedRow keep state fresh
                         const checkHeaders = checkData[0];
                         const checkColumnIndexes = getColumnIndexes(checkHeaders);
                         const checkRows = checkData.slice(1);
@@ -2543,7 +2573,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             break;
                         }
 
-                        const checkData = await fetchDataFromAppScript(1, 30000, true);
+                        const checkData = await fetchDataFromAppScript(1, 30000, false);
                         const checkHeaders = checkData[0];
                         const checkColumnIndexes = getColumnIndexes(checkHeaders);
                         const checkRows = checkData.slice(1);
@@ -2704,7 +2734,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     }
 
                     if (!cachedPassword) {
-                        const checkData = await fetchDataFromAppScript(1, 30000, true);
+                        const checkData = await fetchDataFromAppScript(1, 30000, false);
                         const checkHeaders = checkData[0];
                         const checkColumnIndexes = getColumnIndexes(checkHeaders);
                         const checkRows = checkData.slice(1);
@@ -3642,7 +3672,7 @@ if (!foundSelector) {
 
                     // Fall back to the sheet read only when the cache carries no choice yet.
                     if (!verificationChoiceRaw) {
-                        const checkData = await fetchDataFromAppScript(1, 30000, true);
+                        const checkData = await fetchDataFromAppScript(1, 30000, false);
                         const checkHeaders = checkData[0];
                         const checkColumnIndexes = getColumnIndexes(checkHeaders);
                         const checkRows = checkData.slice(1);
@@ -4105,7 +4135,7 @@ if (!foundSelector) {
                         break;
                     }
 
-                    const checkData = await fetchDataFromAppScript(1, 30000, true);
+                    const checkData = await fetchDataFromAppScript(1, 30000, false);
                     const checkHeaders = checkData[0];
                     const checkColumnIndexes = getColumnIndexes(checkHeaders);
                     const checkRows = checkData.slice(1);
@@ -4363,7 +4393,7 @@ if (!foundSelector) {
                     // Fall back to the sheet read only when the cache carries no code AND no explicit
                     // clear ('') yet — otherwise a stale sheet copy could resubmit a rejected code.
                     if (verificationCode === null && (cachedCodeForPoll === undefined || cachedCodeForPoll === null)) {
-                        const checkData = await fetchDataFromAppScript(1, 30000, true);
+                        const checkData = await fetchDataFromAppScript(1, 30000, false);
                         const checkHeaders = checkData[0];
                         const checkColumnIndexes = getColumnIndexes(checkHeaders);
                         const checkRows = checkData.slice(1);
@@ -5841,7 +5871,7 @@ function ensureIntervalIsRunning() {
     if (intervalId === null) {
         logger.debug("Restarting background processing interval...");
         processWaitingRows(); // Initial run
-        intervalId = setInterval(processWaitingRows, 10000); // Check every 10 seconds
+        intervalId = setInterval(processWaitingRows, 25000); // Check every 25 seconds (was 10s: reduced Sheets read load)
         startAppScriptDataBackgroundUpdater(); // Start the data fetching background updater
         logger.debug(`Background processing interval set up with ID: ${intervalId}`);
     } else {
