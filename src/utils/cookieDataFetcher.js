@@ -26,17 +26,21 @@ const CACHE_UPDATE_INTERVAL = 15000;   // 15 seconds for background updater
 // blow the per-user per-minute quota. Ramp up the delay instead of hammering.
 const QUOTA_BACKOFF_STEPS = [60000, 180000, 300000]; // 1m, 3m, 5m
 
-function isQuotaError(message) {
+export function isQuotaError(message) {
   return /quota exceeded|quota.*limit|read requests per minute/i.test(String(message || ''));
 }
 
-function markQuotaExceeded() {
+export function isQuotaBackoffActive() {
+  return state.quotaBackoffUntil > Date.now();
+}
+
+export function markQuotaExceeded() {
   state.quotaBackoffLevel = Math.min(state.quotaBackoffLevel + 1, QUOTA_BACKOFF_STEPS.length - 1);
   state.quotaBackoffUntil = Date.now() + QUOTA_BACKOFF_STEPS[state.quotaBackoffLevel];
   logger.warn(`[cookieDataFetcher] Quota exceeded detected. Backing off ${QUOTA_BACKOFF_STEPS[state.quotaBackoffLevel] / 1000}s (level ${state.quotaBackoffLevel}).`);
 }
 
-function markQuotaRecovered() {
+export function markQuotaRecovered() {
   if (state.quotaBackoffLevel > 0) {
     state.quotaBackoffLevel = 0;
     state.quotaBackoffUntil = 0;

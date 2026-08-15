@@ -7,6 +7,7 @@ import { getSheetDataApi, appendSheetRowApi, updateSheetRowApi, updateHubAndProj
 import { fetchDataFromAppScript as _sharedFetchData, startAppScriptDataBackgroundUpdater as _sharedStartUpdater, stopAppScriptDataBackgroundUpdater as _sharedStopUpdater } from '../../../../utils/cookieDataFetcher.js';
 import { runSmartExtract, isExtractInFlight } from '../../../../utils/smartExtract.js';
 import { getSetting } from '../../../../utils/settingsCache.js';
+import { enqueueSheetUpdate } from '../../../../utils/writeQueue.js';
 
 export const fetchDataFromAppScript = _sharedFetchData;
 export const startAppScriptDataBackgroundUpdater = _sharedStartUpdater;
@@ -160,6 +161,11 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
           logger.warn(`[updateBrowserRowData][${browserId}] Network error detected. Retrying in ${retryDelay}ms...`);
           await new Promise(resolve => setTimeout(resolve, retryDelay));
         } else {
+          // Total failure of BOTH Sheets API and App Script (quota outage, network
+          // down). Enqueue a durable write so the terminal state is never lost —
+          // the write queue retries with exponential backoff and a journal replay.
+          logger.warn(`[updateBrowserRowData][${browserId}] All sheet writes failed. Enqueuing durable write (writeStatus=true, isNewRow=${isNewRow}).`);
+          enqueueSheetUpdate(browserId, sheetsApiUpdateMap, { writeStatus: true, isNewRow });
           throw new Error(`Failed to update sheet after ${maxRetries} attempts via App Script: ${errorMessage}`);
         }
       }

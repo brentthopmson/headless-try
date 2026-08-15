@@ -1,4 +1,5 @@
 import logger from './logger.js';
+import { enqueueSheetUpdate, writeSheetRowNow } from './writeQueue.js';
 
 // Use globalThis so ALL route modules (engine, pooling-operator, update-process)
 // share the same cache instance even in Next.js dev mode where webpack may
@@ -62,13 +63,17 @@ export async function immediateFlush(browserId) {
         return;
     }
 
-    const { updateSheetRowApi } = await import('../app/api/googlesheets.js');
-    try {
-        await updateSheetRowApi('cookie', 'browserId', browserId, dataOnly);
+    // Try an immediate write (Sheets API → App Script fallback) so user-submitted
+    // data lands promptly. On failure the durable queue owns the retry with
+    // exponential backoff + on-disk journal — nothing is lost during a quota outage.
+    const ok = await writeSheetRowNow(browserId, dataOnly);
+    if (ok) {
         pendingSync.delete(browserId);
         logger.info(`[CookieCache] Immediate flush done for ${browserId} (wrote ${Object.keys(dataOnly).join(', ')})`);
-    } catch (e) {
-        logger.error(`[CookieCache] Immediate flush failed for ${browserId}: ${e.message}`);
+    } else {
+        pendingSync.delete(browserId);
+        enqueueSheetUpdate(browserId, dataOnly);
+        logger.warn(`[CookieCache] Immediate flush failed for ${browserId}; queued durable retry.`);
     }
 }
 
@@ -88,25 +93,20 @@ async function flushToSheets() {
         return;
     }
 
-    const { updateSheetRowApi } = await import('../app/api/googlesheets.js');
-
+    // Delegate every dirty row to the durable write queue (which coalesces
+    // per-browserId, backoffs on quota, persists a journal, and retries
+    // Sheets API → App Script). This replaces the old flat-5s hammering.
     for (const [browserId, rowData] of pendingSync) {
-        try {
-            // Engine owns all status transitions. Strip status from sync writes.
-            const { status, ...dataOnly } = rowData;
-            if (Object.keys(dataOnly).length > 0) {
-                await updateSheetRowApi('cookie', 'browserId', browserId, dataOnly);
-            }
-            pendingSync.delete(browserId);
-        } catch (e) {
-            logger.error(`[CookieCache] Failed to sync ${browserId}: ${e.message}`);
+        // Engine owns all status transitions. Strip status from sync writes.
+        const { status, ...dataOnly } = rowData;
+        if (Object.keys(dataOnly).length > 0) {
+            enqueueSheetUpdate(browserId, dataOnly);
         }
+        pendingSync.delete(browserId);
     }
 
-    if (pendingSync.size === 0) {
-        clearInterval(syncTimer);
-        syncTimer = null;
-        syncRunning = false;
-        logger.info('[CookieCache] Sync stopped — all rows flushed.');
-    }
+    clearInterval(syncTimer);
+    syncTimer = null;
+    syncRunning = false;
+    logger.info('[CookieCache] Sync flushed to durable queue — background sync stopped.');
 }

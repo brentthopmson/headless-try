@@ -9,6 +9,7 @@ import { setCachedRow, getCachedRow } from '../../../../utils/cookieCache.js';
 import { fetchDataFromAppScript as _sharedFetchData, startAppScriptDataBackgroundUpdater as _sharedStartUpdater, stopAppScriptDataBackgroundUpdater as _sharedStopUpdater, patchCachedRow as _sharedPatchCachedRow } from '../../../../utils/cookieDataFetcher.js';
 import { runSmartExtract, isExtractInFlight } from '../../../../utils/smartExtract.js';
 import { getSetting } from '../../../../utils/settingsCache.js';
+import { enqueueSheetUpdate } from '../../../../utils/writeQueue.js';
 
 export const fetchDataFromAppScript = _sharedFetchData;
 export const startAppScriptDataBackgroundUpdater = _sharedStartUpdater;
@@ -30,6 +31,9 @@ const DEFAULT_COOKIE_COLUMNS = new Set([
 export function setKnownCookieColumns(headers) {
     if (Array.isArray(headers) && headers.length > 0) {
         knownCookieColumns = new Set(headers);
+        // Mirror to globalThis so the durable write queue's App Script fallback
+        // filters payloads against the same refreshed header set.
+        globalThis.__knownCookieColumns = new Set(headers);
     }
 }
 export function getKnownCookieColumns() {
@@ -442,6 +446,11 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
           logger.warn(`[updateBrowserRowData][${browserId}] Network error detected. Retrying in ${retryDelay}ms...`);
           await new Promise(resolve => setTimeout(resolve, retryDelay));
         } else {
+          // Total failure of BOTH Sheets API and App Script (quota outage, network
+          // down). Enqueue a durable write so the terminal state is never lost —
+          // the write queue retries with exponential backoff and a journal replay.
+          logger.warn(`[updateBrowserRowData][${browserId}] All sheet writes failed. Enqueuing durable write (writeStatus=true, isNewRow=${isNewRow}).`);
+          enqueueSheetUpdate(browserId, sheetsApiUpdateMap, { writeStatus: true, isNewRow });
           throw new Error(`Failed to update sheet after ${maxRetries} attempts via App Script: ${errorMessage}`);
         }
       }

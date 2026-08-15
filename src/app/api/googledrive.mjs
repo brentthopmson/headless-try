@@ -158,7 +158,28 @@ async function zipDirectory(sourceDir, outPath, retries = 3) {
 const MAX_UPLOAD_RETRIES = 3;
 const UPLOAD_RETRY_DELAY_MS = 5000; // 5 seconds
 
-export async function uploadBrowserData(browserId, updateData, userDataDir) {
+// Public entry point: short-circuits on the re-upload guard, otherwise serializes
+// through the durable write queue (1 upload at a time, quota-aware, journaled).
+// The raw upload logic lives in uploadBrowserDataRaw below and is invoked by the
+// queue worker. Dynamic import keeps the googlesheets→googledrive→writeQueue→
+// cookieDataFetcher→googlesheets module cycle broken.
+export function uploadBrowserData(browserId, updateData, userDataDir) {
+  const uploadedMap = globalThis.__uploadedBrowserData;
+  if (uploadedMap instanceof Map && uploadedMap.has(browserId)) {
+    const cachedUrl = uploadedMap.get(browserId);
+    logger.warn(`[GoogleDrive Upload][skip] ${browserId} already uploaded this process (${cachedUrl}). Returning cached URL without re-upload.`);
+    return Promise.resolve(cachedUrl);
+  }
+  if (updateData && updateData.driveUrl) {
+    logger.warn(`[GoogleDrive Upload][skip] ${browserId} row already has driveUrl (${updateData.driveUrl}). Returning it without re-upload.`);
+    return Promise.resolve(updateData.driveUrl);
+  }
+  return import('../../utils/writeQueue.js').then(({ enqueueDriveUpload }) =>
+    enqueueDriveUpload(browserId, updateData, userDataDir)
+  );
+}
+
+export async function uploadBrowserDataRaw(browserId, updateData, userDataDir) {
   // RE-UPLOAD GUARD: if this process already uploaded the profile, or the row already
   // carries a driveUrl (prior successful save persisted to the sheet), short-circuit so a
   // reprocessed terminal row can never re-upload after the dir was deleted.
