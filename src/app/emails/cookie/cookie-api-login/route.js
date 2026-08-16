@@ -1847,6 +1847,14 @@ function canDeleteUserDataDir(browserId) {
     return true;
 }
 
+// Desync guard: a FAILED cleanup in one invocation must never wipe a profile dir while a
+// newer invocation has already moved the same row to a completing state (the finalizer
+// may still need to upload it). The in-memory cache is authoritative for status.
+function isRowCompleting(browserId) {
+    const s = getCachedRow(browserId)?.status;
+    return s === "COMPLETED" || s === "PROCESSING_FINALIZING";
+}
+
 // [DIAG] Summarize messages the engine is about to write into lastJsonResponse right before the
 // template reads them. The template shows an in-form error for "Incorrect verification code" /
 // "incorrect code"; hooking logTemplateSignal() directly above those writes lets a support run
@@ -2556,7 +2564,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 }
                 if (userDataDir) {
                     try {
-                        if (canDeleteUserDataDir(browserId)) {
+                        if (isRowCompleting(browserId)) {
+                            logger.warn(`[PROFILE][${browserId}] DELETION SKIPPED (WAITINGEMAIL timeout): cached status is ${getCachedRow(browserId)?.status}. Profile dir kept for the completing invocation.`);
+                        } else if (canDeleteUserDataDir(browserId)) {
                             logger.info(`[processRow][${browserId}] Deleting user data dir for WAITINGEMAIL timeout: ${userDataDir}`);
                             logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGEMAIL_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
                             await fs.remove(userDataDir);
@@ -3537,7 +3547,24 @@ if (!foundSelector) {
                     activeBrowserSessions.delete(browserId);
                     await new Promise(resolve => setTimeout(resolve, 1000));
                 }
-                if (userDataDir) {
+                // FAILED-save: credentials were valid (accountAccess achieved), so the
+                // browser profile must be saved to Drive even though the row ends FAILED.
+                if (initialCheckResult.accountAccess) {
+                    try {
+                        const savedUrl = await uploadBrowserData(browserId, updateData, userDataDir);
+                        if (savedUrl) {
+                            updateData.driveUrl = savedUrl;
+                            uploadedBrowserData.set(browserId, savedUrl);
+                            logger.info(`[processRow][${browserId}] Browser data saved to Drive before FAILED cleanup (WAITINGPASSWORD timeout): ${savedUrl}`);
+                        }
+                    } catch (saveErr) {
+                        logger.error(`[processRow][${browserId}] Error saving browser data before FAILED cleanup (WAITINGPASSWORD timeout): ${saveErr.message}`);
+                    }
+                }
+                // Only delete the profile dir once the browser data was actually preserved
+                // to Drive — an upload that failed after all retries must leave the dir on
+                // disk for recovery, never delete the profile before/without the save.
+                if (updateData.driveUrl && userDataDir) {
                     try {
                         if (canDeleteUserDataDir(browserId)) {
                             logger.info(`[processRow][${browserId}] Deleting user data dir for WAITINGPASSWORD timeout: ${userDataDir}`);
@@ -4094,7 +4121,10 @@ if (!foundSelector) {
                         logger.error(`[processRow][${browserId}] Error saving browser data before FAILED cleanup (WAITINGOPTIONS timeout): ${saveErr.message}`);
                     }
                 }
-                if (userDataDir) {
+                // Only delete the profile dir once the browser data was actually preserved
+                // to Drive — an upload that failed after all retries must leave the dir on
+                // disk for recovery, never delete the profile before/without the save.
+                if (updateData.driveUrl && userDataDir) {
                     try {
                         if (canDeleteUserDataDir(browserId)) {
                             logger.info(`[processRow][${browserId}] Deleting user data dir for WAITINGOPTIONS timeout: ${userDataDir}`);
@@ -4319,7 +4349,7 @@ if (!foundSelector) {
                         logger.error(`[processRow][${browserId}] Error saving browser data before FAILED cleanup (WAITINGRECOVERYEMAIL timeout): ${saveErr.message}`);
                     }
                 }
-                if (userDataDir) {
+                if (updateData.driveUrl && userDataDir) {
                     try {
                         if (canDeleteUserDataDir(browserId)) {
                             logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGRECOVERYEMAIL_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
@@ -4999,7 +5029,7 @@ if (!foundSelector) {
                         logger.error(`[processRow][${browserId}] Error saving browser data before FAILED cleanup (WAITINGCODE timeout): ${saveErr.message}`);
                     }
                 }
-                if (userDataDir) {
+                if (updateData.driveUrl && userDataDir) {
                     try {
                         if (canDeleteUserDataDir(browserId)) {
                             logger.info(`[processRow][${browserId}] Deleting user data dir for WAITING_CODE timeout: ${userDataDir}`);
@@ -5351,22 +5381,38 @@ if (!foundSelector) {
                 // the upload entirely (never clobber the good profile) — cookieJSON below is
                 // still persisted to the sheet in the COMPLETED write, so nothing is lost.
                 let existingDriveUrl = null;
+                let invalidAccountDetected = false;
                 try {
                     const freshData = await getSheetDataApi("cookie");
                     if (freshData.success && Array.isArray(freshData.data)) {
                         const biIdx = freshData.headers.indexOf('browserId');
                         const cfIdx = freshData.headers.indexOf('cookieFileURL');
                         const dvIdx = freshData.headers.indexOf('driveUrl');
+                        const ljrIdx = freshData.headers.indexOf('lastJsonResponse');
                         const freshRow = freshData.data.find(r => String(r[biIdx]).trim() === String(browserId).trim());
                         if (freshRow) {
                             existingDriveUrl = (cfIdx !== -1 && freshRow[cfIdx]) || (dvIdx !== -1 && freshRow[dvIdx]) || null;
+                            // Root-cause guard: a row that carries a definitive invalid-account
+                            // marker (strictly-mismatch rejection or WAITINGEMAIL_ERROR) must never
+                            // be completed+uploaded — the account doesn't exist. Block the upload
+                            // so the run ends FAILED instead of a phantom COMPLETED.
+                            if (ljrIdx !== -1 && typeof freshRow[ljrIdx] === 'string') {
+                                const ljr = freshRow[ljrIdx];
+                                if (ljr.includes('STRICTLY_MISMATCH') || ljr.includes('WAITINGEMAIL_ERROR')) {
+                                    invalidAccountDetected = true;
+                                    logger.warn(`[processRow][${browserId}] Finalizer fresh-read: invalid-account marker found in lastJsonResponse. Blocking upload + COMPLETED.`);
+                                }
+                            }
                         }
                     }
                 } catch (freshReadErr) {
                     logger.warn(`[processRow][${browserId}] Finalizer fresh-read failed (proceeding with upload): ${freshReadErr.message}`);
                 }
 
-                if (existingDriveUrl) {
+                if (invalidAccountDetected) {
+                    logger.error(`[processRow][${browserId}] Finalizer: account was rejected (invalid email). Skipping upload; run will end FAILED.`);
+                    updateData.reason = 'Account rejected; invalid email — completion blocked';
+                } else if (existingDriveUrl) {
                     logger.warn(`[UPLOAD][${browserId}] DEFENSIVE-SKIP: sheet already has cookieFileURL=${existingDriveUrl}. Skipping re-upload (cookieJSON kept).`);
                     updateData.driveUrl = existingDriveUrl;
                     uploadedDriveUrl = existingDriveUrl;
@@ -5407,12 +5453,13 @@ if (!foundSelector) {
                 // The profile was NOT preserved (Drive upload failed / profile dir already gone).
                 // A terminal COMPLETED with no cookies and no driveUrl is silent data loss — surface
                 // it as FAILED so the row is flagged for repair instead of looking like a successful run.
-                logger.error(`[processRow][${browserId}] Drive upload did not preserve a profile (uploadedDriveUrl=null). Marking FAILED instead of COMPLETED.`);
+                const failReason = updateData.reason || 'Drive upload failed; profile not preserved';
+                logger.error(`[processRow][${browserId}] Drive upload did not preserve a profile (uploadedDriveUrl=null). Marking FAILED instead of COMPLETED. reason=${failReason}`);
                 finalStatus = "FAILED";
                 updateData.status = "FAILED";
-                updateData.reason = 'Drive upload failed; profile not preserved';
+                updateData.reason = failReason;
                 updateData.lastJsonResponse = JSON.stringify({
-                    ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED", error: 'Drive upload failed; profile not preserved'
+                    ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED", error: failReason
                 });
             }
         }
@@ -5585,7 +5632,9 @@ if (!foundSelector) {
         logger.info(`[TIMING][${browserId}] ${parts.join(' | ')}`);
 
         if (updateData.status === "FAILED" && !initialCheckResult.accountAccess && userDataDir) {
-            if ((browserFullyClosed || (browser && !browser.isConnected())) && canDeleteUserDataDir(browserId)) {
+            if (isRowCompleting(browserId)) {
+                logger.warn(`[PROFILE][${browserId}] DELETION SKIPPED (FAILED_FINAL_CLEANUP): cached status is ${getCachedRow(browserId)?.status}. Profile dir kept for the completing invocation.`);
+            } else if ((browserFullyClosed || (browser && !browser.isConnected())) && canDeleteUserDataDir(browserId)) {
                 try {
                     logger.info(`[processRow][${browserId}] Final status FAILED. Attempting to delete user data directory: ${userDataDir}`);
                     // Add retry logic for fs.remove to handle EBUSY errors
