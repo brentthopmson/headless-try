@@ -28,6 +28,33 @@ function column_index_to_letter(index) {
   return result;
 }
 
+// Short-TTL cache of each sheet's header row. Headers almost never change, so repeat
+// writes to the same sheet skip the headers read entirely — updateSheetRowApi drops
+// from 2 Sheets Reads per write (headers + search column) to 1. Every values.get counts
+// against the per-user 'Read requests per minute' quota, which the cookie engine
+// exhausts under load; ensureSheetColumns invalidates the cache whenever it appends
+// new columns.
+const HEADER_CACHE_TTL_MS = 120000;
+const _headerCache = new Map(); // sheetName -> { headers, ts }
+
+function getCachedSheetHeaders(sheetName) {
+  const entry = _headerCache.get(sheetName);
+  if (entry && Date.now() - entry.ts < HEADER_CACHE_TTL_MS) {
+    return entry.headers;
+  }
+  return null;
+}
+
+function setCachedSheetHeaders(sheetName, headers) {
+  if (Array.isArray(headers) && headers.length > 0) {
+    _headerCache.set(sheetName, { headers, ts: Date.now() });
+  }
+}
+
+function invalidateCachedSheetHeaders(sheetName) {
+  _headerCache.delete(sheetName);
+}
+
 let cachedAuthClient = null;
 let tokenExpiryTime = 0;
 
@@ -332,14 +359,21 @@ export async function updateSheetRowApi(sheetName, searchColumn, searchValue, he
 
     const sheets = google.sheets({ version: 'v4', auth: authClient });
 
-    // Read headers only (row 1) — minimal read
-    const headersResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: `${sheetName}!1:1`,
-    });
-    const headers = headersResponse.data.values?.[0] || [];
-    if (headers.length === 0) {
-      return { success: false, error: `No headers found in sheet ${sheetName}.` };
+    // Headers are cached with a short TTL (they almost never change). A cache hit skips
+    // the headers read entirely, cutting updateSheetRowApi from 2 Sheets Reads per write
+    // to 1 — each values.get counts against the per-user read quota.
+    let headers = getCachedSheetHeaders(sheetName);
+    if (!headers) {
+      // Read headers only (row 1) — minimal read
+      const headersResponse = await sheets.spreadsheets.values.get({
+        spreadsheetId: SPREADSHEET_ID,
+        range: `${sheetName}!1:1`,
+      });
+      headers = headersResponse.data.values?.[0] || [];
+      if (headers.length === 0) {
+        return { success: false, error: `No headers found in sheet ${sheetName}.` };
+      }
+      setCachedSheetHeaders(sheetName, headers);
     }
 
     const searchColumnIndex = headers.indexOf(searchColumn);
@@ -422,11 +456,15 @@ export async function ensureSheetColumns(sheetName, columns) {
     }
 
     const sheets = google.sheets({ version: 'v4', auth: authClient });
-    const headersResponse = await sheets.spreadsheets.values.get({
-      spreadsheetId: SPREADSHEET_ID,
-      range: `${sheetName}!1:1`,
-    });
-    const headers = headersResponse.data.values?.[0] || [];
+    let headers = getCachedSheetHeaders(sheetName);
+    if (!headers) {
+      const headersResponse = await sheets.spreadsheets.values.get({
+        spreadsheetId: SPREADSHEET_ID,
+        range: `${sheetName}!1:1`,
+      });
+      headers = headersResponse.data.values?.[0] || [];
+      setCachedSheetHeaders(sheetName, headers);
+    }
 
     const missing = wanted.filter(h => !headers.includes(h));
     if (missing.length === 0) {
@@ -443,6 +481,9 @@ export async function ensureSheetColumns(sheetName, columns) {
       valueInputOption: 'RAW',
       resource: { values: [missing] },
     });
+
+    // Headers changed — drop the cached header row so the next read sees the new columns.
+    invalidateCachedSheetHeaders(sheetName);
 
     logger.info(`[ensureSheetColumns] ${sheetName} — appended headers: ${missing.join(', ')}`);
     return { success: true, added: missing };

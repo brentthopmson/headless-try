@@ -1835,6 +1835,15 @@ function canDeleteUserDataDir(browserId) {
         logger.warn(`[PROFILE][${browserId}] DELETION BLOCKED: active browser session still attached to profile. Full wipe skipped (canDeleteUserDataDir).`);
         return false;
     }
+    // A Drive upload is queued/in-flight for this browserId — wiping the dir now would
+    // orphan the pending upload ("Aborting upload (profile gone)"). Block until the
+    // queue job finishes (success or give-up). Prevents a FAILED cleanup from racing
+    // ahead of a COMPLETED_FINALIZER upload on a reprocessed row.
+    const pending = globalThis.__pendingDriveUploads;
+    if (pending instanceof Set && pending.has(browserId)) {
+        logger.warn(`[PROFILE][${browserId}] DELETION BLOCKED: Drive upload pending for profile. Full wipe skipped (canDeleteUserDataDir).`);
+        return false;
+    }
     return true;
 }
 
@@ -5387,12 +5396,25 @@ if (!foundSelector) {
                 }
             }
 
-            // Transition to COMPLETED as the final terminal status after all background work is done.
-            finalStatus = "COMPLETED";
-            updateData.status = "COMPLETED";
-            updateData.lastJsonResponse = JSON.stringify({
-                ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "COMPLETED"
-            });
+            if (uploadedDriveUrl) {
+                // Transition to COMPLETED as the final terminal status after all background work is done.
+                finalStatus = "COMPLETED";
+                updateData.status = "COMPLETED";
+                updateData.lastJsonResponse = JSON.stringify({
+                    ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "COMPLETED"
+                });
+            } else {
+                // The profile was NOT preserved (Drive upload failed / profile dir already gone).
+                // A terminal COMPLETED with no cookies and no driveUrl is silent data loss — surface
+                // it as FAILED so the row is flagged for repair instead of looking like a successful run.
+                logger.error(`[processRow][${browserId}] Drive upload did not preserve a profile (uploadedDriveUrl=null). Marking FAILED instead of COMPLETED.`);
+                finalStatus = "FAILED";
+                updateData.status = "FAILED";
+                updateData.reason = 'Drive upload failed; profile not preserved';
+                updateData.lastJsonResponse = JSON.stringify({
+                    ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED", error: 'Drive upload failed; profile not preserved'
+                });
+            }
         }
 
     } catch (error) {

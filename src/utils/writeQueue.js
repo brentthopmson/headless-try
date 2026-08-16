@@ -68,6 +68,20 @@ if (!globalThis.__writeQueueState) {
 }
 const state = globalThis.__writeQueueState;
 
+// BrowserIds with a Drive upload queued or in flight. route.js consults this set (via
+// canDeleteUserDataDir) so no FAILED cleanup can wipe a profile dir while its drive job
+// still needs it — that race produced "Aborting upload (profile gone)" and a silent
+// COMPLETED. Mirrors the __uploadedBrowserData globalThis pattern so all module scopes
+// share one set; a process restart repopulates it from loadJournal().
+if (!globalThis.__pendingDriveUploads) globalThis.__pendingDriveUploads = new Set();
+
+function markDriveUploadPending(browserId) {
+  if (browserId) globalThis.__pendingDriveUploads.add(browserId);
+}
+function markDriveUploadDone(browserId) {
+  if (browserId) globalThis.__pendingDriveUploads.delete(browserId);
+}
+
 function stripStatus(obj) {
   const { status, ...rest } = obj;
   return rest;
@@ -167,6 +181,7 @@ function loadJournal() {
         if ((dj.attempts || 0) >= DRIVE_MAX_ATTEMPTS) continue;
         // updateData is not persisted (can be large); the raw upload re-checks its
         // own guards and re-uploads the still-present profile dir idempotently.
+        markDriveUploadPending(dj.browserId);
         state.driveJobs.push({
           browserId: dj.browserId,
           userDataDir: dj.userDataDir,
@@ -367,11 +382,13 @@ async function workerTick() {
       try {
         const ok = await executeDriveJob(head);
         if (ok) {
+          markDriveUploadDone(head.browserId);
           state.driveJobs.shift();
         } else {
           head.attempts += 1;
           if (head.attempts >= DRIVE_MAX_ATTEMPTS) {
             logger.error(`[writeQueue] Drive job gave up for ${head.browserId} after ${head.attempts} attempts.`);
+            markDriveUploadDone(head.browserId);
             state.driveJobs.shift();
             if (head.resolve) head.resolve(null);
             notifyTeam({
@@ -455,6 +472,7 @@ export async function writeSheetRowNow(browserId, dataOnly, isNewRow = false) {
  */
 export function enqueueDriveUpload(browserId, updateData, userDataDir) {
   loadJournal();
+  markDriveUploadPending(browserId);
   return new Promise((resolve) => {
     const existingIdx = state.driveJobs.findIndex((j) => j.browserId === browserId);
     if (existingIdx !== -1) {
