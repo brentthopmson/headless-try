@@ -2111,6 +2111,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         headless: isDev ? false : "new"
                     });
                     logger.info(`[processRow][${browserId}] Browser launched successfully on attempt ${i + 1}. PID: ${browser.process()?.pid}`);
+                    globalThis.__profileWriter = globalThis.__profileWriter || new Map();
+                    globalThis.__profileWriter.set(browserId, WORKER_SEGMENT);
+                    logger.warn(`[PROFILE][${browserId}] LAUNCH segment=${WORKER_SEGMENT} pid=${process.pid} dirCreated=${fs.existsSync(userDataDir)} dir=${userDataDir}`);
                     break; // Break out of retry loop on success
                 } catch (launchError) {
                     logger.error(`[processRow][${browserId}] Browser launch attempt ${i + 1}/${maxLaunchRetries} failed: ${launchError.message}. Stack: ${launchError.stack}`);
@@ -5417,7 +5420,27 @@ if (!foundSelector) {
                     updateData.driveUrl = existingDriveUrl;
                     uploadedDriveUrl = existingDriveUrl;
                 } else {
-                    logger.warn(`[UPLOAD][${browserId}] attempt caller=COMPLETED_FINALIZER status=${finalStatus} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
+                    const __writer = (globalThis.__profileWriter && globalThis.__profileWriter.get(browserId)) || 'none';
+                    logger.warn(`[UPLOAD][${browserId}] attempt caller=COMPLETED_FINALIZER status=${finalStatus} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} segment=${WORKER_SEGMENT} pid=${process.pid} writer=${__writer} userDataDir=${userDataDir}`);
+                    if (userDataDir && !fs.existsSync(userDataDir)) {
+                        try {
+                            const parent = '/tmp/users_data';
+                            let segs = 'unreadable';
+                            if (fs.existsSync(parent)) {
+                                segs = fs.readdirSync(parent).filter(n => !n.startsWith('.')).join(',') || '(empty)';
+                            }
+                            let writerDirs = 'n/a';
+                            if (__writer !== 'none') {
+                                const writerSeg = `/tmp/users_data/${__writer}`;
+                                if (fs.existsSync(writerSeg)) {
+                                    writerDirs = fs.readdirSync(writerSeg).join(',') || '(empty)';
+                                }
+                            }
+                            logger.warn(`[UPLOAD][${browserId}] DIAG dir-missing: segments=[${segs}] writerDir=${writerDirs} expected=${userDataDir}`);
+                        } catch (diagErr) {
+                            logger.warn(`[UPLOAD][${browserId}] DIAG dir-missing listing failed: ${diagErr.message}`);
+                        }
+                    }
                     uploadedDriveUrl = await uploadBrowserData(browserId, updateData, userDataDir);
                     if (uploadedDriveUrl) {
                         updateData.driveUrl = uploadedDriveUrl;

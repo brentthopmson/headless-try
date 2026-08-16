@@ -192,6 +192,9 @@ function loadJournal() {
       }
     }
     logger.warn(`[writeQueue] Recovered ${state.sheetJobs.size} sheet job(s) and ${state.driveJobs.length} drive job(s) from journal.`);
+    for (const dj of state.driveJobs) {
+      logger.warn(`[writeQueue] Restored drive job ${dj.browserId} userDataDir=${dj.userDataDir} attempts=${dj.attempts || 0} pid=${process.pid} now=${new Date().toISOString()}`);
+    }
     if (state.sheetJobs.size > 0 || state.driveJobs.length > 0) {
       try { fs.unlinkSync(JOURNAL_PATH); } catch (_) {}
       logger.info('[writeQueue] Journal claimed and removed.');
