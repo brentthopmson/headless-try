@@ -1943,6 +1943,11 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         }
     }, 10000) : null;
 
+    // Profile-dir heartbeat. Started only after a successful launch (see LAUNCH diag
+    // below) so it never false-fires while the profile is being created; cleared in finally.
+    let dirHeartbeatInterval = null;
+    let _dirSeenMissing = false;
+
     const userDataDir = buildUserDataDir(browserId);
     let browser = null;
     let page = null;
@@ -2114,6 +2119,27 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     globalThis.__profileWriter = globalThis.__profileWriter || new Map();
                     globalThis.__profileWriter.set(browserId, WORKER_SEGMENT);
                     logger.warn(`[PROFILE][${browserId}] LAUNCH segment=${WORKER_SEGMENT} pid=${process.pid} dirCreated=${fs.existsSync(userDataDir)} dir=${userDataDir}`);
+
+                    // Profile-dir heartbeat: every 15s log whether the profile dir still exists
+                    // (INFO; suppressed in production warn mode) and WARN on the exact tick it
+                    // vanishes without a prior browser close — catches silent mid-run deletion.
+                    _dirSeenMissing = false;
+                    dirHeartbeatInterval = setInterval(() => {
+                        try {
+                            const exists = userDataDir ? fs.existsSync(userDataDir) : false;
+                            const elapsed = ((Date.now() - _timer.start) / 1000).toFixed(1);
+                            if (exists) {
+                                logger.info(`[DIAG-profile][${browserId}] elapsed=${elapsed}s dirExists=true dir=${userDataDir}`);
+                            } else if (browserFullyClosed) {
+                                logger.info(`[DIAG-profile][${browserId}] elapsed=${elapsed}s dirExists=false (after close; expected if cleanup removed it) dir=${userDataDir}`);
+                            } else if (!_dirSeenMissing) {
+                                _dirSeenMissing = true;
+                                logger.warn(`[DIAG-profile][${browserId}] elapsed=${elapsed}s dirExists=FALSE mid-run (silent deletion) dir=${userDataDir}`);
+                            }
+                        } catch (diagErr) {
+                            logger.warn(`[DIAG-profile][${browserId}] dir-heartbeat error: ${diagErr.message}`);
+                        }
+                    }, 15000).unref();
                     break; // Break out of retry loop on success
                 } catch (launchError) {
                     logger.error(`[processRow][${browserId}] Browser launch attempt ${i + 1}/${maxLaunchRetries} failed: ${launchError.message}. Stack: ${launchError.stack}`);
@@ -5368,15 +5394,6 @@ if (!foundSelector) {
                 logger.info(`[processRow][${browserId}] PROCESSING_FINALIZING written to sheet — template will redirect user.`);
             }
 
-            if (browser) {
-                if (targetCreatedListener && browser && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
-                logger.info(`[processRow][${browserId}] Closing browser for COMPLETED status before Drive upload.`);
-                await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
-                browserFullyClosed = true;
-                activeBrowserSessions.delete(browserId);
-                await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
-            }
-
             let uploadedDriveUrl = null;
             try {
                 // Defensive re-read: another worker/instance may have already completed and
@@ -5441,6 +5458,7 @@ if (!foundSelector) {
                             logger.warn(`[UPLOAD][${browserId}] DIAG dir-missing listing failed: ${diagErr.message}`);
                         }
                     }
+                    await new Promise(resolve => setTimeout(resolve, 1500)); // Let Chromium flush profile DBs before zipping the live dir
                     uploadedDriveUrl = await uploadBrowserData(browserId, updateData, userDataDir);
                     if (uploadedDriveUrl) {
                         updateData.driveUrl = uploadedDriveUrl;
@@ -5452,6 +5470,18 @@ if (!foundSelector) {
                 }
             } catch (uploadError) {
                 logger.error(`[processRow][${browserId}] Error during Google Drive upload: ${uploadError.message}`);
+            }
+
+            // Close the browser only AFTER the Drive upload: while the browser is attached,
+            // activeBrowserSessions + __pendingDriveUploads keep canDeleteUserDataDir() false,
+            // so no cleanup path can wipe the live profile out from under the upload.
+            if (browser) {
+                if (targetCreatedListener && browser && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
+                logger.info(`[processRow][${browserId}] Closing browser for COMPLETED status after Drive upload.`);
+                await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
+                browserFullyClosed = true;
+                activeBrowserSessions.delete(browserId);
+                await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
             }
 
             if (updateData.driveUrl && userDataDir && canDeleteUserDataDir(browserId)) {
@@ -5531,6 +5561,7 @@ if (!foundSelector) {
         }
     } finally {
         clearInterval(diagInterval);
+        clearInterval(dirHeartbeatInterval);
         logger.info(`[engineProcess][${browserId}] -FINALLY (cleanup)`);
         activelyProcessing.delete(browserId);
         // Release the per-browser single-flight lock. Must happen here (this finally covers
