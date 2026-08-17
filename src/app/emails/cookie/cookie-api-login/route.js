@@ -258,10 +258,12 @@ async function updateBrowserRowDataFast(browserId, updateData, isNewRow = false)
         const existing = getCachedRow(browserId) || {};
         setCachedRow(browserId, { ...existing, ...updateData, ...historyPayload });
     }
-    // 2. Only do full Sheets cascade for terminal states (COMPLETED/FAILED).
-    //    Intermediate writes go through cache + batched background sync to conserve quota.
+    // 2. Only do full Sheets cascade for terminal states (COMPLETED/FAILED) plus
+    //    PROCESSING_FINALIZING, which the finalizer writes BEFORE the browser closes so
+    //    the template sees it promptly and redirects the user early. Intermediate writes
+    //    go through cache + batched background sync to conserve quota.
     const status = updateData.status || '';
-    if (status === 'COMPLETED' || status === 'FAILED') {
+    if (status === 'COMPLETED' || status === 'FAILED' || status === 'PROCESSING_FINALIZING') {
         const cachedForWrite = getCachedRow(browserId) || {};
         const mergedForWrite = { ...cachedForWrite, ...updateData, ...historyPayload };
         await updateBrowserRowData(browserId, mergedForWrite, isNewRow).catch(err => {
