@@ -99,12 +99,12 @@ export async function POST(request) {
     // Terminal/redirect statuses must NEVER set engineProcessing=true — the template
     // needs to act on them immediately (redirect for PROCESSING_FINALIZING/COMPLETED,
     // show error for FAILED). Not even activelyProcessing should block these.
-    let engineProcessing;
+    let engineProcessing = false;
     const terminalStatuses = new Set(["PROCESSING_FINALIZING", "COMPLETED", "FAILED"]);
     if (terminalStatuses.has(row.status)) {
         engineProcessing = false;
     } else {
-        engineProcessing = activelyProcessing.has(browserId) || (globalThis.__processRowsInFlight?.has(browserId) && row.status === 'WAITING');
+        engineProcessing = activelyProcessing.has(browserId) || (globalThis.__jobMap?.has(browserId) ?? false);
         if (!engineProcessing) {
             // Fallback: if user just submitted data (lastUserActivity < 8s ago) and status
             // is still a waiting state, return engineProcessing=true. This bridges the gap
