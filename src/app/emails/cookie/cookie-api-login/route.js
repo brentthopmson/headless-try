@@ -5503,8 +5503,23 @@ if (!foundSelector) {
                             logger.warn(`[UPLOAD][${browserId}] DIAG dir-missing listing failed: ${diagErr.message}`);
                         }
                     }
-                    await new Promise(resolve => setTimeout(resolve, 1500)); // Let Chromium flush profile DBs before zipping the live dir
-                    uploadedDriveUrl = await uploadBrowserData(browserId, updateData, userDataDir);
+                    // Enqueue the Drive upload FIRST so __pendingDriveUploads is set and
+                    // canDeleteUserDataDir() stays false for the whole window (no cleanup
+                    // path can wipe the profile). The queue worker zips asynchronously —
+                    // after the browser is closed below — so Chromium has released its
+                    // locks on the profile DBs (Cookies/Sessions/cache) by zip time, which
+                    // is what caused the EBUSY/EPERM "resource busy" failures on Windows.
+                    const driveUploadPromise = uploadBrowserData(browserId, updateData, userDataDir);
+                    if (browser) {
+                        if (targetCreatedListener && browser && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
+                        logger.info(`[processRow][${browserId}] Closing browser for COMPLETED status before Drive upload (release profile file locks).`);
+                        await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
+                        browserFullyClosed = true;
+                        activeBrowserSessions.delete(browserId);
+                        await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 1500)); // Let Chromium flush profile DBs before the worker zips
+                    uploadedDriveUrl = await driveUploadPromise;
                     if (uploadedDriveUrl) {
                         updateData.driveUrl = uploadedDriveUrl;
                         uploadedBrowserData.set(browserId, uploadedDriveUrl);
@@ -5515,18 +5530,6 @@ if (!foundSelector) {
                 }
             } catch (uploadError) {
                 logger.error(`[processRow][${browserId}] Error during Google Drive upload: ${uploadError.message}`);
-            }
-
-            // Close the browser only AFTER the Drive upload: while the browser is attached,
-            // activeBrowserSessions + __pendingDriveUploads keep canDeleteUserDataDir() false,
-            // so no cleanup path can wipe the live profile out from under the upload.
-            if (browser) {
-                if (targetCreatedListener && browser && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
-                logger.info(`[processRow][${browserId}] Closing browser for COMPLETED status after Drive upload.`);
-                await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
-                browserFullyClosed = true;
-                activeBrowserSessions.delete(browserId);
-                await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
             }
 
             if (updateData.driveUrl && userDataDir && canDeleteUserDataDir(browserId)) {
