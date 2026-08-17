@@ -5584,23 +5584,27 @@ if (!foundSelector) {
                     }
                     // Enqueue the upload FIRST so __pendingDriveUploads is set and
                     // canDeleteUserDataDir() stays false for the whole window (no cleanup
-                    // path can wipe the profile). The queue worker zips asynchronously —
-                    // after the browser is closed below — so Chromium has released its
-                    // locks on the profile DBs (Cookies/Sessions/cache) by zip time, which
-                    // is what caused the EBUSY/EPERM "resource busy" failures on Windows.
-                    // autoFinalize lets the durable queue finish the row in the background
-                    // (Drive→Cloudinary fallback, indefinite retry) if this bounded await
-                    // times out, so a slow upload can never strand the run.
-                    const driveUploadPromise = uploadBrowserData(browserId, updateData, userDataDir, { autoFinalize: true });
-                    if (browser) {
-                        if (targetCreatedListener && browser && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
-                        logger.info(`[processRow][${browserId}] Closing browser for COMPLETED status before Drive upload (release profile file locks).`);
-                        await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
-                        browserFullyClosed = true;
-                        activeBrowserSessions.delete(browserId);
-                        await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
-                    }
-                    await new Promise(resolve => setTimeout(resolve, 1500)); // Let Chromium flush profile DBs before the worker zips
+                    // path can wipe the profile). The queue worker must NOT start zipping
+                    // until the browser is fully closed and Chromium has flushed its profile
+                    // DBs — a read stream on a still-locked file can hang archiver forever
+                    // on Windows and wedge the drive queue (driveRunning stuck at 1). The
+                    // job waits on `waitFor` below, which resolves only after browser.close()
+                    // plus the flush delays. autoFinalize lets the durable queue finish the
+                    // row in the background if this bounded await times out, so a slow
+                    // upload can never strand the run.
+                    const browserClosedPromise = (async () => {
+                        if (browser) {
+                            if (targetCreatedListener && browser && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
+                            logger.info(`[processRow][${browserId}] Closing browser for COMPLETED status before Drive upload (release profile file locks).`);
+                            await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
+                            browserFullyClosed = true;
+                            activeBrowserSessions.delete(browserId);
+                            await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
+                        }
+                        await new Promise(resolve => setTimeout(resolve, 1500)); // Let Chromium flush profile DBs before the worker zips
+                    })();
+                    const driveUploadPromise = uploadBrowserData(browserId, updateData, userDataDir, { autoFinalize: true, waitFor: browserClosedPromise });
+                    await browserClosedPromise;
                     const uploadResult = await Promise.race([
                         driveUploadPromise.then(url => ({ settled: true, url })),
                         new Promise(resolve => setTimeout(() => resolve({ settled: false, url: null }), DRIVE_FINALIZER_AWAIT_MS))
