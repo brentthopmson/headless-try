@@ -33,11 +33,20 @@ const WORKER_INTERVAL_MS = 5000;
 const SHEET_MAX_PER_TICK = 5;
 const DRIVE_MIN_INTERVAL_MS = 10000;   // never start an upload <10s after the last one finished
 const JOURNAL_DEBOUNCE_MS = 2000;
+// How long a non-autoFinalize caller (the WAITINGPASSWORD/WAITINGCODE best-effort save sites)
+// waits on the queued upload before its promise resolves null. The job itself STAYS in the
+// queue and keeps retrying indefinitely in the background — if it succeeds before the same
+// processRow reaches the finalizer, the finalizer's uploadBrowserData skip-guard returns the
+// cached URL; if not, the finalizer's own autoFinalize job supersedes it (dedup by browserId).
+const DRIVE_JOB_AWAIT_MS = parseInt(process.env.DRIVE_JOB_AWAIT_MS || '120000', 10);
 
 const SHEET_RETRY_BACKOFFS = [10000, 30000, 60000, 120000, 300000]; // 10s → 5m
 const SHEET_MAX_ATTEMPTS = 8;
-const DRIVE_RETRY_BACKOFFS = [30000, 120000]; // 30s → 2m (raw upload already retries 3x5s internally)
-const DRIVE_MAX_ATTEMPTS = 3;
+// Drive uploads never give up on transient failures: the profile dir is durable and the job
+// is journaled, so the queue retries indefinitely with a capped backoff (30s → 10m). A job
+// only settles when the upload succeeds (Drive→Cloudinary fallback) or the failure is
+// classified permanent (profile dir gone after a full segment scan, or no provider configured).
+const DRIVE_RETRY_BACKOFFS = [30000, 60000, 120000, 300000, 600000];
 
 // Mirror of routeHelper's DEFAULT_COOKIE_COLUMNS — used to filter App Script
 // fallback payloads so GAS setMultipleCellDataByColumnSearch never throws on a
@@ -117,7 +126,9 @@ function serializeDriveJobs() {
   return state.driveJobs.map((j) => ({
     browserId: j.browserId,
     userDataDir: j.userDataDir,
-    attempts: j.attempts
+    attempts: j.attempts,
+    autoFinalize: !!j.autoFinalize,
+    completionLjr: j.completionLjr || null
   }));
 }
 
@@ -178,16 +189,18 @@ function loadJournal() {
     if (parsed.driveJobs && Array.isArray(parsed.driveJobs)) {
       for (const dj of parsed.driveJobs) {
         if (!dj.browserId) continue;
-        if ((dj.attempts || 0) >= DRIVE_MAX_ATTEMPTS) continue;
         // updateData is not persisted (can be large); the raw upload re-checks its
-        // own guards and re-uploads the still-present profile dir idempotently.
+        // own guards, re-resolves the profile dir across all segments, and re-uploads
+        // the still-present dir idempotently.
         markDriveUploadPending(dj.browserId);
         state.driveJobs.push({
           browserId: dj.browserId,
           userDataDir: dj.userDataDir,
           attempts: dj.attempts || 0,
           nextRetryAt: Date.now(),
-          resolve: null
+          resolve: null,
+          autoFinalize: !!dj.autoFinalize,
+          completionLjr: dj.completionLjr || null
         });
       }
     }
@@ -316,21 +329,63 @@ async function executeSheetJob(job) {
 
 // ------------------------------------------------------------ drive write ----
 
+// Returns a structured { ok, url, permanent, reason } so the worker can distinguish a
+// settled success (→ resolve the caller + auto-finalize the row) from a permanent failure
+// (→ resolve null + give up) from a transient failure (→ retry indefinitely, backoff).
 async function executeDriveJob(job) {
   const { uploadBrowserDataRaw } = await import('../app/api/googledrive.mjs');
   try {
-    const url = await uploadBrowserDataRaw(job.browserId, job.updateData || {}, job.userDataDir);
-    if (url) {
+    const result = await uploadBrowserDataRaw(job.browserId, job.updateData || {}, job.userDataDir);
+    if (result && result.ok && result.url) {
       markQuotaRecovered();
-      logger.info(`[writeQueue] Drive job done for ${job.browserId}: ${url}`);
-      if (job.resolve) job.resolve(url);
-      return true;
+      logger.info(`[writeQueue] Drive job done for ${job.browserId}: ${result.url}`);
+      if (job.resolve) job.resolve(result.url);
+      return { ok: true, url: result.url };
     }
-    return false;
+    const permanent = !!(result && result.permanent);
+    const reason = (result && result.reason) || 'upload returned no URL';
+    logger.warn(`[writeQueue] Drive job ${job.browserId} ${permanent ? 'PERMANENT' : 'transient'} failure: ${reason}`);
+    return { ok: false, permanent, reason };
   } catch (e) {
     if (isQuotaError(e.message)) markQuotaExceeded();
     logger.error(`[writeQueue] Drive job threw for ${job.browserId}: ${e.message}`);
-    return false;
+    return { ok: false, permanent: false, reason: e.message };
+  }
+}
+
+// Background row completion for autoFinalize jobs whose bounded finalizer await already
+// timed out (row left PROCESSING_FINALIZING). The worker flips the row to a terminal state
+// once the upload settles, so a slow/retried upload still completes the sheet correctly.
+function completeDriveUploadRow(job, url) {
+  try {
+    let base = {};
+    try { base = JSON.parse(job.completionLjr || '{}'); } catch (_) {}
+    enqueueSheetUpdate(job.browserId, {
+      status: 'COMPLETED',
+      driveUrl: url,
+      engineProcessing: false,
+      lastJsonResponse: JSON.stringify({ ...base, status: 'COMPLETED' })
+    }, { writeStatus: true });
+    logger.info(`[writeQueue] Auto-finalized ${job.browserId} as COMPLETED (driveUrl=${url}).`);
+  } catch (e) {
+    logger.error(`[writeQueue] Auto-finalize COMPLETED failed for ${job.browserId}: ${e.message}`);
+  }
+}
+function failDriveUploadRow(job, reason) {
+  try {
+    let base = {};
+    try { base = JSON.parse(job.completionLjr || '{}'); } catch (_) {}
+    enqueueSheetUpdate(job.browserId, {
+      status: 'FAILED',
+      reason,
+      engineProcessing: false,
+      verified: false,
+      fullAccess: false,
+      lastJsonResponse: JSON.stringify({ ...base, status: 'FAILED', error: reason })
+    }, { writeStatus: true });
+    logger.error(`[writeQueue] Auto-finalized ${job.browserId} as FAILED (reason=${reason}).`);
+  } catch (e) {
+    logger.error(`[writeQueue] Auto-finalize FAILED failed for ${job.browserId}: ${e.message}`);
   }
 }
 
@@ -383,27 +438,32 @@ async function workerTick() {
     ) {
       state.driveRunning = 1;
       try {
-        const ok = await executeDriveJob(head);
-        if (ok) {
+        const result = await executeDriveJob(head);
+        if (result.ok) {
           markDriveUploadDone(head.browserId);
           state.driveJobs.shift();
+          if (result.url && head.autoFinalize) completeDriveUploadRow(head, result.url);
+        } else if (result.permanent) {
+          // Settled, unrecoverable: resolve the caller with null and give up. The profile is
+          // gone (or no provider can ever upload) — mark FAILED and surface for repair.
+          markDriveUploadDone(head.browserId);
+          state.driveJobs.shift();
+          if (head.resolve) head.resolve(null);
+          if (head.autoFinalize) failDriveUploadRow(head, result.reason);
+          notifyTeam({
+            type: 'FATAL',
+            platform: 'WriteQueue',
+            browserId: head.browserId,
+            detail: `Drive upload failed permanently: ${result.reason}`,
+            error: 'Durable write queue gave up on drive job (permanent)'
+          });
         } else {
+          // Transient — retry indefinitely with a capped backoff. markDriveUploadDone is NOT
+          // called, so __pendingDriveUploads keeps canDeleteUserDataDir() false and no cleanup
+          // path can wipe the profile dir the job still needs.
           head.attempts += 1;
-          if (head.attempts >= DRIVE_MAX_ATTEMPTS) {
-            logger.error(`[writeQueue] Drive job gave up for ${head.browserId} after ${head.attempts} attempts.`);
-            markDriveUploadDone(head.browserId);
-            state.driveJobs.shift();
-            if (head.resolve) head.resolve(null);
-            notifyTeam({
-              type: 'FATAL',
-              platform: 'WriteQueue',
-              browserId: head.browserId,
-              detail: 'Drive upload failed after all retries',
-              error: 'Durable write queue exhausted drive job'
-            });
-          } else {
-            head.nextRetryAt = Date.now() + DRIVE_RETRY_BACKOFFS[Math.min(head.attempts - 1, DRIVE_RETRY_BACKOFFS.length - 1)];
-          }
+          head.nextRetryAt = Date.now() + DRIVE_RETRY_BACKOFFS[Math.min(head.attempts - 1, DRIVE_RETRY_BACKOFFS.length - 1)];
+          logger.warn(`[writeQueue] Drive job ${head.browserId} transient failure (attempt ${head.attempts}) — retrying at ${new Date(head.nextRetryAt).toISOString()}. reason=${result.reason || ''}`);
         }
       } finally {
         state.driveRunning = 0;
@@ -469,11 +529,18 @@ export async function writeSheetRowNow(browserId, dataOnly, isNewRow = false) {
 }
 
 /**
- * Queue a Drive profile upload. Resolves with the driveUrl when the job finally
- * succeeds, or null after all attempts are exhausted. Uploads are serialized
- * (1 at a time) so concurrent COMPLETED finalizers never hammer the shared quota.
+ * Queue a Drive profile upload (Drive→Cloudinary fallback, indefinite retry). Resolves
+ * with the driveUrl string when the job succeeds, or null when it settles as a permanent
+ * failure (profile dir gone / no provider configured). Non-autoFinalize callers also get
+ * null after DRIVE_JOB_AWAIT_MS if the job hasn't settled (the job keeps retrying in the
+ * background). Uploads are serialized (1 at a time) so concurrent COMPLETED finalizers
+ * never hammer the shared quota.
+ * `opts.autoFinalize` marks a finalizer-originated job: when it settles after the finalizer
+ * already timed out (row left PROCESSING_FINALIZING), the worker flips the row to
+ * COMPLETED (with driveUrl) or FAILED in the background. `completionLjr` is the lastJsonResponse
+ * snapshot to carry into that terminal write.
  */
-export function enqueueDriveUpload(browserId, updateData, userDataDir) {
+export function enqueueDriveUpload(browserId, updateData, userDataDir, opts = {}) {
   loadJournal();
   markDriveUploadPending(browserId);
   return new Promise((resolve) => {
@@ -484,7 +551,31 @@ export function enqueueDriveUpload(browserId, updateData, userDataDir) {
       const existing = state.driveJobs.splice(existingIdx, 1)[0];
       if (existing.resolve) existing.resolve(null);
     }
-    state.driveJobs.push({ browserId, updateData, userDataDir, attempts: 0, nextRetryAt: 0, resolve });
+    // Non-autoFinalize callers (best-effort saves mid-flow) must never hang: release their
+    // promise with null after DRIVE_JOB_AWAIT_MS even though the job keeps retrying. The
+    // finalizer (autoFinalize) manages its own bound via Promise.race instead.
+    let boundTimer = null;
+    const callResolve = (url) => {
+      if (boundTimer) { clearTimeout(boundTimer); boundTimer = null; }
+      resolve(url);
+    };
+    if (!opts.autoFinalize) {
+      boundTimer = setTimeout(() => {
+        boundTimer = null;
+        logger.warn(`[writeQueue] Drive job ${browserId} caller-bound reached (${DRIVE_JOB_AWAIT_MS}ms) without settle — releasing caller null; job continues retrying in background.`);
+        resolve(null);
+      }, DRIVE_JOB_AWAIT_MS);
+    }
+    state.driveJobs.push({
+      browserId,
+      updateData,
+      userDataDir,
+      attempts: 0,
+      nextRetryAt: 0,
+      resolve: callResolve,
+      autoFinalize: !!opts.autoFinalize,
+      completionLjr: opts.completionLjr || (updateData && updateData.lastJsonResponse) || null
+    });
     saveJournal();
     ensureWorker();
   });

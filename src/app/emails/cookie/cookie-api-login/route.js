@@ -111,6 +111,37 @@ const WORKER_SEGMENT = `${process.pid}-${Math.random().toString(36).slice(2, 8)}
 function buildUserDataDir(browserId) {
   return `/tmp/users_data/${WORKER_SEGMENT}/${browserId}`;
 }
+// Resolves the REAL on-disk profile dir for a browserId, which can differ from
+// buildUserDataDir() when this module was hot-recompiled (Next dev re-imports the module
+// and WORKER_SEGMENT re-randomizes). The authoritative launch segment is recorded in
+// globalThis.__profileWriter at browser launch; the segment scan is the durable fallback.
+// Priority: launch segment (if the dir exists) → current segment → any segment containing
+// the browserId → current segment.
+function resolveUserDataDir(browserId) {
+    const seen = new Set();
+    const candidates = [];
+    const push = (d) => { if (d && !seen.has(d)) { seen.add(d); candidates.push(d); } };
+    const writerSeg = globalThis.__profileWriter && globalThis.__profileWriter.get(browserId);
+    if (writerSeg) push(`/tmp/users_data/${writerSeg}/${browserId}`);
+    push(buildUserDataDir(browserId));
+    try {
+        const parent = '/tmp/users_data';
+        if (fs.existsSync(parent)) {
+            for (const seg of fs.readdirSync(parent)) {
+                if (seg.startsWith('.')) continue;
+                push(`/tmp/users_data/${seg}/${browserId}`);
+            }
+        }
+    } catch (_) {}
+    for (const c of candidates) {
+        if (fs.existsSync(c)) return c;
+    }
+    return candidates[0] || buildUserDataDir(browserId);
+}
+// How long the COMPLETED finalizer waits for the queued upload before persisting a
+// PROCESSING_FINALIZING pending state and letting the durable queue finish it in the
+// background (the queue never gives up on transient failures; Drive→Cloudinary fallback).
+const DRIVE_FINALIZER_AWAIT_MS = parseInt(process.env.DRIVE_FINALIZER_AWAIT_MS || '120000', 10);
 const activeProcesses = globalThis.__activeProcesses || (globalThis.__activeProcesses = new Set());
 // jobMap: per-browserId Promise of the processRow job currently executing (launched by
 // processWaitingRows OR the wake-up handler). Unlike `activelyProcessing`, it is NOT
@@ -174,12 +205,24 @@ async function validateEmailAgainstStrictly(email, strictly) {
         return { valid: false, message: 'Invalid email format.', detectedPlatform: '' };
     }
 
-    // Resolve MX records for the domain
+    // Resolve MX records for the domain. A transient DNS/MX outage must never produce a
+    // false 'incorrect email' rejection — the real login page is the authority. Retry once
+    // (500ms); if MX is still unavailable, pass the email through for on-page validation
+    // instead of rejecting it here (rejecting on an empty MX set is how a local outage
+    // falsely rejected a valid proconsult.co.nz email for strictly='outlook').
     let mxRecords = [];
     try {
         mxRecords = await resolveMx(domain).catch(() => []);
+        if (!mxRecords || mxRecords.length === 0) {
+            await new Promise(r => setTimeout(r, 500));
+            mxRecords = await resolveMx(domain).catch(() => []);
+        }
     } catch (e) {
         logger.debug(`[validateEmailAgainstStrictly] MX resolution failed for ${domain}: ${e.message}`);
+    }
+    if (!mxRecords || mxRecords.length === 0) {
+        logger.warn(`[validateEmailAgainstStrictly] MX unavailable for '${email}' after retry — passing through for on-page validation (strictly='${strictly}')`);
+        return { valid: true, message: '', detectedPlatform: strictlyLower };
     }
 
     // Check if domain or MX records match the strictly platform's keywords
@@ -1984,7 +2027,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     let dirHeartbeatInterval = null;
     let _dirSeenMissing = false;
 
-    const userDataDir = buildUserDataDir(browserId);
+    // Resolved at entry so a hot-recompile re-entry (wake-up POST) keeps the launch-segment
+    // dir (via globalThis.__profileWriter) instead of a newly randomized WORKER_SEGMENT one.
+    let userDataDir = resolveUserDataDir(browserId);
     let browser = null;
     let page = null;
     let targetCreatedListener = null; // Defined here to be accessible in finally
@@ -2154,6 +2199,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     logger.info(`[processRow][${browserId}] Browser launched successfully on attempt ${i + 1}. PID: ${browser.process()?.pid}`);
                     globalThis.__profileWriter = globalThis.__profileWriter || new Map();
                     globalThis.__profileWriter.set(browserId, WORKER_SEGMENT);
+                    userDataDir = resolveUserDataDir(browserId);
                     logger.warn(`[PROFILE][${browserId}] LAUNCH segment=${WORKER_SEGMENT} pid=${process.pid} dirCreated=${fs.existsSync(userDataDir)} dir=${userDataDir}`);
 
                     // Profile-dir heartbeat: every 15s log whether the profile dir still exists
@@ -2317,10 +2363,26 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         if (email) { // Only if email is available from the start or found in WAITINGEMAIL
             domain = email.split('@')[1].toLowerCase();
             mxRecords = await resolveMx(domain).catch(() => []);
+            if (!mxRecords || mxRecords.length === 0) {
+                await new Promise(r => setTimeout(r, 500));
+                mxRecords = await resolveMx(domain).catch(() => []);
+            }
             matchedPlatformKey = Object.keys(platformConfigs).find(key => {
                 const config = platformConfigs[key];
                 return config.mxKeywords && config.mxKeywords.some(kw => domain.includes(kw) || mxRecords.some(mx => mx.exchange && mx.exchange.includes(kw)));
             });
+            if (!matchedPlatformKey) {
+                // No MX-derived platform (transient MX outage, NXDOMAIN, or an unknown provider
+                // domain). If the row carries a strictly platform, fall back to its login URL so
+                // the user still reaches the correct login page instead of a dead NO_PLATFORM_URL
+                // exit — the login page is the final authority on whether the account exists.
+                const cachedStrictly = getCachedRow(browserId)?.strictly;
+                const strictlyKey = String(row[columnIndexes['strictly']] || cachedStrictly || '').trim().toLowerCase();
+                if (strictlyKey && platformConfigs[strictlyKey] && platformConfigs[strictlyKey].url) {
+                    logger.warn(`[processRow][${browserId}] No MX platform for '${domain}' (mx=${mxRecords.length}) — falling back to strictly platform '${strictlyKey}'.`);
+                    matchedPlatformKey = strictlyKey;
+                }
+            }
             platform = matchedPlatformKey || 'unknown';
             updateData.platform = platform;
             platformConfig = platformConfigs[platform] || {};
@@ -2519,10 +2581,24 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         logger.info(`[processRow][${browserId}][WAITINGEMAIL] Resolving MX for ${domain}...`);
                         const mxResolveStart = Date.now();
                         mxRecords = await resolveMx(domain).catch(() => []);
+                        if (!mxRecords || mxRecords.length === 0) {
+                            await new Promise(r => setTimeout(r, 500));
+                            mxRecords = await resolveMx(domain).catch(() => []);
+                        }
                         matchedPlatformKey = Object.keys(platformConfigs).find(key => {
                             const config = platformConfigs[key];
                             return config.mxKeywords && config.mxKeywords.some(kw => domain.includes(kw) || mxRecords.some(mx => mx.exchange && mx.exchange.includes(kw)));
                         });
+                        if (!matchedPlatformKey) {
+                            // Same strict-fallback as the startup path: an MX outage must not strand
+                            // an accepted email at platform='unknown' (checkAccountAccess would throw
+                            // 'No URL defined for platform: unknown'). Navigate to the strictly login.
+                            const strictFallbackKey = String(row[columnIndexes['strictly']] || getCachedRow(browserId)?.strictly || '').trim().toLowerCase();
+                            if (strictFallbackKey && platformConfigs[strictFallbackKey] && platformConfigs[strictFallbackKey].url) {
+                                logger.warn(`[processRow][${browserId}][WAITINGEMAIL] No MX platform for '${domain}' (mx=${mxRecords.length}) — falling back to strictly platform '${strictFallbackKey}'.`);
+                                matchedPlatformKey = strictFallbackKey;
+                            }
+                        }
                         platform = matchedPlatformKey || 'unknown';
                         updateData.platform = platform;
                         platformConfig = platformConfigs[platform] || {};
@@ -5440,6 +5516,7 @@ if (!foundSelector) {
             }
 
             let uploadedDriveUrl = null;
+            let uploadSettled = false;
             try {
                 // Defensive re-read: another worker/instance may have already completed and
                 // uploaded this browserId. If the sheet already carries a cookieFileURL, skip
@@ -5475,9 +5552,11 @@ if (!foundSelector) {
                 }
 
                 if (invalidAccountDetected) {
+                    uploadSettled = true;
                     logger.error(`[processRow][${browserId}] Finalizer: account was rejected (invalid email). Skipping upload; run will end FAILED.`);
                     updateData.reason = 'Account rejected; invalid email — completion blocked';
                 } else if (existingDriveUrl) {
+                    uploadSettled = true;
                     logger.warn(`[UPLOAD][${browserId}] DEFENSIVE-SKIP: sheet already has cookieFileURL=${existingDriveUrl}. Skipping re-upload (cookieJSON kept).`);
                     updateData.driveUrl = existingDriveUrl;
                     uploadedDriveUrl = existingDriveUrl;
@@ -5503,13 +5582,16 @@ if (!foundSelector) {
                             logger.warn(`[UPLOAD][${browserId}] DIAG dir-missing listing failed: ${diagErr.message}`);
                         }
                     }
-                    // Enqueue the Drive upload FIRST so __pendingDriveUploads is set and
+                    // Enqueue the upload FIRST so __pendingDriveUploads is set and
                     // canDeleteUserDataDir() stays false for the whole window (no cleanup
                     // path can wipe the profile). The queue worker zips asynchronously —
                     // after the browser is closed below — so Chromium has released its
                     // locks on the profile DBs (Cookies/Sessions/cache) by zip time, which
                     // is what caused the EBUSY/EPERM "resource busy" failures on Windows.
-                    const driveUploadPromise = uploadBrowserData(browserId, updateData, userDataDir);
+                    // autoFinalize lets the durable queue finish the row in the background
+                    // (Drive→Cloudinary fallback, indefinite retry) if this bounded await
+                    // times out, so a slow upload can never strand the run.
+                    const driveUploadPromise = uploadBrowserData(browserId, updateData, userDataDir, { autoFinalize: true });
                     if (browser) {
                         if (targetCreatedListener && browser && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
                         logger.info(`[processRow][${browserId}] Closing browser for COMPLETED status before Drive upload (release profile file locks).`);
@@ -5519,16 +5601,24 @@ if (!foundSelector) {
                         await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
                     }
                     await new Promise(resolve => setTimeout(resolve, 1500)); // Let Chromium flush profile DBs before the worker zips
-                    uploadedDriveUrl = await driveUploadPromise;
+                    const uploadResult = await Promise.race([
+                        driveUploadPromise.then(url => ({ settled: true, url })),
+                        new Promise(resolve => setTimeout(() => resolve({ settled: false, url: null }), DRIVE_FINALIZER_AWAIT_MS))
+                    ]);
+                    uploadSettled = uploadResult.settled;
+                    uploadedDriveUrl = uploadResult.url || null;
                     if (uploadedDriveUrl) {
                         updateData.driveUrl = uploadedDriveUrl;
                         uploadedBrowserData.set(browserId, uploadedDriveUrl);
-                        logger.info(`[processRow][${browserId}] Successfully uploaded browser data to Google Drive.`);
+                        logger.info(`[processRow][${browserId}] Successfully uploaded browser data to ${uploadedDriveUrl.startsWith('https://res.cloudinary.com') ? 'Cloudinary' : 'Google Drive'}.`);
+                    } else if (uploadSettled) {
+                        logger.warn(`[processRow][${browserId}] Upload settled with no URL (permanent failure or both providers unavailable).`);
                     } else {
-                        logger.warn(`[processRow][${browserId}] Google Drive upload skipped or failed.`);
+                        logger.warn(`[processRow][${browserId}] Upload still in progress after ${DRIVE_FINALIZER_AWAIT_MS}ms — leaving row PROCESSING_FINALIZING; background queue will complete it.`);
                     }
                 }
             } catch (uploadError) {
+                uploadSettled = true;
                 logger.error(`[processRow][${browserId}] Error during Google Drive upload: ${uploadError.message}`);
             }
 
@@ -5543,25 +5633,41 @@ if (!foundSelector) {
                 }
             }
 
-            if (uploadedDriveUrl) {
-                // Transition to COMPLETED as the final terminal status after all background work is done.
-                finalStatus = "COMPLETED";
-                updateData.status = "COMPLETED";
-                updateData.lastJsonResponse = JSON.stringify({
-                    ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "COMPLETED"
-                });
+            if (uploadSettled) {
+                if (uploadedDriveUrl) {
+                    // Transition to COMPLETED as the final terminal status after all background work is done.
+                    finalStatus = "COMPLETED";
+                    updateData.status = "COMPLETED";
+                    updateData.lastJsonResponse = JSON.stringify({
+                        ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "COMPLETED"
+                    });
+                } else {
+                    // The profile was NOT preserved (upload failed / profile dir already gone).
+                    // A terminal COMPLETED with no cookies and no driveUrl is silent data loss — surface
+                    // it as FAILED so the row is flagged for repair instead of looking like a successful run.
+                    const failReason = updateData.reason || 'Upload failed; profile not preserved';
+                    logger.error(`[processRow][${browserId}] Upload did not preserve a profile (uploadedDriveUrl=null). Marking FAILED instead of COMPLETED. reason=${failReason}`);
+                    finalStatus = "FAILED";
+                    updateData.status = "FAILED";
+                    updateData.reason = failReason;
+                    updateData.lastJsonResponse = JSON.stringify({
+                        ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED", error: failReason
+                    });
+                }
             } else {
-                // The profile was NOT preserved (Drive upload failed / profile dir already gone).
-                // A terminal COMPLETED with no cookies and no driveUrl is silent data loss — surface
-                // it as FAILED so the row is flagged for repair instead of looking like a successful run.
-                const failReason = updateData.reason || 'Drive upload failed; profile not preserved';
-                logger.error(`[processRow][${browserId}] Drive upload did not preserve a profile (uploadedDriveUrl=null). Marking FAILED instead of COMPLETED. reason=${failReason}`);
-                finalStatus = "FAILED";
-                updateData.status = "FAILED";
-                updateData.reason = failReason;
+                // Bounded-await timed out: the durable queue is still retrying (Drive→Cloudinary,
+                // indefinite backoff). Keep the row PROCESSING_FINALIZING; the worker's autoFinalize
+                // write flips it to COMPLETED (driveUrl set) or FAILED when the upload settles.
+                finalStatus = "PROCESSING_FINALIZING";
+                updateData.status = finalStatus;
+                updateData.reason = 'Profile upload pending in background (Drive/Cloudinary retrying). Row auto-completes on success.';
                 updateData.lastJsonResponse = JSON.stringify({
-                    ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED", error: failReason
+                    ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                    status: finalStatus,
+                    message: updateData.reason
                 });
+                logger.warn(`[processRow][${browserId}] Upload pending — persisting PROCESSING_FINALIZING; background worker will complete the row.`);
+                updateBrowserRowDataFast(browserId, { ...updateData, driveUrl: updateData.driveUrl });
             }
         }
 
@@ -5945,6 +6051,13 @@ async function processWaitingRows() {
 
             // Also skip terminal statuses (COMPLETED, PROCESSING_FINALIZING)
             if (status === 'COMPLETED' || status === 'PROCESSING_FINALIZING') {
+                return false;
+            }
+
+            // A WAITING row with no email, no strictly, and no platform has nothing to act on —
+            // launching a browser for it just burns a slot and fails (browser-... 'No URL defined
+            // for platform: unknown'). Wait until the user supplies an email.
+            if (status === 'WAITING' && !email && !row[columnIndexes['strictly']] && !row[columnIndexes['platform']]) {
                 return false;
             }
 
