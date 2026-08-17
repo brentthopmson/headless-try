@@ -215,6 +215,13 @@ export async function uploadBrowserDataRaw(browserId, updateData, userDataDir) {
       try { walk(sourceDir); } catch (_) {}
       dirSizeMB = Math.round((sizeBytes / 1024 / 1024) * 100) / 100;
       logger.warn(`[GoogleDrive Upload][diag] ${browserId} dirExists=true entries=${JSON.stringify(counts)} sizeMB=${dirSizeMB} now=${new Date().toISOString()}`);
+      // DEGRADED-PROFILE MONITOR: an intact Chromium profile always has several top-level
+      // entries (Default/, Local State, Preferences, ...). files=0 + dirs<=1 means the dir
+      // was deleted mid-run and lazily recreated — the upload would capture a logged-out
+      // empty profile while the sheet still marks the row COMPLETED (silent data loss).
+      if (counts.files === 0 && counts.dirs <= 1) {
+        logger.error(`[GoogleDrive Upload][diag] ${browserId} DEGRADED PROFILE: top-level files=0 dirs=${counts.dirs} sizeMB=${dirSizeMB} — profile dir looks freshly recreated (likely deleted mid-run). Uploading anyway; flag for repair. now=${new Date().toISOString()}`);
+      }
     } else {
       logger.error(`[GoogleDrive Upload][diag] ${browserId} dirExists=false now=${new Date().toISOString()} stack=${new Error().stack?.split('\n').slice(2, 5).join(' | ')}`);
       // GRACE: the profile dir may have just been written by a concurrent profile save/upload.

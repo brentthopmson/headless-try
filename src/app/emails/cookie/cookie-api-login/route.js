@@ -41,6 +41,42 @@ import { sendTelegramMessage } from '../../../api/telegram.js';
 import { getProjectDetails, getSheetDataApi } from '../../../api/googlesheets.js'; // Import getProjectDetails
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
 
+// ── Profile-deletion watchdog ──────────────────────────────────────────────────
+// Every in-process removal of a path under /tmp/users_data is logged with its call
+// site. Legitimate deletes already emit their own "[PROFILE] ... DELETING" line, so
+// any watchdog hit WITHOUT that pairing is the silent mid-run culprit that has been
+// destroying successful rows' profiles (2026-08-16 trial: dir vanished at 62.1s while
+// the browser was attached, then Chromium lazily recreated a fresh/empty one).
+const _PROFILE_ROOT = '/tmp/users_data';
+function _profileWatchdogPath(p) {
+    const s = String(p || '');
+    const i = s.indexOf(_PROFILE_ROOT);
+    if (i === -1) return null;
+    if (s.endsWith('.zip')) return null; // zip cleanup is expected
+    return s.slice(i);
+}
+function _profileWatchdogStack() {
+    return (new Error().stack || '').split('\n').slice(2, 6).join(' | ');
+}
+{
+    const _patchFsDelete = (name) => {
+        const orig = fs[name];
+        if (typeof orig !== 'function' || orig.__watchdogged) return;
+        const wrapped = function (p, ...rest) {
+            const rel = _profileWatchdogPath(p);
+            if (rel !== null) {
+                logger.warn(`[PROFILE-DELETE] fs.${name} path=${rel} stack=[${_profileWatchdogStack()}]`);
+            }
+            return orig.call(this, p, ...rest);
+        };
+        wrapped.__watchdogged = true;
+        fs[name] = wrapped;
+    };
+    for (const m of ['remove', 'removeSync', 'rm', 'rmSync', 'rmdir', 'rmdirSync', 'unlink', 'unlinkSync']) {
+        try { _patchFsDelete(m); } catch (_) {}
+    }
+}
+
 // Suppress unhandled rejections from puppeteer when the browser/target is already closed.
 // These are non-fatal: they occur when plugin stealth hooks fire after browser close.
 process.on('unhandledRejection', (reason) => {
@@ -2135,6 +2171,15 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             } else if (!_dirSeenMissing) {
                                 _dirSeenMissing = true;
                                 logger.warn(`[DIAG-profile][${browserId}] elapsed=${elapsed}s dirExists=FALSE mid-run (silent deletion) dir=${userDataDir}`);
+                                try {
+                                    const parent = '/tmp/users_data';
+                                    const segDir = String(userDataDir).slice(0, String(userDataDir).lastIndexOf('/'));
+                                    const segs = fs.existsSync(parent) ? (fs.readdirSync(parent).filter(n => !n.startsWith('.')).join(',') || '(empty)') : 'unreadable';
+                                    const segListing = fs.existsSync(segDir) ? (fs.readdirSync(segDir).join(',') || '(empty)') : '(segment gone)';
+                                    logger.warn(`[DIAG-profile][${browserId}] DIAG vanish-context: segments=[${segs}] segmentDir=${segListing} expected=${userDataDir}`);
+                                } catch (segErr) {
+                                    logger.warn(`[DIAG-profile][${browserId}] DIAG vanish-context listing failed: ${segErr.message}`);
+                                }
                             }
                         } catch (diagErr) {
                             logger.warn(`[DIAG-profile][${browserId}] dir-heartbeat error: ${diagErr.message}`);
