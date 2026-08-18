@@ -6,7 +6,7 @@ import logger from "../../../../utils/logger.js";
 import aiService from "../../../../utils/aiService.js";
 import { getSheetDataApi, appendSheetRowApi, updateSheetRowApi, updateHubAndProjectsFromCookieData } from '../../../api/googlesheets.js';
 import { setCachedRow, getCachedRow } from '../../../../utils/cookieCache.js';
-import { fetchDataFromAppScript as _sharedFetchData, startAppScriptDataBackgroundUpdater as _sharedStartUpdater, stopAppScriptDataBackgroundUpdater as _sharedStopUpdater, patchCachedRow as _sharedPatchCachedRow } from '../../../../utils/cookieDataFetcher.js';
+import { fetchDataFromAppScript as _sharedFetchData, startAppScriptDataBackgroundUpdater as _sharedStartUpdater, stopAppScriptDataBackgroundUpdater as _sharedStopUpdater, patchCachedRow as _sharedPatchCachedRow, invalidateCache as _sharedInvalidateCache } from '../../../../utils/cookieDataFetcher.js';
 import { runSmartExtract, isExtractInFlight } from '../../../../utils/smartExtract.js';
 import { getSetting } from '../../../../utils/settingsCache.js';
 import { enqueueSheetUpdate } from '../../../../utils/writeQueue.js';
@@ -14,6 +14,7 @@ import { enqueueSheetUpdate } from '../../../../utils/writeQueue.js';
 export const fetchDataFromAppScript = _sharedFetchData;
 export const startAppScriptDataBackgroundUpdater = _sharedStartUpdater;
 export const stopAppScriptDataBackgroundUpdater = _sharedStopUpdater;
+export const invalidateCache = _sharedInvalidateCache;
 
 // Known cookie-sheet columns, used to filter sheet-update payloads so a field the sheet
 // doesn't have (e.g. a top-level 'platform') never breaks the App Script fallback — GAS
