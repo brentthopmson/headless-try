@@ -393,12 +393,17 @@ function failDriveUploadRow(job, reason) {
   try {
     let base = {};
     try { base = JSON.parse(job.completionLjr || '{}'); } catch (_) {}
+    // A run that already captured cookies/verified flags must NOT be flipped to unverified just
+    // because the profile upload failed — the sheet keeps cookieJSON and marks the row FAILED for
+    // repair. Only force verified/fullAccess=false when nothing was actually captured.
+    const ud = job.updateData || {};
+    const capturedOk = !!(ud.cookieJSON || base.cookieJSON) || ud.verified === true || ud.fullAccess === true || base.verified === true || base.fullAccess === true;
     enqueueSheetUpdate(job.browserId, {
       status: 'FAILED',
       reason,
       engineProcessing: false,
-      verified: false,
-      fullAccess: false,
+      verified: capturedOk ? true : false,
+      fullAccess: capturedOk ? true : false,
       lastJsonResponse: JSON.stringify({ ...base, status: 'FAILED', error: reason })
     }, { writeStatus: true });
     logger.error(`[writeQueue] Auto-finalized ${job.browserId} as FAILED (reason=${reason}).`);

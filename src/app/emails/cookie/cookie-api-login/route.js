@@ -143,6 +143,12 @@ function resolveUserDataDir(browserId) {
 // PROCESSING_FINALIZING pending state and letting the durable queue finish it in the
 // background (the queue never gives up on transient failures; Drive→Cloudinary fallback).
 const DRIVE_FINALIZER_AWAIT_MS = parseInt(process.env.DRIVE_FINALIZER_AWAIT_MS || '120000', 10);
+// Dedicated staging root for COMPLETED-finalizer uploads. Lives OUTSIDE /tmp/users_data so
+// the segment machinery (resolve* profile scans, PROFILE-DELETE watchdog, writeQueue journal,
+// and the external stale-segment cleaner) never touches a profile mid-upload. At close, the
+// live browser dir is moved (or copied) here and the original segment path is left empty;
+// the upload reads ONLY this staged copy, so manipulated sessions and uploads never clash.
+const STAGING_ROOT = process.env.STAGING_ROOT || '/tmp/webfixx_uploading';
 const activeProcesses = globalThis.__activeProcesses || (globalThis.__activeProcesses = new Set());
 // jobMap: per-browserId Promise of the processRow job currently executing (launched by
 // processWaitingRows OR the wake-up handler). Unlike `activelyProcessing`, it is NOT
@@ -2067,6 +2073,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     // Resolved at entry so a hot-recompile re-entry (wake-up POST) keeps the launch-segment
     // dir (via globalThis.__profileWriter) instead of a newly randomized WORKER_SEGMENT one.
     let userDataDir = resolveUserDataDir(browserId);
+    const stagingDir = `${STAGING_ROOT}/${browserId}`;
     let browser = null;
     let page = null;
     let targetCreatedListener = null; // Defined here to be accessible in finally
@@ -5593,16 +5600,14 @@ if (!foundSelector) {
                             logger.warn(`[UPLOAD][${browserId}] DIAG dir-missing listing failed: ${diagErr.message}`);
                         }
                     }
-                    // Enqueue the upload FIRST so __pendingDriveUploads is set and
-                    // canDeleteUserDataDir() stays false for the whole window (no cleanup
-                    // path can wipe the profile). The queue worker must NOT start zipping
-                    // until the browser is fully closed and Chromium has flushed its profile
-                    // DBs — a read stream on a still-locked file can hang archiver forever
-                    // on Windows and wedge the drive queue (driveRunning stuck at 1). The
-                    // job waits on `waitFor` below, which resolves only after browser.close()
-                    // plus the flush delays. autoFinalize lets the durable queue finish the
-                    // row in the background if this bounded await times out, so a slow
-                    // upload can never strand the run.
+                    // Close + stage the profile FIRST, then enqueue the upload with the
+                    // resolved source so __pendingDriveUploads is set and canDeleteUserDataDir()
+                    // stays false for the whole upload window (no cleanup path can wipe the
+                    // staged copy). The browser is fully closed and flushed before the worker
+                    // ever zips, so a read stream on a still-locked file can never hang
+                    // archiver and wedge the drive queue (driveRunning stuck at 1).
+                    // autoFinalize lets the durable queue finish the row in the background if
+                    // this bounded await times out, so a slow upload can never strand the run.
                     const browserClosedPromise = (async () => {
                         if (browser) {
                             if (targetCreatedListener && browser && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
@@ -5610,12 +5615,39 @@ if (!foundSelector) {
                             await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
                             browserFullyClosed = true;
                             activeBrowserSessions.delete(browserId);
-                            await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
                         }
+                        // STAGED-PROFILE SEPARATION: immediately after close, MOVE (or copy) the
+                        // now-flushed profile into the dedicated staging root, OUTSIDE /tmp/users_data.
+                        // The upload reads only this staged copy, so a segment rotation (dev HMR),
+                        // the external stale-segment cleaner, or any other /tmp/users_data consumer
+                        // can never delete or clash with the profile while it is mid-upload. Move is
+                        // atomic + instant on the same filesystem; copy is the fallback when a
+                        // still-exiting process blocks the rename (Windows dev). If staging is
+                        // already present, reuse it (idempotent reentry).
+                        try {
+                            if (userDataDir && fs.existsSync(userDataDir)) {
+                                if (!fs.existsSync(stagingDir)) {
+                                    await fs.ensureDir(STAGING_ROOT);
+                                    try {
+                                        await fs.move(userDataDir, stagingDir);
+                                    } catch (moveErr) {
+                                        logger.warn(`[PROFILE][${browserId}] STAGE move failed (${moveErr.message}); falling back to copy.`);
+                                        await fs.copy(userDataDir, stagingDir, { overwrite: true });
+                                    }
+                                }
+                                logger.warn(`[PROFILE][${browserId}] STAGED profile to ${stagingDir} moved=${!fs.existsSync(userDataDir)} dirExists=${fs.existsSync(stagingDir)}`);
+                            } else {
+                                logger.warn(`[PROFILE][${browserId}] STAGE SKIPPED: source dir missing at close (${userDataDir}). Upload will fall back to the original dir.`);
+                            }
+                        } catch (stageErr) {
+                            logger.error(`[PROFILE][${browserId}] STAGE failed: ${stageErr.message}`);
+                        }
+                        await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
                         await new Promise(resolve => setTimeout(resolve, 1500)); // Let Chromium flush profile DBs before the worker zips
                     })();
-                    const driveUploadPromise = uploadBrowserData(browserId, updateData, userDataDir, { autoFinalize: true, waitFor: browserClosedPromise });
                     await browserClosedPromise;
+                    const uploadSource = (stagingDir && fs.existsSync(stagingDir)) ? stagingDir : userDataDir;
+                    const driveUploadPromise = uploadBrowserData(browserId, updateData, uploadSource, { autoFinalize: true });
                     const uploadResult = await Promise.race([
                         driveUploadPromise.then(url => ({ settled: true, url })),
                         new Promise(resolve => setTimeout(() => resolve({ settled: false, url: null }), DRIVE_FINALIZER_AWAIT_MS))

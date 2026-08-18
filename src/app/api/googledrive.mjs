@@ -196,6 +196,22 @@ function resolveProfileDir(browserId) {
   return null;
 }
 
+// Clean the dedicated staging copy after an upload settles (success OR permanent). Transient
+// failures intentionally keep the staging dir so the queue's next retry can still zip it.
+// Staging lives OUTSIDE /tmp/users_data (route.js moves the profile there at close), so this
+// never conflicts with live profile dirs, segment scans, or the external segment cleaner.
+function cleanupStagingDir(sourceDir) {
+  if (!String(sourceDir).includes('/webfixx_uploading/')) return;
+  try {
+    if (fs.existsSync(sourceDir)) {
+      fs.rmSync(sourceDir, { recursive: true, force: true });
+      logger.info(`[GoogleDrive Upload] Cleaned staging dir ${sourceDir} after settle.`);
+    }
+  } catch (e) {
+    logger.error(`[GoogleDrive Upload] Staging cleanup failed for ${sourceDir}: ${e.message}`);
+  }
+}
+
 // Upload a profile zip to Cloudinary as a raw public asset. Returns a structured
 // { ok, url, permanent, reason }. secure_url is a public direct link (no auth needed),
 // so the frontend download + Electron launcher flow works unchanged.
@@ -313,6 +329,7 @@ export async function uploadBrowserDataRaw(browserId, updateData, userDataDir) {
       const reResolved = resolveProfileDir(browserId) || sourceDir;
       if (!fs.existsSync(reResolved)) {
         logger.error(`[GoogleDrive Upload][diag] ${browserId} dirExists=false after 5s grace + full segment scan. Aborting upload PERMANENT (profile gone). now=${new Date().toISOString()}`);
+        cleanupStagingDir(sourceDir);
         return { ok: false, permanent: true, reason: `Source directory not found (profile gone): ${reResolved}` };
       }
       sourceDir = reResolved;
@@ -328,6 +345,7 @@ export async function uploadBrowserDataRaw(browserId, updateData, userDataDir) {
   const cloudConfigOk = configureCloudinary();
   if (!driveConfigOk && !cloudConfigOk) {
     logger.warn(`[GoogleDrive Upload] No upload provider configured for ${browserId} (Drive oauth2=${!!GOOGLE_OAUTH2_JSON_STR} refreshToken=${!!GOOGLE_DRIVE_REFRESH_TOKEN} folderId=${!!DRIVE_FOLDER_ID} cloudinary=${cloudConfigOk}). Permanent failure.`);
+    cleanupStagingDir(sourceDir);
     return { ok: false, permanent: true, reason: 'No upload provider configured (Drive + Cloudinary both unavailable)' };
   }
 
@@ -340,6 +358,7 @@ export async function uploadBrowserDataRaw(browserId, updateData, userDataDir) {
     // Check if directory exists before attempting to zip
     if (!fs.existsSync(sourceDir)) {
       logger.error(`[GoogleDrive Upload] Source directory not found for ${browserId}: ${sourceDir} now=${new Date().toISOString()}`);
+      cleanupStagingDir(sourceDir);
       return { ok: false, permanent: true, reason: `Source directory not found: ${sourceDir}` };
     }
 
@@ -445,6 +464,7 @@ export async function uploadBrowserDataRaw(browserId, updateData, userDataDir) {
       if (globalThis.__uploadedBrowserData instanceof Map) {
         globalThis.__uploadedBrowserData.set(browserId, downloadUrl);
       }
+      cleanupStagingDir(sourceDir);
       return { ok: true, url: downloadUrl };
     }
 
