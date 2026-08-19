@@ -4,7 +4,7 @@ import dns from 'dns';
 import { promisify } from 'util';
 import logger from "../../../../utils/logger.js";
 import aiService from "../../../../utils/aiService.js";
-import { getSheetDataApi, appendSheetRowApi, updateSheetRowApi, updateHubAndProjectsFromCookieData } from '../../../api/googlesheets.js';
+import { getSheetDataApi, appendSheetRowApi, updateSheetRowApi, updateHubAndProjectsFromCookieData, stripFormulaColumns } from '../../../api/googlesheets.js';
 import { setCachedRow, getCachedRow } from '../../../../utils/cookieCache.js';
 import { fetchDataFromAppScript as _sharedFetchData, startAppScriptDataBackgroundUpdater as _sharedStartUpdater, stopAppScriptDataBackgroundUpdater as _sharedStopUpdater, patchCachedRow as _sharedPatchCachedRow, invalidateCache as _sharedInvalidateCache } from '../../../../utils/cookieDataFetcher.js';
 import { runSmartExtract, isExtractInFlight } from '../../../../utils/smartExtract.js';
@@ -311,10 +311,11 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
 
   // Only forward keys that are real cookie-sheet columns. Unknown fields (e.g. a top-level
   // 'platform') are dropped so the App Script fallback never fails on a missing header.
+  // Formula-protected columns (id/end) are ALWAYS stripped — the sheet populates them.
   const knownCols = getKnownCookieColumns();
-  const filteredUpdate = {};
-  for (const [key, value] of Object.entries(cleanUpdateObject)) {
-    if (knownCols.has(key)) filteredUpdate[key] = value;
+  const filteredUpdate = stripFormulaColumns(cleanUpdateObject);
+  for (const [key, value] of Object.entries(filteredUpdate)) {
+    if (!knownCols.has(key)) delete filteredUpdate[key];
   }
 
   const sheetsApiUpdateMap = {

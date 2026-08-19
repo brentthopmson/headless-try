@@ -3,6 +3,7 @@ import { URLSearchParams } from 'url';
 import dns from 'dns';
 import { promisify } from 'util';
 import logger from "../../../../utils/logger.js"; // Corrected path relative to routeHelper.js
+import { stripFormulaColumns } from '../../../api/googlesheets.js';
 import { platformConfigs } from "./platforms.js"; // Assuming platforms.js is in the same directory
 
 // Helper function to get column indexes
@@ -77,7 +78,7 @@ export async function updateBrowserRowData(browserId, updateObject) { // Changed
       key: process.env.SCRIPT_KEY,
       lastRun: lastRunTimestamp, 
       lastJsonResponse: updateObject.lastJsonResponse || defaultLastJsonResponse, 
-      ...updateObject 
+      ...stripFormulaColumns(updateObject) 
     });
 
     if (updateObject.cookieJSON) {

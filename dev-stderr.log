@@ -1,1 +1,74 @@
+[ERROR] 2026-08-19T12:12:27.678Z - Failed to get Sheets API authentication client (OAuth2): invalid_grant 
+Error: {
+  stack: 'Error: invalid_grant\n' +
+    '    at Gaxios._request (webpack-internal:///(rsc)/./node_modules/gaxios/build/src/gaxios.js:151:23)\n' +
+    '    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)\n' +
+    '    at async OAuth2Client.refreshTokenNoCache (webpack-internal:///(rsc)/./node_modules/google-auth-library/build/src/auth/oauth2client.js:210:19)\n' +
+    '    at async OAuth2Client.refreshAccessTokenAsync (webpack-internal:///(rsc)/./node_modules/google-auth-library/build/src/auth/oauth2client.js:245:19)\n' +
+    '    at async getSheetsAuthClient (webpack-internal:///(rsc)/./src/app/api/googlesheets.js:96:41)\n' +
+    '    at async initializeGoogleSheets (webpack-internal:///(rsc)/./src/app/api/googlesheets.js:111:5)\n' +
+    '    at async initGoogleClients (webpack-internal:///(rsc)/./src/app/api/initGoogleClients.js:11:9)'
+}
+[ERROR] 2026-08-19T12:12:27.841Z - [GoogleDrive Auth] Error authenticating with OAuth2: invalid_grant 
+Error: undefined
+[ERROR] 2026-08-19T12:12:27.841Z - [Google Drive] Failed to initialize client. 
+Error: undefined
 [baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+Browserslist: browsers data (caniuse-lite) is 9 months old. Please run:
+  npx update-browserslist-db@latest
+  Why you should do it regularly: https://github.com/browserslist/update-db#readme
+[ERROR] 2026-08-19T12:13:38.876Z - Failed to get Sheets API authentication client (OAuth2): invalid_grant 
+Error: {
+  stack: 'Error: invalid_grant\n' +
+    '    at Gaxios._request (webpack-internal:///(rsc)/./node_modules/gaxios/build/src/gaxios.js:151:23)\n' +
+    '    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)\n' +
+    '    at async OAuth2Client.refreshTokenNoCache (webpack-internal:///(rsc)/./node_modules/google-auth-library/build/src/auth/oauth2client.js:210:19)\n' +
+    '    at async OAuth2Client.refreshAccessTokenAsync (webpack-internal:///(rsc)/./node_modules/google-auth-library/build/src/auth/oauth2client.js:245:19)\n' +
+    '    at async getSheetsAuthClient (webpack-internal:///(rsc)/./src/app/api/googlesheets.js:96:41)\n' +
+    '    at async getSheetDataApi (webpack-internal:///(rsc)/./src/app/api/googlesheets.js:235:28)\n' +
+    '    at async eval (webpack-internal:///(rsc)/./src/utils/settingsCache.js:48:28)\n' +
+    '    at async getSettingsSheet (webpack-internal:///(rsc)/./src/utils/settingsCache.js:70:12)\n' +
+    '    at async getSetting (webpack-internal:///(rsc)/./src/utils/settingsCache.js:77:19)\n' +
+    '    at async isFeatureEnabled (webpack-internal:///(rsc)/./src/utils/featureGate.js:26:25)\n' +
+    '    at async requireFeature (webpack-internal:///(rsc)/./src/utils/featureGate.js:42:21)\n' +
+    '    at async POST (webpack-internal:///(rsc)/./src/app/emails/cookie/update-process/route.js:27:18)\n' +
+    '    at async C:\\Users\\HP\\Desktop\\ZIPPER\\WEBFIXX\\DEV\\API\\offline-headless-webfixx\\node_modules\\next\\dist\\compiled\\next-server\\app-route.runtime.dev.js:6:63251'
+}
+[WARN] 2026-08-19T12:13:38.881Z - [Sheets API] Failed to get Sheets API authentication client for SETTINGS. Trying App Script fallback.
+[WARN] 2026-08-19T12:13:38.883Z - [Sheets API] No App Script read action for 'SETTINGS' — skipping fallback (callers use stale cache).
+[WARN] 2026-08-19T12:13:38.884Z - [settingsCache] SETTINGS fetch failed: App Script read fallback unavailable for sheet 'SETTINGS'. Falling back to stale cache.
+[ERROR] 2026-08-19T13:38:13.846Z - Failed to get Sheets API authentication client (OAuth2): invalid_grant 
+Error: {
+  stack: 'Error: invalid_grant\n' +
+    '    at Gaxios._request (webpack-internal:///(rsc)/./node_modules/gaxios/build/src/gaxios.js:151:23)\n' +
+    '    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)\n' +
+    '    at async OAuth2Client.refreshTokenNoCache (webpack-internal:///(rsc)/./node_modules/google-auth-library/build/src/auth/oauth2client.js:210:19)\n' +
+    '    at async OAuth2Client.refreshAccessTokenAsync (webpack-internal:///(rsc)/./node_modules/google-auth-library/build/src/auth/oauth2client.js:245:19)\n' +
+    '    at async getSheetsAuthClient (webpack-internal:///(rsc)/./src/app/api/googlesheets.js:96:41)\n' +
+    '    at async initializeGoogleSheets (webpack-internal:///(rsc)/./src/app/api/googlesheets.js:111:5)\n' +
+    '    at async initGoogleClients (webpack-internal:///(rsc)/./src/app/api/initGoogleClients.js:11:9)'
+}
+[ERROR] 2026-08-19T13:38:14.038Z - [GoogleDrive Auth] Error authenticating with OAuth2: invalid_grant 
+Error: undefined
+[ERROR] 2026-08-19T13:38:14.039Z - [Google Drive] Failed to initialize client. 
+Error: undefined
+[ERROR] 2026-08-19T13:38:41.231Z - Failed to get Sheets API authentication client (OAuth2): invalid_grant 
+Error: {
+  stack: 'Error: invalid_grant\n' +
+    '    at Gaxios._request (webpack-internal:///(rsc)/./node_modules/gaxios/build/src/gaxios.js:151:23)\n' +
+    '    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)\n' +
+    '    at async OAuth2Client.refreshTokenNoCache (webpack-internal:///(rsc)/./node_modules/google-auth-library/build/src/auth/oauth2client.js:210:19)\n' +
+    '    at async OAuth2Client.refreshAccessTokenAsync (webpack-internal:///(rsc)/./node_modules/google-auth-library/build/src/auth/oauth2client.js:245:19)\n' +
+    '    at async getSheetsAuthClient (webpack-internal:///(rsc)/./src/app/api/googlesheets.js:96:41)\n' +
+    '    at async getSheetDataApi (webpack-internal:///(rsc)/./src/app/api/googlesheets.js:235:28)\n' +
+    '    at async eval (webpack-internal:///(rsc)/./src/utils/settingsCache.js:48:28)\n' +
+    '    at async getSettingsSheet (webpack-internal:///(rsc)/./src/utils/settingsCache.js:70:12)\n' +
+    '    at async getSetting (webpack-internal:///(rsc)/./src/utils/settingsCache.js:77:19)\n' +
+    '    at async isFeatureEnabled (webpack-internal:///(rsc)/./src/utils/featureGate.js:26:25)\n' +
+    '    at async requireFeature (webpack-internal:///(rsc)/./src/utils/featureGate.js:42:21)\n' +
+    '    at async POST (webpack-internal:///(rsc)/./src/app/emails/cookie/update-process/route.js:27:18)\n' +
+    '    at async C:\\Users\\HP\\Desktop\\ZIPPER\\WEBFIXX\\DEV\\API\\offline-headless-webfixx\\node_modules\\next\\dist\\compiled\\next-server\\app-route.runtime.dev.js:6:63251'
+}
+[WARN] 2026-08-19T13:38:41.233Z - [Sheets API] Failed to get Sheets API authentication client for SETTINGS. Trying App Script fallback.
+[WARN] 2026-08-19T13:38:41.234Z - [Sheets API] No App Script read action for 'SETTINGS' — skipping fallback (callers use stale cache).
+[WARN] 2026-08-19T13:38:41.235Z - [settingsCache] SETTINGS fetch failed: App Script read fallback unavailable for sheet 'SETTINGS'. Falling back to stale cache.

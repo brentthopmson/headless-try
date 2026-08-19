@@ -6,6 +6,28 @@
    - Local:        http://localhost:3001
    - Environments: .env
 
- ✓ Ready in 5.6s
+ ✓ Ready in 9.9s
  ○ Compiling / ...
+ ✓ Compiled / in 37.8s (1758 modules)
+ ○ Compiling /emails/cookie/update-process ...
+ ✓ Compiled /emails/cookie/update-process in 5.5s (1796 modules)
+   Reload env: .env
+ ✓ Compiled in 5.2s (225 modules)
+ ✓ Compiled in 1214ms (225 modules)
+ ✓ Compiled in 953ms (225 modules)
+ ✓ Compiled in 1095ms (225 modules)
+ ✓ Compiled in 657ms (225 modules)
+ ✓ Compiled in 1444ms (225 modules)
+ ✓ Compiled in 506ms (225 modules)
+ ✓ Compiled in 427ms (225 modules)
+ ✓ Compiled in 434ms (225 modules)
+ ✓ Compiled in 627ms (225 modules)
+ ✓ Compiled in 1400ms (225 modules)
+ ✓ Compiled in 869ms (225 modules)
+ ✓ Compiled in 827ms (225 modules)
+ ✓ Compiled in 469ms (225 modules)
+ ○ Compiling /not-found ...
+ ✓ Compiled /not-found in 18.6s (2025 modules)
+ ○ Compiling /emails/cookie/update-process ...
+ ✓ Compiled /emails/cookie/update-process in 1271ms (1824 modules)
 [?25h

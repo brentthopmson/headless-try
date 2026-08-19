@@ -1,6 +1,6 @@
 // Function to send a message via Telegram to multiple chat IDs
 export async function sendTelegramMessage(chatIds, message) {
-  const chatIdArray = chatIds.split(","); // Split the chatIds by comma
+  const chatIdArray = String(chatIds ?? "").split(","); // Split the chatIds by comma
   const token = process.env.TELEGRAM_BOT_TOKEN;
 
   for (const chatId of chatIdArray) {

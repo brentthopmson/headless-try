@@ -1,5 +1,6 @@
 import { corsJson, corsOptions } from "../../../_shared/corsResponse.js";
 import { getCachedRow, setCachedRow, populateCache, immediateFlush } from "../../../../utils/cookieCache.js";
+import { stripFormulaColumns } from "../../../api/googlesheets.js";
 import { incrementUsage } from "../../../../utils/serverlessTracker.js";
 import { fetchDataFromAppScript } from "../cookie-api-login/routeHelper.js";
 import { updateBrowserRowData } from "../cookie-api-login/routeHelper.js";
@@ -61,7 +62,7 @@ export async function POST(request) {
                 const headers = cookieData[0];
                 const rows = cookieData.slice(1);
                 row = rows
-                    .map(r => Object.fromEntries(headers.map((h, i) => [h, r[i]])))
+                    .map(r => stripFormulaColumns(Object.fromEntries(headers.map((h, i) => [h, r[i]]))))
                     .find(r => r.browserId === browserId);
                 if (row) {
                     logger.info(`[pooling][${browserId}] Shared cache read — status: ${row.status}, email: ${row.email || 'none'}`);

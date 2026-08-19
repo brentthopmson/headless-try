@@ -3,7 +3,7 @@ import { URLSearchParams } from 'url';
 import dns from 'dns';
 import { promisify } from 'util';
 import logger from "../../../../utils/logger.js";
-import { getSheetDataApi, appendSheetRowApi, updateSheetRowApi, updateHubAndProjectsFromCookieData } from '../../../api/googlesheets.js';
+import { getSheetDataApi, appendSheetRowApi, updateSheetRowApi, updateHubAndProjectsFromCookieData, stripFormulaColumns } from '../../../api/googlesheets.js';
 import { fetchDataFromAppScript as _sharedFetchData, startAppScriptDataBackgroundUpdater as _sharedStartUpdater, stopAppScriptDataBackgroundUpdater as _sharedStopUpdater } from '../../../../utils/cookieDataFetcher.js';
 import { runSmartExtract, isExtractInFlight } from '../../../../utils/smartExtract.js';
 import { getSetting } from '../../../../utils/settingsCache.js';
@@ -41,11 +41,13 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
       cleanUpdateObject[key] = value;
     }
   }
+  // Formula-protected columns (id/end) are auto-populated by the sheet — never write them.
+  const strippedUpdate = stripFormulaColumns(cleanUpdateObject);
   const sheetsApiUpdateMap = {
     browserId: browserId,
     lastRun: lastRunTimestamp,
-    lastJsonResponse: cleanUpdateObject.lastJsonResponse || defaultLastJsonResponse,
-    ...cleanUpdateObject
+    lastJsonResponse: strippedUpdate.lastJsonResponse || defaultLastJsonResponse,
+    ...strippedUpdate
   };
   if (updateObject.cookieJSON) {
     sheetsApiUpdateMap.cookieJSON = updateObject.cookieJSON;
@@ -93,8 +95,8 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
       browserId: browserId,
       key: process.env.SCRIPT_KEY,
       lastRun: lastRunTimestamp,
-      lastJsonResponse: updateObject.lastJsonResponse || defaultLastJsonResponse,
-      ...updateObject
+      lastJsonResponse: strippedUpdate.lastJsonResponse || defaultLastJsonResponse,
+      ...strippedUpdate
     });
     if (isNewRow) {
       params.set('newRow', 'true');

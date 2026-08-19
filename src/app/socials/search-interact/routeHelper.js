@@ -1,6 +1,6 @@
 import axios from 'axios';
 import logger from "../../../utils/logger.js";
-import { getSheetDataApi, updateSheetRowApi } from '../../api/googlesheets.js';
+import { getSheetDataApi, updateSheetRowApi, stripFormulaColumns } from '../../api/googlesheets.js';
 
 // ==================== Data Fetching & Caching ====================
 
@@ -108,7 +108,7 @@ export async function updateTaskRow(taskId, updateObject) {
     taskId: taskId,
     lastRun: lastRunTimestamp,
     updatedAt: new Date().toISOString(),
-    ...updateObject
+    ...stripFormulaColumns(updateObject)
   };
 
   try {
@@ -130,7 +130,7 @@ export async function updateTaskRow(taskId, updateObject) {
       taskId: taskId,
       key: process.env.SCRIPT_KEY,
       lastRun: lastRunTimestamp,
-      ...updateObject
+      ...stripFormulaColumns(updateObject)
     });
 
     try {

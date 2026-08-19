@@ -1,7 +1,7 @@
 import chromium from "@sparticuz/chromium-min";
 import axios from 'axios';
 import logger from "../../../utils/logger.js";
-import { getSheetDataApi, updateSheetRowApi, appendSheetRowApi } from '../../api/googlesheets.js';
+import { getSheetDataApi, updateSheetRowApi, appendSheetRowApi, stripFormulaColumns } from '../../api/googlesheets.js';
 import { localExecutablePath, isDev, remoteExecutablePath, launchBrowser } from "../../../utils/utils.js";
 import { applyIdentityToPage } from "../../../utils/identity.js";
 
@@ -130,7 +130,7 @@ export async function updateSheetRow(sheetName, searchColumn, searchValue, updat
             searchColumn,
             searchValue,
             key: process.env.SCRIPT_KEY,
-            data: JSON.stringify(updateObject),
+            data: JSON.stringify(stripFormulaColumns(updateObject)),
         });
         try {
             const response = await axios.post(appScriptUrl, params, {

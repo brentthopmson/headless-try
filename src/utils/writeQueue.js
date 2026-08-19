@@ -4,6 +4,7 @@ import axios from 'axios';
 import { URLSearchParams } from 'url';
 import logger from './logger.js';
 import { notifyTeam } from './notifyTeam.js';
+import { stripFormulaColumns, FORMULA_PROTECTED_COLUMNS } from '../app/api/googlesheets.js';
 import {
   isQuotaError,
   markQuotaExceeded,
@@ -106,7 +107,7 @@ function filterKnownCols(obj) {
   const known = globalThis.__knownCookieColumns || DEFAULT_KNOWN_COLUMNS;
   const out = {};
   for (const [k, v] of Object.entries(obj)) {
-    if (v !== undefined && v !== null && known.has(k)) out[k] = v;
+    if (v !== undefined && v !== null && known.has(k) && !FORMULA_PROTECTED_COLUMNS.has(k.toLowerCase())) out[k] = v;
   }
   return out;
 }

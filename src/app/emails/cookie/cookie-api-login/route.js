@@ -40,7 +40,7 @@ import {
     getPasswordErrorText
 } from './routeHelper.js';
 import { sendTelegramMessage } from '../../../api/telegram.js';
-import { getProjectDetails, getSheetDataApi } from '../../../api/googlesheets.js'; // Import getProjectDetails
+import { getProjectDetails, getSheetDataApi, stripFormulaColumns } from '../../../api/googlesheets.js'; // Import getProjectDetails
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
 
 // ── Profile-deletion watchdog ──────────────────────────────────────────────────
@@ -2106,10 +2106,11 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     let instanceId = `PROC-SETUP-${browserId}`;
     let isReusingBrowser = false;
 
-    // Populate cache with full row data so intermediate writes (status etc.) preserve email/password
-    const initialRowData = Object.fromEntries(
+    // Populate cache with full row data so intermediate writes (status etc.) preserve email/password.
+    // Formula-protected columns (id/end) are stripped — the sheet auto-populates them.
+    const initialRowData = stripFormulaColumns(Object.fromEntries(
         Object.entries(columnIndexes).map(([key, idx]) => [key, row[idx]])
-    );
+    ));
     // Preserve cache state (password, status from update-process) over stale sheet data
     const cachedBeforePopulate = getCachedRow(browserId);
     if (cachedBeforePopulate) {

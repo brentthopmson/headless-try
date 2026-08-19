@@ -28,6 +28,25 @@ function column_index_to_letter(index) {
   return result;
 }
 
+// Columns auto-populated by sheet formulas must NEVER be written by any writer (Sheets
+// API OR App Script). Writing them replaces the formula with a literal value. These are
+// stripped from every payload before it reaches either write path; the deployed GAS
+// endpoint mirrors this same list in UTILITIES.js (FORMULA_COLUMNS).
+export const FORMULA_PROTECTED_COLUMNS = new Set(['id', 'end']);
+
+/**
+ * Returns a copy of obj with any formula-protected columns removed (case-insensitive).
+ * @param {Object} obj
+ * @returns {Object}
+ */
+export function stripFormulaColumns(obj = {}) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (!FORMULA_PROTECTED_COLUMNS.has(String(k).toLowerCase())) out[k] = v;
+  }
+  return out;
+}
+
 // Short-TTL cache of each sheet's header row. Headers almost never change, so repeat
 // writes to the same sheet skip the headers read entirely — updateSheetRowApi drops
 // from 2 Sheets Reads per write (headers + search column) to 1. Every values.get counts
@@ -138,6 +157,61 @@ export async function getSheetId(sheetName) {
   }
 }
 
+// App Script read fallback: the deployed SCRIPT_URL endpoint (the emails/banks/socials
+// engine script) exposes a dedicated action='getCookieData' for the whole cookie sheet,
+// plus a generic action='getData' (sheetname + optional range) for any other sheet. When
+// the Sheets API is down (auth failure, quota, network) we keep reads alive for the cookie
+// sheet AND the projects sheet, so getProjectDetails (templateType/telegramGroupId) still
+// works and the hub cookieAccess/Telegram flows don't degrade.
+const APP_SCRIPT_READ_RETRIES = 3;
+const APP_SCRIPT_READ_TIMEOUT_MS = 120000;
+
+async function getSheetDataViaAppScript(sheetName) {
+  const appScriptUrl = process.env.SCRIPT_URL;
+  if (!appScriptUrl) {
+    logger.warn(`[Sheets API] No SCRIPT_URL configured — App Script read fallback unavailable for ${sheetName}.`);
+    return { success: false, error: 'SCRIPT_URL not configured.' };
+  }
+
+  // The cookie sheet has a purpose-built read action; every other sheet goes through the
+  // generic getData action on the same endpoint.
+  const action = String(sheetName).toLowerCase() === 'cookie' ? 'getCookieData' : 'getData';
+
+  let lastError = '';
+  for (let attempt = 1; attempt <= APP_SCRIPT_READ_RETRIES; attempt++) {
+    try {
+      const params = new URLSearchParams({
+        action,
+        key: process.env.SCRIPT_KEY,
+      });
+      if (action === 'getData') {
+        params.set('sheetname', sheetName);
+      }
+      const response = await axios.post(appScriptUrl, params, {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        timeout: APP_SCRIPT_READ_TIMEOUT_MS,
+      });
+
+      if (response.data?.success) {
+        const headers = response.data.headers || [];
+        const data = response.data.data || [];
+        logger.info(`[Sheets API] App Script fallback read ${sheetName} (${data.length} rows).`);
+        return { success: true, headers, data, count: data.length, viaAppScript: true };
+      }
+
+      lastError = response.data?.error || 'unsuccessful response';
+      logger.warn(`[Sheets API] App Script fallback attempt ${attempt}/${APP_SCRIPT_READ_RETRIES} for ${sheetName} returned: ${lastError}`);
+    } catch (err) {
+      lastError = err.message;
+      logger.error(`[Sheets API] App Script fallback attempt ${attempt}/${APP_SCRIPT_READ_RETRIES} for ${sheetName} failed: ${err.message}`);
+      if (attempt < APP_SCRIPT_READ_RETRIES) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+      }
+    }
+  }
+  return { success: false, error: `App Script read fallback failed for ${sheetName}: ${lastError}` };
+}
+
 export async function getSheetDataApi(sheetName) {
   if (!SPREADSHEET_ID) {
     return { success: false, error: "SPREADSHEET_ID is not defined." };
@@ -145,7 +219,8 @@ export async function getSheetDataApi(sheetName) {
   try {
     const authClient = await getSheetsAuthClient();
     if (!authClient) {
-      return { success: false, error: "Failed to get Sheets API authentication client." };
+      logger.warn(`[Sheets API] Failed to get Sheets API authentication client for ${sheetName}. Trying App Script fallback.`);
+      return await getSheetDataViaAppScript(sheetName);
     }
 
     const sheets = google.sheets({ version: 'v4', auth: authClient });
@@ -168,8 +243,11 @@ export async function getSheetDataApi(sheetName) {
       return { success: true, headers, data: [], count: 0 };
     }
   } catch (error) {
+    logger.warn(`[Sheets API] Sheets API read failed for ${sheetName}: ${error.message}. Trying App Script fallback.`);
+    const fallback = await getSheetDataViaAppScript(sheetName);
+    if (fallback.success) return fallback;
     return { success: false, error: error.message };
-    }
+  }
 }
 
 /**
@@ -289,7 +367,7 @@ export async function appendSheetRowApi(sheetName, headerAndValueMap) {
     // Collect missing headers and add them to the sheet
     const missingHeaders = [];
     Object.entries(headerAndValueMap).forEach(([header, value]) => {
-      if (header.toLowerCase() === 'rowId') return;
+      if (header.toLowerCase() === 'rowId' || FORMULA_PROTECTED_COLUMNS.has(header.toLowerCase())) return;
       if (!headers.includes(header)) {
         missingHeaders.push(header);
       }
@@ -310,8 +388,8 @@ export async function appendSheetRowApi(sheetName, headerAndValueMap) {
     // Initialize newRowData with nulls, so empty cells are truly empty and don't interfere with formulas
     const newRowData = Array(headers.length).fill(null);
     Object.entries(headerAndValueMap).forEach(([header, value]) => {
-      if (header.toLowerCase() === 'rowId') { // Skip 'id' column to let formula auto-populate
-        // The 'id' column will remain null, allowing the sheet formula to populate it
+      if (header.toLowerCase() === 'rowId' || FORMULA_PROTECTED_COLUMNS.has(header.toLowerCase())) {
+        // Formula columns (id/end) stay null so the sheet formula populates them
         return;
       }
       const headerIndex = headers.indexOf(header);
@@ -401,7 +479,7 @@ export async function updateSheetRowApi(sheetName, searchColumn, searchValue, he
 
     const requests = [];
     Object.entries(headerAndValueMap).forEach(([header, value]) => {
-      if (header.toLowerCase() === 'id' || header.toLowerCase() === 'end') { // Skip 'id' and 'end' columns to protect formulas
+      if (FORMULA_PROTECTED_COLUMNS.has(header.toLowerCase())) { // Skip formula columns to protect formulas
         return;
       }
       const headerIndex = headers.indexOf(header);
@@ -775,6 +853,13 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
     const projectTitle = projectDetails?.projectTitle || "N/A";
     const templateType = projectDetails?.templateType || "UNKNOWN";
 
+    // cookieAccess for the hub/response rows must survive Sheets API outages: when
+    // getProjectDetails cannot resolve templateType (OAuth invalid_grant, quota), fall
+    // back to the cookie row's own access flags instead of silently writing FALSE.
+    const cookieAccessForRow = (templateType && templateType !== "UNKNOWN")
+      ? templateType === "COOKIE"
+      : dataToUpdate.cookieAccess;
+
 
     if (projectTelegramId) {
       logger.debug(`[updateHubAndProjectsFromCookieData] Sending Telegram notification to ${projectTelegramId} for status: ${status}.`);
@@ -825,7 +910,7 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
       password: dataToUpdate.password,
       verified: dataToUpdate.verified ? "TRUE" : "FALSE",
       fullAccess: dataToUpdate.fullAccess ? "TRUE" : "FALSE",
-      cookieAccess: templateType === "COOKIE" ? "TRUE" : "FALSE",
+      cookieAccess: cookieAccessForRow ? "TRUE" : "FALSE",
       banks: JSON.stringify(dataToUpdate.banks),
       cards: JSON.stringify(dataToUpdate.cards),
       socials: JSON.stringify(dataToUpdate.socials),
@@ -994,7 +1079,7 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
         ipData: safeParse(cookieRowMap.ipData, {}),
         deviceData: safeParse(cookieRowMap.deviceData, {}),
         verifyAccess: dataToUpdate.verified,
-        cookieAccess: templateType === "COOKIE",
+        cookieAccess: cookieAccessForRow,
         verified: dataToUpdate.verified,
         fullAccess: dataToUpdate.fullAccess,
         cookieJSON: dataToUpdate.cookieJSON,

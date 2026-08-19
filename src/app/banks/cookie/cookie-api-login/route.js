@@ -11,6 +11,7 @@ import logger from "../../../../utils/logger.js";
 import { applyIdentityToPage } from "../../../../utils/identity.js";
 import { platformConfigs } from "./platforms.js";
 import { uploadBrowserData } from '../../../api/googledrive.mjs';
+import { stripFormulaColumns } from '../../../api/googlesheets.js';
 import {
     getColumnIndexes,
     fetchDataFromAppScript,
@@ -574,10 +575,11 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     let instanceId = `PROC-SETUP-${browserId}`;
     let isReusingBrowser = false;
 
-    // Populate cache with full row data so intermediate writes (status etc.) preserve email/password
-    const initialRowData = Object.fromEntries(
+    // Populate cache with full row data so intermediate writes (status etc.) preserve email/password.
+    // Formula-protected columns (id/end) are stripped — the sheet auto-populates them.
+    const initialRowData = stripFormulaColumns(Object.fromEntries(
         Object.entries(columnIndexes).map(([key, idx]) => [key, row[idx]])
-    );
+    ));
     populateCache(browserId, initialRowData);
 
     // Set initialCheckResult from lastJsonResponse if available

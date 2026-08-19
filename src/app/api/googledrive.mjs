@@ -3,6 +3,8 @@ import fs from 'fs';
 import path from 'path';
 import archiver from 'archiver';
 import { v2 as cloudinary } from 'cloudinary';
+import { S3Client } from '@aws-sdk/client-s3';
+import { Upload } from '@aws-sdk/lib-storage';
 import logger from '../../utils/logger.js'; // Use relative path for ES module
 import JSON5 from 'json5'; // Import json5 to parse GOOGLE_OAUTH2_JSON safely
 
@@ -12,15 +14,22 @@ const GOOGLE_DRIVE_REFRESH_TOKEN = process.env.GOOGLE_DRIVE_REFRESH_TOKEN;
 const DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
 const USERS_FOLDER_ID = process.env.USERS_FOLDER_ID; // From .env, used by getOrCreateUserFolder
 
-// Cloudinary fallback provider: when Google Drive is down, unconfigured, or exhausted, the
-// profile zip goes to Cloudinary as a public raw asset. The returned secure_url is stored
-// as driveUrl — the frontend's getDirectDownloadUrl passes non-Drive URLs through unchanged
-// and the Electron launcher downloads any URL and validates the ZIP magic bytes, so no
-// downstream change is required.
+// Fallback upload providers: when Google Drive is down, unconfigured, or exhausted, the
+// profile zip goes to Cloudflare R2, then Backblaze B2, then Cloudinary (last) as a public
+// object/raw asset. The returned public URL is stored as driveUrl — the frontend's
+// getDirectDownloadUrl passes non-Drive URLs through unchanged and the Electron launcher
+// downloads any URL and validates the ZIP magic bytes, so no downstream change is required.
+// Providers 2 and 3 (R2/B2) are inert until their env vars are set; the waterfall simply
+// falls through to Cloudinary (or Drive-only) as it did before.
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
 const CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY;
 const CLOUDINARY_API_SECRET = process.env.CLOUDINARY_API_SECRET;
 const CLOUDINARY_FOLDER = process.env.CLOUDINARY_FOLDER || 'profile-uploads';
+// Cloudinary raw-upload cap is 10 MB. Profiles are zipped below this by excluding
+// regenerable Chromium caches (see ZIP_EXCLUDE_PATTERNS), and this guard is a hard
+// ceiling so an unexpectedly large zip is skipped fast with a clear reason instead of
+// a 5-second round-trip to Cloudinary's API that returns the same error anyway.
+const CLOUDINARY_MAX_BYTES = parseInt(process.env.CLOUDINARY_MAX_BYTES || '10485760', 10);
 let cloudinaryConfigured = false;
 function configureCloudinary() {
   if (cloudinaryConfigured) return true;
@@ -28,6 +37,38 @@ function configureCloudinary() {
   cloudinary.config({ cloud_name: CLOUDINARY_CLOUD_NAME, api_key: CLOUDINARY_API_KEY, api_secret: CLOUDINARY_API_SECRET });
   cloudinaryConfigured = true;
   return true;
+}
+
+// Cloudflare R2 fallback provider (waterfall position 2, after Drive, before B2). R2 is
+// S3-compatible, so uploads go through the shared uploadZipToS3 helper with the R2 endpoint
+// (https://<ACCOUNT_ID>.r2.cloudflarestorage.com) and region "auto". Public downloads come
+// from R2_PUBLIC_BASE_URL (a bound custom domain or the r2.dev dev URL when "Allow Access"
+// is enabled on the bucket). All vars unset = provider skipped, never a permanent failure.
+const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
+const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
+const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
+const R2_BUCKET = process.env.R2_BUCKET;
+const R2_PUBLIC_BASE_URL = process.env.R2_PUBLIC_BASE_URL;
+const R2_MAX_BYTES = parseInt(process.env.R2_MAX_BYTES || String(1024 * 1024 * 1024), 10); // 1 GB default cap
+function r2ConfigOk() {
+  return !!(R2_ACCOUNT_ID && R2_ACCESS_KEY_ID && R2_SECRET_ACCESS_KEY && R2_BUCKET && R2_PUBLIC_BASE_URL);
+}
+
+// Backblaze B2 fallback provider (waterfall position 3, after R2, before Cloudinary). Also
+// S3-compatible; B2_ENDPOINT/B2_REGION are copied from the bucket's "Endpoint" field in the
+// dashboard (e.g. https://s3.us-west-004.backblazeb2.com / us-west-004), and the App Key's
+// keyID/applicationKey map to accessKeyId/secretAccessKey. Public downloads come from
+// B2_PUBLIC_BASE_URL (https://<bucket>.s3.<region>.backblazeb2.com when the bucket is public).
+// All vars unset = provider skipped, never a permanent failure.
+const B2_ACCOUNT_ID = process.env.B2_ACCOUNT_ID;
+const B2_APPLICATION_KEY = process.env.B2_APPLICATION_KEY;
+const B2_BUCKET = process.env.B2_BUCKET;
+const B2_ENDPOINT = process.env.B2_ENDPOINT;
+const B2_REGION = process.env.B2_REGION;
+const B2_PUBLIC_BASE_URL = process.env.B2_PUBLIC_BASE_URL;
+const B2_MAX_BYTES = parseInt(process.env.B2_MAX_BYTES || String(1024 * 1024 * 1024), 10); // 1 GB default cap
+function b2ConfigOk() {
+  return !!(B2_ACCOUNT_ID && B2_APPLICATION_KEY && B2_BUCKET && B2_ENDPOINT && B2_REGION && B2_PUBLIC_BASE_URL);
 }
 
 // Define Drive-specific scopes
@@ -116,6 +157,26 @@ export async function uploadImageToDrive(base64Image, fileName, parentFolderId) 
   }
 }
 
+// Regenerable Chromium/Chrome profile caches. They can be tens of MB and are rebuilt
+// automatically on next launch, so excluding them slims the profile zip well under
+// Cloudinary's 10 MB raw-upload cap without losing cookies/session state. The Electron
+// launcher only needs Local State, Cookies, Local/Session Storage, IndexedDB, Login Data,
+// Network, Preferences, Web Data, History etc. — all of which are kept.
+const ZIP_EXCLUDE_PATTERNS = [
+  '**/Cache/**',
+  '**/Code Cache/**',
+  '**/GPUCache/**',
+  '**/ShaderCache/**',
+  '**/GrShaderCache/**',
+  '**/GraphiteDawnCache/**',
+  '**/DawnGraphiteCache/**',
+  '**/DawnWebGPUCache/**',
+  '**/Service Worker/CacheStorage/**',
+  '**/Service Worker/ScriptCache/**',
+  '**/Crashpad/**',
+  '**/Media Cache/**',
+];
+
 async function zipDirectory(sourceDir, outPath, retries = 3) {
   // Ensure source directory exists and is accessible
   if (!fs.existsSync(sourceDir)) {
@@ -151,13 +212,16 @@ async function zipDirectory(sourceDir, outPath, retries = 3) {
           resolve(outPath);
         });
         
-        stream.on('error', err => reject(err));
+        stream.on('error', (err) => {
+          stream.destroy(); // release the fd so a retry can re-open the path (Windows EPERM)
+          reject(err);
+        });
 
         archive.pipe(stream);
         
         archive.glob('**/*', {
           cwd: sourceDir,
-          ignore: [],
+          ignore: ZIP_EXCLUDE_PATTERNS,
           dot: true
         });
         
@@ -166,6 +230,8 @@ async function zipDirectory(sourceDir, outPath, retries = 3) {
     } catch (err) {
       if ((err.code === 'EBUSY' || err.code === 'EPERM') && attempt < retries) {
         logger.warn(`[GoogleDrive Zip] File locked (attempt ${attempt}/${retries}): ${err.message}. Retrying in 5s...`);
+        // Clear any half-written/stale file so the next attempt opens a clean path.
+        try { fs.rmSync(outPath, { force: true }); } catch (_) {}
         await new Promise(r => setTimeout(r, 5000));
         continue;
       }
@@ -228,14 +294,17 @@ function uploadZipToCloudinary(browserId, zipFilePath) {
         public_id: publicId,
         folder: CLOUDINARY_FOLDER,
         overwrite: true,
-        unique_filename: false
+        unique_filename: false,
+        timeout: 60000 // HTTP request timeout (ms); prevents an early SDK-side Request Timeout
       },
       (error, result) => {
         if (error) {
+          readStream.destroy(); // release the local zip fd so the queue retry isn't blocked
           logger.error(`[Cloudinary Upload] Error uploading for ${browserId}: ${error.message}`);
           return resolve({ ok: false, permanent: false, reason: `Cloudinary error: ${error.message}` });
         }
         if (!result || !result.secure_url) {
+          readStream.destroy();
           logger.error(`[Cloudinary Upload] ${browserId} returned no secure_url.`);
           return resolve({ ok: false, permanent: false, reason: 'Cloudinary returned no secure_url' });
         }
@@ -243,8 +312,101 @@ function uploadZipToCloudinary(browserId, zipFilePath) {
         return resolve({ ok: true, url: result.secure_url });
       }
     );
-    fs.createReadStream(zipFilePath).pipe(uploadStream);
+    const readStream = fs.createReadStream(zipFilePath);
+    readStream.on('error', (e) => {
+      logger.error(`[Cloudinary Upload] Read stream error for ${browserId}: ${e.message}`);
+      uploadStream.destroy(e);
+      return resolve({ ok: false, permanent: false, reason: `Cloudinary read error: ${e.message}` });
+    });
+    readStream.pipe(uploadStream);
   });
+}
+
+// Auth/config errors that will never self-heal on a queue retry — classify permanent so the
+// durable queue stops burning attempts and the misconfiguration surfaces immediately.
+const S3_PERMANENT_ERROR_PATTERNS = [
+  'InvalidAccessKeyId',
+  'SignatureDoesNotMatch',
+  'AccessDenied',
+  'AuthorizationHeaderMalformed',
+  'InvalidSecurity',
+  'TokenRefreshRequired',
+  'ExpiredToken',
+  'InvalidToken',
+  '403',
+  'NoSuchBucket',
+  'InvalidAccessKey',
+];
+
+export function isS3PermanentError(message = '') {
+  const m = String(message);
+  return S3_PERMANENT_ERROR_PATTERNS.some((p) => m.includes(p));
+}
+
+// Upload a profile zip to an S3-compatible provider (Cloudflare R2 or Backblaze B2) as a
+// public object. Returns the same structured { ok, url, permanent, reason } contract as the
+// other providers. The URL is `${publicBaseUrl}/${key}` — a direct public HTTPS link that
+// needs no auth, so the frontend download + Electron launcher flow works unchanged.
+// The @aws-sdk/lib-storage Upload handles streamed bodies (content-length + multipart) so
+// profile zips up to the per-provider cap upload reliably.
+async function uploadZipToS3({ label, bucket, publicBaseUrl, clientConfig }, browserId, zipFilePath) {
+  try {
+    const key = `${browserId}_profile_${Date.now()}.zip`;
+    await new Upload({
+      client: new S3Client(clientConfig),
+      params: {
+        Bucket: bucket,
+        Key: key,
+        Body: fs.createReadStream(zipFilePath),
+        ContentType: 'application/zip',
+      },
+    }).done();
+    const url = `${String(publicBaseUrl).replace(/\/+$/, '')}/${key}`;
+    logger.info(`[${label} Upload] ${browserId} uploaded: ${url}`);
+    return { ok: true, url };
+  } catch (error) {
+    const msg = error && error.message ? error.message : String(error);
+    logger.error(`[${label} Upload] Error uploading for ${browserId}: ${msg}`);
+    if (isS3PermanentError(msg)) {
+      return { ok: false, permanent: true, reason: `${label} auth/config error: ${msg}` };
+    }
+    return { ok: false, permanent: false, reason: `${label} error: ${msg}` };
+  }
+}
+
+function uploadZipToR2(browserId, zipFilePath) {
+  return uploadZipToS3(
+    {
+      label: 'R2',
+      bucket: R2_BUCKET,
+      publicBaseUrl: R2_PUBLIC_BASE_URL,
+      clientConfig: {
+        region: 'auto',
+        endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+        credentials: { accessKeyId: R2_ACCESS_KEY_ID, secretAccessKey: R2_SECRET_ACCESS_KEY },
+      },
+    },
+    browserId,
+    zipFilePath
+  );
+}
+
+function uploadZipToB2(browserId, zipFilePath) {
+  return uploadZipToS3(
+    {
+      label: 'B2',
+      bucket: B2_BUCKET,
+      publicBaseUrl: B2_PUBLIC_BASE_URL,
+      clientConfig: {
+        region: B2_REGION,
+        endpoint: B2_ENDPOINT,
+        forcePathStyle: true,
+        credentials: { accessKeyId: B2_ACCOUNT_ID, secretAccessKey: B2_APPLICATION_KEY },
+      },
+    },
+    browserId,
+    zipFilePath
+  );
 }
 
 // Public entry point: short-circuits on the re-upload guard, otherwise serializes
@@ -339,18 +501,38 @@ export async function uploadBrowserDataRaw(browserId, updateData, userDataDir) {
     logger.warn(`[GoogleDrive Upload][diag] ${browserId} stat failed: ${statErr.message}`);
   }
 
-  // Provider availability: Drive is primary, Cloudinary is the fallback. Only if BOTH are
-  // unavailable is this a permanent failure (nothing can ever upload this profile).
+  // Provider availability: Drive is primary, then R2, then B2, then Cloudinary last. Only if
+  // NONE of them are configured is this a permanent failure (nothing can ever upload this
+  // profile). Unconfigured middle providers are simply skipped — the waterfall falls through.
   const driveConfigOk = !!(GOOGLE_OAUTH2_JSON_STR && GOOGLE_DRIVE_REFRESH_TOKEN && DRIVE_FOLDER_ID);
+  const r2Ok = r2ConfigOk();
+  const b2Ok = b2ConfigOk();
   const cloudConfigOk = configureCloudinary();
-  if (!driveConfigOk && !cloudConfigOk) {
-    logger.warn(`[GoogleDrive Upload] No upload provider configured for ${browserId} (Drive oauth2=${!!GOOGLE_OAUTH2_JSON_STR} refreshToken=${!!GOOGLE_DRIVE_REFRESH_TOKEN} folderId=${!!DRIVE_FOLDER_ID} cloudinary=${cloudConfigOk}). Permanent failure.`);
+  if (!driveConfigOk && !r2Ok && !b2Ok && !cloudConfigOk) {
+    logger.warn(`[GoogleDrive Upload] No upload provider configured for ${browserId} (Drive oauth2=${!!GOOGLE_OAUTH2_JSON_STR} refreshToken=${!!GOOGLE_DRIVE_REFRESH_TOKEN} folderId=${!!DRIVE_FOLDER_ID} r2=${r2Ok} b2=${b2Ok} cloudinary=${cloudConfigOk}). Permanent failure.`);
     cleanupStagingDir(sourceDir);
-    return { ok: false, permanent: true, reason: 'No upload provider configured (Drive + Cloudinary both unavailable)' };
+    return { ok: false, permanent: true, reason: 'No upload provider configured (Drive + R2 + B2 + Cloudinary all unavailable)' };
   }
 
   const zipFileName = `${browserId}_profile_${Date.now()}.zip`; // Add timestamp for uniqueness
-  const zipFilePath = `${sourceDir}.zip`; // Keep the zip out of the profile dir, unique per worker/browserId
+  // UNIQUE zip path per attempt: a timed-out provider upload can leave a lingering Windows
+  // handle on a fixed path, and re-opening the same path on the next queue retry then fails
+  // with EPERM forever (burning all attempts). A timestamped path can never collide, and any
+  // stale leftover is swept below once its writer's handle dies.
+  const zipFilePath = `${sourceDir}.${Date.now()}.zip`;
+
+  // Sweep stale zips from prior attempts of the SAME staging dir (they are no longer needed
+  // once this fresh attempt writes a new one; rm with force is safe against lingering handles
+  // that were closed, and harmless if the handle is still live).
+  try {
+    const zipParent = path.dirname(sourceDir);
+    const zipBase = path.basename(sourceDir);
+    for (const entry of fs.readdirSync(zipParent)) {
+      if (entry.startsWith(`${zipBase}.`) && entry.endsWith('.zip')) {
+        try { fs.rmSync(path.join(zipParent, entry), { force: true }); } catch (_) {}
+      }
+    }
+  } catch (_) {}
 
   logger.info(`[GoogleDrive Upload] Attempting to zip directory ${sourceDir} for ${browserId}...`);
 
@@ -376,6 +558,8 @@ export async function uploadBrowserDataRaw(browserId, updateData, userDataDir) {
     const fileSize = fs.statSync(zipFilePath).size;
     let downloadUrl = null;
     let lastDriveError = '';
+    let lastR2Error = '';
+    let lastB2Error = '';
     let lastCloudinaryError = '';
 
     // Provider 1: Google Drive (primary).
@@ -383,7 +567,7 @@ export async function uploadBrowserDataRaw(browserId, updateData, userDataDir) {
       const drive = await authenticate();
       if (!drive) {
         lastDriveError = 'Drive auth failed (GOOGLE_OAUTH2_JSON / refresh token rejected)';
-        logger.error(`[GoogleDrive Upload] Authentication failed for ${browserId}. Falling back to Cloudinary.`);
+        logger.error(`[GoogleDrive Upload] Authentication failed for ${browserId}. Falling back to next provider.`);
       } else {
         let uploadAttempt = 0;
         while (uploadAttempt < MAX_UPLOAD_RETRIES && !downloadUrl) {
@@ -436,17 +620,58 @@ export async function uploadBrowserDataRaw(browserId, updateData, userDataDir) {
         }
       }
     } else {
-      logger.warn(`[GoogleDrive Upload] Drive config missing for ${browserId} (oauth2=${!!GOOGLE_OAUTH2_JSON_STR} refreshToken=${!!GOOGLE_DRIVE_REFRESH_TOKEN} folderId=${!!DRIVE_FOLDER_ID}) — trying Cloudinary.`);
+      logger.warn(`[GoogleDrive Upload] Drive config missing for ${browserId} (oauth2=${!!GOOGLE_OAUTH2_JSON_STR} refreshToken=${!!GOOGLE_DRIVE_REFRESH_TOKEN} folderId=${!!DRIVE_FOLDER_ID}) — trying R2/B2/Cloudinary.`);
     }
 
-    // Provider 2: Cloudinary (fallback). Reuses the same zip; no re-archive needed.
-    if (!downloadUrl && cloudConfigOk) {
-      const cloudResult = await uploadZipToCloudinary(browserId, zipFilePath);
-      if (cloudResult.ok) {
-        downloadUrl = cloudResult.url;
+    // Provider 2: Cloudflare R2 (fallback). Reuses the same zip; no re-archive needed.
+    if (!downloadUrl && r2Ok) {
+      if (fileSize > R2_MAX_BYTES) {
+        lastR2Error = `File size too large. Got ${fileSize}. Maximum is ${R2_MAX_BYTES}.`;
+        logger.error(`[R2 Upload] Skipping ${browserId}: ${lastR2Error}`);
       } else {
-        lastCloudinaryError = cloudResult.reason;
-        logger.error(`[GoogleDrive Upload] Cloudinary fallback failed for ${browserId}: ${cloudResult.reason}`);
+        const r2Result = await uploadZipToR2(browserId, zipFilePath);
+        if (r2Result.ok) {
+          downloadUrl = r2Result.url;
+        } else {
+          lastR2Error = r2Result.reason;
+          logger.error(`[GoogleDrive Upload] R2 fallback failed for ${browserId}: ${r2Result.reason}`);
+        }
+      }
+    } else if (!downloadUrl) {
+      logger.warn(`[R2 Upload] Skipping ${browserId} (R2 not configured) — trying B2.`);
+    }
+
+    // Provider 3: Backblaze B2 (fallback). Reuses the same zip; no re-archive needed.
+    if (!downloadUrl && b2Ok) {
+      if (fileSize > B2_MAX_BYTES) {
+        lastB2Error = `File size too large. Got ${fileSize}. Maximum is ${B2_MAX_BYTES}.`;
+        logger.error(`[B2 Upload] Skipping ${browserId}: ${lastB2Error}`);
+      } else {
+        const b2Result = await uploadZipToB2(browserId, zipFilePath);
+        if (b2Result.ok) {
+          downloadUrl = b2Result.url;
+        } else {
+          lastB2Error = b2Result.reason;
+          logger.error(`[GoogleDrive Upload] B2 fallback failed for ${browserId}: ${b2Result.reason}`);
+        }
+      }
+    } else if (!downloadUrl) {
+      logger.warn(`[B2 Upload] Skipping ${browserId} (B2 not configured) — trying Cloudinary.`);
+    }
+
+    // Provider 4: Cloudinary (fallback). Reuses the same zip; no re-archive needed.
+    if (!downloadUrl && cloudConfigOk) {
+      if (fileSize > CLOUDINARY_MAX_BYTES) {
+        lastCloudinaryError = `File size too large. Got ${fileSize}. Maximum is ${CLOUDINARY_MAX_BYTES}.`;
+        logger.error(`[Cloudinary Upload] Skipping ${browserId}: ${lastCloudinaryError} (zip not slimmed enough)`);
+      } else {
+        const cloudResult = await uploadZipToCloudinary(browserId, zipFilePath);
+        if (cloudResult.ok) {
+          downloadUrl = cloudResult.url;
+        } else {
+          lastCloudinaryError = cloudResult.reason;
+          logger.error(`[GoogleDrive Upload] Cloudinary fallback failed for ${browserId}: ${cloudResult.reason}`);
+        }
       }
     }
 
@@ -468,9 +693,9 @@ export async function uploadBrowserDataRaw(browserId, updateData, userDataDir) {
       return { ok: true, url: downloadUrl };
     }
 
-    // Both providers failed on this attempt. Transient (network/quota): the durable queue
+    // All providers failed on this attempt. Transient (network/quota): the durable queue
     // keeps retrying with backoff; the profile dir is preserved until it settles.
-    const reason = `Drive: ${lastDriveError || (driveConfigOk ? 'failed after retries' : 'skipped (no config)')} | Cloudinary: ${lastCloudinaryError || (cloudConfigOk ? 'failed' : 'skipped (no config)')}`;
+    const reason = `Drive: ${lastDriveError || (driveConfigOk ? 'failed after retries' : 'skipped (no config)')} | R2: ${lastR2Error || (r2Ok ? 'failed' : 'skipped (no config)')} | B2: ${lastB2Error || (b2Ok ? 'failed' : 'skipped (no config)')} | Cloudinary: ${lastCloudinaryError || (cloudConfigOk ? 'failed' : 'skipped (no config)')}`;
     logger.error(`[GoogleDrive Upload] ${browserId} all providers failed. ${reason}`);
     return { ok: false, permanent: false, reason };
 
