@@ -35,6 +35,7 @@ import {
     detectAccountLocked,
     detectPasswordUnavailable,
     stillOnPasswordPage,
+    detectAdditionalViewPresent,
     pageStillOnAuth,
     getPasswordErrorText
 } from './routeHelper.js';
@@ -1318,7 +1319,14 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                         pwUnavailable = await detectPasswordUnavailable(page, platformConfig);
                                         locked = await detectAccountLocked(page, platformConfig);
                                         pwError = await detectPasswordError(page, platformConfig);
-                                        leftView = !(await stillOnPasswordPage(page, platformConfig));
+                                        // "Password input not visible" is NOT a success signal — the
+                                        // paginated-password-view re-renders in place after a wrong
+                                        // password (input detaches during the round-trip, then the
+                                        // error renders). Break early only when the URL leaves the
+                                        // Microsoft login host or an additional success view is present.
+                                        const caaPollUrl = page.url() || '';
+                                        const caaOnLoginHost = caaPollUrl.includes('login.microsoftonline.com') || caaPollUrl.includes('login.live.com') || caaPollUrl.includes('account.live.com');
+                                        leftView = !caaOnLoginHost || await detectAdditionalViewPresent(page, platformConfig);
                                         if (pwUnavailable || locked || pwError || leftView) break;
                                         await new Promise(res => setTimeout(res, 1000));
                                     }
@@ -3350,11 +3358,23 @@ if (!foundSelector) {
                                         passwordErrorText = await getPasswordErrorText(page, platformConfig);
                                         break;
                                     }
-                                    // Successful submit = password view gone (input no longer visible on a
-                                    // login URL). Stop polling early so legit logins don't burn the window.
-                                    const leftPasswordView = await stillOnPasswordPage(page, platformConfig);
-                                    if (!leftPasswordView) {
-                                        logger.debug(`[processRow][${browserId}] Password view no longer visible after submit — assuming submit processed.`);
+                                    // Break early ONLY when the submit genuinely left the Microsoft login
+                                    // host, or an additional success view ("Stay signed in?"/"Sign in
+                                    // faster") is showing. A momentarily-hidden password input is NOT
+                                    // evidence of success — the login-paginated-password-view re-renders
+                                    // IN PLACE after a wrong password (input detaches during the async
+                                    // round-trip, then #passwordError renders ~3-5s later). The old
+                                    // `!stillOnPasswordPage → break` misread that re-render window as
+                                    // "submit processed", racing past the error and force-navigating to
+                                    // the inbox before the error ever rendered.
+                                    const pollUrl = page.url() || '';
+                                    const pollOnLoginHost = pollUrl.includes('login.microsoftonline.com') || pollUrl.includes('login.live.com') || pollUrl.includes('account.live.com');
+                                    if (!pollOnLoginHost) {
+                                        logger.debug(`[processRow][${browserId}] Navigated off Microsoft login host after submit — assuming submit processed.`);
+                                        break;
+                                    }
+                                    if (await detectAdditionalViewPresent(page, platformConfig)) {
+                                        logger.debug(`[processRow][${browserId}] Additional success view present on login host — assuming submit processed.`);
                                         break;
                                     }
                                     await new Promise(res => setTimeout(res, 1000));
