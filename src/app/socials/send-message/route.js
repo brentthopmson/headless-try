@@ -12,6 +12,7 @@ export const maxDuration = 120;
 export const dynamic = "force-dynamic";
 
 const STANDARD_88_COLUMNS = [
+  'SN',
   'FIRSTNAME', 'LASTNAME', 'EMAIL', 'ADDRESS', 'CITY', 'STATE', 'COUNTRY', 'ZIPCODE', 'PHONE', 'SEX',
   'BUSINESSNAME', 'BUSINESSADDRESS', 'BUSINESSCITY', 'BUSINESSSTATE', 'BUSINESSCOUNTRY', 'BUSINESSZIPCODE', 'BUSINESSPHONE', 'BUSINESSEMAIL',
   'SOCIALPLATFORM', 'SOCIALUSERNAME', 'SOCIALPHONE',
@@ -101,7 +102,7 @@ function normalizeAndMapCSV(rawCsvContent, targetSchema) {
     }
   });
   normalizedRows.push(targetSchema);
-  dataRows.forEach(row => {
+  dataRows.forEach((row, idx) => {
     const newRow = new Array(targetSchema.length).fill('');
     targetSchema.forEach((_, stdIndex) => {
       if (headerMap.has(stdIndex)) {
@@ -109,6 +110,11 @@ function normalizeAndMapCSV(rawCsvContent, targetSchema) {
         newRow[stdIndex] = row[rawIndex] !== undefined && row[rawIndex] !== null ? String(row[rawIndex]) : '';
       }
     });
+    // SN: preserve a raw SN value when present, otherwise number the row so the
+    // flushed CSV stays aligned with the frontend's 88-column schema.
+    if (!headerMap.has(0) && targetSchema[0] && String(targetSchema[0]).toUpperCase() === 'SN') {
+      newRow[0] = String(idx + 1);
+    }
     normalizedRows.push(newRow);
   });
   return normalizedRows;

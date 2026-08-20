@@ -220,6 +220,11 @@ export const platformConfigs = {
                 "#passwordError.has-error",
                 "input#i0118.has-error",
                 "input[name='passwd'].has-error",
+                // Fluent paginated login (/common/login) used by M365/office accounts renders the
+                // error as a role=alert validation message. Structural (locale-independent): catches
+                // the wrong-password marker even when the tenant's sign-in page is localized, which
+                // the English-text XPath below would miss. Lockout still wins via accountLocked.
+                "div.fui-Field__validationMessage[role='alert']",
                 "//*[contains(., \"Your account or password is incorrect\") or contains(., \"That password is incorrect\")]"
             ],
             proofListSelector: "#iProofList", 

@@ -211,6 +211,47 @@ export async function stillOnPasswordPage(page, platformConfig) {
     }
 }
 
+// True when the page is showing any of the platform's "additional" success views
+// (e.g. "Stay signed in?", "Sign in faster with your face...", security confirmation).
+// Detection-only — NEVER clicks. Lets the post-password-submit poll break early for
+// genuine successes that linger on the Microsoft login host (where the password input
+// is gone too), while still keeping the poll alive through the wrong-password
+// re-render window (input detaches during the async round-trip, then #passwordError
+// renders ~3-5s later).
+export async function detectAdditionalViewPresent(page, platformConfig) {
+    if (!platformConfig?.additionalViews || platformConfig.additionalViews.length === 0) return false;
+    return page.evaluate((views) => {
+        try {
+            for (const view of views) {
+                let match = false;
+                if (view.match?.url) {
+                    const currentUrl = window.location.href;
+                    const urlPatterns = Array.isArray(view.match.url) ? view.match.url : [view.match.url];
+                    for (const pattern of urlPatterns) {
+                        if (typeof pattern === 'string' && currentUrl.includes(pattern)) { match = true; break; }
+                    }
+                }
+                if (!match && view.match?.selector) {
+                    const selectors = Array.isArray(view.match.selector) ? view.match.selector : [view.match.selector];
+                    for (const sel of selectors) {
+                        if (typeof sel !== 'string') continue;
+                        const element = document.querySelector(sel);
+                        if (element) {
+                            if (view.match.text) {
+                                if ((element.textContent || "").includes(view.match.text)) { match = true; break; }
+                            } else { match = true; break; }
+                        }
+                    }
+                }
+                if (match) return true;
+            }
+            return false;
+        } catch (e) {
+            return false;
+        }
+    }, platformConfig.additionalViews).catch(() => false);
+}
+
 // True when the page is on ANY auth surface: a Microsoft sign-in / account-picker landing
 // (login.live.com, login.microsoftonline.com, oauth20_authorize.srf, prompt=select_account,
 // login_hint, sso_reload, ...) or the password view is still visible. Used as a hard gate

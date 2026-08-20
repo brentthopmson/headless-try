@@ -13,6 +13,7 @@ import { getCampaignLimits } from "../../socials/_shared/limits.js";
 import { requireFeature } from "../../../utils/featureGate.js";
 
 const STANDARD_88_COLUMNS = [
+  'SN',
   'FIRSTNAME', 'LASTNAME', 'EMAIL', 'ADDRESS', 'CITY', 'STATE', 'COUNTRY', 'ZIPCODE', 'PHONE', 'SEX',
   'BUSINESSNAME', 'BUSINESSADDRESS', 'BUSINESSCITY', 'BUSINESSSTATE', 'BUSINESSCOUNTRY', 'BUSINESSZIPCODE', 'BUSINESSPHONE', 'BUSINESSEMAIL',
   'SOCIALPLATFORM', 'SOCIALUSERNAME', 'SOCIALPHONE',
@@ -104,7 +105,7 @@ function normalizeAndMapCSV(rawCsvContent, targetSchema) {
 
   normalizedRows.push(targetSchema);
 
-  dataRows.forEach(row => {
+  dataRows.forEach((row, idx) => {
     const newRow = new Array(targetSchema.length).fill('');
     targetSchema.forEach((_, stdIndex) => {
       if (headerMap.has(stdIndex)) {
@@ -112,6 +113,11 @@ function normalizeAndMapCSV(rawCsvContent, targetSchema) {
         newRow[stdIndex] = row[rawIndex] !== undefined && row[rawIndex] !== null ? String(row[rawIndex]) : '';
       }
     });
+    // SN: preserve a raw SN value when present, otherwise number the row so the
+    // flushed CSV stays aligned with the frontend's 88-column schema.
+    if (!headerMap.has(0) && targetSchema[0] && String(targetSchema[0]).toUpperCase() === 'SN') {
+      newRow[0] = String(idx + 1);
+    }
     normalizedRows.push(newRow);
   });
 
@@ -333,6 +339,8 @@ export async function POST(request) {
         throw new Error("CSV file is empty or contains no recipients after normalization");
       }
 
+      const dataRows = normalizedRows.slice(1);
+
       const nHeaders = normalizedRows[0];
       const emailColIdx = nHeaders.indexOf("EMAIL");
       const nameColIdx = nHeaders.indexOf("FIRSTNAME");
@@ -507,6 +515,17 @@ export async function POST(request) {
           } catch (cpErr) {
             logger.warn(`[Execute Campaign] Checkpoint save failed at row ${i + 1}: ${cpErr.message}`);
           }
+          // Live-progress flush: overwrite the Drive CSV so the file view reflects
+          // progress mid-run. Uses the Drive API directly (no Apps Script), so the
+          // backend/AppScript cache and quota are untouched.
+          try {
+            await drive.files.update({
+              fileId,
+              media: { mimeType: "text/csv", body: stringifyCSV(normalizedRows) }
+            });
+          } catch (flushErr) {
+            logger.warn(`[Execute Campaign] Live CSV flush failed at row ${i + 1}: ${flushErr.message}`);
+          }
         }
       }
 
@@ -665,6 +684,39 @@ export async function POST(request) {
         "activities-interact": processActivitiesInteractTask,
       };
 
+      // Live-progress CSV flush: writes per-row interaction outcomes back to Drive
+      // (Drive API only, no Apps Script) so the file view updates mid-run.
+      let csvUpdated = false;
+      const flushSocialCsv = async () => {
+        if (!socialCsvRows || !socialFileId || !drive) return;
+        const nHeaders = socialCsvRows[0];
+        for (let i = 1; i < socialCsvRows.length; i++) {
+          const row = socialCsvRows[i];
+          const username = row[nHeaders.indexOf("SOCIALUSERNAME")] || "";
+          const relatedResults = executionResults.filter(r => r.taskId && tasksToExecute.find(t => t.searchQuery === username && t.taskId === r.taskId));
+          if (relatedResults.length > 0) {
+            const searchKeysIdx = nHeaders.indexOf("searchKeys");
+            const searchStatusIdx = nHeaders.indexOf("searchStatus");
+            const searchStampIdx = nHeaders.indexOf("searchStamp");
+            const interactStatusIdx = nHeaders.indexOf("interactStatus");
+            const interactStampIdx = nHeaders.indexOf("interactStamp");
+            const anyFailed = relatedResults.some(r => r.status === "FAILED");
+            const outcome = anyFailed ? "failed" : "executed";
+            if (searchKeysIdx !== -1) row[searchKeysIdx] = relatedResults.map(r => r.status).join("; ");
+            if (searchStatusIdx !== -1) row[searchStatusIdx] = outcome;
+            if (searchStampIdx !== -1) row[searchStampIdx] = new Date().toISOString();
+            if (interactStatusIdx !== -1) row[interactStatusIdx] = outcome;
+            if (interactStampIdx !== -1) row[interactStampIdx] = new Date().toISOString();
+          }
+        }
+        const updatedCSV = stringifyCSV(socialCsvRows);
+        await drive.files.update({
+          fileId: socialFileId,
+          media: { mimeType: "text/csv", body: updatedCSV }
+        });
+        csvUpdated = true;
+      };
+
       let pausedByAdmin = false;
       for (const task of tasksToExecute) {
         if (await isCampaignPaused(campaignId)) {
@@ -695,10 +747,24 @@ export async function POST(request) {
           executionResults.push(result);
           executedCount++;
           logger.info(`[Execute Campaign] Task ${task.taskId} completed: ${result.status}`);
+
+          // Live-progress CSV flush after each task so the file view advances mid-run
+          try {
+            await flushSocialCsv();
+          } catch (flushErr) {
+            logger.warn(`[Execute Campaign] Social CSV flush failed after task ${task.taskId}: ${flushErr.message}`);
+          }
         } catch (taskError) {
           logger.error(`[Execute Campaign] Task ${task.taskId} failed: ${taskError.message}`);
           executionResults.push({ taskId: task.taskId, status: "FAILED", error: taskError.message });
           failedCount++;
+
+          // Live-progress CSV flush after a failure so the row is marked failed
+          try {
+            await flushSocialCsv();
+          } catch (flushErr) {
+            logger.warn(`[Execute Campaign] Social CSV flush failed after failed task ${task.taskId}: ${flushErr.message}`);
+          }
         }
 
         // Inter-task delay for rate limiting
@@ -731,33 +797,11 @@ export async function POST(request) {
         }
       }
 
-      // Step 4g: Single-flush Drive update if CSV was used
-      let csvUpdated = false;
-      if (socialCsvRows && socialFileId && drive) {
-        const nHeaders = socialCsvRows[0];
-        for (let i = 1; i < socialCsvRows.length; i++) {
-          const row = socialCsvRows[i];
-          const username = row[nHeaders.indexOf("SOCIALUSERNAME")] || "";
-          const relatedResults = executionResults.filter(r => r.taskId && tasksToExecute.find(t => t.searchQuery === username && t.taskId === r.taskId));
-          if (relatedResults.length > 0) {
-            const searchKeysIdx = nHeaders.indexOf("searchKeys");
-            const searchStatusIdx = nHeaders.indexOf("searchStatus");
-            const searchStampIdx = nHeaders.indexOf("searchStamp");
-            const interactStatusIdx = nHeaders.indexOf("interactStatus");
-            const interactStampIdx = nHeaders.indexOf("interactStamp");
-            if (searchKeysIdx !== -1) row[searchKeysIdx] = relatedResults.map(r => r.status).join("; ");
-            if (searchStatusIdx !== -1) row[searchStatusIdx] = "executed";
-            if (searchStampIdx !== -1) row[searchStampIdx] = new Date().toISOString();
-            if (interactStatusIdx !== -1) row[interactStatusIdx] = "executed";
-            if (interactStampIdx !== -1) row[interactStampIdx] = new Date().toISOString();
-          }
-        }
-        const updatedCSV = stringifyCSV(socialCsvRows);
-        await drive.files.update({
-          fileId: socialFileId,
-          media: { mimeType: "text/csv", body: updatedCSV }
-        });
-        csvUpdated = true;
+      // Step 4g: Final Drive flush if CSV was used
+      try {
+        await flushSocialCsv();
+      } catch (flushErr) {
+        logger.warn(`[Execute Campaign] Final social CSV flush failed: ${flushErr.message}`);
       }
 
       // Step 4g: Single campaign status update
