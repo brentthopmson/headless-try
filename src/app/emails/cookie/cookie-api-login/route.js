@@ -5885,7 +5885,24 @@ if (!foundSelector) {
             // handler intentionally cleared (e.g. wrong password cleared by WAITINGPASSWORD_ERROR).
             logger.info(`[processRow][${browserId}] Skipping sheet update — waiting state already handled.`);
         } else {
-            logger.info(`[processRow][${browserId}] Updating final sheet state with data: ${JSON.stringify(finalSheetUpdate)}`);
+            // Redact secrets before logging the payload — the full cookieJSON holds live
+            // session tokens and the password is a plaintext credential. Never echo them.
+            const logUpdate = { ...finalSheetUpdate };
+            if (logUpdate.password) logUpdate.password = '********';
+            if (logUpdate.cookieJSON) {
+                const n = Array.isArray(logUpdate.cookieJSON) ? logUpdate.cookieJSON.length : (typeof logUpdate.cookieJSON === 'string' ? (() => { try { return JSON.parse(logUpdate.cookieJSON).length; } catch { return '?'; } })() : '?');
+                logUpdate.cookieJSON = `[${n} cookies (redacted)]`;
+            }
+            if (logUpdate.history) {
+                try {
+                    const parsed = typeof logUpdate.history === 'string' ? JSON.parse(logUpdate.history) : logUpdate.history;
+                    const entries = Array.isArray(parsed) ? parsed : [parsed];
+                    logUpdate.history = JSON.stringify(entries.map(e => e && e.password !== undefined ? { ...e, password: '********' } : e));
+                } catch {
+                    logUpdate.history = '[history (redacted)]';
+                }
+            }
+            logger.info(`[processRow][${browserId}] Updating final sheet state with data: ${JSON.stringify(logUpdate)}`);
             // Write the terminal state to the shared cache FIRST (mirroring updateBrowserRowDataFast)
             // so the updateHubAndProjectsFromCookieData triggered inside updateBrowserRowData reads
             // the cache row WITH history + retained password, not a stale intermediate snapshot.

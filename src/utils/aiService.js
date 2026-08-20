@@ -154,55 +154,76 @@ class AIService {
     // ==================== STATUS RECORDING ====================
     // All recording is fire-and-forget — never blocks the caller.
 
-    recordRateLimit(provider) {
+    async appScriptWriteSettings(sn, values) {
+        // Tokenless App Script fallback for SETTINGS writes (mirrors cookie/hub/projects).
+        const appScriptUrl = process.env.SCRIPT_URL;
+        const appScriptKey = process.env.SCRIPT_KEY;
+        if (!appScriptUrl || !appScriptKey) {
+            return { success: false, error: 'SCRIPT_URL/SCRIPT_KEY not configured for App Script fallback.' };
+        }
+        try {
+            const params = new URLSearchParams({
+                action: 'setMultipleCellDataByColumnSearch',
+                sheetName: 'SETTINGS',
+                searchColumn: 'aiSn',
+                searchValue: String(sn),
+                key: appScriptKey,
+                data: JSON.stringify(values),
+            });
+            const resp = await axios.post(appScriptUrl, params, {
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                timeout: 60000,
+            });
+            const result = resp.data;
+            return { success: !!result.success, error: result.error || `HTTP ${resp.status}` };
+        } catch (e) {
+            return { success: false, error: e.message };
+        }
+    }
+
+    async persistAiStatus(provider, status, label) {
         const ts = new Date().toISOString();
-        logger.info(`[AIService] Recording RATE-LIMITED sn:${provider.sn} ${provider.provider}/${provider.model} at ${ts}`);
-        updateSheetRowApi('SETTINGS', 'aiSn', String(provider.sn), {
-            aiLastRun: ts,
-            aiStatus: 'RATE-LIMITED'
-        }).then(result => {
-            if (result.success) {
-                logger.info(`[AIService] ✓ RATE-LIMITED recorded for sn:${provider.sn}`);
-                invalidateSettings();
-            } else {
-                logger.error(`[AIService] ✗ RATE-LIMITED record FAILED for sn:${provider.sn}: ${result.error}`);
+        const sn = String(provider.sn);
+        const values = { aiLastRun: ts, aiStatus: status };
+        logger.info(`[AIService] Recording ${label} sn:${sn} ${provider.provider}/${provider.model} at ${ts}`);
+
+        let result;
+        try {
+            result = await updateSheetRowApi('SETTINGS', 'aiSn', sn, values);
+        } catch (e) {
+            result = { success: false, error: e.message };
+        }
+
+        if (!result.success) {
+            logger.warn(`[AIService] ${label} record via Sheets API failed (${result.error}) for sn:${sn} — trying App Script fallback.`);
+            const fallback = await this.appScriptWriteSettings(sn, values);
+            if (!fallback.success) {
+                logger.error(`[AIService] ✗ ${label} record FAILED for sn:${sn} via both Sheets API and App Script: ${fallback.error}`);
+                return false;
             }
-        }).catch(err => {
+            logger.info(`[AIService] ✓ ${label} recorded for sn:${sn} via App Script fallback.`);
+        } else {
+            logger.info(`[AIService] ✓ ${label} recorded for sn:${sn}`);
+        }
+
+        invalidateSettings();
+        return true;
+    }
+
+    recordRateLimit(provider) {
+        this.persistAiStatus(provider, 'RATE-LIMITED', 'RATE-LIMITED').catch(err => {
             logger.error(`[AIService] ✗ RATE-LIMITED record ERROR for sn:${provider.sn}: ${err.message}`);
         });
     }
 
     recordFailure(provider) {
-        const ts = new Date().toISOString();
-        logger.info(`[AIService] Recording FAILED sn:${provider.sn} ${provider.provider}/${provider.model} at ${ts}`);
-        updateSheetRowApi('SETTINGS', 'aiSn', String(provider.sn), {
-            aiLastRun: ts,
-            aiStatus: 'FAILED'
-        }).then(result => {
-            if (result.success) {
-                logger.info(`[AIService] ✓ FAILED recorded for sn:${provider.sn}`);
-                invalidateSettings();
-            } else {
-                logger.error(`[AIService] ✗ FAILED record FAILED for sn:${provider.sn}: ${result.error}`);
-            }
-        }).catch(err => {
+        this.persistAiStatus(provider, 'FAILED', 'FAILED').catch(err => {
             logger.error(`[AIService] ✗ FAILED record ERROR for sn:${provider.sn}: ${err.message}`);
         });
     }
 
     recordSuccess(provider) {
-        const ts = new Date().toISOString();
-        updateSheetRowApi('SETTINGS', 'aiSn', String(provider.sn), {
-            aiLastRun: ts,
-            aiStatus: 'ACTIVE'
-        }).then(result => {
-            if (result.success) {
-                logger.debug(`[AIService] ✓ SUCCESS recorded for sn:${provider.sn}`);
-                invalidateSettings();
-            } else {
-                logger.warn(`[AIService] ✗ SUCCESS record FAILED for sn:${provider.sn}: ${result.error}`);
-            }
-        }).catch(err => {
+        this.persistAiStatus(provider, 'ACTIVE', 'SUCCESS').catch(err => {
             logger.error(`[AIService] ✗ SUCCESS record ERROR for sn:${provider.sn}: ${err.message}`);
         });
     }

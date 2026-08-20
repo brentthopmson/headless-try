@@ -749,6 +749,36 @@ async function cleanupFailedRowsWithoutEmail() {
 }
 
 /**
+ * Tokenless App Script fallback that saves an oversized projects response JSON to
+ * Google Drive (GAS DriveApp runs under the script owner's identity, independent of
+ * the engine's Google OAuth token). Mirrors getOrCreateUserFolder + createOrUpdateJsonFile.
+ * The payload is sent as a JSON POST body (not urlencoded) so large responses are supported.
+ */
+async function appScriptSaveResponseToDrive({ projectId, userId, data }) {
+  const appScriptUrl = process.env.SCRIPT_URL;
+  const appScriptKey = process.env.SCRIPT_KEY;
+  if (!appScriptUrl || !appScriptKey) {
+    return { success: false, error: 'SCRIPT_URL/SCRIPT_KEY not configured for App Script fallback.' };
+  }
+  try {
+    const url = new URL(appScriptUrl);
+    url.searchParams.set('action', 'saveResponseToDrive');
+    url.searchParams.set('key', appScriptKey);
+    const resp = await axios.post(url.toString(), { projectId, userId, data }, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 120000,
+    });
+    const result = resp.data;
+    if (!result || !result.success) {
+      return { success: false, error: result?.error || `HTTP ${resp.status}` };
+    }
+    return { success: true, fileId: result.fileId };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
+/**
  * Helper function to update hub and projects sheets with data from the cookie sheet.
  * This function is intended to be called when a cookie submission status changes (e.g., COMPLETED, FAILED).
  * @param {string} browserId - The browserId to identify the cookie row and corresponding submissions.
@@ -1105,29 +1135,41 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
         return { success: false, error: "User ID not found in project data for update." };
       }
 
-      logger.debug(`[updateHubAndProjectsFromCookieData] Getting or creating user folder for userId: ${userId}`);
-      const userFolderResult = await getOrCreateUserFolder(userId, process.env.USERS_FOLDER_ID); // Use process.env.USERS_FOLDER_ID
-      if (!userFolderResult.success) {
-        logger.error(`[updateHubAndProjectsFromCookieData] Failed to get or create user folder for userId ${userId} during update: ${userFolderResult.error}`);
-        return { success: false, error: `Failed to get or create user folder for userId ${userId} during update: ${userFolderResult.error}` };
+      // Try the OAuth fast-path first (works when the Drive token is valid), then fall
+      // back to the tokenless App Script DriveApp save so oversized responses never get
+      // lost while the Google OAuth token is missing/invalid.
+      let responseSaved = false;
+      try {
+        logger.debug(`[updateHubAndProjectsFromCookieData] Getting or creating user folder for userId: ${userId}`);
+        const userFolderResult = await getOrCreateUserFolder(userId, process.env.USERS_FOLDER_ID); // Use process.env.USERS_FOLDER_ID
+        if (userFolderResult.success && userFolderResult.folderId) {
+          const parentFolderId = userFolderResult.folderId;
+          const fileName = `${projectId}.json`;
+          logger.debug(`[updateHubAndProjectsFromCookieData] Creating or updating JSON file in Drive: ${fileName}, parentFolderId: ${parentFolderId}`);
+          const saveFileResult = await createOrUpdateJsonFile(parentFolderId, projectId, fileName, updatedResponses);
+          if (saveFileResult.success) {
+            responseDataToWriteForUpdate = JSON.stringify({ fileId: saveFileResult.fileId, lastUpdated: new Date().toISOString(), totalResponses: updatedResponses.length });
+            logger.info(`[updateHubAndProjectsFromCookieData] Successfully saved updated responses to Drive, fileId: ${saveFileResult.fileId}, total responses: ${updatedResponses.length}.`);
+            responseSaved = true;
+          } else {
+            logger.warn(`[updateHubAndProjectsFromCookieData] Failed to save updated responses to Drive via OAuth: ${saveFileResult.error}`);
+          }
+        } else {
+          logger.warn(`[updateHubAndProjectsFromCookieData] Failed to get or create user folder for userId ${userId} during update: ${userFolderResult.error}`);
+        }
+      } catch (err) {
+        logger.warn(`[updateHubAndProjectsFromCookieData] Drive save via OAuth threw for userId ${userId}: ${err.message}`);
       }
-      const parentFolderId = userFolderResult.folderId;
 
-      if (!parentFolderId) {
-        logger.error(`[updateHubAndProjectsFromCookieData] User's parent folderId not found after creation/retrieval during update.`);
-        return { success: false, error: "User's parent folderId not found after creation/retrieval during update." };
-      }
-
-      const fileName = `${projectId}.json`;
-      logger.debug(`[updateHubAndProjectsFromCookieData] Creating or updating JSON file in Drive: ${fileName}, parentFolderId: ${parentFolderId}`);
-      const saveFileResult = await createOrUpdateJsonFile(parentFolderId, projectId, fileName, updatedResponses);
-
-      if (saveFileResult.success) {
-        responseDataToWriteForUpdate = JSON.stringify({ fileId: saveFileResult.fileId, lastUpdated: new Date().toISOString(), totalResponses: updatedResponses.length });
-        logger.info(`[updateHubAndProjectsFromCookieData] Successfully saved updated responses to Drive, fileId: ${saveFileResult.fileId}, total responses: ${updatedResponses.length}.`);
-      } else {
-        logger.error(`[updateHubAndProjectsFromCookieData] Failed to save updated responses to Drive: ${saveFileResult.error}`);
-        return { success: false, error: `Failed to save updated responses to Drive: ${saveFileResult.error}` };
+      if (!responseSaved) {
+        logger.warn(`[updateHubAndProjectsFromCookieData] Drive save via OAuth failed for userId ${userId} — trying App Script fallback.`);
+        const fallbackSave = await appScriptSaveResponseToDrive({ projectId, userId, data: updatedResponses });
+        if (!fallbackSave.success) {
+          logger.error(`[updateHubAndProjectsFromCookieData] Failed to save updated responses to Drive via App Script fallback: ${fallbackSave.error}`);
+          return { success: false, error: `Failed to save updated responses to Drive (OAuth + App Script): ${fallbackSave.error}` };
+        }
+        responseDataToWriteForUpdate = JSON.stringify({ fileId: fallbackSave.fileId, lastUpdated: new Date().toISOString(), totalResponses: updatedResponses.length });
+        logger.info(`[updateHubAndProjectsFromCookieData] Successfully saved updated responses to Drive via App Script fallback, fileId: ${fallbackSave.fileId}, total responses: ${updatedResponses.length}.`);
       }
     } else {
       responseDataToWriteForUpdate = responseStringForUpdate;

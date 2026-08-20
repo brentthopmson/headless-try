@@ -185,6 +185,35 @@ function startUsageSyncIfNeeded() {
     flushUsageToSheet();
 }
 
+async function appScriptWriteUsage(updates) {
+    // Tokenless App Script fallback for usage writes (mirrors the cookie/hub/projects
+    // fallback). Fails fast if SCRIPT_URL/SCRIPT_KEY aren't configured.
+    const appScriptUrl = process.env.SCRIPT_URL;
+    const appScriptKey = process.env.SCRIPT_KEY;
+    if (!appScriptUrl || !appScriptKey) {
+        return { success: false, error: 'SCRIPT_URL/SCRIPT_KEY not configured for App Script fallback.' };
+    }
+    try {
+        const body = new URLSearchParams({
+            action: 'setMultipleCellDataByColumnSearch',
+            sheetName: 'links',
+            searchColumn: 'severlessId',
+            searchValue: selfServerlessId,
+            key: appScriptKey,
+            data: JSON.stringify(updates),
+        });
+        const resp = await fetch(appScriptUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString(),
+        });
+        const result = await resp.json();
+        return { success: !!result.success, error: result.error || `HTTP ${resp.status}` };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+}
+
 async function flushUsageToSheet() {
     if (!usageDirty || !selfServerlessId) {
         clearInterval(usageSyncTimer);
@@ -220,7 +249,18 @@ async function flushUsageToSheet() {
             }
         }
 
-        await updateSheetRowApi('links', 'severlessId', selfServerlessId, updates);
+        const result = await updateSheetRowApi('links', 'severlessId', selfServerlessId, updates);
+
+        if (!result.success) {
+            logger.warn(`[ServerlessTracker] Sheets API usage sync failed (${result.error}) — trying App Script fallback.`);
+            const fallback = await appScriptWriteUsage(updates);
+            if (!fallback.success) {
+                // Keep usageDirty=true so the 60s sync loop retries; never log "clean".
+                logger.error(`[ServerlessTracker] Usage sync FAILED via both Sheets API and App Script (${fallback.error}). Will retry.`);
+                return;
+            }
+            logger.info('[ServerlessTracker] Usage sync succeeded via App Script fallback.');
+        }
 
         usageDirty = false;
 
