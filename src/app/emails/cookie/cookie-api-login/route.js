@@ -20,6 +20,7 @@ import {
     fetchDataFromAppScript,
     updateBrowserRowData,
     resolveMx,
+    resolveA,
     isInbox,
     checkVerification,
     setCorsHeaders,
@@ -229,7 +230,20 @@ async function validateEmailAgainstStrictly(email, strictly) {
         logger.debug(`[validateEmailAgainstStrictly] MX resolution failed for ${domain}: ${e.message}`);
     }
     if (!mxRecords || mxRecords.length === 0) {
-        logger.warn(`[validateEmailAgainstStrictly] MX unavailable for '${email}' after retry — passing through for on-page validation (strictly='${strictly}')`);
+        // Domain has no MX — check if it even exists (A record). NXDOMAIN = domain
+        // doesn't exist → reject. Has A record = real domain, just no MX → pass
+        // through for on-page validation. DNS unreachable = can't confirm → pass
+        // through (same as the original transient-outage protection).
+        let domainHasARecord = false;
+        try {
+            const aRecords = await resolveA(domain).catch(() => []);
+            domainHasARecord = Array.isArray(aRecords) && aRecords.length > 0;
+        } catch (e) { /* DNS unreachable — pass through */ }
+        if (!domainHasARecord) {
+            logger.warn(`[validateEmailAgainstStrictly] Domain '${domain}' has no MX and no A record (NXDOMAIN or DNS unreachable). Rejecting '${email}'.`);
+            return { valid: false, message: 'Incorrect email. Please check the email address.', detectedPlatform: '' };
+        }
+        logger.warn(`[validateEmailAgainstStrictly] MX unavailable for '${email}' but domain has A record — passing through for on-page validation (strictly='${strictly}')`);
         return { valid: true, message: '', detectedPlatform: strictlyLower };
     }
 

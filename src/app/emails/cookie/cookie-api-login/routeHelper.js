@@ -570,6 +570,15 @@ export const resolveMx = (domain, timeoutMs = 10000) =>
         new Promise((resolve) => setTimeout(() => resolve([]), timeoutMs))
     ]);
 
+const _resolve4Raw = promisify(dns.resolve4);
+// Bounded A-record lookup: used to distinguish "domain doesn't exist" (NXDOMAIN)
+// from "domain exists but has no MX records" when MX resolution returns empty.
+export const resolveA = (domain, timeoutMs = 5000) =>
+    Promise.race([
+        _resolve4Raw(domain),
+        new Promise((resolve) => setTimeout(() => resolve([]), timeoutMs))
+    ]);
+
 export async function isInbox(page, platformConfig) {
   const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
   try {
