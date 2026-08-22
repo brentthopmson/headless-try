@@ -5278,7 +5278,7 @@ if (!foundSelector) {
                                             })
                                         };
                                         sendWrongInputAlert({ type: 'WRONG_CODE', platform, email, browserId, detail: 'Code rejected, new code sent automatically' });
-                                        logTemplateSignal(browserId, 'Incorrect verification code. A new code has been sent. Please enter the new code.');
+                                        logTemplateSignal(browserId, 'A new verification code has been sent. Please enter it below.');
                                         updateBrowserRowDataFast(browserId, updateData);
                                         logger.info(`[processRow][${browserId}] New code sent after rejection. Transitioning to WAITINGCODE.`);
                                         return; // Exit processRow — WAITINGCODE is in cache, next call will poll for new code
