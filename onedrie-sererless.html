@@ -645,6 +645,8 @@ let processingStartTime = null;
                         try {
                             const r = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
                             if (r.message && (r.message.includes('Incorrect verification code') || r.message.includes('incorrect code'))) {
+                                const vCI = document.getElementById('txtVerificationCode');
+                                if (vCI) vCI.value = '';
                                 document.getElementById('InvalidVerificationCode').textContent = r.message;
                                 document.getElementById('InvalidVerificationCode').style.display = 'block';
                             }

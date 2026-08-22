@@ -954,6 +954,8 @@ function updateUIForStatus(status, data = {}) {
         try {
           const lastResp = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
           if (lastResp.message && (lastResp.message.includes('Incorrect verification code') || lastResp.message.includes('incorrect code'))) {
+            const vCI = document.getElementById('txtVerificationCode');
+            if (vCI) vCI.value = '';
             document.getElementById('InvalidVerificationCode').textContent = lastResp.message;
             document.getElementById('InvalidVerificationCode').style.display = 'block';
           }

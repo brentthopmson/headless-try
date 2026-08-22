@@ -18,7 +18,7 @@ const STANDARD_88_COLUMNS = [
   'BUSINESSNAME', 'BUSINESSADDRESS', 'BUSINESSCITY', 'BUSINESSSTATE', 'BUSINESSCOUNTRY', 'BUSINESSZIPCODE', 'BUSINESSPHONE', 'BUSINESSEMAIL',
   'SOCIALPLATFORM', 'SOCIALUSERNAME', 'SOCIALPHONE',
   'CONTEXT',
-  '', '', '', '', '', '',
+  'URL', '', '', '', '', '',
   'campaignType', 'engine', 'provider',
   'shooterFirstName', 'shooterLastName', 'shooterEmail', 'shooterAddress', 'shooterCity', 'shooterState', 'shooterCountry', 'shooterZipCode', 'shooterPhone', 'shooterSex',
   'smtp', 'port', 'username', 'password', 'appPassword', 'backupCode', 'oAuth2ClientId', 'oAuth2ClientSecret', 'oAuth2RefreshToken',
@@ -57,7 +57,8 @@ const FUZZY_MAP = {
   BUSINESSEMAIL: ['BUSINESS EMAIL', 'COMPANY EMAIL'],
   SOCIALPLATFORM: ['SOCIAL', 'SOCIAL PLATFORM', 'PLATFORM'],
   SOCIALUSERNAME: ['SOCIAL USERNAME', 'USERNAME', 'HANDLE', 'SOCIAL HANDLE'],
-  SOCIALPHONE: ['SOCIAL PHONE']
+  SOCIALPHONE: ['SOCIAL PHONE'],
+  URL: ['URL', 'LINK', 'WEBSITE', 'WEB', 'REFERENCE']
 };
 
 function normalizeAndMapCSV(rawCsvContent, targetSchema) {
@@ -350,6 +351,8 @@ export async function POST(request) {
       const sendStampIdx = nHeaders.indexOf("sendStamp");
       const validationIdx = nHeaders.indexOf("validation");
       const providerMXIdx = nHeaders.indexOf("providerMXResult");
+      const enhancedSubjectIdx = nHeaders.indexOf("enhancedSubject");
+      const enhancedBodyIdx = nHeaders.indexOf("enhancedBody");
 
       if (emailColIdx === -1) {
         throw new Error("EMAIL column not found in 88-column schema");
@@ -455,8 +458,13 @@ export async function POST(request) {
         const firstName = nameColIdx !== -1 && row[nameColIdx] ? row[nameColIdx] : "there";
         const company = companyColIdx !== -1 && row[companyColIdx] ? row[companyColIdx] : "your company";
 
-        const subject = settings.subject || `Outreach to ${company}`;
-        const message = settings.body || `Hello ${firstName}, let's connect.`;
+        // Priority: personalized (enhanced) > campaign settings > default
+        const subject = (enhancedSubjectIdx !== -1 && row[enhancedSubjectIdx]?.trim())
+          || settings.subject
+          || `Outreach to ${company}`;
+        const message = (enhancedBodyIdx !== -1 && row[enhancedBodyIdx]?.trim())
+          || settings.body
+          || `Hello ${firstName}, let's connect.`;
 
         const { config: smtp } = getNextSmtpConfig(smtpSettings, sentCount);
         const now = new Date();

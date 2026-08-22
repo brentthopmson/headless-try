@@ -43,7 +43,7 @@ export async function POST(request) {
         }
     } else if (updateType === 'verificationChoice' && verificationChoice) {
         updates.verificationChoice = verificationChoice;
-        updates.status = 'PROCESSING';
+        updates.status = 'WAITINGOPTIONS';
     } else if (updateType === 'verificationCode' && verificationCode) {
         updates.verificationCode = verificationCode;
     }

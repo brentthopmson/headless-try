@@ -135,16 +135,22 @@ export async function POST(request) {
       companyColIndex = headers.indexOf("enriched_company");
     }
 
-    // Prepare subject and message columns
-    let subjectColIndex = headers.indexOf("subject");
-    let messageColIndex = headers.indexOf("message");
+    // Use schema-positioned columns: enhancedSubject (idx 69), enhancedBody (idx 70), CONTEXT (idx 21)
+    // Find by header name first (works with normalized 88-column CSV)
+    let subjectColIndex = headers.findIndex(h => h.toLowerCase().trim() === "enhancedsubject");
+    let messageColIndex = headers.findIndex(h => h.toLowerCase().trim() === "enhancedbody");
+    const contextColIndex = headers.findIndex(h => h.toLowerCase().trim() === "context");
+
+    // Fallback: find by position if headers don't match (raw CSV without normalization)
+    if (subjectColIndex === -1 && headers.length > 69) subjectColIndex = 69;
+    if (messageColIndex === -1 && headers.length > 70) messageColIndex = 70;
 
     if (subjectColIndex === -1) {
-      headers.push("subject");
+      headers.push("enhancedSubject");
       subjectColIndex = headers.length - 1;
     }
     if (messageColIndex === -1) {
-      headers.push("message");
+      headers.push("enhancedBody");
       messageColIndex = headers.length - 1;
     }
 
@@ -213,11 +219,15 @@ export async function POST(request) {
 
         const firstName = nameColIndex !== -1 && row[nameColIndex] ? row[nameColIndex] : "there";
         const company = companyColIndex !== -1 && row[companyColIndex] ? row[companyColIndex] : "your company";
+        const context = contextColIndex !== -1 && row[contextColIndex] ? row[contextColIndex] : "";
+
+        const contextBlock = context ? `\n\nAdditional context about this recipient (from their website):\n"${context}"` : "";
 
         const prompt = `You are an expert personalized outreach copywriter. Generate a highly tailored cold email subject line and email body for the following recipient:
 - First Name: ${firstName}
 - Company: ${company}
 - Email: ${email}
+${contextBlock}
 
 Context and Instructions for email tone and objective:
 "${personalizationPrompt}"
@@ -271,7 +281,7 @@ Do NOT return any markdown backticks, explanations, or surrounding text. Return 
       row[messageColIndex] = `Hi ${firstName},\n\nHope this finds you well. I wanted to reach out to you at ${company}.\n\nBest,\nWebFixx Team`;
     }
 
-    // 4. Save modified CSV back to Drive
+    // Save modified CSV back to Drive
     logger.info(`[Personalize Campaign] Uploading personalized CSV back to Drive file: ${fileId}`);
     const updatedCSVContent = stringifyCSV(rows);
     await drive.files.update({

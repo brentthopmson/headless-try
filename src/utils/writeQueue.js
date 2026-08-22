@@ -379,6 +379,17 @@ function completeDriveUploadRow(job, url) {
   try {
     let base = {};
     try { base = JSON.parse(job.completionLjr || '{}'); } catch (_) {}
+    // Don't override a FAILED status — the upload succeeded but the process failed.
+    // Preserve FAILED and just attach the driveUrl so the profile is recoverable.
+    if (base.status === 'FAILED' || job.updateData?.status === 'FAILED') {
+      enqueueSheetUpdate(job.browserId, {
+        driveUrl: url,
+        engineProcessing: false,
+        lastJsonResponse: JSON.stringify({ ...base, driveUrl: url })
+      }, { writeStatus: false });
+      logger.info(`[writeQueue] Upload succeeded for ${job.browserId} but process was FAILED — preserving FAILED, adding driveUrl.`);
+      return;
+    }
     enqueueSheetUpdate(job.browserId, {
       status: 'COMPLETED',
       driveUrl: url,

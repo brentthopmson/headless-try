@@ -332,6 +332,60 @@ export const platformConfigs = {
                     logger.error(`[Outlook][${instanceId}] Error extracting verification options for 'Outlook Verification Options': ${error.message}`);
                     return [];
                 }
+            } else if (viewName === 'Microsoft Identity Confirm') {
+                // Identity/confirm page (account.live.com/identity/confirm or account.office.com/identity/confirm)
+                // uses the same DOM structure as Outlook Verification Options (proofDiv, radio buttons, iProofLbl).
+                if (!platformConfig.selectors.proofListSelector) {
+                    logger.warn(`[Outlook][${instanceId}] proofListSelector not defined for 'Microsoft Identity Confirm'.`);
+                    return [];
+                }
+                try {
+                    await page.waitForSelector(platformConfig.selectors.proofListSelector, { visible: true, timeout: 10000 });
+                    const options = await page.evaluate((selectorFromConfig) => {
+                        const proofList = document.querySelector(selectorFromConfig);
+                        if (!proofList) return [];
+                        const extractedOptions = [];
+                        const proofDivs = proofList.querySelectorAll('div[id^="proofDiv"]');
+                        proofDivs.forEach((div, index) => {
+                            const radioInput = div.querySelector('input[type="radio"]');
+                            const labelSpan = div.querySelector('span[id^="iProofLbl"]');
+                            if (radioInput && labelSpan) {
+                                const option = {
+                                    id: radioInput.id,
+                                    valueAttribute: radioInput.value,
+                                    label: labelSpan.textContent.trim(),
+                                    choiceIndex: (radioInput.getAttribute('aria-posinset') || (index + 1).toString()),
+                                    type: 'unknown',
+                                    requiresInput: false,
+                                    inputSelector: null,
+                                    inputLabel: null
+                                };
+                                if (option.valueAttribute.toLowerCase().includes('email') || option.label.toLowerCase().includes('email')) {
+                                    option.type = 'email';
+                                    const emailMatch = option.valueAttribute.match(/\|\|(.*?@.*?)\|\|/);
+                                    if (emailMatch && emailMatch[1]) option.maskedDetail = emailMatch[1];
+                                    else { const labelEmailMatch = option.label.match(/Email\s+(.+)/i); if (labelEmailMatch && labelEmailMatch[1]) option.maskedDetail = labelEmailMatch[1]; }
+                                    const emailInputDiv = div.querySelector('div.emailPartial[id="iProofEmailEntry"]');
+                                    if (emailInputDiv && emailInputDiv.style.display !== 'none') { option.requiresInput = true; option.inputSelector = '#iProofEmail'; option.inputLabel = 'Email name'; }
+                                } else if (option.valueAttribute.toLowerCase().includes('phone') || option.label.toLowerCase().includes('phone') || option.label.toLowerCase().includes('text') || option.label.toLowerCase().includes('call')) {
+                                    option.type = 'phone';
+                                    const phoneMatch = option.valueAttribute.match(/\|\|(\+?\d{0,3}\*{3,}\d{4})\|\|/);
+                                    if (phoneMatch && phoneMatch[1]) option.maskedDetail = phoneMatch[1];
+                                    else { const labelPhoneMatch = option.label.match(/(?:Phone|Text|Call)\s+.+?(\d{4})/i); if (labelPhoneMatch && labelPhoneMatch[1]) option.maskedDetail = `****${labelPhoneMatch[1]}`; }
+                                    const phoneInputDiv = div.querySelector('div.phcontainer[id="iProofPhoneEntry"]');
+                                    if (phoneInputDiv && phoneInputDiv.style.display !== 'none') { option.requiresInput = true; option.inputSelector = '#iProofPhone'; option.inputLabel = 'Last 4 digits of phone number'; }
+                                } else if (option.label.toLowerCase().includes("i don't have these")) { option.type = 'no_access'; }
+                                extractedOptions.push(option);
+                            }
+                        });
+                        return extractedOptions;
+                    }, platformConfig.selectors.proofListSelector);
+                    logger.debug(`[Outlook][${instanceId}] Extracted verification options for 'Microsoft Identity Confirm': ${JSON.stringify(options)}`);
+                    return options;
+                } catch (error) {
+                    logger.error(`[Outlook][${instanceId}] Error extracting verification options for 'Microsoft Identity Confirm': ${error.message}`);
+                    return [];
+                }
             } else {
                 logger.warn(`[Outlook][${instanceId}] Unknown viewName '${viewName}' for option extraction.`);
                 return [];
