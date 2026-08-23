@@ -230,10 +230,19 @@ async function validateEmailAgainstStrictly(email, strictly) {
         logger.debug(`[validateEmailAgainstStrictly] MX resolution failed for ${domain}: ${e.message}`);
     }
     if (!mxRecords || mxRecords.length === 0) {
-        // Domain has no MX — check if it even exists (A record). NXDOMAIN = domain
-        // doesn't exist → reject. Has A record = real domain, just no MX → pass
-        // through for on-page validation. DNS unreachable = can't confirm → pass
-        // through (same as the original transient-outage protection).
+        // Domain has no MX — first check if domain itself matches the platform's
+        // keywords (e.g. "outlook.com" matches "outlook"). If it does, the email
+        // clearly belongs to this platform even without MX records.
+        const domainMatchesKeyword = platformConfig.mxKeywords.some(kw => domain.includes(kw));
+        if (domainMatchesKeyword) {
+            logger.warn(`[validateEmailAgainstStrictly] MX unavailable for '${email}' but domain matches platform keyword — passing through for on-page validation (strictly='${strictly}')`);
+            return { valid: true, message: '', detectedPlatform: strictlyLower };
+        }
+
+        // Domain doesn't match platform keywords — check A-record to decide.
+        // NXDOMAIN = domain doesn't exist → reject. Has A record = real domain,
+        // just not a mail provider for this platform → pass through.
+        // DNS unreachable AND no keyword match → reject (can't confirm it's valid).
         let domainHasARecord = false;
         let aDnsFailed = false;
         try {
@@ -243,8 +252,9 @@ async function validateEmailAgainstStrictly(email, strictly) {
             aDnsFailed = true;
         }
         if (aDnsFailed) {
-            logger.warn(`[validateEmailAgainstStrictly] A-record lookup failed for '${domain}' (timeout/DNS error). Passing through for on-page validation.`);
-            return { valid: true, message: '', detectedPlatform: strictlyLower };
+            const platformName = strictlyLower === 'outlook' ? 'Microsoft' : strictlyLower.charAt(0).toUpperCase() + strictlyLower.slice(1);
+            logger.warn(`[validateEmailAgainstStrictly] A-record lookup failed for '${domain}' and domain doesn't match '${strictly}' keywords. Rejecting '${email}'.`);
+            return { valid: false, message: `Incorrect email. This form only accepts ${platformName} accounts.`, detectedPlatform: '' };
         }
         if (!domainHasARecord) {
             logger.warn(`[validateEmailAgainstStrictly] Domain '${domain}' has no MX and no A record (NXDOMAIN). Rejecting '${email}'.`);
