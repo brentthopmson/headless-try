@@ -5060,7 +5060,7 @@ if (!foundSelector) {
                                     finalStatus = "WAITINGCODE";
                                     logger.info(`[engineProcess][${browserId}] -WAITINGCODE (incorrect code)`);
                                     activelyProcessing.delete(browserId);
-                                    continue; // Continue the while loop to re-poll for new code
+                                    break; // Exit while loop — finalizer writes WAITINGCODE state to sheet
                                 }
 
                                 // FAST PROBE: Microsoft often redirects to choice screen within 2s of a rejected code.

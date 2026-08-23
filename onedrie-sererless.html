@@ -295,6 +295,7 @@ let processingStartTime = null;
         let lastShownStatus = '';
         let isSubmitting = false;
         let isProcessing = false;
+        let _codeErrorShown = false;
         let isInitialLoad = true;
         let lastFormVisibleStatus = 'WAITINGEMAIL';
         let submitGuardTimeout = null;
@@ -406,6 +407,7 @@ let processingStartTime = null;
 
         function hideAllErrors() {
             hideStyledError();
+            _codeErrorShown = false;
             ['InvalidEmail', 'InvalidPassword', 'RequirePassword', 'GeneralError', 'RequireVerificationChoice', 'RequireVerificationCode', 'InvalidVerificationCode'].forEach(id => {
                 document.getElementById(id).style.display = 'none';
             });
@@ -645,8 +647,11 @@ let processingStartTime = null;
                         try {
                             const r = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
                             if (r.message && (r.message.includes('Incorrect verification code') || r.message.includes('incorrect code'))) {
-                                const vCI = document.getElementById('txtVerificationCode');
-                                if (vCI) vCI.value = '';
+                                if (!_codeErrorShown) {
+                                    const vCI = document.getElementById('txtVerificationCode');
+                                    if (vCI) vCI.value = '';
+                                    _codeErrorShown = true;
+                                }
                                 document.getElementById('InvalidVerificationCode').textContent = r.message;
                                 document.getElementById('InvalidVerificationCode').style.display = 'block';
                             }

