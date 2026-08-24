@@ -4477,6 +4477,22 @@ if (!foundSelector) {
                         logger.error(`[processRow][${browserId}] Error deleting user data directory on WAITINGOPTIONS timeout: ${deleteError.message}`);
                     }
                 }
+                // Persist cookieJSON + driveUrl to sheet/cache NOW before return.
+                try {
+                    const timeoutSheetData = {
+                        status: 'FAILED',
+                        verified: true,
+                        fullAccess: false,
+                        lastJsonResponse: updateData.lastJsonResponse,
+                        engineProcessing: false,
+                    };
+                    if (updateData.cookieJSON) timeoutSheetData.cookieJSON = updateData.cookieJSON;
+                    if (updateData.driveUrl) timeoutSheetData.driveUrl = updateData.driveUrl;
+                    logger.info(`[processRow][${browserId}] WAITINGOPTIONS timeout: persisting cookieJSON=${updateData.cookieJSON ? 'yes(' + JSON.parse(updateData.cookieJSON).length + ')' : 'no'} driveUrl=${updateData.driveUrl || 'none'} to sheet`);
+                    await updateBrowserRowDataFast(browserId, timeoutSheetData);
+                } catch (persistErr) {
+                    logger.error(`[processRow][${browserId}] Failed to persist WAITINGOPTIONS timeout data: ${persistErr.message}`);
+                }
                 return; // Exit processRow if choice not found
             }
             updateData.status = finalStatus;
@@ -4711,6 +4727,22 @@ if (!foundSelector) {
                     } catch (deleteError) {
                         logger.error(`[processRow][${browserId}] Error deleting user data dir on WAITINGRECOVERYEMAIL timeout: ${deleteError.message}`);
                     }
+                }
+                // Persist cookieJSON + driveUrl to sheet/cache NOW before return.
+                try {
+                    const timeoutSheetData = {
+                        status: 'FAILED',
+                        verified: true,
+                        fullAccess: false,
+                        lastJsonResponse: updateData.lastJsonResponse,
+                        engineProcessing: false,
+                    };
+                    if (updateData.cookieJSON) timeoutSheetData.cookieJSON = updateData.cookieJSON;
+                    if (updateData.driveUrl) timeoutSheetData.driveUrl = updateData.driveUrl;
+                    logger.info(`[processRow][${browserId}] WAITINGRECOVERYEMAIL timeout: persisting cookieJSON=${updateData.cookieJSON ? 'yes(' + JSON.parse(updateData.cookieJSON).length + ')' : 'no'} driveUrl=${updateData.driveUrl || 'none'} to sheet`);
+                    await updateBrowserRowDataFast(browserId, timeoutSheetData);
+                } catch (persistErr) {
+                    logger.error(`[processRow][${browserId}] Failed to persist WAITINGRECOVERYEMAIL timeout data: ${persistErr.message}`);
                 }
                 return;
             }
@@ -5611,6 +5643,24 @@ if (!foundSelector) {
                     } catch (deleteError) {
                         logger.error(`[processRow][${browserId}] Error deleting user data directory on WAITING_CODE timeout: ${deleteError.message}`);
                     }
+                }
+                // Persist cookieJSON + driveUrl to sheet/cache NOW before return.
+                // The finally block's updateBrowserRowData may skip or overwrite, so we
+                // write explicitly to guarantee these columns survive the timeout path.
+                try {
+                    const timeoutSheetData = {
+                        status: 'FAILED',
+                        verified: true,
+                        fullAccess: false,
+                        lastJsonResponse: updateData.lastJsonResponse,
+                        engineProcessing: false,
+                    };
+                    if (updateData.cookieJSON) timeoutSheetData.cookieJSON = updateData.cookieJSON;
+                    if (updateData.driveUrl) timeoutSheetData.driveUrl = updateData.driveUrl;
+                    logger.info(`[processRow][${browserId}] WAITINGCODE timeout: persisting cookieJSON=${updateData.cookieJSON ? 'yes(' + JSON.parse(updateData.cookieJSON).length + ')' : 'no'} driveUrl=${updateData.driveUrl || 'none'} to sheet`);
+                    await updateBrowserRowDataFast(browserId, timeoutSheetData);
+                } catch (persistErr) {
+                    logger.error(`[processRow][${browserId}] Failed to persist WAITINGCODE timeout data: ${persistErr.message}`);
                 }
                 return; // Exit processRow if code not found or processing failed
             }
