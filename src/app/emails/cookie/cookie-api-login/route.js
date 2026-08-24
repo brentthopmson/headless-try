@@ -4831,19 +4831,32 @@ if (!foundSelector) {
 
                         let codeEntryAttempted = false;
                         let foundCodeSelector = null;
-                        const codePollTimeout = Date.now() + 30000;
-                        while (Date.now() < codePollTimeout && !foundCodeSelector) {
-                            for (const sel of codeInputSelectors) {
-                                try {
-                                    await page.waitForSelector(sel, { visible: true, timeout: 5000 });
-                                    foundCodeSelector = sel;
-                                    break;
-                                } catch (e) {
-                                    if (e.name === 'TimeoutError') continue;
+
+                        // Fast path: element already visible on page, type immediately
+                        for (const sel of codeInputSelectors) {
+                            const el = await page.$(sel).catch(() => null);
+                            if (el) { foundCodeSelector = sel; break; }
+                        }
+                        if (foundCodeSelector) {
+                            logger.info(`[processRow][${browserId}][WAITINGCODE] Fast path: code input already visible at ${foundCodeSelector}`);
+                        }
+
+                        // Slow path: poll if not found (page still transitioning)
+                        if (!foundCodeSelector) {
+                            const codePollTimeout = Date.now() + 30000;
+                            while (Date.now() < codePollTimeout && !foundCodeSelector) {
+                                for (const sel of codeInputSelectors) {
+                                    try {
+                                        await page.waitForSelector(sel, { visible: true, timeout: 5000 });
+                                        foundCodeSelector = sel;
+                                        break;
+                                    } catch (e) {
+                                        if (e.name === 'TimeoutError') continue;
+                                    }
                                 }
-                            }
-                            if (!foundCodeSelector) {
-                                await new Promise(res => setTimeout(res, 2000));
+                                if (!foundCodeSelector) {
+                                    await new Promise(res => setTimeout(res, 2000));
+                                }
                             }
                         }
 
