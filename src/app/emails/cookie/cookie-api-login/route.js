@@ -5057,6 +5057,9 @@ if (!foundSelector) {
                                         fullAccess: false,
                                         lastJsonResponse: JSON.stringify(ljp)
                                     });
+                                    updateData.lastJsonResponse = JSON.stringify(ljp);
+                                    updateData.verified = true;
+                                    updateData.fullAccess = false;
                                     finalStatus = "WAITINGCODE";
                                     logger.info(`[engineProcess][${browserId}] -WAITINGCODE (incorrect code)`);
                                     activelyProcessing.delete(browserId);
@@ -5384,6 +5387,11 @@ if (!foundSelector) {
                                         status: "WAITING_CODE",
                                         message: "Incorrect verification code entered. Please try again."
                                     })
+                                });
+                                updateData.lastJsonResponse = JSON.stringify({
+                                    ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                    status: "WAITING_CODE",
+                                    message: "Incorrect verification code entered. Please try again."
                                 });
                                 break;
                             } else if (postCodeVerificationState.required && postCodeVerificationState.type === 'text_input') {
