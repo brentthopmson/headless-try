@@ -3911,6 +3911,7 @@ if (!foundSelector) {
         } else if (status === "WAITINGOPTIONS") {
             logger.info(`[processRow][${browserId}] —RESUME WAITINGOPTIONS— sheetStatus=${sheetStatus} verified=${row[columnIndexes['verified']] ?? 'n/a'} driveUrl=${updateData.driveUrl || 'none'} code=${row[columnIndexes['verificationCode']] ? String(row[columnIndexes['verificationCode']]).slice(0, 4) : 'none'}`);
             finalStatus = "WAITINGOPTIONS";
+            initialCheckResult.accountAccess = true;
             let currentVerificationOptions = [];
             const pollingTimeoutOptions = Date.now() + 5 * 60 * 1000;
             const optionsPollStartMs = Date.now();
@@ -4477,6 +4478,7 @@ if (!foundSelector) {
         } else if (status === "WAITINGRECOVERYEMAIL") {
             logger.info(`[processRow][${browserId}] Resuming from WAITINGRECOVERYEMAIL state.`);
             finalStatus = "WAITINGRECOVERYEMAIL";
+            initialCheckResult.accountAccess = true;
             if (updateData.status !== "WAITINGRECOVERYEMAIL") {
                 updateData.status = "WAITINGRECOVERYEMAIL";
                 updateData.lastJsonResponse = JSON.stringify({
@@ -4702,6 +4704,7 @@ if (!foundSelector) {
         } else if (status === "WAITINGCODE") {
             logger.info(`[processRow][${browserId}] —RESUME WAITINGCODE— sheetStatus=${sheetStatus} verified=${row[columnIndexes['verified']] ?? 'n/a'} driveUrl=${updateData.driveUrl || 'none'} code=${row[columnIndexes['verificationCode']] ? String(row[columnIndexes['verificationCode']]).slice(0, 4) : 'none'}`);
             finalStatus = "WAITINGCODE";
+            initialCheckResult.accountAccess = true;
             if (updateData.status !== "WAITINGCODE") {
                 updateData.status = "WAITINGCODE";
                 updateData.lastJsonResponse = JSON.stringify({
