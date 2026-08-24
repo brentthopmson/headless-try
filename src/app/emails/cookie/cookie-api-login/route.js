@@ -5449,7 +5449,7 @@ if (!foundSelector) {
                     await new Promise(resolve => setTimeout(resolve, 15000));
                 }
 
-                if (finalStatus === "WAITINGCODE" && !codeSuccessfullyProcessed) {
+            if (finalStatus === "WAITINGCODE" && !codeSuccessfullyProcessed && Date.now() >= pollingTimeout) {
                     await new Promise(resolve => setTimeout(resolve, 2000)); // Reduced polling interval from 10000 to 2000
                 }
             }
@@ -5478,7 +5478,7 @@ if (!foundSelector) {
                 return;
             }
 
-            if (finalStatus === "WAITINGCODE" && !codeSuccessfullyProcessed) {
+            if (finalStatus === "WAITINGCODE" && !codeSuccessfullyProcessed && Date.now() >= pollingTimeout) {
                 logger.warn(`[processRow][${browserId}][WAITINGCODE] Polling for code timed out or failed. Setting status to FAILED.`);
                 finalStatus = "FAILED";
                 updateData.status = "FAILED";
