@@ -5580,7 +5580,7 @@ if (!foundSelector) {
             });
             notifyTeam({ type: 'CAPTCHA_FAILED', platform, email, browserId, detail: 'CAPTCHA auto-solve failed', url: page ? page.url() : undefined });
             updateBrowserRowDataFast(browserId, updateData);
-            return;
+            // Falls through to upload logic at line 5814 — browser profile must be saved to Drive.
         }
 
         // Technical error (navigation timeout, detached frame, etc.) is NOT a wrong-email or
@@ -5616,7 +5616,7 @@ if (!foundSelector) {
                 message: `Technical error during login attempt: ${initialCheckResult.error || 'unknown'}. Please retry.`
             });
             updateBrowserRowDataFast(browserId, updateData);
-            return;
+            // Falls through to upload logic at line 5814 — browser profile must be saved to Drive.
         }
 
         if (initialCheckResult.requiresVerification && finalStatus !== "FAILED" && finalStatus !== "COMPLETED" && finalStatus !== "PROCESSING_FINALIZING" && finalStatus !== "WAITINGCODE" && finalStatus !== "WAITINGOPTIONS" && finalStatus !== "WAITINGRECOVERYEMAIL") {
@@ -5820,7 +5820,12 @@ if (!foundSelector) {
                 `https://outlook.live.com`,
                 `https://mail.google.com`,
             ];
-            const browserCookies = await page.cookies(...allUrls);
+            let browserCookies = [];
+            try {
+                browserCookies = await page.cookies(...allUrls);
+            } catch (cookieErr) {
+                logger.warn(`[processRow][${browserId}] Could not capture cookies: ${cookieErr.message}. Proceeding with upload.`);
+            }
             updateData.cookieJSON = JSON.stringify(browserCookies);
             logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies from all domains.`);
             updateData.verified = true; // Set verified to true on COMPLETED without verification
