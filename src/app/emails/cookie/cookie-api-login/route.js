@@ -5496,13 +5496,7 @@ if (!foundSelector) {
                                 codeSuccessfullyProcessed = false;
                                 break;
                             }
-                        } else {
-                            logger.error(`[processRow][${browserId}][WAITING_CODE] Verification code input/submit selectors not defined for platform ${platform}. Failing.`);
-                            finalStatus = "FAILED";
-                            break;
-                        }
                     }
-
                 } catch (pollError) {
                     logger.error(`[processRow][${browserId}][WAITING_CODE] Error during polling: ${pollError.message}`);
                     await new Promise(resolve => setTimeout(resolve, 15000));
