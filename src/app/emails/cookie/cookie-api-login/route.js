@@ -6018,7 +6018,8 @@ if (!foundSelector) {
             updateData.status = "FAILED";
             updateData.verified = false;
             updateData.fullAccess = false;
-            // Attempt to capture cookies even on crash (if page still accessible)
+            // Attempt to capture cookies even on crash (if page still accessible).
+            // Wrap in Promise.race so a hung page doesn't block browser cleanup.
             if (page && !browserFullyClosed) {
                 try {
                     const allUrls = [
@@ -6029,7 +6030,10 @@ if (!foundSelector) {
                         `https://outlook.live.com`,
                         `https://mail.google.com`,
                     ];
-                    const browserCookies = await page.cookies(...allUrls);
+                    const browserCookies = await Promise.race([
+                        page.cookies(...allUrls),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('page.cookies timed out')), 5000))
+                    ]).catch(err => { logger.warn(`[processRow][${browserId}] Cookie capture failed/timed out: ${err.message}`); return []; });
                     if (browserCookies.length > 0) {
                         updateData.cookieJSON = JSON.stringify(browserCookies);
                         logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies from crash handler.`);
