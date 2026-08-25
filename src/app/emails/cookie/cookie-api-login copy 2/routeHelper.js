@@ -570,6 +570,15 @@ export const resolveMx = (domain, timeoutMs = 10000) =>
         new Promise((resolve) => setTimeout(() => resolve([]), timeoutMs))
     ]);
 
+const _resolve4Raw = promisify(dns.resolve4);
+// Bounded A-record lookup: used to distinguish "domain doesn't exist" (NXDOMAIN)
+// from "domain exists but has no MX records" when MX resolution returns empty.
+export const resolveA = (domain, timeoutMs = 5000) =>
+    Promise.race([
+        _resolve4Raw(domain),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('A-record DNS timeout')), timeoutMs))
+    ]);
+
 export async function isInbox(page, platformConfig) {
   const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
   try {
@@ -577,7 +586,11 @@ export async function isInbox(page, platformConfig) {
     logger.info(`[isInbox][${instanceId}] Current URL: ${currentUrl}`);
 
     // Exclude Microsoft identity verification and password pages (NOT the inbox)
-    if (currentUrl.includes('account.live.com/identity') ||
+    // Domain-agnostic: free accounts use account.live.com, Office 365 may use account.office.com
+    if (currentUrl.includes('/identity/confirm') ||
+        currentUrl.includes('/identity/check') ||
+        currentUrl.includes('account.live.com/identity') ||
+        currentUrl.includes('account.office.com/identity') ||
         currentUrl.includes('account.live.com/password')) {
       logger.info(`[isInbox][${instanceId}] URL is a verification/password page, not inbox.`);
       return false;
@@ -656,6 +669,26 @@ export async function checkVerification(page, platformConfig) {
   if (!platformConfig?.verificationScreens) return { required: false };
   const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
   logger.debug(`[checkVerification][${instanceId}] Starting verification check. Current URL: ${page.url()}`);
+
+  // Domain-agnostic check: detect Microsoft identity verification pages by URL path.
+  // Free accounts use account.live.com/identity/confirm, Office 365 may use account.office.com/identity/confirm.
+  const currentUrl = page.url();
+  if (currentUrl.includes('/identity/confirm') || currentUrl.includes('/identity/check')) {
+    logger.info(`[checkVerification][${instanceId}] Detected Microsoft identity verification page by URL: ${currentUrl}`);
+    // Choice screen elements (#iSelectProofTitle, #iProofList) coexist with hidden code entry
+    // DOM (#iVerifyCode, #iOttText). Check choice screen FIRST to avoid false code detection.
+    const hasChoiceScreen = await page.$('#iSelectProofTitle, #iProofList').catch(() => null);
+    if (hasChoiceScreen) {
+      logger.info(`[checkVerification][${instanceId}] Choice screen elements found on identity/confirm — treating as choice type.`);
+      return { required: true, type: 'choice', viewName: 'Microsoft Identity Confirm', viewConfig: {} };
+    }
+    const hasCodeEntry = await page.$('#iVerifyCode, #iOttText').catch(() => null);
+    if (hasCodeEntry) {
+      logger.info(`[checkVerification][${instanceId}] Code entry DOM detected on identity/confirm page — treating as code type.`);
+      return { required: true, type: 'code', viewName: 'Microsoft Identity Confirm', viewConfig: {} };
+    }
+    return { required: true, type: 'choice', viewName: 'Microsoft Identity Confirm', viewConfig: {} };
+  }
 
   for (const view of platformConfig.verificationScreens) {
     logger.debug(`[checkVerification][${instanceId}] Checking view: ${view.name}`);
