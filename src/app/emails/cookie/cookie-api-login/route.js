@@ -2147,6 +2147,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     let updateData = { status: finalStatus, email: email || '', password: password || '' };
     let browserFullyClosed = false;
     let exitingEarly = false;
+    let pollingTimedOut = false; // Set true when WAITINGCODE/WAITINGOPTIONS/WAITINGRECOVERYEMAIL polling timeout fires — prevents post-loop code from overwriting the FAILED status
     let platform = 'unknown';
     // Hoisted to function scope so the outer catch (crash handler) can reference it — it's
     // reassigned inside the try block but must be in scope when processRow throws.
@@ -5467,6 +5468,7 @@ if (!foundSelector) {
             }
 
             if (finalStatus === "WAITINGCODE" && !codeSuccessfullyProcessed && Date.now() >= pollingTimeout) {
+                pollingTimedOut = true;
                 logger.warn(`[processRow][${browserId}][WAITINGCODE] Polling for code timed out. Setting FAILED — COMPLETED handler will save cookies + profile.`);
                 finalStatus = "FAILED";
                 updateData.status = "FAILED";
@@ -5719,7 +5721,7 @@ if (!foundSelector) {
                         logger.warn(`[processRow][${browserId}] Login successful but did not reach expected inbox state. Setting status to FAILED.`);
                         finalStatus = "FAILED";
                     }
-                } else { // This case should be covered by the initial 'if (initialCheckResult.requiresVerification)' block.
+                } else if (!pollingTimedOut) { // Only set WAITINGCODE/WAITINGOPTIONS if the polling loop didn't already time out to FAILED
                     // Convert verificationState to sheet status format
                     const sheetStatus = initialCheckResult.verificationState.replace(/_/g, '');
                     if (sheetStatus === 'WAITINGOPTIONS') {
@@ -6531,16 +6533,23 @@ async function processWaitingRows() {
                         notifyTeam({ type: 'FATAL', browserId, error: updateErr.message, detail: 'processRow crashed AND sheet update failed' });
                     }
                 } finally {
-                    // Only remove from activeProcesses if the row reached a terminal state
-                    // or if no browser session is held. Otherwise processRow exited early
-                    // (e.g. WAITINGEMAIL → email not found → return) and the next interval
-                    // would re-pick this browserId, launching a duplicate browser.
+                    // Only remove from activeProcesses if the row reached a terminal state,
+                    // if no browser session is held, OR if the row is in a waiting state that
+                    // needs re-pickup (WAITINGCODE/WAITINGOPTIONS/WAITINGRECOVERYEMAIL).
+                    // The waiting-state branches use a two-phase pattern: Phase 1 sets the
+                    // status and returns (storing the browser in activeBrowserSessions); Phase 2
+                    // (next interval tick) must re-pick the row to enter the polling while loop.
+                    // Without removing from activeProcesses here, Phase 2 never fires.
                     const cached = getCachedRow(browserId);
                     const terminalStatuses = ['COMPLETED', 'FAILED', 'PROCESSING_FINALIZING'];
+                    const waitingStatesForRePickup = ['WAITINGCODE', 'WAITINGOPTIONS', 'WAITINGRECOVERYEMAIL'];
                     if (cached && terminalStatuses.includes(cached.status)) {
                         activeProcesses.delete(browserId);
                     } else if (!activeBrowserSessions.has(browserId)) {
                         activeProcesses.delete(browserId);
+                    } else if (cached && waitingStatesForRePickup.includes(cached.status)) {
+                        activeProcesses.delete(browserId);
+                        logger.debug(`[processWaitingRows] Removing ${browserId} from activeProcesses for re-pickup (status=${cached?.status})`);
                     } else {
                         logger.debug(`[processWaitingRows] Keeping ${browserId} in activeProcesses — status=${cached?.status}`);
                     }
