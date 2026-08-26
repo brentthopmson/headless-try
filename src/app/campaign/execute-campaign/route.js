@@ -11,6 +11,41 @@ import { processActivitiesInteractTask } from "../../socials/activities-interact
 import { POST as sendMessageHandler } from "../../socials/send-message/route.js";
 import { getCampaignLimits } from "../../socials/_shared/limits.js";
 import { requireFeature } from "../../../utils/featureGate.js";
+import { getSetting } from "../../../utils/settingsCache.js";
+import { getSelfUrl } from "../../../utils/serverlessTracker.js";
+
+async function getAvailableServers() {
+  try {
+    const linksResult = await getSheetDataApi('links');
+    if (!linksResult.success || !linksResult.data) return [];
+    const idIdx = linksResult.headers.indexOf('severlessId');
+    const urlIdx = linksResult.headers.indexOf('severlessURL');
+    const statusIdx = linksResult.headers.indexOf('status');
+    if (idIdx === -1 || urlIdx === -1) return [];
+
+    return linksResult.data
+      .filter(r => {
+        const url = r[urlIdx]?.trim();
+        const status = statusIdx !== -1 ? r[statusIdx]?.trim().toLowerCase() : 'active';
+        return url && url.startsWith('http') && status !== 'disabled';
+      })
+      .map(r => ({
+        id: r[idIdx],
+        url: r[urlIdx].replace(/\/+$/, ''),
+      }));
+  } catch (err) {
+    logger.warn(`[Execute Campaign] Failed to fetch server pool: ${err.message}`);
+    return [];
+  }
+}
+
+function embedCampaignIdentifier(subject, body, campaignId) {
+  const identifier = `[${campaignId}]`;
+  const taggedSubject = subject.includes(identifier) ? subject : `${subject} ${identifier}`;
+  const identifierComment = `<!-- campaign:${campaignId} -->`;
+  const taggedBody = body.includes(identifierComment) ? body : `${body}\n\n${identifierComment}`;
+  return { subject: taggedSubject, body: taggedBody };
+}
 
 const STANDARD_88_COLUMNS = [
   'SN',
@@ -298,6 +333,18 @@ export async function POST(request) {
     }
 
     const channel = settings.channel || "email";
+
+    // Read batch limits from SETTINGS
+    const shootingBatchSetting = await getSetting('shootingBatchLimit');
+    const SHOOTING_BATCH_SIZE = parseInt(shootingBatchSetting?.value1) || 20;
+    const checkpointSetting = await getSetting('checkpointInterval');
+    const CHECKPOINT_INTERVAL = parseInt(checkpointSetting?.value1) || 5;
+    const delaySetting = await getSetting('interBatchDelayMs');
+    const INTER_BATCH_DELAY = parseInt(delaySetting?.value1) || 500;
+    const multiServerSetting = await getSetting('multiServerEnabled');
+    const MULTI_SERVER_ENABLED = multiServerSetting?.value1 === 'true';
+
+    logger.info(`[Execute Campaign] shooting=${SHOOTING_BATCH_SIZE}, checkpoint=${CHECKPOINT_INTERVAL}, delay=${INTER_BATCH_DELAY}ms, multiServer=${MULTI_SERVER_ENABLED}`);
     
     // Update campaign status to running
     await updateSheetRowApi("campaigns", "campaignId", campaignId, {
@@ -430,7 +477,7 @@ export async function POST(request) {
       }
 
       const startIndex = Math.max(0, lastProcessedRow);
-      const maxToProcess = Math.min(deduplicatedRows.length, shootContactsLimit, 30);
+      const maxToProcess = Math.min(deduplicatedRows.length, shootContactsLimit, SHOOTING_BATCH_SIZE);
       logger.info(`[Execute Campaign] Sending emails: limit=${shootContactsLimit === Infinity ? 'unlimited' : shootContactsLimit}, batch=${maxToProcess} contacts (after dedup: ${deduplicatedRows.length}/${dataRows.length})`);
 
       // Step 3e: Processing loop over deduplicated rows with checkpointing
@@ -459,12 +506,17 @@ export async function POST(request) {
         const company = companyColIdx !== -1 && row[companyColIdx] ? row[companyColIdx] : "your company";
 
         // Priority: personalized (enhanced) > campaign settings > default
-        const subject = (enhancedSubjectIdx !== -1 && row[enhancedSubjectIdx]?.trim())
+        let subject = (enhancedSubjectIdx !== -1 && row[enhancedSubjectIdx]?.trim())
           || settings.subject
           || `Outreach to ${company}`;
-        const message = (enhancedBodyIdx !== -1 && row[enhancedBodyIdx]?.trim())
+        let message = (enhancedBodyIdx !== -1 && row[enhancedBodyIdx]?.trim())
           || settings.body
           || `Hello ${firstName}, let's connect.`;
+
+        // Embed campaign identifier for interaction tracking
+        const tagged = embedCampaignIdentifier(subject, message, campaignId);
+        subject = tagged.subject;
+        message = tagged.body;
 
         const { config: smtp } = getNextSmtpConfig(smtpSettings, sentCount);
         const now = new Date();
@@ -511,8 +563,8 @@ export async function POST(request) {
           if (providerMXIdx !== -1) row[providerMXIdx] = err.message;
         }
 
-        // Checkpoint: save progress every 5 rows
-        if ((i + 1) % 5 === 0) {
+        // Checkpoint: save progress every N rows (configurable from SETTINGS)
+        if ((i + 1) % CHECKPOINT_INTERVAL === 0) {
           logger.info(`[Execute Campaign] Checkpoint at row ${i + 1}/${deduplicatedRows.length}`);
           try {
             settings.lastProcessedRow = i + 1;
@@ -557,7 +609,9 @@ export async function POST(request) {
         failed: failedCount,
         limitReached,
         paused: pausedByAdmin,
-        failureDetails: failureDetails.slice(0, 20)
+        failureDetails: failureDetails.slice(0, 20),
+        server: getSelfUrl(),
+        batchConfig: { shootingBatchSize: SHOOTING_BATCH_SIZE, checkpointInterval: CHECKPOINT_INTERVAL }
       };
 
       settings.analytics = analytics;
