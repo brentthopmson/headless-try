@@ -3928,6 +3928,7 @@ if (!foundSelector) {
                         finalStatus = "FAILED";
                         updateData.status = "FAILED";
                         updateData.lastJsonResponse = JSON.stringify({ ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED", message: "Failed during WAITINGOPTIONS phase: Template stopped responding." });
+                        pollingTimedOut = true; // Prevent post-loop WAITINGOPTIONS override at line 5736
                         break;
                     }
 
@@ -3937,6 +3938,7 @@ if (!foundSelector) {
                         finalStatus = "FAILED";
                         updateData.status = "FAILED";
                         updateData.lastJsonResponse = JSON.stringify({ ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED", message: "Page state changed unexpectedly during WAITINGOPTIONS." });
+                        pollingTimedOut = true; // Prevent post-loop WAITINGOPTIONS override at line 5736
                         break;
                     }
                     if (currentPageVerificationState.type === 'code') {
@@ -4421,6 +4423,7 @@ if (!foundSelector) {
             }
             if (finalStatus === "WAITINGOPTIONS") {
                 logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Polling for choice timed out. Setting FAILED — COMPLETED handler will save cookies + profile.`);
+                pollingTimedOut = true; // Prevent post-loop WAITINGOPTIONS override at line 5736
                 finalStatus = "FAILED";
                 updateData.status = "FAILED";
                 updateData.verified = true;
@@ -4466,6 +4469,7 @@ if (!foundSelector) {
                             ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
                             message: "Failed during WAITING_RECOVERY_EMAIL phase: Browser page became unresponsive."
                         });
+                        pollingTimedOut = true; // Prevent post-loop override at line 5736
                         break;
                     }
 
@@ -4478,6 +4482,7 @@ if (!foundSelector) {
                             ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
                             message: "Failed during WAITINGRECOVERYEMAIL phase: Template stopped responding."
                         });
+                        pollingTimedOut = true; // Prevent post-loop override at line 5736
                         break;
                     }
 
@@ -4490,6 +4495,7 @@ if (!foundSelector) {
                     if (!checkRow) {
                         logger.error(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Row not found. Exiting loop.`);
                         finalStatus = "FAILED";
+                        pollingTimedOut = true; // Prevent post-loop override at line 5736
                         break;
                     }
 
@@ -4614,6 +4620,7 @@ if (!foundSelector) {
 
             if (finalStatus === "WAITINGRECOVERYEMAIL" && !recoveryEmailProcessed) {
                 logger.warn(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Polling for recovery email timed out. Setting FAILED — COMPLETED handler will save cookies + profile.`);
+                pollingTimedOut = true; // Prevent post-loop override at line 5736
                 finalStatus = "FAILED";
                 updateData.status = "FAILED";
                 updateData.verified = true;
@@ -4668,6 +4675,7 @@ if (!foundSelector) {
                             ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
                             message: "Failed during WAITING_CODE phase: Browser page became unresponsive."
                         });
+                        pollingTimedOut = true; // Prevent post-loop WAITINGCODE override at line 5736
                         break; // Exit polling loop
                     }
 
@@ -4680,6 +4688,7 @@ if (!foundSelector) {
                             ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
                             message: "Failed during WAITINGCODE phase: Template stopped responding."
                         });
+                        pollingTimedOut = true; // Prevent post-loop WAITINGCODE override at line 5736
                         break;
                     }
 
@@ -4698,6 +4707,7 @@ if (!foundSelector) {
                     if (cachedStatusForCodePoll && TERMINAL_CODE_POLL_STATUSES.includes(cachedStatusForCodePoll)) {
                         logger.info(`[processRow][${browserId}][WAITINGCODE] Status changed externally to ${cachedStatusForCodePoll}. Exiting loop.`);
                         finalStatus = cachedStatusForCodePoll;
+                        if (finalStatus === "FAILED") pollingTimedOut = true; // Prevent post-loop WAITINGCODE override at line 5736
                         break;
                     }
 
