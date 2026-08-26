@@ -4,6 +4,7 @@ import { google } from "googleapis";
 import geminiHelper from "../../api/gemini.js";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
+import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -171,10 +172,349 @@ Rules:
   return batch.map(() => null);
 }
 
+async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
+  const authClient = await getSheetsAuthClient();
+  if (!authClient) {
+    return NextResponse.json({ success: false, error: "Failed to authenticate with Google APIs" }, { status: 500 });
+  }
+  const drive = google.drive({ version: "v3", auth: authClient });
+
+  const batchSetting = await getSetting('personalizeBatchLimit');
+  const BATCH_SIZE = parseInt(batchSetting?.value1) || 30;
+  logger.info(`[Personalize Campaign] Batch size: ${BATCH_SIZE}`);
+
+  logger.info(`[Personalize Campaign] Downloading CSV file: ${fileId}`);
+  const driveFile = await drive.files.get({ fileId, alt: "media" });
+  const csvContent = driveFile.data;
+  if (typeof csvContent !== "string") throw new Error("Failed to download CSV as text content");
+
+  const rows = parseCSV(csvContent);
+  if (rows.length === 0) throw new Error("CSV file is empty");
+
+  const headers = rows[0];
+
+  const emailIdx = headers.findIndex(h => {
+    const n = h.toLowerCase().trim();
+    return n === "email" || n === "mail" || n === "email address";
+  });
+  if (emailIdx === -1) throw new Error("No email column found");
+
+  const firstNameIdx = headers.findIndex(h => {
+    const n = h.toLowerCase().trim();
+    return n === "firstname" || n === "first name" || n === "first";
+  });
+  const companyIdx = headers.findIndex(h => {
+    const n = h.toLowerCase().trim();
+    return n === "businessname" || n === "business name" || n === "company";
+  });
+  const contextIdx = headers.findIndex(h => h.toUpperCase() === "CONTEXT");
+  const enhancedSubjectIdx = headers.findIndex(h => h.toLowerCase().trim() === "enhancedsubject");
+  const enhancedBodyIdx = headers.findIndex(h => h.toLowerCase().trim() === "enhancedbody");
+  const enhancedSocialMsgIdx = headers.findIndex(h => h.toLowerCase().trim() === "enhancedsocialmessage");
+  const socialPlatformIdx = headers.findIndex(h => h.toUpperCase() === "SOCIALPLATFORM");
+  const socialUsernameIdx = headers.findIndex(h => h.toUpperCase() === "SOCIALUSERNAME");
+
+  let personalizationPrompt = "Write a short, professional cold outreach email. Address by first name, reference company. Keep it engaging, under 150 words. Vary subject lines.";
+
+  const campaignsResult = await getSheetDataApi("campaigns");
+  if (campaignsResult.success) {
+    const cHeaders = campaignsResult.headers;
+    const cIdIndex = cHeaders.indexOf("campaignId");
+    const cSettingsIndex = cHeaders.indexOf("settings");
+    const campaignRow = campaignsResult.data.find(r => r[cIdIndex] === campaignId);
+    if (campaignRow && cSettingsIndex !== -1) {
+      try {
+        const settingsStr = campaignRow[cSettingsIndex];
+        const settings = typeof settingsStr === "string" ? JSON.parse(settingsStr) : (settingsStr || {});
+        if (settings.aiPersonalizationPrompt) personalizationPrompt = settings.aiPersonalizationPrompt;
+      } catch {}
+    }
+  }
+
+  let channel = "email";
+  try {
+    const campaignsResult2 = await getSheetDataApi("campaigns");
+    if (campaignsResult2.success) {
+      const cHeaders = campaignsResult2.headers;
+      const cIdIndex = cHeaders.indexOf("campaignId");
+      const cSettingsIndex = cHeaders.indexOf("settings");
+      const campaignRow = campaignsResult2.data.find(r => r[cIdIndex] === campaignId);
+      if (campaignRow && cSettingsIndex !== -1) {
+        const settingsStr = campaignRow[cSettingsIndex];
+        const settings = typeof settingsStr === "string" ? JSON.parse(settingsStr) : (settingsStr || {});
+        channel = settings.channel || "email";
+      }
+    }
+  } catch {}
+
+  const dataRows = rows.slice(1);
+
+  const multiEnabled = await isMultiServerEnabled();
+  if (multiEnabled) {
+    const dispatchResult = await dispatchToServers(campaignId, 'personalize', fileUrl, dataRows.length);
+    if (dispatchResult && dispatchResult.servers) {
+      return NextResponse.json({ success: true, dispatched: true, servers: dispatchResult.servers });
+    }
+  }
+
+  let personalizedCount = 0;
+
+  const batchCount = Math.ceil(dataRows.length / BATCH_SIZE);
+  for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
+    if (await isCampaignPaused(campaignId)) {
+      logger.info(`[Personalize Campaign] Campaign paused at batch ${batchIdx + 1}/${batchCount}`);
+      break;
+    }
+
+    const start = batchIdx * BATCH_SIZE;
+    const end = Math.min(start + BATCH_SIZE, dataRows.length);
+    const batch = dataRows.slice(start, end);
+
+    if (channel === "email") {
+      const contacts = batch.map(row => ({
+        email: row[emailIdx]?.trim() || "",
+        firstName: firstNameIdx !== -1 ? row[firstNameIdx]?.trim() || "there" : "there",
+        company: companyIdx !== -1 ? row[companyIdx]?.trim() || "your company" : "your company",
+        context: contextIdx !== -1 ? row[contextIdx]?.trim() || "" : ""
+      }));
+
+      const aiResults = await personalizeBatch(contacts, personalizationPrompt, headers);
+
+      for (let i = 0; i < batch.length; i++) {
+        const result = aiResults[i];
+        if (result) {
+          if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = result.subject || "";
+          if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = result.body || "";
+          personalizedCount++;
+        } else {
+          const firstName = contacts[i].firstName;
+          const company = contacts[i].company;
+          if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = `Quick question for ${firstName}`;
+          if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = `Hi ${firstName},\n\nHope this finds you well. I wanted to reach out about ${company}.\n\nBest,\nWebFixx Team`;
+          personalizedCount++;
+        }
+      }
+    }
+
+    if (channel === "social" && enhancedSocialMsgIdx !== -1) {
+      const socialContacts = batch.map(row => ({
+        username: socialUsernameIdx !== -1 ? row[socialUsernameIdx]?.trim() || "" : "",
+        platform: socialPlatformIdx !== -1 ? row[socialPlatformIdx]?.trim() || "" : "",
+        firstName: firstNameIdx !== -1 ? row[firstNameIdx]?.trim() || "there" : "there",
+        context: contextIdx !== -1 ? row[contextIdx]?.trim() || "" : ""
+      }));
+
+      const aiResults = await personalizeSocialBatch(socialContacts, personalizationPrompt);
+
+      for (let i = 0; i < batch.length; i++) {
+        const result = aiResults[i];
+        if (result && result.message) {
+          batch[i][enhancedSocialMsgIdx] = result.message;
+        } else {
+          const contact = socialContacts[i];
+          batch[i][enhancedSocialMsgIdx] = `Hi ${contact.firstName}, came across your ${contact.platform || 'social'} profile and wanted to connect!`;
+        }
+      }
+    }
+
+    try {
+      await drive.files.update({
+        fileId,
+        media: { mimeType: "text/csv", body: stringifyCSV(rows) }
+      });
+    } catch (flushErr) {
+      logger.warn(`[Personalize Campaign] Live flush failed at batch ${batchIdx + 1}: ${flushErr.message}`);
+    }
+
+    logger.info(`[Personalize Campaign] Batch ${batchIdx + 1}/${batchCount} complete`);
+  }
+
+  logger.info(`[Personalize Campaign] Final CSV flush to Drive: ${fileId}`);
+  await drive.files.update({
+    fileId,
+    media: { mimeType: "text/csv", body: stringifyCSV(rows) }
+  });
+
+  await updateCampaignSettings(campaignId, { personalizationStatus: "completed" });
+
+  return NextResponse.json({
+    success: true,
+    message: "Campaign personalization completed successfully",
+    total: dataRows.length,
+    personalized: personalizedCount
+  });
+}
+
+async function handleWorkerMode(campaignId, fileId, serverBatch) {
+  const myAssignment = await findMyAssignment(campaignId, 'personalize');
+  if (!myAssignment) {
+    return NextResponse.json({ success: false, error: "No assignment found for this server" }, { status: 400 });
+  }
+
+  await updateMyAssignment(campaignId, 'personalize', { status: 'running' });
+
+  const drive = await getDriveClient();
+
+  const batchSetting = await getSetting('personalizeBatchLimit');
+  const BATCH_SIZE = parseInt(batchSetting?.value1) || 30;
+  logger.info(`[Personalize Campaign] Worker batch size: ${BATCH_SIZE}`);
+
+  logger.info(`[Personalize Campaign] Worker downloading CSV file: ${fileId}`);
+  const driveFile = await drive.files.get({ fileId, alt: "media" });
+  const csvContent = driveFile.data;
+  if (typeof csvContent !== "string") throw new Error("Failed to download CSV as text content");
+
+  const rows = parseCSV(csvContent);
+  if (rows.length === 0) throw new Error("CSV file is empty");
+
+  const headers = rows[0];
+
+  const emailIdx = headers.findIndex(h => {
+    const n = h.toLowerCase().trim();
+    return n === "email" || n === "mail" || n === "email address";
+  });
+  if (emailIdx === -1) throw new Error("No email column found");
+
+  const firstNameIdx = headers.findIndex(h => {
+    const n = h.toLowerCase().trim();
+    return n === "firstname" || n === "first name" || n === "first";
+  });
+  const companyIdx = headers.findIndex(h => {
+    const n = h.toLowerCase().trim();
+    return n === "businessname" || n === "business name" || n === "company";
+  });
+  const contextIdx = headers.findIndex(h => h.toUpperCase() === "CONTEXT");
+  const enhancedSubjectIdx = headers.findIndex(h => h.toLowerCase().trim() === "enhancedsubject");
+  const enhancedBodyIdx = headers.findIndex(h => h.toLowerCase().trim() === "enhancedbody");
+  const enhancedSocialMsgIdx = headers.findIndex(h => h.toLowerCase().trim() === "enhancedsocialmessage");
+  const socialPlatformIdx = headers.findIndex(h => h.toUpperCase() === "SOCIALPLATFORM");
+  const socialUsernameIdx = headers.findIndex(h => h.toUpperCase() === "SOCIALUSERNAME");
+
+  let personalizationPrompt = "Write a short, professional cold outreach email. Address by first name, reference company. Keep it engaging, under 150 words. Vary subject lines.";
+
+  const campaignsResult = await getSheetDataApi("campaigns");
+  if (campaignsResult.success) {
+    const cHeaders = campaignsResult.headers;
+    const cIdIndex = cHeaders.indexOf("campaignId");
+    const cSettingsIndex = cHeaders.indexOf("settings");
+    const campaignRow = campaignsResult.data.find(r => r[cIdIndex] === campaignId);
+    if (campaignRow && cSettingsIndex !== -1) {
+      try {
+        const settingsStr = campaignRow[cSettingsIndex];
+        const settings = typeof settingsStr === "string" ? JSON.parse(settingsStr) : (settingsStr || {});
+        if (settings.aiPersonalizationPrompt) personalizationPrompt = settings.aiPersonalizationPrompt;
+      } catch {}
+    }
+  }
+
+  let channel = "email";
+  try {
+    const campaignsResult2 = await getSheetDataApi("campaigns");
+    if (campaignsResult2.success) {
+      const cHeaders = campaignsResult2.headers;
+      const cIdIndex = cHeaders.indexOf("campaignId");
+      const cSettingsIndex = cHeaders.indexOf("settings");
+      const campaignRow = campaignsResult2.data.find(r => r[cIdIndex] === campaignId);
+      if (campaignRow && cSettingsIndex !== -1) {
+        const settingsStr = campaignRow[cSettingsIndex];
+        const settings = typeof settingsStr === "string" ? JSON.parse(settingsStr) : (settingsStr || {});
+        channel = settings.channel || "email";
+      }
+    }
+  } catch {}
+
+  const dataRows = rows.slice(1);
+  const rowStart = serverBatch.rowStart || 0;
+  const rowEnd = serverBatch.rowEnd || dataRows.length;
+  const myRows = dataRows.slice(rowStart, Math.min(rowEnd, dataRows.length));
+
+  let personalizedCount = 0;
+
+  const batchCount = Math.ceil(myRows.length / BATCH_SIZE);
+  for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
+    if (await isCampaignPaused(campaignId)) {
+      logger.info(`[Personalize Campaign] Worker campaign paused at batch ${batchIdx + 1}/${batchCount}`);
+      break;
+    }
+
+    const start = batchIdx * BATCH_SIZE;
+    const end = Math.min(start + BATCH_SIZE, myRows.length);
+    const batch = myRows.slice(start, end);
+
+    if (channel === "email") {
+      const contacts = batch.map(row => ({
+        email: row[emailIdx]?.trim() || "",
+        firstName: firstNameIdx !== -1 ? row[firstNameIdx]?.trim() || "there" : "there",
+        company: companyIdx !== -1 ? row[companyIdx]?.trim() || "your company" : "your company",
+        context: contextIdx !== -1 ? row[contextIdx]?.trim() || "" : ""
+      }));
+
+      const aiResults = await personalizeBatch(contacts, personalizationPrompt, headers);
+
+      for (let i = 0; i < batch.length; i++) {
+        const result = aiResults[i];
+        if (result) {
+          if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = result.subject || "";
+          if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = result.body || "";
+          personalizedCount++;
+        } else {
+          const firstName = contacts[i].firstName;
+          const company = contacts[i].company;
+          if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = `Quick question for ${firstName}`;
+          if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = `Hi ${firstName},\n\nHope this finds you well. I wanted to reach out about ${company}.\n\nBest,\nWebFixx Team`;
+          personalizedCount++;
+        }
+      }
+    }
+
+    if (channel === "social" && enhancedSocialMsgIdx !== -1) {
+      const socialContacts = batch.map(row => ({
+        username: socialUsernameIdx !== -1 ? row[socialUsernameIdx]?.trim() || "" : "",
+        platform: socialPlatformIdx !== -1 ? row[socialPlatformIdx]?.trim() || "" : "",
+        firstName: firstNameIdx !== -1 ? row[firstNameIdx]?.trim() || "there" : "there",
+        context: contextIdx !== -1 ? row[contextIdx]?.trim() || "" : ""
+      }));
+
+      const aiResults = await personalizeSocialBatch(socialContacts, personalizationPrompt);
+
+      for (let i = 0; i < batch.length; i++) {
+        const result = aiResults[i];
+        if (result && result.message) {
+          batch[i][enhancedSocialMsgIdx] = result.message;
+        } else {
+          const contact = socialContacts[i];
+          batch[i][enhancedSocialMsgIdx] = `Hi ${contact.firstName}, came across your ${contact.platform || 'social'} profile and wanted to connect!`;
+        }
+      }
+    }
+
+    const processedUpTo = rowStart + end;
+    await updateMyAssignment(campaignId, 'personalize', { processedUpTo });
+    await mergeAndFlush(campaignId, 'personalize', rows, fileId);
+
+    logger.info(`[Personalize Campaign] Worker batch ${batchIdx + 1}/${batchCount} complete (processedUpTo: ${processedUpTo})`);
+  }
+
+  await mergeAndFlush(campaignId, 'personalize', rows, fileId);
+  await updateMyAssignment(campaignId, 'personalize', { status: 'completed' });
+
+  const allDone = await checkAllComplete(campaignId, 'personalize');
+  if (allDone) {
+    await updateCampaignSettings(campaignId, { personalizationStatus: "completed" });
+  }
+
+  return NextResponse.json({
+    success: true,
+    message: "Worker personalization completed",
+    total: myRows.length,
+    personalized: personalizedCount
+  });
+}
+
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { campaignId, fileUrl } = body;
+    const { campaignId, fileUrl, serverBatch } = body;
 
     logger.info(`[Personalize Campaign] Received personalization request for campaign: ${campaignId}`);
 
@@ -187,180 +527,11 @@ export async function POST(request) {
       return NextResponse.json({ success: false, error: "Invalid fileUrl or Drive file ID" }, { status: 400 });
     }
 
-    const authClient = await getSheetsAuthClient();
-    if (!authClient) {
-      return NextResponse.json({ success: false, error: "Failed to authenticate with Google APIs" }, { status: 500 });
+    if (serverBatch) {
+      return await handleWorkerMode(campaignId, fileId, serverBatch);
+    } else {
+      return await handleCoordinatorMode(campaignId, fileId, fileUrl);
     }
-    const drive = google.drive({ version: "v3", auth: authClient });
-
-    // Read batch limits from SETTINGS
-    const batchSetting = await getSetting('personalizeBatchLimit');
-    const BATCH_SIZE = parseInt(batchSetting?.value1) || 30;
-    logger.info(`[Personalize Campaign] Batch size: ${BATCH_SIZE}`);
-
-    // 1. Download CSV
-    logger.info(`[Personalize Campaign] Downloading CSV file: ${fileId}`);
-    const driveFile = await drive.files.get({ fileId, alt: "media" });
-    const csvContent = driveFile.data;
-    if (typeof csvContent !== "string") throw new Error("Failed to download CSV as text content");
-
-    const rows = parseCSV(csvContent);
-    if (rows.length === 0) throw new Error("CSV file is empty");
-
-    const headers = rows[0];
-
-    // 2. Find column indices
-    const emailIdx = headers.findIndex(h => {
-      const n = h.toLowerCase().trim();
-      return n === "email" || n === "mail" || n === "email address";
-    });
-    if (emailIdx === -1) throw new Error("No email column found");
-
-    const firstNameIdx = headers.findIndex(h => {
-      const n = h.toLowerCase().trim();
-      return n === "firstname" || n === "first name" || n === "first";
-    });
-    const companyIdx = headers.findIndex(h => {
-      const n = h.toLowerCase().trim();
-      return n === "businessname" || n === "business name" || n === "company";
-    });
-    const contextIdx = headers.findIndex(h => h.toUpperCase() === "CONTEXT");
-    const enhancedSubjectIdx = headers.findIndex(h => h.toLowerCase().trim() === "enhancedsubject");
-    const enhancedBodyIdx = headers.findIndex(h => h.toLowerCase().trim() === "enhancedbody");
-    const enhancedSocialMsgIdx = headers.findIndex(h => h.toLowerCase().trim() === "enhancedsocialmessage");
-    const socialPlatformIdx = headers.findIndex(h => h.toUpperCase() === "SOCIALPLATFORM");
-    const socialUsernameIdx = headers.findIndex(h => h.toUpperCase() === "SOCIALUSERNAME");
-    const validationIdx = headers.indexOf("validation");
-
-    // 3. Fetch personalization prompt from campaign settings
-    let personalizationPrompt = "Write a short, professional cold outreach email. Address by first name, reference company. Keep it engaging, under 150 words. Vary subject lines.";
-
-    const campaignsResult = await getSheetDataApi("campaigns");
-    if (campaignsResult.success) {
-      const cHeaders = campaignsResult.headers;
-      const cIdIndex = cHeaders.indexOf("campaignId");
-      const cSettingsIndex = cHeaders.indexOf("settings");
-      const campaignRow = campaignsResult.data.find(r => r[cIdIndex] === campaignId);
-      if (campaignRow && cSettingsIndex !== -1) {
-        try {
-          const settingsStr = campaignRow[cSettingsIndex];
-          const settings = typeof settingsStr === "string" ? JSON.parse(settingsStr) : (settingsStr || {});
-          if (settings.aiPersonalizationPrompt) personalizationPrompt = settings.aiPersonalizationPrompt;
-        } catch {}
-      }
-    }
-
-    // 4. Determine channel
-    let channel = "email";
-    try {
-      const campaignsResult2 = await getSheetDataApi("campaigns");
-      if (campaignsResult2.success) {
-        const cHeaders = campaignsResult2.headers;
-        const cIdIndex = cHeaders.indexOf("campaignId");
-        const cSettingsIndex = cHeaders.indexOf("settings");
-        const campaignRow = campaignsResult2.data.find(r => r[cIdIndex] === campaignId);
-        if (campaignRow && cSettingsIndex !== -1) {
-          const settingsStr = campaignRow[cSettingsIndex];
-          const settings = typeof settingsStr === "string" ? JSON.parse(settingsStr) : (settingsStr || {});
-          channel = settings.channel || "email";
-        }
-      }
-    } catch {}
-
-    // 5. Process in batches
-    const dataRows = rows.slice(1);
-    let personalizedCount = 0;
-
-    const batchCount = Math.ceil(dataRows.length / BATCH_SIZE);
-    for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
-      if (await isCampaignPaused(campaignId)) {
-        logger.info(`[Personalize Campaign] Campaign paused at batch ${batchIdx + 1}/${batchCount}`);
-        break;
-      }
-
-      const start = batchIdx * BATCH_SIZE;
-      const end = Math.min(start + BATCH_SIZE, dataRows.length);
-      const batch = dataRows.slice(start, end);
-
-      // Email personalization
-      if (channel === "email") {
-        const contacts = batch.map(row => ({
-          email: row[emailIdx]?.trim() || "",
-          firstName: firstNameIdx !== -1 ? row[firstNameIdx]?.trim() || "there" : "there",
-          company: companyIdx !== -1 ? row[companyIdx]?.trim() || "your company" : "your company",
-          context: contextIdx !== -1 ? row[contextIdx]?.trim() || "" : ""
-        }));
-
-        const aiResults = await personalizeBatch(contacts, personalizationPrompt, headers);
-
-        for (let i = 0; i < batch.length; i++) {
-          const result = aiResults[i];
-          if (result) {
-            if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = result.subject || "";
-            if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = result.body || "";
-            personalizedCount++;
-          } else {
-            // Fallback
-            const firstName = contacts[i].firstName;
-            const company = contacts[i].company;
-            if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = `Quick question for ${firstName}`;
-            if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = `Hi ${firstName},\n\nHope this finds you well. I wanted to reach out about ${company}.\n\nBest,\nWebFixx Team`;
-            personalizedCount++;
-          }
-        }
-      }
-
-      // Social message personalization
-      if (channel === "social" && enhancedSocialMsgIdx !== -1) {
-        const socialContacts = batch.map(row => ({
-          username: socialUsernameIdx !== -1 ? row[socialUsernameIdx]?.trim() || "" : "",
-          platform: socialPlatformIdx !== -1 ? row[socialPlatformIdx]?.trim() || "" : "",
-          firstName: firstNameIdx !== -1 ? row[firstNameIdx]?.trim() || "there" : "there",
-          context: contextIdx !== -1 ? row[contextIdx]?.trim() || "" : ""
-        }));
-
-        const aiResults = await personalizeSocialBatch(socialContacts, personalizationPrompt);
-
-        for (let i = 0; i < batch.length; i++) {
-          const result = aiResults[i];
-          if (result && result.message) {
-            batch[i][enhancedSocialMsgIdx] = result.message;
-          } else {
-            const contact = socialContacts[i];
-            batch[i][enhancedSocialMsgIdx] = `Hi ${contact.firstName}, came across your ${contact.platform || 'social'} profile and wanted to connect!`;
-          }
-        }
-      }
-
-      // Live flush after each batch
-      try {
-        await drive.files.update({
-          fileId,
-          media: { mimeType: "text/csv", body: stringifyCSV(rows) }
-        });
-      } catch (flushErr) {
-        logger.warn(`[Personalize Campaign] Live flush failed at batch ${batchIdx + 1}: ${flushErr.message}`);
-      }
-
-      logger.info(`[Personalize Campaign] Batch ${batchIdx + 1}/${batchCount} complete`);
-    }
-
-    // 6. Final flush
-    logger.info(`[Personalize Campaign] Final CSV flush to Drive: ${fileId}`);
-    await drive.files.update({
-      fileId,
-      media: { mimeType: "text/csv", body: stringifyCSV(rows) }
-    });
-
-    // 7. Update campaign settings
-    await updateCampaignSettings(campaignId, { personalizationStatus: "completed" });
-
-    return NextResponse.json({
-      success: true,
-      message: "Campaign personalization completed successfully",
-      total: dataRows.length,
-      personalized: personalizedCount
-    });
 
   } catch (error) {
     logger.error(`[Personalize Campaign] Error: ${error.message}`, { stack: error.stack });

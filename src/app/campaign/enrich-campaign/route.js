@@ -6,6 +6,7 @@ import * as cheerio from "cheerio";
 import geminiHelper from "../../api/gemini.js";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
+import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -254,257 +255,528 @@ async function updateCampaignSettings(campaignId, updates) {
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { campaignId, fileUrl } = body;
+    const { campaignId, fileUrl, serverBatch } = body;
 
-    logger.info(`[Enrich Campaign] Received enrichment request for campaign: ${campaignId}`);
-
-    if (!campaignId || !fileUrl) {
-      return NextResponse.json({ success: false, error: "Missing campaignId or fileUrl" }, { status: 400 });
+    if (!campaignId) {
+      return NextResponse.json({ success: false, error: "Missing campaignId" }, { status: 400 });
     }
 
-    const fileId = extractFileId(fileUrl);
-    if (!fileId) {
-      return NextResponse.json({ success: false, error: "Invalid fileUrl or Drive file ID" }, { status: 400 });
+    if (serverBatch) {
+      return await handleWorkerMode(campaignId, fileUrl, serverBatch);
     }
 
-    const authClient = await getSheetsAuthClient();
-    if (!authClient) {
-      return NextResponse.json({ success: false, error: "Failed to authenticate with Google APIs" }, { status: 500 });
-    }
-    const drive = google.drive({ version: "v3", auth: authClient });
-
-    // Read batch limits from SETTINGS
-    const enrichBatchSetting = await getSetting('enrichBatchLimit');
-    const ENRICH_BATCH_SIZE = parseInt(enrichBatchSetting?.value1) || 20;
-    const searchBatchSetting = await getSetting('enrichSearchBatchLimit');
-    const SEARCH_BATCH_SIZE = parseInt(searchBatchSetting?.value1) || 10;
-    const aiBatchSetting = await getSetting('enrichAiBatchLimit');
-    const AI_BATCH_SIZE = parseInt(aiBatchSetting?.value1) || 15;
-
-    logger.info(`[Enrich Campaign] enrich=${ENRICH_BATCH_SIZE}, search=${SEARCH_BATCH_SIZE}, ai=${AI_BATCH_SIZE}`);
-
-    // 1. Download CSV
-    logger.info(`[Enrich Campaign] Downloading CSV file: ${fileId}`);
-    const driveFile = await drive.files.get({ fileId, alt: "media" });
-    const csvContent = driveFile.data;
-    if (typeof csvContent !== "string") throw new Error("Failed to download CSV as text content");
-
-    const cleanContent = csvContent.charCodeAt(0) === 0xFEFF ? csvContent.slice(1) : csvContent;
-
-    // 2. Parse and find columns
-    const parsedRows = parseCSV(cleanContent);
-    if (parsedRows.length === 0) throw new Error("CSV file is empty");
-
-    const rawHeaders = parsedRows[0];
-    const headers = rawHeaders.map(h => h.trim().toUpperCase());
-
-    const emailIdx = headers.indexOf("EMAIL");
-    if (emailIdx === -1) throw new Error("EMAIL column not found");
-
-    const firstNameIdx = headers.indexOf("FIRSTNAME");
-    const companyIdx = headers.indexOf("BUSINESSNAME");
-    const urlIdx = headers.indexOf("URL");
-    const contextIdx = headers.indexOf("CONTEXT");
-    const validationIdx = headers.indexOf("validation");
-
-    const dataRows = parsedRows.slice(1);
-    logger.info(`[Enrich Campaign] Processing ${dataRows.length} rows`);
-
-    // 3. Inference pass (firstName, company from email)
-    for (const row of dataRows) {
-      const email = row[emailIdx]?.trim();
-      if (!email) continue;
-      if (firstNameIdx !== -1 && !row[firstNameIdx]?.trim()) {
-        row[firstNameIdx] = inferFirstName(email);
-      }
-      if (companyIdx !== -1 && !row[companyIdx]?.trim()) {
-        row[companyIdx] = inferCompany(email);
-      }
+    if (!fileUrl) {
+      return NextResponse.json({ success: false, error: "Missing fileUrl" }, { status: 400 });
     }
 
-    // 4. URL Enrichment (batched)
-    let urlScrapedCount = 0;
-    const scrapeCache = new Map();
-    const rowsWithUrl = dataRows.filter(r => {
-      const url = r[urlIdx]?.trim();
-      return url && url.startsWith("http");
-    });
-
-    const enrichBatchCount = Math.ceil(rowsWithUrl.length / ENRICH_BATCH_SIZE);
-    for (let batchIdx = 0; batchIdx < enrichBatchCount; batchIdx++) {
-      if (await isCampaignPaused(campaignId)) {
-        logger.info(`[Enrich Campaign] Campaign paused at URL batch ${batchIdx + 1}/${enrichBatchCount}`);
-        break;
-      }
-
-      const start = batchIdx * ENRICH_BATCH_SIZE;
-      const end = Math.min(start + ENRICH_BATCH_SIZE, rowsWithUrl.length);
-      const batch = rowsWithUrl.slice(start, end);
-
-      const scrapePromises = batch.map(async (row) => {
-        const url = row[urlIdx]?.trim();
-        if (scrapeCache.has(url)) {
-          const cached = scrapeCache.get(url);
-          if (cached && contextIdx !== -1) row[contextIdx] = cached;
-          return;
-        }
-
-        const result = await scrapeUrl(url);
-        if (result) {
-          let contextValue = null;
-          const parts = [];
-          if (result.title) parts.push(`Page: ${result.title}`);
-          if (result.description) parts.push(result.description);
-          contextValue = parts.join(". ") || "";
-
-          if (contextIdx !== -1) row[contextIdx] = contextValue;
-          scrapeCache.set(url, contextValue);
-          urlScrapedCount++;
-        }
-
-        await new Promise(r => setTimeout(r, 200));
-      });
-
-      await Promise.allSettled(scrapePromises);
-
-      // Live flush
-      try {
-        await drive.files.update({
-          fileId,
-          media: { mimeType: "text/csv", body: stringifyCSV(parsedRows) }
-        });
-      } catch (flushErr) {
-        logger.warn(`[Enrich Campaign] Live flush failed at batch ${batchIdx + 1}: ${flushErr.message}`);
-      }
-
-      logger.info(`[Enrich Campaign] URL batch ${batchIdx + 1}/${enrichBatchCount} complete (${urlScrapedCount} scraped)`);
-    }
-
-    // 5. Google Search Fallback (rows without URL, batched)
-    let searchFoundCount = 0;
-    const rowsWithoutUrl = dataRows.filter(r => {
-      const url = r[urlIdx]?.trim();
-      const email = r[emailIdx]?.trim();
-      const context = r[contextIdx]?.trim();
-      return email && (!url || !url.startsWith("http")) && (!context || context.length < 10);
-    });
-
-    const searchBatchCount = Math.ceil(rowsWithoutUrl.length / SEARCH_BATCH_SIZE);
-    for (let batchIdx = 0; batchIdx < searchBatchCount; batchIdx++) {
-      if (await isCampaignPaused(campaignId)) {
-        logger.info(`[Enrich Campaign] Campaign paused at search batch ${batchIdx + 1}/${searchBatchCount}`);
-        break;
-      }
-
-      const start = batchIdx * SEARCH_BATCH_SIZE;
-      const end = Math.min(start + SEARCH_BATCH_SIZE, rowsWithoutUrl.length);
-      const batch = rowsWithoutUrl.slice(start, end);
-
-      for (const row of batch) {
-        const email = row[emailIdx]?.trim();
-        const firstName = firstNameIdx !== -1 ? row[firstNameIdx]?.trim() : "";
-        const company = companyIdx !== -1 ? row[companyIdx]?.trim() : "";
-
-        if (!email) continue;
-
-        const query = [
-          firstName && company ? `"${firstName}" "${company}"` : "",
-          company || "",
-          "site:linkedin.com OR site:twitter.com OR site:github.com"
-        ].filter(Boolean).join(" ");
-
-        if (!query) continue;
-
-        const results = await googleSearch(query);
-        if (results.length > 0) {
-          const bestResult = results.find(r =>
-            r.url.includes("linkedin.com") || r.url.includes("twitter.com") || r.url.includes("github.com")
-          ) || results[0];
-
-          let contextValue = bestResult.snippet || bestResult.title || "";
-          if (bestResult.url && contextIdx !== -1) {
-            contextValue = `${contextValue} | Profile: ${bestResult.url}`.trim();
-          }
-          if (contextIdx !== -1) row[contextIdx] = contextValue;
-          searchFoundCount++;
-        }
-
-        await new Promise(r => setTimeout(r, 500));
-      }
-
-      // Live flush
-      try {
-        await drive.files.update({
-          fileId,
-          media: { mimeType: "text/csv", body: stringifyCSV(parsedRows) }
-        });
-      } catch (flushErr) {
-        logger.warn(`[Enrich Campaign] Live flush failed at search batch ${batchIdx + 1}: ${flushErr.message}`);
-      }
-
-      logger.info(`[Enrich Campaign] Search batch ${batchIdx + 1}/${searchBatchCount} complete (${searchFoundCount} found)`);
-    }
-
-    // 6. Batch AI Analysis (on scraped content)
-    const rowsNeedingAnalysis = dataRows.filter(r => {
-      const context = r[contextIdx]?.trim();
-      return context && context.length > 10 && !context.includes("Industry:");
-    });
-
-    const aiBatchCount = Math.ceil(rowsNeedingAnalysis.length / AI_BATCH_SIZE);
-    for (let batchIdx = 0; batchIdx < aiBatchCount; batchIdx++) {
-      if (await isCampaignPaused(campaignId)) break;
-
-      const start = batchIdx * AI_BATCH_SIZE;
-      const end = Math.min(start + AI_BATCH_SIZE, rowsNeedingAnalysis.length);
-      const batch = rowsNeedingAnalysis.slice(start, end);
-
-      const scrapeResults = batch.map(row => ({
-        title: "",
-        description: row[contextIdx]?.trim() || "",
-        bodyText: ""
-      }));
-
-      const aiResults = await analyzeBatchWithGemini(scrapeResults);
-
-      for (let i = 0; i < batch.length; i++) {
-        const aiResult = aiResults[i];
-        if (aiResult) {
-          const enriched = [
-            aiResult.summary,
-            aiResult.industry ? `Industry: ${aiResult.industry}` : "",
-            aiResult.services ? `Services: ${aiResult.services}` : ""
-          ].filter(Boolean).join(". ");
-          if (enriched) batch[i][contextIdx] = enriched;
-        }
-      }
-
-      logger.info(`[Enrich Campaign] AI batch ${batchIdx + 1}/${aiBatchCount} complete`);
-    }
-
-    // 7. Final CSV flush
-    logger.info(`[Enrich Campaign] Final CSV flush to Drive: ${fileId}`);
-    await drive.files.update({
-      fileId,
-      media: { mimeType: "text/csv", body: stringifyCSV(parsedRows) }
-    });
-
-    // 8. Update campaign settings
-    await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
-
-    return NextResponse.json({
-      success: true,
-      message: "Campaign enrichment completed",
-      total: dataRows.length,
-      urlsScraped: urlScrapedCount,
-      searchFound: searchFoundCount,
-      aiAnalyzed: rowsNeedingAnalysis.length
-    });
+    return await handleCoordinatorMode(campaignId, fileUrl);
 
   } catch (error) {
     logger.error(`[Enrich Campaign] Error: ${error.message}`, { stack: error.stack });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
+}
+
+async function handleCoordinatorMode(campaignId, fileUrl) {
+  logger.info(`[Enrich Campaign] Received enrichment request for campaign: ${campaignId}`);
+
+  const fileId = extractFileId(fileUrl);
+  if (!fileId) {
+    return NextResponse.json({ success: false, error: "Invalid fileUrl or Drive file ID" }, { status: 400 });
+  }
+
+  const authClient = await getSheetsAuthClient();
+  if (!authClient) {
+    return NextResponse.json({ success: false, error: "Failed to authenticate with Google APIs" }, { status: 500 });
+  }
+  const drive = google.drive({ version: "v3", auth: authClient });
+
+  // Read batch limits from SETTINGS
+  const enrichBatchSetting = await getSetting('enrichBatchLimit');
+  const ENRICH_BATCH_SIZE = parseInt(enrichBatchSetting?.value1) || 20;
+  const searchBatchSetting = await getSetting('enrichSearchBatchLimit');
+  const SEARCH_BATCH_SIZE = parseInt(searchBatchSetting?.value1) || 10;
+  const aiBatchSetting = await getSetting('enrichAiBatchLimit');
+  const AI_BATCH_SIZE = parseInt(aiBatchSetting?.value1) || 15;
+
+  logger.info(`[Enrich Campaign] enrich=${ENRICH_BATCH_SIZE}, search=${SEARCH_BATCH_SIZE}, ai=${AI_BATCH_SIZE}`);
+
+  // 1. Download CSV
+  logger.info(`[Enrich Campaign] Downloading CSV file: ${fileId}`);
+  const driveFile = await drive.files.get({ fileId, alt: "media" });
+  const csvContent = driveFile.data;
+  if (typeof csvContent !== "string") throw new Error("Failed to download CSV as text content");
+
+  const cleanContent = csvContent.charCodeAt(0) === 0xFEFF ? csvContent.slice(1) : csvContent;
+
+  // 2. Parse and find columns
+  const parsedRows = parseCSV(cleanContent);
+  if (parsedRows.length === 0) throw new Error("CSV file is empty");
+
+  const rawHeaders = parsedRows[0];
+  const headers = rawHeaders.map(h => h.trim().toUpperCase());
+
+  const emailIdx = headers.indexOf("EMAIL");
+  if (emailIdx === -1) throw new Error("EMAIL column not found");
+
+  const firstNameIdx = headers.indexOf("FIRSTNAME");
+  const companyIdx = headers.indexOf("BUSINESSNAME");
+  const urlIdx = headers.indexOf("URL");
+  const contextIdx = headers.indexOf("CONTEXT");
+  const validationIdx = headers.indexOf("validation");
+
+  const dataRows = parsedRows.slice(1);
+  logger.info(`[Enrich Campaign] Processing ${dataRows.length} rows`);
+
+  const multiEnabled = await isMultiServerEnabled();
+  if (multiEnabled) {
+    const dispatchResult = await dispatchToServers(campaignId, 'enrich', fileUrl, dataRows.length);
+    if (dispatchResult) {
+      return NextResponse.json({ success: true, dispatched: true, servers: dispatchResult });
+    }
+  }
+
+  // 3. Inference pass (firstName, company from email)
+  for (const row of dataRows) {
+    const email = row[emailIdx]?.trim();
+    if (!email) continue;
+    if (firstNameIdx !== -1 && !row[firstNameIdx]?.trim()) {
+      row[firstNameIdx] = inferFirstName(email);
+    }
+    if (companyIdx !== -1 && !row[companyIdx]?.trim()) {
+      row[companyIdx] = inferCompany(email);
+    }
+  }
+
+  // 4. URL Enrichment (batched)
+  let urlScrapedCount = 0;
+  const scrapeCache = new Map();
+  const rowsWithUrl = dataRows.filter(r => {
+    const url = r[urlIdx]?.trim();
+    return url && url.startsWith("http");
+  });
+
+  const enrichBatchCount = Math.ceil(rowsWithUrl.length / ENRICH_BATCH_SIZE);
+  for (let batchIdx = 0; batchIdx < enrichBatchCount; batchIdx++) {
+    if (await isCampaignPaused(campaignId)) {
+      logger.info(`[Enrich Campaign] Campaign paused at URL batch ${batchIdx + 1}/${enrichBatchCount}`);
+      break;
+    }
+
+    const start = batchIdx * ENRICH_BATCH_SIZE;
+    const end = Math.min(start + ENRICH_BATCH_SIZE, rowsWithUrl.length);
+    const batch = rowsWithUrl.slice(start, end);
+
+    const scrapePromises = batch.map(async (row) => {
+      const url = row[urlIdx]?.trim();
+      if (scrapeCache.has(url)) {
+        const cached = scrapeCache.get(url);
+        if (cached && contextIdx !== -1) row[contextIdx] = cached;
+        return;
+      }
+
+      const result = await scrapeUrl(url);
+      if (result) {
+        let contextValue = null;
+        const parts = [];
+        if (result.title) parts.push(`Page: ${result.title}`);
+        if (result.description) parts.push(result.description);
+        contextValue = parts.join(". ") || "";
+
+        if (contextIdx !== -1) row[contextIdx] = contextValue;
+        scrapeCache.set(url, contextValue);
+        urlScrapedCount++;
+      }
+
+      await new Promise(r => setTimeout(r, 200));
+    });
+
+    await Promise.allSettled(scrapePromises);
+
+    // Live flush
+    try {
+      await drive.files.update({
+        fileId,
+        media: { mimeType: "text/csv", body: stringifyCSV(parsedRows) }
+      });
+    } catch (flushErr) {
+      logger.warn(`[Enrich Campaign] Live flush failed at batch ${batchIdx + 1}: ${flushErr.message}`);
+    }
+
+    logger.info(`[Enrich Campaign] URL batch ${batchIdx + 1}/${enrichBatchCount} complete (${urlScrapedCount} scraped)`);
+  }
+
+  // 5. Google Search Fallback (rows without URL, batched)
+  let searchFoundCount = 0;
+  const rowsWithoutUrl = dataRows.filter(r => {
+    const url = r[urlIdx]?.trim();
+    const email = r[emailIdx]?.trim();
+    const context = r[contextIdx]?.trim();
+    return email && (!url || !url.startsWith("http")) && (!context || context.length < 10);
+  });
+
+  const searchBatchCount = Math.ceil(rowsWithoutUrl.length / SEARCH_BATCH_SIZE);
+  for (let batchIdx = 0; batchIdx < searchBatchCount; batchIdx++) {
+    if (await isCampaignPaused(campaignId)) {
+      logger.info(`[Enrich Campaign] Campaign paused at search batch ${batchIdx + 1}/${searchBatchCount}`);
+      break;
+    }
+
+    const start = batchIdx * SEARCH_BATCH_SIZE;
+    const end = Math.min(start + SEARCH_BATCH_SIZE, rowsWithoutUrl.length);
+    const batch = rowsWithoutUrl.slice(start, end);
+
+    for (const row of batch) {
+      const email = row[emailIdx]?.trim();
+      const firstName = firstNameIdx !== -1 ? row[firstNameIdx]?.trim() : "";
+      const company = companyIdx !== -1 ? row[companyIdx]?.trim() : "";
+
+      if (!email) continue;
+
+      const query = [
+        firstName && company ? `"${firstName}" "${company}"` : "",
+        company || "",
+        "site:linkedin.com OR site:twitter.com OR site:github.com"
+      ].filter(Boolean).join(" ");
+
+      if (!query) continue;
+
+      const results = await googleSearch(query);
+      if (results.length > 0) {
+        const bestResult = results.find(r =>
+          r.url.includes("linkedin.com") || r.url.includes("twitter.com") || r.url.includes("github.com")
+        ) || results[0];
+
+        let contextValue = bestResult.snippet || bestResult.title || "";
+        if (bestResult.url && contextIdx !== -1) {
+          contextValue = `${contextValue} | Profile: ${bestResult.url}`.trim();
+        }
+        if (contextIdx !== -1) row[contextIdx] = contextValue;
+        searchFoundCount++;
+      }
+
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    // Live flush
+    try {
+      await drive.files.update({
+        fileId,
+        media: { mimeType: "text/csv", body: stringifyCSV(parsedRows) }
+      });
+    } catch (flushErr) {
+      logger.warn(`[Enrich Campaign] Live flush failed at search batch ${batchIdx + 1}: ${flushErr.message}`);
+    }
+
+    logger.info(`[Enrich Campaign] Search batch ${batchIdx + 1}/${searchBatchCount} complete (${searchFoundCount} found)`);
+  }
+
+  // 6. Batch AI Analysis (on scraped content)
+  const rowsNeedingAnalysis = dataRows.filter(r => {
+    const context = r[contextIdx]?.trim();
+    return context && context.length > 10 && !context.includes("Industry:");
+  });
+
+  const aiBatchCount = Math.ceil(rowsNeedingAnalysis.length / AI_BATCH_SIZE);
+  for (let batchIdx = 0; batchIdx < aiBatchCount; batchIdx++) {
+    if (await isCampaignPaused(campaignId)) break;
+
+    const start = batchIdx * AI_BATCH_SIZE;
+    const end = Math.min(start + AI_BATCH_SIZE, rowsNeedingAnalysis.length);
+    const batch = rowsNeedingAnalysis.slice(start, end);
+
+    const scrapeResults = batch.map(row => ({
+      title: "",
+      description: row[contextIdx]?.trim() || "",
+      bodyText: ""
+    }));
+
+    const aiResults = await analyzeBatchWithGemini(scrapeResults);
+
+    for (let i = 0; i < batch.length; i++) {
+      const aiResult = aiResults[i];
+      if (aiResult) {
+        const enriched = [
+          aiResult.summary,
+          aiResult.industry ? `Industry: ${aiResult.industry}` : "",
+          aiResult.services ? `Services: ${aiResult.services}` : ""
+        ].filter(Boolean).join(". ");
+        if (enriched) batch[i][contextIdx] = enriched;
+      }
+    }
+
+    logger.info(`[Enrich Campaign] AI batch ${batchIdx + 1}/${aiBatchCount} complete`);
+  }
+
+  // 7. Final CSV flush
+  logger.info(`[Enrich Campaign] Final CSV flush to Drive: ${fileId}`);
+  await drive.files.update({
+    fileId,
+    media: { mimeType: "text/csv", body: stringifyCSV(parsedRows) }
+  });
+
+  // 8. Update campaign settings
+  await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
+
+  return NextResponse.json({
+    success: true,
+    message: "Campaign enrichment completed",
+    total: dataRows.length,
+    urlsScraped: urlScrapedCount,
+    searchFound: searchFoundCount,
+    aiAnalyzed: rowsNeedingAnalysis.length
+  });
+}
+
+async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
+  logger.info(`[Enrich Campaign] Worker mode for campaign: ${campaignId}, rows ${serverBatch.rowStart}-${serverBatch.rowEnd}`);
+
+  const assignment = await findMyAssignment(campaignId, 'enrich');
+  if (!assignment) {
+    return NextResponse.json({ success: false, error: "No assignment found for this worker" }, { status: 404 });
+  }
+
+  await updateMyAssignment(campaignId, 'enrich', { status: 'running' });
+
+  const fileId = extractFileId(fileUrl);
+  if (!fileId) {
+    return NextResponse.json({ success: false, error: "Invalid fileUrl or Drive file ID" }, { status: 400 });
+  }
+
+  const authClient = await getSheetsAuthClient();
+  if (!authClient) {
+    return NextResponse.json({ success: false, error: "Failed to authenticate with Google APIs" }, { status: 500 });
+  }
+  const drive = google.drive({ version: "v3", auth: authClient });
+
+  const enrichBatchSetting = await getSetting('enrichBatchLimit');
+  const ENRICH_BATCH_SIZE = parseInt(enrichBatchSetting?.value1) || 20;
+  const searchBatchSetting = await getSetting('enrichSearchBatchLimit');
+  const SEARCH_BATCH_SIZE = parseInt(searchBatchSetting?.value1) || 10;
+  const aiBatchSetting = await getSetting('enrichAiBatchLimit');
+  const AI_BATCH_SIZE = parseInt(aiBatchSetting?.value1) || 15;
+
+  // 1. Download full CSV
+  logger.info(`[Enrich Campaign] Worker downloading CSV file: ${fileId}`);
+  const driveFile = await drive.files.get({ fileId, alt: "media" });
+  const csvContent = driveFile.data;
+  if (typeof csvContent !== "string") throw new Error("Failed to download CSV as text content");
+
+  const cleanContent = csvContent.charCodeAt(0) === 0xFEFF ? csvContent.slice(1) : csvContent;
+
+  // 2. Parse and find columns
+  const parsedRows = parseCSV(cleanContent);
+  if (parsedRows.length === 0) throw new Error("CSV file is empty");
+
+  const rawHeaders = parsedRows[0];
+  const headers = rawHeaders.map(h => h.trim().toUpperCase());
+
+  const emailIdx = headers.indexOf("EMAIL");
+  if (emailIdx === -1) throw new Error("EMAIL column not found");
+
+  const firstNameIdx = headers.indexOf("FIRSTNAME");
+  const companyIdx = headers.indexOf("BUSINESSNAME");
+  const urlIdx = headers.indexOf("URL");
+  const contextIdx = headers.indexOf("CONTEXT");
+  const validationIdx = headers.indexOf("validation");
+
+  const allDataRows = parsedRows.slice(1);
+
+  // 3. Extract assigned slice
+  const rowStart = serverBatch.rowStart || 0;
+  const rowEnd = Math.min(serverBatch.rowEnd || allDataRows.length, allDataRows.length);
+  const dataRows = allDataRows.slice(rowStart, rowEnd);
+
+  logger.info(`[Enrich Campaign] Worker processing ${dataRows.length} rows (slice ${rowStart}-${rowEnd})`);
+
+  // 4. Inference pass
+  for (const row of dataRows) {
+    const email = row[emailIdx]?.trim();
+    if (!email) continue;
+    if (firstNameIdx !== -1 && !row[firstNameIdx]?.trim()) {
+      row[firstNameIdx] = inferFirstName(email);
+    }
+    if (companyIdx !== -1 && !row[companyIdx]?.trim()) {
+      row[companyIdx] = inferCompany(email);
+    }
+  }
+
+  // 5. URL Enrichment (batched)
+  let urlScrapedCount = 0;
+  const scrapeCache = new Map();
+  const rowsWithUrl = dataRows.filter(r => {
+    const url = r[urlIdx]?.trim();
+    return url && url.startsWith("http");
+  });
+
+  const enrichBatchCount = Math.ceil(rowsWithUrl.length / ENRICH_BATCH_SIZE);
+  for (let batchIdx = 0; batchIdx < enrichBatchCount; batchIdx++) {
+    if (await isCampaignPaused(campaignId)) {
+      logger.info(`[Enrich Campaign] Worker campaign paused at URL batch ${batchIdx + 1}/${enrichBatchCount}`);
+      break;
+    }
+
+    const start = batchIdx * ENRICH_BATCH_SIZE;
+    const end = Math.min(start + ENRICH_BATCH_SIZE, rowsWithUrl.length);
+    const batch = rowsWithUrl.slice(start, end);
+
+    const scrapePromises = batch.map(async (row) => {
+      const url = row[urlIdx]?.trim();
+      if (scrapeCache.has(url)) {
+        const cached = scrapeCache.get(url);
+        if (cached && contextIdx !== -1) row[contextIdx] = cached;
+        return;
+      }
+
+      const result = await scrapeUrl(url);
+      if (result) {
+        let contextValue = null;
+        const parts = [];
+        if (result.title) parts.push(`Page: ${result.title}`);
+        if (result.description) parts.push(result.description);
+        contextValue = parts.join(". ") || "";
+
+        if (contextIdx !== -1) row[contextIdx] = contextValue;
+        scrapeCache.set(url, contextValue);
+        urlScrapedCount++;
+      }
+
+      await new Promise(r => setTimeout(r, 200));
+    });
+
+    await Promise.allSettled(scrapePromises);
+
+    await updateMyAssignment(campaignId, 'enrich', {
+      processedUpTo: rowStart + (batchIdx + 1) * ENRICH_BATCH_SIZE
+    });
+    await mergeAndFlush(campaignId, 'enrich', parsedRows, fileId);
+
+    logger.info(`[Enrich Campaign] Worker URL batch ${batchIdx + 1}/${enrichBatchCount} complete (${urlScrapedCount} scraped)`);
+  }
+
+  // 6. Google Search Fallback
+  let searchFoundCount = 0;
+  const rowsWithoutUrl = dataRows.filter(r => {
+    const url = r[urlIdx]?.trim();
+    const email = r[emailIdx]?.trim();
+    const context = r[contextIdx]?.trim();
+    return email && (!url || !url.startsWith("http")) && (!context || context.length < 10);
+  });
+
+  const searchBatchCount = Math.ceil(rowsWithoutUrl.length / SEARCH_BATCH_SIZE);
+  for (let batchIdx = 0; batchIdx < searchBatchCount; batchIdx++) {
+    if (await isCampaignPaused(campaignId)) {
+      logger.info(`[Enrich Campaign] Worker campaign paused at search batch ${batchIdx + 1}/${searchBatchCount}`);
+      break;
+    }
+
+    const start = batchIdx * SEARCH_BATCH_SIZE;
+    const end = Math.min(start + SEARCH_BATCH_SIZE, rowsWithoutUrl.length);
+    const batch = rowsWithoutUrl.slice(start, end);
+
+    for (const row of batch) {
+      const email = row[emailIdx]?.trim();
+      const firstName = firstNameIdx !== -1 ? row[firstNameIdx]?.trim() : "";
+      const company = companyIdx !== -1 ? row[companyIdx]?.trim() : "";
+
+      if (!email) continue;
+
+      const query = [
+        firstName && company ? `"${firstName}" "${company}"` : "",
+        company || "",
+        "site:linkedin.com OR site:twitter.com OR site:github.com"
+      ].filter(Boolean).join(" ");
+
+      if (!query) continue;
+
+      const results = await googleSearch(query);
+      if (results.length > 0) {
+        const bestResult = results.find(r =>
+          r.url.includes("linkedin.com") || r.url.includes("twitter.com") || r.url.includes("github.com")
+        ) || results[0];
+
+        let contextValue = bestResult.snippet || bestResult.title || "";
+        if (bestResult.url && contextIdx !== -1) {
+          contextValue = `${contextValue} | Profile: ${bestResult.url}`.trim();
+        }
+        if (contextIdx !== -1) row[contextIdx] = contextValue;
+        searchFoundCount++;
+      }
+
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    await updateMyAssignment(campaignId, 'enrich', {
+      processedUpTo: rowStart + (batchIdx + 1) * SEARCH_BATCH_SIZE
+    });
+    await mergeAndFlush(campaignId, 'enrich', parsedRows, fileId);
+
+    logger.info(`[Enrich Campaign] Worker search batch ${batchIdx + 1}/${searchBatchCount} complete (${searchFoundCount} found)`);
+  }
+
+  // 7. Batch AI Analysis
+  const rowsNeedingAnalysis = dataRows.filter(r => {
+    const context = r[contextIdx]?.trim();
+    return context && context.length > 10 && !context.includes("Industry:");
+  });
+
+  const aiBatchCount = Math.ceil(rowsNeedingAnalysis.length / AI_BATCH_SIZE);
+  for (let batchIdx = 0; batchIdx < aiBatchCount; batchIdx++) {
+    if (await isCampaignPaused(campaignId)) break;
+
+    const start = batchIdx * AI_BATCH_SIZE;
+    const end = Math.min(start + AI_BATCH_SIZE, rowsNeedingAnalysis.length);
+    const batch = rowsNeedingAnalysis.slice(start, end);
+
+    const scrapeResults = batch.map(row => ({
+      title: "",
+      description: row[contextIdx]?.trim() || "",
+      bodyText: ""
+    }));
+
+    const aiResults = await analyzeBatchWithGemini(scrapeResults);
+
+    for (let i = 0; i < batch.length; i++) {
+      const aiResult = aiResults[i];
+      if (aiResult) {
+        const enriched = [
+          aiResult.summary,
+          aiResult.industry ? `Industry: ${aiResult.industry}` : "",
+          aiResult.services ? `Services: ${aiResult.services}` : ""
+        ].filter(Boolean).join(". ");
+        if (enriched) batch[i][contextIdx] = enriched;
+      }
+    }
+
+    logger.info(`[Enrich Campaign] Worker AI batch ${batchIdx + 1}/${aiBatchCount} complete`);
+  }
+
+  // 8. Final flush
+  logger.info(`[Enrich Campaign] Worker final flush to Drive: ${fileId}`);
+  await drive.files.update({
+    fileId,
+    media: { mimeType: "text/csv", body: stringifyCSV(parsedRows) }
+  });
+
+  await updateMyAssignment(campaignId, 'enrich', {
+    status: 'completed',
+    processedUpTo: rowEnd
+  });
+
+  // 9. Check if all workers are done
+  const allDone = await checkAllComplete(campaignId, 'enrich');
+  if (allDone) {
+    await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
+  }
+
+  return NextResponse.json({
+    success: true,
+    message: "Worker enrichment completed",
+    total: dataRows.length,
+    urlsScraped: urlScrapedCount,
+    searchFound: searchFoundCount,
+    aiAnalyzed: rowsNeedingAnalysis.length
+  });
 }
 
 export async function OPTIONS() {
