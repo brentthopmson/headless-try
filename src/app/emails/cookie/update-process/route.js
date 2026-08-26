@@ -61,7 +61,8 @@ export async function POST(request) {
     }).catch(() => {});
 
     logger.info(`[update-process][${browserId}] Woke engine | engineProcessing=true`);
-    return corsJson({ success: true, engineProcessing: true });
+    const cachedRow = getCachedRow(browserId) || {};
+    return corsJson({ success: true, engineProcessing: true, data: cachedRow });
 }
 
 export async function OPTIONS() {

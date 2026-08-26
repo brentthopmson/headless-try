@@ -979,9 +979,13 @@ let processingStartTime = null;
                     body: objectToFormData(payload)
                 });
                 if (!res.ok) throw new Error('HTTP ' + res.status);
-                await res.json();
+                const data = await res.json();
                 isProcessing = true;
-                updateUIForStatus('PROCESSING', {});
+                if (data.data && data.data.status && data.data.status !== 'PROCESSING') {
+                    updateUIForStatus(data.data.status, data.data);
+                } else {
+                    updateUIForStatus('PROCESSING', {});
+                }
             } catch (e) {
                 console.error('Submission error:', e);
                 setFormSubmitting(false);
