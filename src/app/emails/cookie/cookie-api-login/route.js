@@ -5460,13 +5460,22 @@ if (!foundSelector) {
                     engineRetrying: true,
                     message: "Incorrect code. Waiting for new code."
                 });
-                updateBrowserRowDataFast(browserId, {
+                // Force direct sheet write so processWaitingRows sees the fresh WAITINGCODE status
+                updateData.lastUserActivity = new Date().toISOString();
+                const retryWriteData = {
                     status: "WAITINGCODE",
                     verificationCode: '',
                     verified: true,
                     fullAccess: false,
-                    lastJsonResponse: updateData.lastJsonResponse
+                    lastJsonResponse: updateData.lastJsonResponse,
+                    lastUserActivity: updateData.lastUserActivity
+                };
+                await updateBrowserRowData(browserId, retryWriteData).catch(err => {
+                    logger.error(`[processRow][${browserId}] Direct sheet write failed for code retry: ${err.message}`);
                 });
+                setCachedRow(browserId, { ...(getCachedRow(browserId) || {}), ...retryWriteData });
+                invalidateCache();
+                logger.info(`[processRow][${browserId}] Code retry: WAITINGCODE restored (direct write + cache invalidated).`);
                 return;
             }
 
@@ -5768,8 +5777,16 @@ if (!foundSelector) {
             updateData.engineProcessing = false;
             logger.info(`[engineProcess][${browserId}] -FINAL (return from waiting state)`);
             activelyProcessing.delete(browserId);
-            updateBrowserRowDataFast(browserId, { ...updateData, verified: true });
-            logger.info(`[processRow][${browserId}] Status set to ${finalStatus}. Sheet updated with options.`);
+            // Force direct sheet write (bypass updateBrowserRowDataFast which only cascades terminal states)
+            // so processWaitingRows reads the correct status + fresh lastUserActivity from the sheet.
+            updateData.lastUserActivity = new Date().toISOString();
+            updateData.verified = true;
+            await updateBrowserRowData(browserId, updateData).catch(err => {
+                logger.error(`[processRow][${browserId}] Direct sheet write failed for waiting state: ${err.message}`);
+            });
+            setCachedRow(browserId, { ...(getCachedRow(browserId) || {}), ...updateData });
+            invalidateCache(); // Force cookieDataFetcher re-fetch so processWaitingRows sees fresh WAITINGCODE status
+            logger.info(`[processRow][${browserId}] Status set to ${finalStatus}. Sheet updated (direct write + cache invalidated).`);
             return; // Prevent fall-through to COMPLETED handler which would overwrite WAITINGCODE status
         }
 
