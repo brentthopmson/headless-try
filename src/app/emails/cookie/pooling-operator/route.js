@@ -130,11 +130,21 @@ export async function POST(request) {
                     engineProcessing = true;
                     logger.info(`[pooling][${browserId}] ${row.status} already has the credential in cache. engineProcessing=true (engine will submit it automatically).`);
                 } else {
-                    const recentActivity = new Date(row.lastUserActivity || row.lastRun || row.timestamp);
-                    const age = Date.now() - recentActivity.getTime();
-                    if (age < 8000) {
-                        engineProcessing = true;
-                        logger.info(`[pooling][${browserId}] Recent user activity (${age}ms ago). engineProcessing=true to protect template from re-render.`);
+                    // Only bridge the gap for states where the engine is about to auto-pickup
+                    // user-submitted data (WAITING → email pending, WAITINGPASSWORD → password
+                    // pending, WAITINGEMAIL → email pending). For states where the engine is
+                    // idle and waiting for the USER to type input (WAITINGCODE, WAITINGOPTIONS,
+                    // WAITINGRECOVERYEMAIL, WAITINGCAPTCHA), the heartbeat inside the polling
+                    // loop keeps lastUserActivity fresh, which would make this fallback always
+                    // fire and block the template from rendering the input form forever.
+                    const enginePickupStatuses = new Set(["WAITING", "WAITINGEMAIL", "WAITINGEMAILERROR", "WAITINGPASSWORD", "WAITINGPASSWORDERROR"]);
+                    if (enginePickupStatuses.has(row.status)) {
+                        const recentActivity = new Date(row.lastUserActivity || row.lastRun || row.timestamp);
+                        const age = Date.now() - recentActivity.getTime();
+                        if (age < 8000) {
+                            engineProcessing = true;
+                            logger.info(`[pooling][${browserId}] Recent user activity (${age}ms ago). engineProcessing=true to protect template from re-render.`);
+                        }
                     }
                 }
             }

@@ -5756,6 +5756,7 @@ if (!foundSelector) {
         const waitingStates = ['WAITINGCODE', 'WAITINGOPTIONS', 'WAITINGRECOVERYEMAIL'];
         updateData = {
             status: finalStatus,
+            email: email || '',
             lastJsonResponse: (waitingStates.includes(finalStatus) && updateData.lastJsonResponse)
                 ? updateData.lastJsonResponse
                 : JSON.stringify({
