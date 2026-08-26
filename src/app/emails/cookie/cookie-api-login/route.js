@@ -6558,26 +6558,12 @@ async function processWaitingRows() {
                         notifyTeam({ type: 'FATAL', browserId, error: updateErr.message, detail: 'processRow crashed AND sheet update failed' });
                     }
                 } finally {
-                    // Only remove from activeProcesses if the row reached a terminal state,
-                    // if no browser session is held, OR if the row is in a waiting state that
-                    // needs re-pickup (WAITINGCODE/WAITINGOPTIONS/WAITINGRECOVERYEMAIL).
-                    // The waiting-state branches use a two-phase pattern: Phase 1 sets the
-                    // status and returns (storing the browser in activeBrowserSessions); Phase 2
-                    // (next interval tick) must re-pick the row to enter the polling while loop.
-                    // Without removing from activeProcesses here, Phase 2 never fires.
-                    const cached = getCachedRow(browserId);
-                    const terminalStatuses = ['COMPLETED', 'FAILED', 'PROCESSING_FINALIZING'];
-                    const waitingStatesForRePickup = ['WAITINGCODE', 'WAITINGOPTIONS', 'WAITINGRECOVERYEMAIL'];
-                    if (cached && terminalStatuses.includes(cached.status)) {
-                        activeProcesses.delete(browserId);
-                    } else if (!activeBrowserSessions.has(browserId)) {
-                        activeProcesses.delete(browserId);
-                    } else if (cached && waitingStatesForRePickup.includes(cached.status)) {
-                        activeProcesses.delete(browserId);
-                        logger.debug(`[processWaitingRows] Removing ${browserId} from activeProcesses for re-pickup (status=${cached?.status})`);
-                    } else {
-                        logger.debug(`[processWaitingRows] Keeping ${browserId} in activeProcesses — status=${cached?.status}`);
-                    }
+                    // Always remove from activeProcesses so the next interval tick can
+                    // re-evaluate the row. The filter already blocks terminal states
+                    // (FAILED/COMPLETED/PROCESSING_FINALIZING) and deduplicates via
+                    // activeProcesses — so removing here is safe and ensures two-phase
+                    // waiting states get re-pickup for Phase 2.
+                    activeProcesses.delete(browserId);
                     logger.info(`[processWaitingRows] Finished tracking process for ${browserId}. Active: ${activeProcesses.size}/${MAX_CONCURRENT_BROWSERS}`);
                 }
             })();
