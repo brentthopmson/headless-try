@@ -13,31 +13,7 @@ import { getCampaignLimits } from "../../socials/_shared/limits.js";
 import { requireFeature } from "../../../utils/featureGate.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { getSelfUrl } from "../../../utils/serverlessTracker.js";
-
-async function getAvailableServers() {
-  try {
-    const linksResult = await getSheetDataApi('links');
-    if (!linksResult.success || !linksResult.data) return [];
-    const idIdx = linksResult.headers.indexOf('severlessId');
-    const urlIdx = linksResult.headers.indexOf('severlessURL');
-    const statusIdx = linksResult.headers.indexOf('status');
-    if (idIdx === -1 || urlIdx === -1) return [];
-
-    return linksResult.data
-      .filter(r => {
-        const url = r[urlIdx]?.trim();
-        const status = statusIdx !== -1 ? r[statusIdx]?.trim().toLowerCase() : 'active';
-        return url && url.startsWith('http') && status !== 'disabled';
-      })
-      .map(r => ({
-        id: r[idIdx],
-        url: r[urlIdx].replace(/\/+$/, ''),
-      }));
-  } catch (err) {
-    logger.warn(`[Execute Campaign] Failed to fetch server pool: ${err.message}`);
-    return [];
-  }
-}
+import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
 
 function embedCampaignIdentifier(subject, body, campaignId) {
   const identifier = `[${campaignId}]`;
@@ -470,6 +446,20 @@ export async function POST(request) {
         logger.info(`[Execute Campaign] Removed ${duplicateCount} duplicate email(s) from recipient list`);
       }
 
+      // ─── MULTI-SERVER DISPATCH ────────────────────────────────────
+      if (MULTI_SERVER_ENABLED) {
+        const dispatchResult = await dispatchToServers(campaignId, 'execute', fileUrl, deduplicatedRows.length);
+        if (dispatchResult) {
+          return NextResponse.json({
+            success: true,
+            message: `Email campaign distributed across ${dispatchResult.servers.length} servers`,
+            dispatched: true,
+            servers: dispatchResult.servers,
+          });
+        }
+      }
+
+      // ─── SINGLE-SERVER FALLBACK ────────────────────────────────────
       // Step 3d: Check for checkpoint to resume partial execution
       const lastProcessedRow = settings.lastProcessedRow || 0;
       if (lastProcessedRow > 0) {

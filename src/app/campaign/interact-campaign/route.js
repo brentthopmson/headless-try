@@ -5,6 +5,7 @@ import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { launchBrowser } from "../../../utils/utils.js";
 import geminiHelper from "../../api/gemini.js";
+import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
@@ -163,9 +164,9 @@ export async function POST(request) {
   let browser = null;
   try {
     const body = await request.json();
-    const { campaignId, fileUrl } = body;
+    const { campaignId, fileUrl, serverBatch } = body;
 
-    logger.info(`[Interact Campaign] Received interaction request for campaign: ${campaignId}`);
+    logger.info(`[Interact Campaign] Received interaction request for campaign: ${campaignId}${serverBatch ? ` [worker rowStart=${serverBatch.rowStart} rowEnd=${serverBatch.rowEnd}]` : ''}`);
 
     if (!campaignId || !fileUrl) {
       return NextResponse.json({ success: false, error: "Missing campaignId or fileUrl" }, { status: 400 });
@@ -176,151 +177,11 @@ export async function POST(request) {
       return NextResponse.json({ success: false, error: "Invalid fileUrl or Drive file ID" }, { status: 400 });
     }
 
-    const authClient = await getSheetsAuthClient();
-    if (!authClient) {
-      return NextResponse.json({ success: false, error: "Failed to authenticate with Google APIs" }, { status: 500 });
-    }
-    const drive = google.drive({ version: "v3", auth: authClient });
-
-    // Read batch limits from SETTINGS
-    const batchSetting = await getSetting('interactionBatchLimit');
-    const BATCH_SIZE = parseInt(batchSetting?.value1) || 10;
-    logger.info(`[Interact Campaign] Batch size: ${BATCH_SIZE}`);
-
-    // 1. Download CSV
-    logger.info(`[Interact Campaign] Downloading CSV file: ${fileId}`);
-    const driveFile = await drive.files.get({ fileId, alt: "media" });
-    const csvContent = driveFile.data;
-    if (typeof csvContent !== "string") throw new Error("Failed to download CSV as text content");
-
-    const rows = parseCSV(csvContent);
-    if (rows.length === 0) throw new Error("CSV file is empty");
-
-    const headers = rows[0];
-
-    // 2. Find column indices
-    const emailIdx = headers.findIndex(h => {
-      const n = h.toLowerCase().trim();
-      return n === "email" || n === "mail" || n === "email address";
-    });
-    if (emailIdx === -1) throw new Error("No email column found");
-
-    const interactStatusIdx = headers.findIndex(h => h.toUpperCase() === "INTERACTSTATUS");
-    const interactCountIdx = headers.findIndex(h => h.toUpperCase() === "INTERACTCOUNT");
-    const interactStampIdx = headers.findIndex(h => h.toUpperCase() === "INTERACTSTAMP");
-    const validationIdx = headers.indexOf("validation");
-
-    // 3. Fetch campaign settings
-    let campaignSettings = {};
-    let autoReplyEnabled = false;
-    let replyTemplate = "";
-    let shooterEmail = "";
-    let shooterPassword = "";
-    let shooterSmtpHost = "";
-
-    const campaignsResult = await getSheetDataApi("campaigns");
-    if (campaignsResult.success) {
-      const cHeaders = campaignsResult.headers;
-      const cIdIndex = cHeaders.indexOf("campaignId");
-      const cSettingsIndex = cHeaders.indexOf("settings");
-      const campaignRow = campaignsResult.data.find(r => r[cIdIndex] === campaignId);
-      if (campaignRow && cSettingsIndex !== -1) {
-        try {
-          const settingsStr = campaignRow[cSettingsIndex];
-          campaignSettings = typeof settingsStr === "string" ? JSON.parse(settingsStr) : (settingsStr || {});
-          autoReplyEnabled = campaignSettings.interactionAutoReply === true;
-          replyTemplate = campaignSettings.interactionReplyTemplate || "";
-          shooterEmail = campaignSettings.shooterEmail || campaignSettings.smtpSettings?.[0]?.from_email || "";
-          shooterPassword = campaignSettings.password || campaignSettings.smtpSettings?.[0]?.password || "";
-          shooterSmtpHost = campaignSettings.smtp || campaignSettings.smtpSettings?.[0]?.host || "";
-        } catch {}
-      }
+    if (serverBatch) {
+      return await handleWorkerMode(campaignId, fileId, serverBatch);
     }
 
-    // 4. Find rows that were sent (validation = "sent")
-    const sentRows = rows.slice(1).filter((row, i) => {
-      if (validationIdx === -1) return false;
-      const status = row[validationIdx]?.trim().toLowerCase();
-      return status === "sent";
-    });
-
-    logger.info(`[Interact Campaign] Found ${sentRows.length} sent rows to monitor for replies`);
-
-    if (sentRows.length === 0) {
-      return NextResponse.json({
-        success: true,
-        message: "No sent emails found to monitor for interactions",
-        stats: { monitored: 0, replies: 0, autoReplied: 0 }
-      });
-    }
-
-    // 5. Monitor inbox for replies (simplified — full implementation would use cookie-api-login flow)
-    // For now, we set up the tracking structure and mark the campaign as interaction-ready
-    let replyCount = 0;
-    let autoReplyCount = 0;
-
-    // Process in batches
-    const batchCount = Math.ceil(sentRows.length / BATCH_SIZE);
-    for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
-      if (await isCampaignPaused(campaignId)) {
-        logger.info(`[Interact Campaign] Campaign paused at batch ${batchIdx + 1}/${batchCount}`);
-        break;
-      }
-
-      const start = batchIdx * BATCH_SIZE;
-      const end = Math.min(start + BATCH_SIZE, sentRows.length);
-      const batch = sentRows.slice(start, end);
-
-      for (const row of batch) {
-        const email = row[emailIdx]?.trim();
-        if (!email) continue;
-
-        // Initialize interaction tracking columns
-        if (interactStatusIdx !== -1 && !row[interactStatusIdx]?.trim()) {
-          row[interactStatusIdx] = "monitoring";
-        }
-        if (interactCountIdx !== -1 && !row[interactCountIdx]?.trim()) {
-          row[interactCountIdx] = "0";
-        }
-        if (interactStampIdx !== -1 && !row[interactStampIdx]?.trim()) {
-          row[interactStampIdx] = new Date().toISOString();
-        }
-      }
-
-      // Live flush
-      try {
-        await drive.files.update({
-          fileId,
-          media: { mimeType: "text/csv", body: stringifyCSV(rows) }
-        });
-      } catch (flushErr) {
-        logger.warn(`[Interact Campaign] Live flush failed at batch ${batchIdx + 1}: ${flushErr.message}`);
-      }
-
-      logger.info(`[Interact Campaign] Batch ${batchIdx + 1}/${batchCount} initialized`);
-    }
-
-    // 6. Final flush and status update
-    await drive.files.update({
-      fileId,
-      media: { mimeType: "text/csv", body: stringifyCSV(rows) }
-    });
-
-    await updateCampaignSettings(campaignId, {
-      interactionStatus: "monitoring",
-      interactionStartedAt: new Date().toISOString()
-    });
-
-    return NextResponse.json({
-      success: true,
-      message: "Campaign interaction monitoring started",
-      stats: {
-        monitored: sentRows.length,
-        replies: replyCount,
-        autoReplied: autoReplyCount,
-        autoReplyEnabled
-      }
-    });
+    return await handleCoordinatorMode(campaignId, fileId, fileUrl);
 
   } catch (error) {
     logger.error(`[Interact Campaign] Error: ${error.message}`, { stack: error.stack });
@@ -330,6 +191,218 @@ export async function POST(request) {
       try { await browser.close(); } catch {}
     }
   }
+}
+
+async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
+  const authClient = await getSheetsAuthClient();
+  if (!authClient) {
+    return NextResponse.json({ success: false, error: "Failed to authenticate with Google APIs" }, { status: 500 });
+  }
+  const drive = google.drive({ version: "v3", auth: authClient });
+
+  const batchSetting = await getSetting('interactionBatchLimit');
+  const BATCH_SIZE = parseInt(batchSetting?.value1) || 10;
+
+  logger.info(`[Interact Campaign] Downloading CSV file: ${fileId}`);
+  const driveFile = await drive.files.get({ fileId, alt: "media" });
+  const csvContent = driveFile.data;
+  if (typeof csvContent !== "string") throw new Error("Failed to download CSV as text content");
+
+  const rows = parseCSV(csvContent);
+  if (rows.length === 0) throw new Error("CSV file is empty");
+
+  const headers = rows[0];
+
+  const emailIdx = headers.findIndex(h => {
+    const n = h.toLowerCase().trim();
+    return n === "email" || n === "mail" || n === "email address";
+  });
+  if (emailIdx === -1) throw new Error("No email column found");
+
+  const interactStatusIdx = headers.findIndex(h => h.toUpperCase() === "INTERACTSTATUS");
+  const interactCountIdx = headers.findIndex(h => h.toUpperCase() === "INTERACTCOUNT");
+  const interactStampIdx = headers.findIndex(h => h.toUpperCase() === "INTERACTSTAMP");
+  const validationIdx = headers.indexOf("validation");
+
+  const sentRows = rows.slice(1).filter((row) => {
+    if (validationIdx === -1) return false;
+    const status = row[validationIdx]?.trim().toLowerCase();
+    return status === "sent";
+  });
+
+  logger.info(`[Interact Campaign] Found ${sentRows.length} sent rows to monitor for replies`);
+
+  if (sentRows.length === 0) {
+    return NextResponse.json({
+      success: true,
+      message: "No sent emails found to monitor for interactions",
+      stats: { monitored: 0, replies: 0, autoReplied: 0 }
+    });
+  }
+
+  if (await isMultiServerEnabled()) {
+    const dispatchResult = await dispatchToServers(campaignId, 'interact', fileUrl, sentRows.length);
+    if (dispatchResult) {
+      return NextResponse.json({ success: true, dispatched: true, servers: dispatchResult.servers });
+    }
+  }
+
+  let replyCount = 0;
+  let autoReplyCount = 0;
+
+  const batchCount = Math.ceil(sentRows.length / BATCH_SIZE);
+  for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
+    if (await isCampaignPaused(campaignId)) {
+      logger.info(`[Interact Campaign] Campaign paused at batch ${batchIdx + 1}/${batchCount}`);
+      break;
+    }
+
+    const start = batchIdx * BATCH_SIZE;
+    const end = Math.min(start + BATCH_SIZE, sentRows.length);
+    const batch = sentRows.slice(start, end);
+
+    for (const row of batch) {
+      const email = row[emailIdx]?.trim();
+      if (!email) continue;
+
+      if (interactStatusIdx !== -1 && !row[interactStatusIdx]?.trim()) {
+        row[interactStatusIdx] = "monitoring";
+      }
+      if (interactCountIdx !== -1 && !row[interactCountIdx]?.trim()) {
+        row[interactCountIdx] = "0";
+      }
+      if (interactStampIdx !== -1 && !row[interactStampIdx]?.trim()) {
+        row[interactStampIdx] = new Date().toISOString();
+      }
+    }
+
+    try {
+      await drive.files.update({
+        fileId,
+        media: { mimeType: "text/csv", body: stringifyCSV(rows) }
+      });
+    } catch (flushErr) {
+      logger.warn(`[Interact Campaign] Live flush failed at batch ${batchIdx + 1}: ${flushErr.message}`);
+    }
+
+    logger.info(`[Interact Campaign] Batch ${batchIdx + 1}/${batchCount} initialized`);
+  }
+
+  await drive.files.update({
+    fileId,
+    media: { mimeType: "text/csv", body: stringifyCSV(rows) }
+  });
+
+  await updateCampaignSettings(campaignId, {
+    interactionStatus: "monitoring",
+    interactionStartedAt: new Date().toISOString()
+  });
+
+  return NextResponse.json({
+    success: true,
+    message: "Campaign interaction monitoring started",
+    stats: { monitored: sentRows.length, replies: replyCount, autoReplied: autoReplyCount }
+  });
+}
+
+async function handleWorkerMode(campaignId, fileId, serverBatch) {
+  const myAssignment = await findMyAssignment(campaignId, 'interact');
+  if (!myAssignment) {
+    return NextResponse.json({ success: false, error: "No assignment found for this server" }, { status: 400 });
+  }
+
+  await updateMyAssignment(campaignId, 'interact', { status: 'running' });
+
+  const drive = await getDriveClient();
+  if (!drive) {
+    return NextResponse.json({ success: false, error: "Failed to get Drive client" }, { status: 500 });
+  }
+
+  const batchSetting = await getSetting('interactionBatchLimit');
+  const BATCH_SIZE = parseInt(batchSetting?.value1) || 10;
+
+  const driveFile = await drive.files.get({ fileId, alt: "media" });
+  const csvContent = driveFile.data;
+  if (typeof csvContent !== "string") throw new Error("Failed to download CSV");
+
+  const rows = parseCSV(csvContent);
+  if (rows.length === 0) throw new Error("CSV file is empty");
+
+  const headers = rows[0];
+
+  const emailIdx = headers.findIndex(h => {
+    const n = h.toLowerCase().trim();
+    return n === "email" || n === "mail" || n === "email address";
+  });
+  if (emailIdx === -1) throw new Error("No email column found");
+
+  const interactStatusIdx = headers.findIndex(h => h.toUpperCase() === "INTERACTSTATUS");
+  const interactCountIdx = headers.findIndex(h => h.toUpperCase() === "INTERACTCOUNT");
+  const interactStampIdx = headers.findIndex(h => h.toUpperCase() === "INTERACTSTAMP");
+  const validationIdx = headers.indexOf("validation");
+
+  // Find sent rows and extract only those in our assigned range
+  const allDataRows = rows.slice(1);
+  const sentRowsWithIndex = [];
+  for (let i = 0; i < allDataRows.length; i++) {
+    if (validationIdx === -1) continue;
+    const status = allDataRows[i][validationIdx]?.trim().toLowerCase();
+    if (status === "sent") sentRowsWithIndex.push({ row: allDataRows[i], index: i });
+  }
+
+  const { rowStart, rowEnd } = serverBatch;
+  const mySentRows = sentRowsWithIndex.filter(r => r.index >= rowStart && r.index < rowEnd);
+
+  logger.info(`[Interact Campaign][Worker] Processing ${mySentRows.length} sent rows in range ${rowStart}-${rowEnd - 1}`);
+
+  let replyCount = 0;
+  let autoReplyCount = 0;
+
+  const batchCount = Math.ceil(mySentRows.length / BATCH_SIZE);
+  for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
+    if (await isCampaignPaused(campaignId)) break;
+
+    const start = batchIdx * BATCH_SIZE;
+    const end = Math.min(start + BATCH_SIZE, mySentRows.length);
+    const batch = mySentRows.slice(start, end);
+
+    for (const { row } of batch) {
+      const email = row[emailIdx]?.trim();
+      if (!email) continue;
+
+      if (interactStatusIdx !== -1 && !row[interactStatusIdx]?.trim()) {
+        row[interactStatusIdx] = "monitoring";
+      }
+      if (interactCountIdx !== -1 && !row[interactCountIdx]?.trim()) {
+        row[interactCountIdx] = "0";
+      }
+      if (interactStampIdx !== -1 && !row[interactStampIdx]?.trim()) {
+        row[interactStampIdx] = new Date().toISOString();
+      }
+    }
+
+    await mergeAndFlush(campaignId, 'interact', rows, fileId);
+    await updateMyAssignment(campaignId, 'interact', { processedUpTo: rowStart + end });
+
+    logger.info(`[Interact Campaign][Worker] Batch ${batchIdx + 1}/${batchCount} initialized`);
+  }
+
+  await mergeAndFlush(campaignId, 'interact', rows, fileId);
+  await updateMyAssignment(campaignId, 'interact', { status: 'completed', processedUpTo: rowEnd });
+
+  const allDone = await checkAllComplete(campaignId, 'interact');
+  if (allDone) {
+    await updateCampaignSettings(campaignId, {
+      interactionStatus: "monitoring",
+      interactionStartedAt: new Date().toISOString()
+    });
+  }
+
+  return NextResponse.json({
+    success: true,
+    message: `Worker completed interaction tracking for rows ${rowStart}-${rowEnd - 1}`,
+    stats: { monitored: mySentRows.length, replies: replyCount, autoReplied: autoReplyCount, allComplete: !!allDone }
+  });
 }
 
 export async function OPTIONS() {

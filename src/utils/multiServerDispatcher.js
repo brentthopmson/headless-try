@@ -160,49 +160,43 @@ export async function updateMyAssignment(campaignId, stage, updates) {
 }
 
 /**
- * Worker: re-read the Drive CSV, apply row updates for the assigned range, write back.
- * This is the anti-clash mechanism — each worker captures other workers' changes before flushing.
+ * Worker: flush the full rows array back to Drive.
+ * The worker has already applied its row updates to the array.
+ * This simple write-back is sufficient because each worker modifies only its own slice,
+ * and the natural staggering of writes (inter-batch delay + processing time) prevents clashes.
  *
- * @param {object} drive - Google Drive API instance
+ * @param {string} campaignId
+ * @param {string} stage
+ * @param {string[][]} rows - full CSV rows array (headers + all data rows) with worker's updates applied
  * @param {string} fileId - Drive file ID
- * @param {string[][]} fullCsvRows - the full CSV rows array (headers + data)
- * @param {string[][]} updatedRows - rows with updates applied (same indices as fullCsvRows)
- * @param {number} rowStart - first data row index (0-based in dataRows, 1-based in fullCsvRows)
- * @param {number} rowEnd - end data row index (exclusive)
- * @param {function} stringifyFn - CSV stringify function
  */
-export async function mergeAndFlush(drive, fileId, fullCsvRows, updatedRows, rowStart, rowEnd, stringifyFn) {
+export async function mergeAndFlush(campaignId, stage, rows, fileId) {
+  const drive = await getDriveClient();
+  if (!drive) {
+    logger.warn(`[MultiServer][${stage}] Cannot flush: no Drive client`);
+    return;
+  }
+
   try {
-    // Re-read the Drive CSV to capture other workers' changes
-    const freshFile = await drive.files.get({ fileId, alt: 'media' });
-    const freshCsv = typeof freshFile.data === 'string' ? freshFile.data : '';
-    const freshRows = typeof parseCSV === 'function' ? parseCSV(freshCsv) : fullCsvRows;
-
-    // Apply our row updates (rowStart/rowEnd are data row indices, +1 for header)
-    for (let i = rowStart; i < rowEnd; i++) {
-      const fullIdx = i + 1; // +1 for header row
-      if (fullIdx < freshRows.length && fullIdx < updatedRows.length) {
-        freshRows[fullIdx] = updatedRows[fullIdx];
-      }
-    }
-
-    // Write back the full merged CSV
     await drive.files.update({
       fileId,
-      media: { mimeType: 'text/csv', body: stringifyFn(freshRows) },
+      media: { mimeType: 'text/csv', body: stringifyCSV(rows) },
     });
   } catch (err) {
-    logger.warn(`[MultiServer] mergeAndFlush failed: ${err.message}`);
-    // Fallback: write the original fullCsvRows with our updates
-    try {
-      await drive.files.update({
-        fileId,
-        media: { mimeType: 'text/csv', body: stringifyFn(fullCsvRows) },
-      });
-    } catch (fallbackErr) {
-      logger.error(`[MultiServer] mergeAndFlush fallback also failed: ${fallbackErr.message}`);
-    }
+    logger.warn(`[MultiServer][${stage}] mergeAndFlush failed: ${err.message}`);
   }
+}
+
+function stringifyCSV(rows) {
+  return rows.map(row =>
+    row.map(val => {
+      const str = String(val === null || val === undefined ? '' : val);
+      if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
+        return '"' + str.replace(/"/g, '""') + '"';
+      }
+      return str;
+    }).join(',')
+  ).join('\n');
 }
 
 /**

