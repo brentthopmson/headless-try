@@ -567,9 +567,9 @@ let processingStartTime = null;
                 case 'WAITINGPASSWORDERROR':
                     lastFormVisibleStatus = status;
                     console.log('[Template] WAITINGPASSWORD | statusChanged:', statusChanged, '| browserId:', browserId);
+                    setFormSubmitting(false);
                     if (statusChanged) {
                         console.log('[Template] WAITINGPASSWORD: rendering form (status transition from', currentStatus, ')');
-                        setFormSubmitting(false);
                         emailGroup.style.display = 'block';
                         passwordGroup.style.display = 'block';
                         verificationOptionsGroup.style.display = 'none';

@@ -876,8 +876,8 @@ function updateUIForStatus(status, data = {}) {
     case 'WAITINGPASSWORD':
     case 'WAITINGPASSWORDERROR':
       lastFormVisibleStatus=status;
+      setFormSubmitting(false);
       if (statusChanged) {
-        setFormSubmitting(false);
         emailGroup.style.display = 'block';
         passwordGroup.style.display = 'block';
         verificationOptionsGroup.style.display = 'none';
