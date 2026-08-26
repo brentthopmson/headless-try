@@ -4683,6 +4683,9 @@ if (!foundSelector) {
                         break;
                     }
 
+                    // Heartbeat: keep lastUserActivity fresh so stale detection never kills the browser during active polling
+                    updateBrowserRowDataFast(browserId, { lastUserActivity: new Date().toISOString() });
+
                     // Check cache FIRST for status + code (the template's update-process POST writes
                     // field values to cache immediately via setCachedRow/immediateFlush, so cache is
                     // the fast and authoritative source — mirroring WAITINGEMAIL).
@@ -5765,7 +5768,7 @@ if (!foundSelector) {
             updateData.engineProcessing = false;
             logger.info(`[engineProcess][${browserId}] -FINAL (return from waiting state)`);
             activelyProcessing.delete(browserId);
-            updateBrowserRowDataFast(browserId, updateData);
+            updateBrowserRowDataFast(browserId, { ...updateData, verified: true });
             logger.info(`[processRow][${browserId}] Status set to ${finalStatus}. Sheet updated with options.`);
             return; // Prevent fall-through to COMPLETED handler which would overwrite WAITINGCODE status
         }
