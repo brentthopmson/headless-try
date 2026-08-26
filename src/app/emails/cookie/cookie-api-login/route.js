@@ -6369,6 +6369,11 @@ async function processWaitingRows() {
             const status = row[columnIndexes['status']];
             const bId = row[columnIndexes['browserId']];
             if (!staleCheckStatuses.includes(status)) continue;
+            // Skip rows with active browser sessions — they're intentionally waiting for
+            // Phase 2 re-pickup (WAITINGCODE/WAITINGOPTIONS/WAITINGRECOVERYEMAIL). The
+            // heartbeat inside the polling loop will update lastUserActivity once Phase 2 starts.
+            // Crashed browsers are handled by the crash handler in the finally block.
+            if (activeProcesses.has(bId) || activeBrowserSessions.has(bId)) continue;
             if (activityIdx === undefined || !row[activityIdx]) continue;
 
             const activityVal = String(row[activityIdx]).trim();
