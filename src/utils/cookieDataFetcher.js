@@ -78,6 +78,7 @@ async function _fetchAndCacheAppScriptData(retries = 3, timeout = 120000, forceR
   const fetchPromise = (async () => {
     try {
       // --- Attempt Sheets API first ---
+      let appScriptAlreadyTried = false;
       try {
         const sheetsApiResult = await getSheetDataApi("cookie");
         if (sheetsApiResult.success) {
@@ -88,14 +89,27 @@ async function _fetchAndCacheAppScriptData(retries = 3, timeout = 120000, forceR
           return state.appScriptDataCache;
         } else {
           if (isQuotaError(sheetsApiResult.error)) markQuotaExceeded();
-          logger.warn(`[cookieDataFetcher] Sheets API fetch failed: ${sheetsApiResult.error}. Falling back to App Script.`);
+          if (sheetsApiResult.viaAppScript) {
+            appScriptAlreadyTried = true;
+            logger.warn(`[cookieDataFetcher] Sheets API fetch failed and App Script was already attempted: ${sheetsApiResult.error}`);
+          } else {
+            logger.warn(`[cookieDataFetcher] Sheets API fetch failed: ${sheetsApiResult.error}. Falling back to App Script.`);
+          }
         }
       } catch (sheetsApiError) {
         if (isQuotaError(sheetsApiError.message)) markQuotaExceeded();
         logger.error(`[cookieDataFetcher] Error with Sheets API fetch: ${sheetsApiError.message}. Falling back to App Script.`);
       }
 
-      // --- Fallback to App Script ---
+      // --- Fallback to App Script (skip if already attempted by getSheetDataApi) ---
+      if (appScriptAlreadyTried) {
+        if (state.appScriptDataCache) {
+          logger.warn("[cookieDataFetcher] App Script already failed. Returning stale cache.");
+          return state.appScriptDataCache;
+        }
+        throw new Error("Both Sheets API and App Script failed. No cache available.");
+      }
+
       const appScriptUrl = process.env.SCRIPT_URL;
       const params = new URLSearchParams({
         action: 'getCookieData',

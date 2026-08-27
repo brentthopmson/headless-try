@@ -203,7 +203,9 @@ async function getSheetDataViaAppScript(sheetName) {
       logger.warn(`[Sheets API] App Script fallback attempt ${attempt}/${APP_SCRIPT_READ_RETRIES} for ${sheetName} returned: ${lastError}`);
     } catch (err) {
       lastError = err.message;
-      logger.error(`[Sheets API] App Script fallback attempt ${attempt}/${APP_SCRIPT_READ_RETRIES} for ${sheetName} failed: ${err.message}`);
+      const status = err.response?.status;
+      const respBody = err.response?.data ? JSON.stringify(err.response.data).substring(0, 500) : 'no body';
+      logger.error(`[Sheets API] App Script fallback attempt ${attempt}/${APP_SCRIPT_READ_RETRIES} for ${sheetName} failed: ${err.message}${status ? ` (HTTP ${status}: ${respBody})` : ''}`);
       if (attempt < APP_SCRIPT_READ_RETRIES) {
         await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
       }
@@ -220,7 +222,8 @@ export async function getSheetDataApi(sheetName) {
     const authClient = await getSheetsAuthClient();
     if (!authClient) {
       logger.warn(`[Sheets API] Failed to get Sheets API authentication client for ${sheetName}. Trying App Script fallback.`);
-      return await getSheetDataViaAppScript(sheetName);
+      const asResult = await getSheetDataViaAppScript(sheetName);
+      return { ...asResult, viaAppScript: true };
     }
 
     const sheets = google.sheets({ version: 'v4', auth: authClient });
@@ -245,8 +248,8 @@ export async function getSheetDataApi(sheetName) {
   } catch (error) {
     logger.warn(`[Sheets API] Sheets API read failed for ${sheetName}: ${error.message}. Trying App Script fallback.`);
     const fallback = await getSheetDataViaAppScript(sheetName);
-    if (fallback.success) return fallback;
-    return { success: false, error: error.message };
+    if (fallback.success) return { ...fallback, viaAppScript: true };
+    return { success: false, error: error.message, viaAppScript: true };
   }
 }
 

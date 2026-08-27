@@ -1499,11 +1499,7 @@ async function handleFormSubmission() {
     console.log('[Template] Update process response:', data);
 
     isProcessing = true;
-    if (data.data && data.data.status && data.data.status !== 'PROCESSING') {
-      updateUIForStatus(data.data.status, data.data);
-    } else {
-      updateUIForStatus('PROCESSING', {});
-    }
+    updateUIForStatus('PROCESSING', {});
 
   } catch (error) {
     console.error("[Template] Error during form submission:", error);
