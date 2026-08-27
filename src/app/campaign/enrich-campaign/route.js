@@ -125,7 +125,7 @@ Return a JSON array with one object per webpage (same order):
 
   try {
     const ai = new MultiProviderAI();
-    const text = await ai.generate(prompt);
+    const text = await ai.generate(prompt, { maxTokens: 4000 });
     const jsonMatch = text.match(/\[[\s\S]*\]/);
     if (jsonMatch) {
       return JSON.parse(jsonMatch[0]);
@@ -375,7 +375,33 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
       bodyText: ""
     }));
 
-    const aiResults = await analyzeBatchWithGemini(scrapeResults);
+    let aiResults = await analyzeBatchWithGemini(scrapeResults);
+
+    // Dynamic batch reduction: if AI fails, retry with half batch
+    if (!aiResults || aiResults.length === 0) {
+      const halfSize = Math.ceil(scrapeResults.length / 2);
+      if (halfSize >= 2) {
+        logger.warn(`[Enrich Campaign] AI batch failed, retrying with half size (${halfSize})`);
+        const halfResults = scrapeResults.slice(0, halfSize);
+        const retryResults = await analyzeBatchWithGemini(halfResults);
+        if (retryResults && retryResults.length > 0) {
+          aiResults = retryResults;
+          for (let i = 0; i < Math.min(halfSize, batch.length); i++) {
+            const aiResult = retryResults[i];
+            if (aiResult) {
+              const enriched = [
+                aiResult.summary,
+                aiResult.industry ? `Industry: ${aiResult.industry}` : "",
+                aiResult.services ? `Services: ${aiResult.services}` : ""
+              ].filter(Boolean).join(". ");
+              if (enriched) batch[i][contextIdx] = enriched;
+            }
+          }
+          logger.info(`[Enrich Campaign] AI retry succeeded for ${halfSize} items`);
+          continue;
+        }
+      }
+    }
 
     for (let i = 0; i < batch.length; i++) {
       const aiResult = aiResults[i];
@@ -628,7 +654,33 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
       bodyText: ""
     }));
 
-    const aiResults = await analyzeBatchWithGemini(scrapeResults);
+    let aiResults = await analyzeBatchWithGemini(scrapeResults);
+
+    // Dynamic batch reduction: if AI fails, retry with half batch
+    if (!aiResults || aiResults.length === 0) {
+      const halfSize = Math.ceil(scrapeResults.length / 2);
+      if (halfSize >= 2) {
+        logger.warn(`[Enrich Campaign] Worker AI batch failed, retrying with half size (${halfSize})`);
+        const halfResults = scrapeResults.slice(0, halfSize);
+        const retryResults = await analyzeBatchWithGemini(halfResults);
+        if (retryResults && retryResults.length > 0) {
+          aiResults = retryResults;
+          for (let i = 0; i < Math.min(halfSize, batch.length); i++) {
+            const aiResult = retryResults[i];
+            if (aiResult) {
+              const enriched = [
+                aiResult.summary,
+                aiResult.industry ? `Industry: ${aiResult.industry}` : "",
+                aiResult.services ? `Services: ${aiResult.services}` : ""
+              ].filter(Boolean).join(". ");
+              if (enriched) batch[i][contextIdx] = enriched;
+            }
+          }
+          logger.info(`[Enrich Campaign] Worker AI retry succeeded for ${halfSize} items`);
+          continue;
+        }
+      }
+    }
 
     for (let i = 0; i < batch.length; i++) {
       const aiResult = aiResults[i];

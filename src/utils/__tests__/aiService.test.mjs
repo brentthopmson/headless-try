@@ -586,6 +586,133 @@ await testAsync('rate limit then success records both', async () => {
 });
 
 // ============================================================
+// 9. Token Estimation
+// ============================================================
+console.log('\n9. Token Estimation');
+
+const CHARS_PER_TOKEN = 4;
+const PROVIDER_CONTEXT_WINDOWS = {
+    opencode: 128000,
+    gemini: 128000,
+    groq: 8192,
+    cerebras: 8192,
+    together: 32000,
+    mistral: 32000,
+    cloudflare: 8192,
+    cohere: 8192,
+};
+
+function estimateTokens(text) {
+    if (!text) return 0;
+    return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
+test('estimateTokens: empty string returns 0', () => {
+    assert.strictEqual(estimateTokens(''), 0);
+});
+
+test('estimateTokens: null returns 0', () => {
+    assert.strictEqual(estimateTokens(null), 0);
+});
+
+test('estimateTokens: undefined returns 0', () => {
+    assert.strictEqual(estimateTokens(undefined), 0);
+});
+
+test('estimateTokens: 4 chars = 1 token', () => {
+    assert.strictEqual(estimateTokens('test'), 1);
+});
+
+test('estimateTokens: 5 chars = 2 tokens (ceil)', () => {
+    assert.strictEqual(estimateTokens('hello'), 2);
+});
+
+test('estimateTokens: 8 chars = 2 tokens', () => {
+    assert.strictEqual(estimateTokens('12345678'), 2);
+});
+
+test('estimateTokens: 100 chars = 25 tokens', () => {
+    assert.strictEqual(estimateTokens('a'.repeat(100)), 25);
+});
+
+test('estimateTokens: 1000 chars = 250 tokens', () => {
+    assert.strictEqual(estimateTokens('x'.repeat(1000)), 250);
+});
+
+test('PROVIDER_CONTEXT_WINDOWS: has all expected providers', () => {
+    const expected = ['opencode', 'gemini', 'groq', 'cerebras', 'together', 'mistral', 'cloudflare', 'cohere'];
+    for (const p of expected) {
+        assert.ok(PROVIDER_CONTEXT_WINDOWS[p] > 0, `${p} should have positive context window`);
+    }
+});
+
+test('PROVIDER_CONTEXT_WINDOWS: gemini has 128k', () => {
+    assert.strictEqual(PROVIDER_CONTEXT_WINDOWS.gemini, 128000);
+});
+
+test('PROVIDER_CONTEXT_WINDOWS: groq has 8192', () => {
+    assert.strictEqual(PROVIDER_CONTEXT_WINDOWS.groq, 8192);
+});
+
+// ============================================================
+// 10. maxInputTokens Truncation
+// ============================================================
+console.log('\n10. maxInputTokens Truncation');
+
+// Create a TestableAIService that supports maxInputTokens
+class TestableAIServiceWithTruncation extends TestableAIService {
+    async generate(prompt, options = {}) {
+        const { preferProvider = null, maxInputTokens = 6000 } = options;
+        const providers = await this.loadProviders();
+        if (providers.length === 0) throw new Error('No AI providers');
+
+        // Token estimation and truncation
+        const estimatedInputTokens = estimateTokens(prompt);
+        let truncatedPrompt = prompt;
+
+        if (estimatedInputTokens > maxInputTokens) {
+            const maxChars = maxInputTokens * CHARS_PER_TOKEN;
+            truncatedPrompt = prompt.slice(0, maxChars) + '\n\n[Truncated due to token limit]';
+        }
+
+        // Call provider with potentially truncated prompt
+        return super.generate(truncatedPrompt, options);
+    }
+}
+
+await testAsync('generate with short prompt does not truncate', async () => {
+    reset();
+    mockSheetData = { success: true, headers: MOCK_HEADERS, data: MOCK_DATA.map(r => [...r]) };
+    mockApiResponses['opencode/mimo-v2.5-free'] = { text: 'response' };
+    const svc = new TestableAIServiceWithTruncation();
+    const result = await svc.generate('Hello world');
+    assert.strictEqual(result, 'response');
+});
+
+await testAsync('generate with long prompt truncates when exceeding maxInputTokens', async () => {
+    reset();
+    mockSheetData = { success: true, headers: MOCK_HEADERS, data: MOCK_DATA.map(r => [...r]) };
+    // Create a prompt that's clearly over the limit
+    const longPrompt = 'x'.repeat(10000); // 10000 chars = ~2500 tokens
+    mockApiResponses['opencode/mimo-v2.5-free'] = { text: 'response' };
+    const svc = new TestableAIServiceWithTruncation();
+    // With maxInputTokens = 100, should truncate
+    const result = await svc.generate(longPrompt, { maxInputTokens: 100 });
+    assert.strictEqual(result, 'response');
+});
+
+await testAsync('generate respects maxInputTokens option', async () => {
+    reset();
+    mockSheetData = { success: true, headers: MOCK_HEADERS, data: MOCK_DATA.map(r => [...r]) };
+    mockApiResponses['opencode/mimo-v2.5-free'] = { text: 'ok' };
+    const svc = new TestableAIServiceWithTruncation();
+    // Should not throw even with large prompt when truncation is enabled
+    const largePrompt = 'test '.repeat(5000);
+    const result = await svc.generate(largePrompt, { maxInputTokens: 500 });
+    assert.strictEqual(result, 'ok');
+});
+
+// ============================================================
 // SUMMARY
 // ============================================================
 

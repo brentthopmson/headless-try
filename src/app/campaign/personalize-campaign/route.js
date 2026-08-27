@@ -37,7 +37,7 @@ Rules:
 
   try {
     const ai = new MultiProviderAI();
-    const text = await ai.generate(prompt);
+    const text = await ai.generate(prompt, { maxTokens: 4000 });
     const jsonMatch = text.match(/\[[\s\S]*\]/);
     if (jsonMatch) {
       return JSON.parse(jsonMatch[0]);
@@ -73,7 +73,7 @@ Rules:
 
   try {
     const ai = new MultiProviderAI();
-    const text = await ai.generate(prompt);
+    const text = await ai.generate(prompt, { maxTokens: 4000 });
     const jsonMatch = text.match(/\[[\s\S]*\]/);
     if (jsonMatch) {
       return JSON.parse(jsonMatch[0]);
@@ -137,6 +137,13 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
     }
   } catch {}
 
+  // Cap personalization prompt length to prevent token overflow
+  const promptMaxCharsSetting = await getSetting('personalizationPromptMaxChars');
+  const PROMPT_MAX_CHARS = parseInt(promptMaxCharsSetting?.value1) || 500;
+  if (personalizationPrompt.length > PROMPT_MAX_CHARS) {
+    personalizationPrompt = personalizationPrompt.slice(0, PROMPT_MAX_CHARS);
+  }
+
   const dataRows = rows.slice(1);
 
   const multiEnabled = await isMultiServerEnabled();
@@ -168,7 +175,35 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
         context: contextIdx !== -1 ? row[contextIdx]?.trim() || "" : ""
       }));
 
-      const aiResults = await personalizeBatch(contacts, personalizationPrompt, headers);
+      let aiResults = await personalizeBatch(contacts, personalizationPrompt, headers);
+
+      // Dynamic batch reduction: if AI fails, retry with half batch
+      if (!aiResults || aiResults.every(r => !r.subject && !r.body)) {
+        const halfSize = Math.ceil(contacts.length / 2);
+        if (halfSize >= 2) {
+          logger.warn(`[Personalize Campaign] AI batch failed, retrying with half size (${halfSize})`);
+          const halfContacts = contacts.slice(0, halfSize);
+          const retryResults = await personalizeBatch(halfContacts, personalizationPrompt, headers);
+          if (retryResults && retryResults.some(r => r.subject || r.body)) {
+            for (let i = 0; i < Math.min(halfSize, batch.length); i++) {
+              const result = retryResults[i];
+              if (result && (result.subject || result.body)) {
+                if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = result.subject || "";
+                if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = result.body || "";
+                personalizedCount++;
+              } else {
+                const firstName = contacts[i].firstName;
+                const company = contacts[i].company;
+                if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = `Quick question for ${firstName}`;
+                if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = `Hi ${firstName},\n\nHope this finds you well.\n\nBest,\nWebFixx Team`;
+                personalizedCount++;
+              }
+            }
+            logger.info(`[Personalize Campaign] AI retry succeeded for ${halfSize} contacts`);
+            continue;
+          }
+        }
+      }
 
       for (let i = 0; i < batch.length; i++) {
         const result = aiResults[i];
@@ -194,7 +229,30 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
         context: contextIdx !== -1 ? row[contextIdx]?.trim() || "" : ""
       }));
 
-      const aiResults = await personalizeSocialBatch(socialContacts, personalizationPrompt);
+      let aiResults = await personalizeSocialBatch(socialContacts, personalizationPrompt);
+
+      // Dynamic batch reduction: if AI fails, retry with half batch
+      if (!aiResults || aiResults.every(r => !r.message)) {
+        const halfSize = Math.ceil(socialContacts.length / 2);
+        if (halfSize >= 2) {
+          logger.warn(`[Personalize Campaign] Social AI batch failed, retrying with half size (${halfSize})`);
+          const halfContacts = socialContacts.slice(0, halfSize);
+          const retryResults = await personalizeSocialBatch(halfContacts, personalizationPrompt);
+          if (retryResults && retryResults.some(r => r.message)) {
+            for (let i = 0; i < Math.min(halfSize, batch.length); i++) {
+              const result = retryResults[i];
+              if (result && result.message) {
+                batch[i][enhancedSocialMsgIdx] = result.message;
+              } else {
+                const contact = socialContacts[i];
+                batch[i][enhancedSocialMsgIdx] = `Hi ${contact.firstName}, came across your ${contact.platform || 'social'} profile and wanted to connect!`;
+              }
+            }
+            logger.info(`[Personalize Campaign] Social AI retry succeeded for ${halfSize} contacts`);
+            continue;
+          }
+        }
+      }
 
       for (let i = 0; i < batch.length; i++) {
         const result = aiResults[i];
@@ -301,6 +359,13 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
     }
   } catch {}
 
+  // Cap personalization prompt length to prevent token overflow
+  const promptMaxCharsSetting = await getSetting('personalizationPromptMaxChars');
+  const PROMPT_MAX_CHARS = parseInt(promptMaxCharsSetting?.value1) || 500;
+  if (personalizationPrompt.length > PROMPT_MAX_CHARS) {
+    personalizationPrompt = personalizationPrompt.slice(0, PROMPT_MAX_CHARS);
+  }
+
   const dataRows = rows.slice(1);
   const rowStart = serverBatch.rowStart || 0;
   const rowEnd = serverBatch.rowEnd || dataRows.length;
@@ -327,7 +392,35 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
         context: contextIdx !== -1 ? row[contextIdx]?.trim() || "" : ""
       }));
 
-      const aiResults = await personalizeBatch(contacts, personalizationPrompt, headers);
+      let aiResults = await personalizeBatch(contacts, personalizationPrompt, headers);
+
+      // Dynamic batch reduction: if AI fails, retry with half batch
+      if (!aiResults || aiResults.every(r => !r.subject && !r.body)) {
+        const halfSize = Math.ceil(contacts.length / 2);
+        if (halfSize >= 2) {
+          logger.warn(`[Personalize Campaign] Worker AI batch failed, retrying with half size (${halfSize})`);
+          const halfContacts = contacts.slice(0, halfSize);
+          const retryResults = await personalizeBatch(halfContacts, personalizationPrompt, headers);
+          if (retryResults && retryResults.some(r => r.subject || r.body)) {
+            for (let i = 0; i < Math.min(halfSize, batch.length); i++) {
+              const result = retryResults[i];
+              if (result && (result.subject || result.body)) {
+                if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = result.subject || "";
+                if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = result.body || "";
+                personalizedCount++;
+              } else {
+                const firstName = contacts[i].firstName;
+                const company = contacts[i].company;
+                if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = `Quick question for ${firstName}`;
+                if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = `Hi ${firstName},\n\nHope this finds you well.\n\nBest,\nWebFixx Team`;
+                personalizedCount++;
+              }
+            }
+            logger.info(`[Personalize Campaign] Worker AI retry succeeded for ${halfSize} contacts`);
+            continue;
+          }
+        }
+      }
 
       for (let i = 0; i < batch.length; i++) {
         const result = aiResults[i];
@@ -353,7 +446,30 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
         context: contextIdx !== -1 ? row[contextIdx]?.trim() || "" : ""
       }));
 
-      const aiResults = await personalizeSocialBatch(socialContacts, personalizationPrompt);
+      let aiResults = await personalizeSocialBatch(socialContacts, personalizationPrompt);
+
+      // Dynamic batch reduction: if AI fails, retry with half batch
+      if (!aiResults || aiResults.every(r => !r.message)) {
+        const halfSize = Math.ceil(socialContacts.length / 2);
+        if (halfSize >= 2) {
+          logger.warn(`[Personalize Campaign] Worker social AI batch failed, retrying with half size (${halfSize})`);
+          const halfContacts = socialContacts.slice(0, halfSize);
+          const retryResults = await personalizeSocialBatch(halfContacts, personalizationPrompt);
+          if (retryResults && retryResults.some(r => r.message)) {
+            for (let i = 0; i < Math.min(halfSize, batch.length); i++) {
+              const result = retryResults[i];
+              if (result && result.message) {
+                batch[i][enhancedSocialMsgIdx] = result.message;
+              } else {
+                const contact = socialContacts[i];
+                batch[i][enhancedSocialMsgIdx] = `Hi ${contact.firstName}, came across your ${contact.platform || 'social'} profile and wanted to connect!`;
+              }
+            }
+            logger.info(`[Personalize Campaign] Worker social AI retry succeeded for ${halfSize} contacts`);
+            continue;
+          }
+        }
+      }
 
       for (let i = 0; i < batch.length; i++) {
         const result = aiResults[i];

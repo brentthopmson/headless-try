@@ -19,6 +19,31 @@ import { getSettingsSheet, invalidateSettings } from './settingsCache.js';
 
 const FAILED_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
+// Approximate tokens per character (English text averages ~4 chars per token)
+const CHARS_PER_TOKEN = 4;
+
+// Provider-specific context window limits (input tokens)
+const PROVIDER_CONTEXT_WINDOWS = {
+    opencode: 128000,
+    gemini: 128000,
+    groq: 8192,
+    cerebras: 8192,
+    together: 32000,
+    mistral: 32000,
+    cloudflare: 8192,
+    cohere: 8192,
+};
+
+/**
+ * Estimates token count from text. Approximation: ceil(text.length / CHARS_PER_TOKEN).
+ * @param {string} text
+ * @returns {number}
+ */
+function estimateTokens(text) {
+    if (!text) return 0;
+    return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
 function getEnvFallback(provider) {
     if (provider === 'opencode') return process.env.OPENCODE_API_KEY || process.env.OPENAI_API_KEY || '';
     if (provider === 'gemini') return process.env.GOOGLE_GEMINI_API_KEY || '';
@@ -314,6 +339,21 @@ class MultiProviderAI {
             });
         } else {
             messages.push({ role: 'user', content: prompt });
+        }
+
+        // Token estimation and truncation
+        const maxInputTokens = options.maxInputTokens || 6000;
+        const fullText = messages.map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join(' ');
+        const estimatedInputTokens = estimateTokens(fullText);
+
+        if (estimatedInputTokens > maxInputTokens) {
+            logger.warn(`[MultiProviderAI] Prompt too long: ~${estimatedInputTokens} tokens exceeds limit ${maxInputTokens}. Truncating.`);
+            // Truncate the last user message content
+            const lastMsg = messages[messages.length - 1];
+            if (typeof lastMsg.content === 'string') {
+                const maxChars = maxInputTokens * CHARS_PER_TOKEN;
+                lastMsg.content = lastMsg.content.slice(0, maxChars) + '\n\n[Truncated due to token limit]';
+            }
         }
 
         // Try preferred provider first
