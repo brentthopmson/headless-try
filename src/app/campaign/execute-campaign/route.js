@@ -334,7 +334,8 @@ export async function POST(request) {
 
       if (shootCampaignLimit <= 0) {
         logger.info(`[Execute Campaign] shootCampaignLimit is 0 or unavailable, blocking execution`);
-        break;
+        await updateCampaignSettings(campaignId, { executionStatus: "completed" });
+        return NextResponse.json({ success: true, message: "Execution blocked: shootCampaignLimit is 0", limitReached: true });
       }
 
       let sentCount = 0;
@@ -608,7 +609,8 @@ export async function POST(request) {
 
       if (shootCampaignLimit <= 0) {
         logger.info(`[Execute Campaign] shootCampaignLimit is 0 or unavailable, blocking social execution`);
-        break;
+        await updateCampaignSettings(campaignId, { executionStatus: "completed" });
+        return NextResponse.json({ success: true, message: "Execution blocked: shootCampaignLimit is 0", limitReached: true });
       }
 
       logger.info(`[Execute Campaign] Queueing social tasks for ${activeProfiles.length} profiles (interactionLimit=${interactionLimit})...`);
