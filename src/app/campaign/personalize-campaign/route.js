@@ -1,103 +1,15 @@
 import { NextResponse } from "next/server";
-import { getSheetsAuthClient, updateSheetRowApi, getSheetDataApi } from "../../api/googlesheets.js";
+import { getSheetsAuthClient } from "../../api/googlesheets.js";
 import { google } from "googleapis";
 import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings } from "../_shared/pipelineUtils.js";
+import { getSelfUrl } from "../../../utils/serverlessTracker.js";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
-
-function extractFileId(url) {
-  if (!url) return null;
-  if (!url.startsWith("http")) return url;
-  const matches = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
-  return matches ? matches[1] : null;
-}
-
-function parseCSV(text) {
-  const lines = [];
-  let row = [""];
-  let inQuotes = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    const next = text[i + 1];
-    if (inQuotes) {
-      if (c === '"') {
-        if (next === '"') { row[row.length - 1] += '"'; i++; }
-        else { inQuotes = false; }
-      } else { row[row.length - 1] += c; }
-    } else {
-      if (c === '"') { inQuotes = true; }
-      else if (c === ',') { row.push(""); }
-      else if (c === '\r' || c === '\n') {
-        if (c === '\r' && next === '\n') i++;
-        lines.push(row);
-        row = [""];
-      } else { row[row.length - 1] += c; }
-    }
-  }
-  if (row.length > 1 || row[0] !== "") lines.push(row);
-  return lines;
-}
-
-function stringifyCSV(rows) {
-  return rows.map(row =>
-    row.map(val => {
-      const str = String(val === null || val === undefined ? "" : val);
-      if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
-        return '"' + str.replace(/"/g, '""') + '"';
-      }
-      return str;
-    }).join(',')
-  ).join('\n');
-}
-
-async function isCampaignPaused(campaignId) {
-  try {
-    const campaignsResult = await getSheetDataApi("campaigns");
-    if (!campaignsResult.success) return false;
-    const headers = campaignsResult.headers;
-    const idIdx = headers.indexOf("campaignId");
-    const statusIdx = headers.indexOf("status");
-    if (idIdx === -1 || statusIdx === -1) return false;
-    const row = campaignsResult.data.find(r => String(r[idIdx]).trim() === String(campaignId).trim());
-    if (!row) return false;
-    return String(row[statusIdx] || "").trim().toLowerCase() === "paused";
-  } catch (err) {
-    logger.warn(`[Personalize Campaign] Pause check failed: ${err.message}`);
-    return false;
-  }
-}
-
-async function updateCampaignSettings(campaignId, updates) {
-  try {
-    const campaignsResult = await getSheetDataApi("campaigns");
-    if (!campaignsResult.success) return;
-    const cHeaders = campaignsResult.headers;
-    const cIdIndex = cHeaders.indexOf("campaignId");
-    const cSettingsIndex = cHeaders.indexOf("settings");
-    const campaignRow = campaignsResult.data.find(r => r[cIdIndex] === campaignId);
-    if (!campaignRow || cSettingsIndex === -1) return;
-
-    let settings = {};
-    try {
-      const settingsStr = campaignRow[cSettingsIndex];
-      if (typeof settingsStr === "string") settings = JSON.parse(settingsStr);
-      else if (settingsStr && typeof settingsStr === 'object') settings = settingsStr;
-    } catch {}
-
-    Object.assign(settings, updates);
-
-    await updateSheetRowApi("campaigns", "campaignId", campaignId, {
-      settings: JSON.stringify(settings),
-      updatedOn: new Date().toISOString()
-    });
-  } catch (err) {
-    logger.warn(`[Personalize Campaign] Failed to update settings: ${err.message}`);
-  }
-}
 
 async function personalizeBatch(batch, personalizationPrompt, headers) {
   if (batch.length === 0) return batch.map(() => null);
@@ -216,34 +128,12 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
 
   let personalizationPrompt = "Write a short, professional cold outreach email. Address by first name, reference company. Keep it engaging, under 150 words. Vary subject lines.";
 
-  const campaignsResult = await getSheetDataApi("campaigns");
-  if (campaignsResult.success) {
-    const cHeaders = campaignsResult.headers;
-    const cIdIndex = cHeaders.indexOf("campaignId");
-    const cSettingsIndex = cHeaders.indexOf("settings");
-    const campaignRow = campaignsResult.data.find(r => r[cIdIndex] === campaignId);
-    if (campaignRow && cSettingsIndex !== -1) {
-      try {
-        const settingsStr = campaignRow[cSettingsIndex];
-        const settings = typeof settingsStr === "string" ? JSON.parse(settingsStr) : (settingsStr || {});
-        if (settings.aiPersonalizationPrompt) personalizationPrompt = settings.aiPersonalizationPrompt;
-      } catch {}
-    }
-  }
-
   let channel = "email";
   try {
-    const campaignsResult2 = await getSheetDataApi("campaigns");
-    if (campaignsResult2.success) {
-      const cHeaders = campaignsResult2.headers;
-      const cIdIndex = cHeaders.indexOf("campaignId");
-      const cSettingsIndex = cHeaders.indexOf("settings");
-      const campaignRow = campaignsResult2.data.find(r => r[cIdIndex] === campaignId);
-      if (campaignRow && cSettingsIndex !== -1) {
-        const settingsStr = campaignRow[cSettingsIndex];
-        const settings = typeof settingsStr === "string" ? JSON.parse(settingsStr) : (settingsStr || {});
-        channel = settings.channel || "email";
-      }
+    const campaignData = await getCampaignSettings(campaignId);
+    if (campaignData?.settings) {
+      if (campaignData.settings.aiPersonalizationPrompt) personalizationPrompt = campaignData.settings.aiPersonalizationPrompt;
+      channel = campaignData.settings.channel || "email";
     }
   } catch {}
 
@@ -337,6 +227,16 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
 
   await updateCampaignSettings(campaignId, { personalizationStatus: "completed" });
 
+  // Auto-advance pipeline
+  try {
+    const selfUrl = getSelfUrl();
+    fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ campaignId })
+    }).catch(err => logger.warn(`[Personalize Campaign] Auto-advance failed: ${err.message}`));
+  } catch {}
+
   return NextResponse.json({
     success: true,
     message: "Campaign personalization completed successfully",
@@ -392,34 +292,12 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
 
   let personalizationPrompt = "Write a short, professional cold outreach email. Address by first name, reference company. Keep it engaging, under 150 words. Vary subject lines.";
 
-  const campaignsResult = await getSheetDataApi("campaigns");
-  if (campaignsResult.success) {
-    const cHeaders = campaignsResult.headers;
-    const cIdIndex = cHeaders.indexOf("campaignId");
-    const cSettingsIndex = cHeaders.indexOf("settings");
-    const campaignRow = campaignsResult.data.find(r => r[cIdIndex] === campaignId);
-    if (campaignRow && cSettingsIndex !== -1) {
-      try {
-        const settingsStr = campaignRow[cSettingsIndex];
-        const settings = typeof settingsStr === "string" ? JSON.parse(settingsStr) : (settingsStr || {});
-        if (settings.aiPersonalizationPrompt) personalizationPrompt = settings.aiPersonalizationPrompt;
-      } catch {}
-    }
-  }
-
   let channel = "email";
   try {
-    const campaignsResult2 = await getSheetDataApi("campaigns");
-    if (campaignsResult2.success) {
-      const cHeaders = campaignsResult2.headers;
-      const cIdIndex = cHeaders.indexOf("campaignId");
-      const cSettingsIndex = cHeaders.indexOf("settings");
-      const campaignRow = campaignsResult2.data.find(r => r[cIdIndex] === campaignId);
-      if (campaignRow && cSettingsIndex !== -1) {
-        const settingsStr = campaignRow[cSettingsIndex];
-        const settings = typeof settingsStr === "string" ? JSON.parse(settingsStr) : (settingsStr || {});
-        channel = settings.channel || "email";
-      }
+    const campaignData = await getCampaignSettings(campaignId);
+    if (campaignData?.settings) {
+      if (campaignData.settings.aiPersonalizationPrompt) personalizationPrompt = campaignData.settings.aiPersonalizationPrompt;
+      channel = campaignData.settings.channel || "email";
     }
   } catch {}
 

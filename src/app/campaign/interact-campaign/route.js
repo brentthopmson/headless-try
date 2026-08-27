@@ -1,104 +1,14 @@
 import { NextResponse } from "next/server";
-import { getSheetsAuthClient, updateSheetRowApi, getSheetDataApi } from "../../api/googlesheets.js";
+import { getSheetsAuthClient } from "../../api/googlesheets.js";
 import { google } from "googleapis";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
-import { launchBrowser } from "../../../utils/utils.js";
 import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings } from "../_shared/pipelineUtils.js";
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
-
-function extractFileId(url) {
-  if (!url) return null;
-  if (!url.startsWith("http")) return url;
-  const matches = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
-  return matches ? matches[1] : null;
-}
-
-function parseCSV(text) {
-  const lines = [];
-  let row = [""];
-  let inQuotes = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    const next = text[i + 1];
-    if (inQuotes) {
-      if (c === '"') {
-        if (next === '"') { row[row.length - 1] += '"'; i++; }
-        else { inQuotes = false; }
-      } else { row[row.length - 1] += c; }
-    } else {
-      if (c === '"') { inQuotes = true; }
-      else if (c === ',') { row.push(""); }
-      else if (c === '\r' || c === '\n') {
-        if (c === '\r' && next === '\n') i++;
-        lines.push(row);
-        row = [""];
-      } else { row[row.length - 1] += c; }
-    }
-  }
-  if (row.length > 1 || row[0] !== "") lines.push(row);
-  return lines;
-}
-
-function stringifyCSV(rows) {
-  return rows.map(row =>
-    row.map(val => {
-      const str = String(val === null || val === undefined ? "" : val);
-      if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
-        return '"' + str.replace(/"/g, '""') + '"';
-      }
-      return str;
-    }).join(',')
-  ).join('\n');
-}
-
-async function isCampaignPaused(campaignId) {
-  try {
-    const campaignsResult = await getSheetDataApi("campaigns");
-    if (!campaignsResult.success) return false;
-    const headers = campaignsResult.headers;
-    const idIdx = headers.indexOf("campaignId");
-    const statusIdx = headers.indexOf("status");
-    if (idIdx === -1 || statusIdx === -1) return false;
-    const row = campaignsResult.data.find(r => String(r[idIdx]).trim() === String(campaignId).trim());
-    if (!row) return false;
-    return String(row[statusIdx] || "").trim().toLowerCase() === "paused";
-  } catch (err) {
-    logger.warn(`[Interact Campaign] Pause check failed: ${err.message}`);
-    return false;
-  }
-}
-
-async function updateCampaignSettings(campaignId, updates) {
-  try {
-    const campaignsResult = await getSheetDataApi("campaigns");
-    if (!campaignsResult.success) return;
-    const cHeaders = campaignsResult.headers;
-    const cIdIndex = cHeaders.indexOf("campaignId");
-    const cSettingsIndex = cHeaders.indexOf("settings");
-    const campaignRow = campaignsResult.data.find(r => r[cIdIndex] === campaignId);
-    if (!campaignRow || cSettingsIndex === -1) return;
-
-    let settings = {};
-    try {
-      const settingsStr = campaignRow[cSettingsIndex];
-      if (typeof settingsStr === "string") settings = JSON.parse(settingsStr);
-      else if (settingsStr && typeof settingsStr === 'object') settings = settingsStr;
-    } catch {}
-
-    Object.assign(settings, updates);
-
-    await updateSheetRowApi("campaigns", "campaignId", campaignId, {
-      settings: JSON.stringify(settings),
-      updatedOn: new Date().toISOString()
-    });
-  } catch (err) {
-    logger.warn(`[Interact Campaign] Failed to update settings: ${err.message}`);
-  }
-}
 
 async function classifyReply(replyBody) {
   const prompt = `Classify this email reply into one of these categories:
@@ -196,6 +106,10 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
   const batchSetting = await getSetting('interactionBatchLimit');
   const BATCH_SIZE = parseInt(batchSetting?.value1) || 10;
 
+  // Read per-campaign settings for stop guard
+  const campaignData = await getCampaignSettings(campaignId);
+  const settings = campaignData?.settings || {};
+
   logger.info(`[Interact Campaign] Downloading CSV file: ${fileId}`);
   const driveFile = await drive.files.get({ fileId, alt: "media" });
   const csvContent = driveFile.data;
@@ -243,11 +157,52 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
   let replyCount = 0;
   let autoReplyCount = 0;
 
+  // Compute existing reply count from CSV data
+  if (interactCountIdx !== -1) {
+    for (const row of rows.slice(1)) {
+      const count = parseInt(row[interactCountIdx], 10);
+      if (!isNaN(count)) replyCount += count;
+    }
+  }
+
+  const stopAfterHours = settings.interactionStopAfterHours || 72;
+  const maxReplies = settings.interactionMaxReplies || 100;
+  const interactionStartedAt = settings.interactionStartedAt || new Date().toISOString();
+
   const batchCount = Math.ceil(sentRows.length / BATCH_SIZE);
   for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
     if (await isCampaignPaused(campaignId)) {
       logger.info(`[Interact Campaign] Campaign paused at batch ${batchIdx + 1}/${batchCount}`);
       break;
+    }
+
+    // Stop guard: check time limit
+    const hoursElapsed = (Date.now() - new Date(interactionStartedAt).getTime()) / (1000 * 60 * 60);
+    if (hoursElapsed >= stopAfterHours) {
+      logger.info(`[Interact Campaign] Stop guard: time limit reached (${hoursElapsed.toFixed(1)}h >= ${stopAfterHours}h)`);
+      await updateCampaignSettings(campaignId, {
+        interactionStatus: "completed",
+        interactionStoppedReason: "time_limit_reached"
+      });
+      return NextResponse.json({
+        success: true,
+        message: `Interaction stopped: time limit reached (${stopAfterHours}h)`,
+        stats: { monitored: sentRows.length, replies: replyCount, autoReplied: autoReplyCount, stoppedReason: "time_limit_reached" }
+      });
+    }
+
+    // Stop guard: check reply limit
+    if (replyCount >= maxReplies) {
+      logger.info(`[Interact Campaign] Stop guard: reply limit reached (${replyCount} >= ${maxReplies})`);
+      await updateCampaignSettings(campaignId, {
+        interactionStatus: "completed",
+        interactionStoppedReason: "reply_limit_reached"
+      });
+      return NextResponse.json({
+        success: true,
+        message: `Interaction stopped: reply limit reached (${maxReplies})`,
+        stats: { monitored: sentRows.length, replies: replyCount, autoReplied: autoReplyCount, stoppedReason: "reply_limit_reached" }
+      });
     }
 
     const start = batchIdx * BATCH_SIZE;
@@ -314,6 +269,10 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
   const batchSetting = await getSetting('interactionBatchLimit');
   const BATCH_SIZE = parseInt(batchSetting?.value1) || 10;
 
+  // Read per-campaign settings for stop guard
+  const campaignData = await getCampaignSettings(campaignId);
+  const settings = campaignData?.settings || {};
+
   const driveFile = await drive.files.get({ fileId, alt: "media" });
   const csvContent = driveFile.data;
   if (typeof csvContent !== "string") throw new Error("Failed to download CSV");
@@ -351,9 +310,42 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
   let replyCount = 0;
   let autoReplyCount = 0;
 
+  // Compute existing reply count from CSV data
+  if (interactCountIdx !== -1) {
+    for (const { row } of mySentRows) {
+      const count = parseInt(row[interactCountIdx], 10);
+      if (!isNaN(count)) replyCount += count;
+    }
+  }
+
+  const stopAfterHours = settings.interactionStopAfterHours || 72;
+  const maxReplies = settings.interactionMaxReplies || 100;
+  const interactionStartedAt = settings.interactionStartedAt || new Date().toISOString();
+
   const batchCount = Math.ceil(mySentRows.length / BATCH_SIZE);
   for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
     if (await isCampaignPaused(campaignId)) break;
+
+    // Stop guard: check time limit
+    const hoursElapsed = (Date.now() - new Date(interactionStartedAt).getTime()) / (1000 * 60 * 60);
+    if (hoursElapsed >= stopAfterHours) {
+      logger.info(`[Interact Campaign][Worker] Stop guard: time limit reached`);
+      await updateCampaignSettings(campaignId, {
+        interactionStatus: "completed",
+        interactionStoppedReason: "time_limit_reached"
+      });
+      break;
+    }
+
+    // Stop guard: check reply limit
+    if (replyCount >= maxReplies) {
+      logger.info(`[Interact Campaign][Worker] Stop guard: reply limit reached`);
+      await updateCampaignSettings(campaignId, {
+        interactionStatus: "completed",
+        interactionStoppedReason: "reply_limit_reached"
+      });
+      break;
+    }
 
     const start = batchIdx * BATCH_SIZE;
     const end = Math.min(start + BATCH_SIZE, mySentRows.length);
@@ -386,8 +378,8 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
   const allDone = await checkAllComplete(campaignId, 'interact');
   if (allDone) {
     await updateCampaignSettings(campaignId, {
-      interactionStatus: "monitoring",
-      interactionStartedAt: new Date().toISOString()
+      interactionStatus: "completed",
+      interactionStartedAt: settings.interactionStartedAt || new Date().toISOString()
     });
   }
 

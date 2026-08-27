@@ -13,7 +13,8 @@ import { getCampaignLimits } from "../../socials/_shared/limits.js";
 import { requireFeature } from "../../../utils/featureGate.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { getSelfUrl } from "../../../utils/serverlessTracker.js";
-import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
+import { dispatchToServers } from "../../../utils/multiServerDispatcher.js";
+import { extractFileId, stringifyCSV, isCampaignPaused } from "../_shared/pipelineUtils.js";
 
 function embedCampaignIdentifier(subject, body, campaignId) {
   const identifier = `[${campaignId}]`;
@@ -136,27 +137,8 @@ function normalizeAndMapCSV(rawCsvContent, targetSchema) {
   return normalizedRows;
 }
 
-function stringifyCSV(rows) {
-  return rows.map(row =>
-    row.map(val => {
-      const str = String(val === null || val === undefined ? "" : val);
-      if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
-        return '"' + str.replace(/"/g, '""') + '"';
-      }
-      return str;
-    }).join(',')
-  ).join('\n');
-}
-
 export const maxDuration = 60; // Up to 60 seconds
 export const dynamic = "force-dynamic";
-
-function extractFileId(url) {
-  if (!url) return null;
-  if (!url.startsWith("http")) return url;
-  const matches = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
-  return matches ? matches[1] : null;
-}
 
 function columnIndexToLetter(index) {
   let result = "";
@@ -165,48 +147,6 @@ function columnIndexToLetter(index) {
     index = Math.floor(index / 26) - 1;
   }
   return result;
-}
-
-function parseCSV(text) {
-  const lines = [];
-  let row = [""];
-  let inQuotes = false;
-
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    const next = text[i+1];
-
-    if (inQuotes) {
-      if (c === '"') {
-        if (next === '"') {
-          row[row.length - 1] += '"';
-          i++;
-        } else {
-          inQuotes = false;
-        }
-      } else {
-        row[row.length - 1] += c;
-      }
-    } else {
-      if (c === '"') {
-        inQuotes = true;
-      } else if (c === ',') {
-        row.push("");
-      } else if (c === '\r' || c === '\n') {
-        if (c === '\r' && next === '\n') {
-          i++;
-        }
-        lines.push(row);
-        row = [""];
-      } else {
-        row[row.length - 1] += c;
-      }
-    }
-  }
-  if (row.length > 1 || row[0] !== "") {
-    lines.push(row);
-  }
-  return lines;
 }
 
 async function getSocialProfileCookies(profileId) {
@@ -226,27 +166,6 @@ async function getSocialProfileCookies(profileId) {
     cookies: row[cookieIdx] || "",
     platform: platformIdx !== -1 ? String(row[platformIdx]).toLowerCase().trim() : "twitter"
   };
-}
-
-/**
- * Re-reads the campaign row and returns true if its status is currently paused.
- * Used mid-batch so an in-flight run can abort at a checkpoint when the user pauses.
- */
-async function isCampaignPaused(campaignId) {
-  try {
-    const campaignsResult = await getSheetDataApi("campaigns");
-    if (!campaignsResult.success) return false;
-    const headers = campaignsResult.headers;
-    const idIdx = headers.indexOf("campaignId");
-    const statusIdx = headers.indexOf("status");
-    if (idIdx === -1 || statusIdx === -1) return false;
-    const row = campaignsResult.data.find(r => String(r[idIdx]).trim() === String(campaignId).trim());
-    if (!row) return false;
-    return String(row[statusIdx] || "").trim().toLowerCase() === "paused";
-  } catch (err) {
-    logger.warn(`[Execute Campaign] Pause check failed for ${campaignId}: ${err.message}`);
-    return false;
-  }
 }
 
 export async function POST(request) {
@@ -620,6 +539,17 @@ export async function POST(request) {
       }
       await updateSheetRowApi("campaigns", "campaignId", campaignId, statusUpdate);
 
+      // Auto-advance pipeline (fire-and-forget)
+      if (finalStatus === "completed") {
+        try {
+          fetch(`${getSelfUrl()}/campaign/pipeline-orchestrator`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ campaignId })
+          }).catch(err => logger.warn(`[Execute Campaign] Auto-advance failed: ${err.message}`));
+        } catch {}
+      }
+
       return NextResponse.json({
         success: true,
         message: `Email campaign executed successfully (${finalStatus})`,
@@ -892,6 +822,17 @@ export async function POST(request) {
         status: finalStatus,
         updatedOn: new Date().toISOString()
       });
+
+      // Auto-advance pipeline (fire-and-forget)
+      if (finalStatus === "completed") {
+        try {
+          fetch(`${getSelfUrl()}/campaign/pipeline-orchestrator`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ campaignId })
+          }).catch(err => logger.warn(`[Execute Campaign] Auto-advance failed: ${err.message}`));
+        } catch {}
+      }
 
       return NextResponse.json({
         success: true,

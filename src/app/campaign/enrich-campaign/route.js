@@ -1,39 +1,17 @@
 ﻿import { NextResponse } from "next/server";
-import { getSheetsAuthClient, updateSheetRowApi, getSheetDataApi } from "../../api/googlesheets.js";
+import { getSheetsAuthClient } from "../../api/googlesheets.js";
 import { google } from "googleapis";
 import axios from "axios";
 import * as cheerio from "cheerio";
 import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
-import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
+import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings } from "../_shared/pipelineUtils.js";
+import { getSelfUrl } from "../../../utils/serverlessTracker.js";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
-
-const STANDARD_88_COLUMNS = [
-  'SN',
-  'FIRSTNAME', 'LASTNAME', 'EMAIL', 'ADDRESS', 'CITY', 'STATE', 'COUNTRY', 'ZIPCODE', 'PHONE', 'SEX',
-  'BUSINESSNAME', 'BUSINESSADDRESS', 'BUSINESSCITY', 'BUSINESSSTATE', 'BUSINESSCOUNTRY', 'BUSINESSZIPCODE', 'BUSINESSPHONE', 'BUSINESSEMAIL',
-  'SOCIALPLATFORM', 'SOCIALUSERNAME', 'SOCIALPHONE',
-  'CONTEXT',
-  'URL', '', '', '', '', '',
-  'campaignType', 'engine', 'provider',
-  'shooterFirstName', 'shooterLastName', 'shooterEmail', 'shooterAddress', 'shooterCity', 'shooterState', 'shooterCountry', 'shooterZipCode', 'shooterPhone', 'shooterSex',
-  'smtp', 'port', 'username', 'password', 'appPassword', 'backupCode', 'oAuth2ClientId', 'oAuth2ClientSecret', 'oAuth2RefreshToken',
-  '',
-  'shouldValidate', 'shouldEnhance', 'shouldSearchInteract', 'shouldPageInteract', 'shouldInboxInteract', 'shouldActivitiesInteract', 'shouldSendMessage',
-  '', '',
-  'emailSubject', 'emailBody', 'socialMessage', 'replyTo',
-  '', '', '',
-  'validation', 'providerMXResult', 'enhancedSubject', 'enhancedBody', 'enhancedSocialMessage',
-  '', '',
-  'sendDate', 'sendTime', 'sendStamp',
-  '', '', '',
-  'searchKeys', 'searchCount', 'searchStatus', 'searchStamp',
-  '',
-  'profileToInteract', 'interactCount', 'interactStatus', 'interactStamp'
-];
 
 const GENERIC_DOMAINS = new Set([
   "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com", "icloud.com",
@@ -63,55 +41,6 @@ function inferCompany(email) {
   const domain = parts[1].toLowerCase().trim();
   if (GENERIC_DOMAINS.has(domain)) return "Personal";
   return capitalize(domain.split(".")[0]);
-}
-
-function extractFileId(url) {
-  if (!url) return null;
-  if (!url.startsWith("http")) return url;
-  const matches = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
-  return matches ? matches[1] : null;
-}
-
-function parseCSV(text) {
-  const lines = [];
-  let row = [""];
-  let inQuotes = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    const next = text[i + 1];
-    if (inQuotes) {
-      if (c === '"') {
-        if (next === '"') { row[row.length - 1] += '"'; i++; }
-        else { inQuotes = false; }
-      } else {
-        row[row.length - 1] += c;
-      }
-    } else {
-      if (c === '"') { inQuotes = true; }
-      else if (c === ',') { row.push(""); }
-      else if (c === '\r' || c === '\n') {
-        if (c === '\r' && next === '\n') i++;
-        lines.push(row);
-        row = [""];
-      } else {
-        row[row.length - 1] += c;
-      }
-    }
-  }
-  if (row.length > 1 || row[0] !== "") lines.push(row);
-  return lines;
-}
-
-function stringifyCSV(rows) {
-  return rows.map(row =>
-    row.map(val => {
-      const str = String(val === null || val === undefined ? "" : val);
-      if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
-        return '"' + str.replace(/"/g, '""') + '"';
-      }
-      return str;
-    }).join(',')
-  ).join('\n');
 }
 
 async function scrapeUrl(url) {
@@ -207,51 +136,6 @@ Return a JSON array with one object per webpage (same order):
   return [];
 }
 
-async function isCampaignPaused(campaignId) {
-  try {
-    const campaignsResult = await getSheetDataApi("campaigns");
-    if (!campaignsResult.success) return false;
-    const headers = campaignsResult.headers;
-    const idIdx = headers.indexOf("campaignId");
-    const statusIdx = headers.indexOf("status");
-    if (idIdx === -1 || statusIdx === -1) return false;
-    const row = campaignsResult.data.find(r => String(r[idIdx]).trim() === String(campaignId).trim());
-    if (!row) return false;
-    return String(row[statusIdx] || "").trim().toLowerCase() === "paused";
-  } catch (err) {
-    logger.warn(`[Enrich Campaign] Pause check failed: ${err.message}`);
-    return false;
-  }
-}
-
-async function updateCampaignSettings(campaignId, updates) {
-  try {
-    const campaignsResult = await getSheetDataApi("campaigns");
-    if (!campaignsResult.success) return;
-    const cHeaders = campaignsResult.headers;
-    const cIdIndex = cHeaders.indexOf("campaignId");
-    const cSettingsIndex = cHeaders.indexOf("settings");
-    const campaignRow = campaignsResult.data.find(r => r[cIdIndex] === campaignId);
-    if (!campaignRow || cSettingsIndex === -1) return;
-
-    let settings = {};
-    try {
-      const settingsStr = campaignRow[cSettingsIndex];
-      if (typeof settingsStr === "string") settings = JSON.parse(settingsStr);
-      else if (settingsStr && typeof settingsStr === 'object') settings = settingsStr;
-    } catch {}
-
-    Object.assign(settings, updates);
-
-    await updateSheetRowApi("campaigns", "campaignId", campaignId, {
-      settings: JSON.stringify(settings),
-      updatedOn: new Date().toISOString()
-    });
-  } catch (err) {
-    logger.warn(`[Enrich Campaign] Failed to update settings: ${err.message}`);
-  }
-}
-
 export async function POST(request) {
   try {
     const body = await request.json();
@@ -332,7 +216,7 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
   if (multiEnabled) {
     const dispatchResult = await dispatchToServers(campaignId, 'enrich', fileUrl, dataRows.length);
     if (dispatchResult) {
-      return NextResponse.json({ success: true, dispatched: true, servers: dispatchResult });
+      return NextResponse.json({ success: true, dispatched: true, servers: dispatchResult.servers });
     }
   }
 
@@ -517,6 +401,16 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
 
   // 8. Update campaign settings
   await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
+
+  // Auto-advance pipeline
+  try {
+    const selfUrl = getSelfUrl();
+    fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ campaignId })
+    }).catch(err => logger.warn(`[Enrich Campaign] Auto-advance failed: ${err.message}`));
+  } catch {}
 
   return NextResponse.json({
     success: true,
