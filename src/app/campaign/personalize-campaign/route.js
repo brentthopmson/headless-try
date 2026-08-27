@@ -7,6 +7,7 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings } from "../_shared/pipelineUtils.js";
 import { getSelfUrl } from "../../../utils/serverlessTracker.js";
+import { getCampaignLimits } from "../../socials/_shared/limits.js";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -145,6 +146,13 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
   }
 
   const dataRows = rows.slice(1);
+
+  // Apply personalizeLimit from Limits sheet
+  const campaignLimits = await getCampaignLimits();
+  if (campaignLimits.personalizeLimit > 0 && dataRows.length > campaignLimits.personalizeLimit) {
+    dataRows.length = campaignLimits.personalizeLimit;
+    logger.info(`[Personalize Campaign] personalizeLimit (${campaignLimits.personalizeLimit}) applied: capped to ${dataRows.length} rows`);
+  }
 
   const multiEnabled = await isMultiServerEnabled();
   if (multiEnabled) {

@@ -10,6 +10,7 @@ import { platformConfigs } from "../../emails/cookie/cookie-api-login/platforms.
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings } from "../_shared/pipelineUtils.js";
 import { getSelfUrl } from "../../../utils/serverlessTracker.js";
+import { getCampaignLimits } from "../../socials/_shared/limits.js";
 
 const resolveMx = promisify(dns.resolveMx);
 
@@ -192,6 +193,16 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
   if (emailColIdx === -1) throw new Error("EMAIL column not found in 88-column schema");
 
   const dataRows = normalizedRows.slice(1);
+
+  // Apply validateLimit from Limits sheet
+  const campaignLimits = await getCampaignLimits();
+  const originalCount = dataRows.length;
+  let limitApplied = false;
+  if (campaignLimits.validateLimit > 0 && dataRows.length > campaignLimits.validateLimit) {
+    dataRows.length = campaignLimits.validateLimit;
+    limitApplied = true;
+    logger.info(`[Validate Campaign] validateLimit (${campaignLimits.validateLimit}) applied: ${originalCount} → ${dataRows.length} rows`);
+  }
 
   // 3. Dedup by email
   const uniqueEmails = new Map();

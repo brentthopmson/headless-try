@@ -323,13 +323,18 @@ export async function POST(request) {
         }
       }
 
-      // Step 3b: Fetch plan limit (shootContactsLimit) from the cached Limits sheet
-      let shootContactsLimit = Infinity;
+      // Step 3b: Fetch plan limit (shootCampaignLimit) from the cached Limits sheet
+      let shootCampaignLimit = 0;
       try {
         const campaignLimits = await getCampaignLimits();
-        shootContactsLimit = campaignLimits.shootContactsLimit;
+        shootCampaignLimit = campaignLimits.shootCampaignLimit;
       } catch (limitErr) {
-        logger.warn(`[Execute Campaign] Failed to fetch limits, proceeding without limit: ${limitErr.message}`);
+        logger.warn(`[Execute Campaign] Failed to fetch limits, blocking: ${limitErr.message}`);
+      }
+
+      if (shootCampaignLimit <= 0) {
+        logger.info(`[Execute Campaign] shootCampaignLimit is 0 or unavailable, blocking execution`);
+        break;
       }
 
       let sentCount = 0;
@@ -386,8 +391,8 @@ export async function POST(request) {
       }
 
       const startIndex = Math.max(0, lastProcessedRow);
-      const maxToProcess = Math.min(deduplicatedRows.length, shootContactsLimit, SHOOTING_BATCH_SIZE);
-      logger.info(`[Execute Campaign] Sending emails: limit=${shootContactsLimit === Infinity ? 'unlimited' : shootContactsLimit}, batch=${maxToProcess} contacts (after dedup: ${deduplicatedRows.length}/${dataRows.length})`);
+      const maxToProcess = Math.min(deduplicatedRows.length, shootCampaignLimit, SHOOTING_BATCH_SIZE);
+      logger.info(`[Execute Campaign] Sending emails: limit=${shootCampaignLimit === Infinity ? 'unlimited' : shootCampaignLimit}, batch=${maxToProcess} contacts (after dedup: ${deduplicatedRows.length}/${dataRows.length})`);
 
       // Step 3e: Processing loop over deduplicated rows with checkpointing
       let pausedByAdmin = false;
@@ -397,9 +402,9 @@ export async function POST(request) {
           logger.info(`[Execute Campaign] Campaign ${campaignId} was paused during run. Stopping at row ${i}.`);
           break;
         }
-        if (sentCount >= shootContactsLimit) {
+        if (sentCount >= shootCampaignLimit) {
           limitReached = true;
-          logger.info(`[Execute Campaign] shootContactsLimit (${shootContactsLimit}) reached, stopping.`);
+          logger.info(`[Execute Campaign] shootCampaignLimit (${shootCampaignLimit}) reached, stopping.`);
           break;
         }
         if (sentCount >= 30) {
@@ -590,18 +595,23 @@ export async function POST(request) {
         }
       }
 
-      // Step 4b: Fetch both shootContactsLimit and interactionLimit from the cached Limits sheet
-      let shootContactsLimit = Infinity;
-      let interactionLimit = Infinity;
+      // Step 4b: Fetch both shootCampaignLimit and interactionLimit from the cached Limits sheet
+      let shootCampaignLimit = 0;
+      let interactionLimit = 0;
       try {
         const campaignLimits = await getCampaignLimits();
-        shootContactsLimit = campaignLimits.shootContactsLimit;
+        shootCampaignLimit = campaignLimits.shootCampaignLimit;
         interactionLimit = campaignLimits.interactionLimit;
       } catch (limitErr) {
-        logger.warn(`[Execute Campaign] Failed to fetch social limits: ${limitErr.message}`);
+        logger.warn(`[Execute Campaign] Failed to fetch social limits, blocking: ${limitErr.message}`);
       }
 
-      logger.info(`[Execute Campaign] Queueing social tasks for ${activeProfiles.length} profiles (interactionLimit=${interactionLimit === Infinity ? 'unlimited' : interactionLimit})...`);
+      if (shootCampaignLimit <= 0) {
+        logger.info(`[Execute Campaign] shootCampaignLimit is 0 or unavailable, blocking social execution`);
+        break;
+      }
+
+      logger.info(`[Execute Campaign] Queueing social tasks for ${activeProfiles.length} profiles (interactionLimit=${interactionLimit})...`);
 
       // Step 4c: Accumulate all tasks in-memory with priority ordering
       const PRIORITY_MAP = { "inbox-interact": 0, "activities-interact": 1, "page-interact": 2, "search-interact": 3 };
@@ -654,7 +664,7 @@ export async function POST(request) {
       pendingSocialTasks.sort((a, b) => a.priority - b.priority);
 
       // Step 4e: Execute tasks directly via social route handlers
-      const tasksToExecute = pendingSocialTasks.slice(0, Math.min(pendingSocialTasks.length, shootContactsLimit));
+      const tasksToExecute = pendingSocialTasks.slice(0, Math.min(pendingSocialTasks.length, shootCampaignLimit));
       const executionResults = [];
       let executedCount = 0;
       let failedCount = 0;
@@ -803,7 +813,7 @@ export async function POST(request) {
       }
 
       // Step 4g: Single campaign status update
-      const limitReached = executedCount < pendingSocialTasks.length || executedCount >= shootContactsLimit;
+      const limitReached = executedCount < pendingSocialTasks.length || executedCount >= shootCampaignLimit;
       const finalStatus = pausedByAdmin ? "paused" : (limitReached ? "Limit Reached" : "completed");
       const analytics = {
         totalRows: tasksToExecute.length,

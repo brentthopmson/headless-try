@@ -135,27 +135,33 @@ export async function checkActionAllowed(platform, action, accountUsage = {}) {
 
 export async function getCampaignLimits() {
     const sheet = await getLimitsSheet();
-    if (!sheet) return { shootContactsLimit: Infinity, interactionLimit: Infinity };
+    // Default to 0 (block) when sheet is unavailable
+    if (!sheet) return { validateLimit: 0, enrichLimit: 0, personalizeLimit: 0, shootCampaignLimit: 0, interactionLimit: 0 };
 
     const headers = sheet.headers;
     const categoryIdx = headers.indexOf("category");
-    const shootIdx = headers.indexOf("shootContactsLimit");
-    const interactIdx = headers.indexOf("interactionLimit");
-
-    if (categoryIdx === -1) return { shootContactsLimit: Infinity, interactionLimit: Infinity };
+    if (categoryIdx === -1) return { validateLimit: 0, enrichLimit: 0, personalizeLimit: 0, shootCampaignLimit: 0, interactionLimit: 0 };
 
     const campaignRow = sheet.data.find(r => String(r[categoryIdx]).trim().toLowerCase() === "campaign");
-    if (!campaignRow) return { shootContactsLimit: Infinity, interactionLimit: Infinity };
+    if (!campaignRow) return { validateLimit: 0, enrichLimit: 0, personalizeLimit: 0, shootCampaignLimit: 0, interactionLimit: 0 };
 
     const parseLimit = (val) => {
-        if (!val) return Infinity;
+        if (!val) return 0;
         const n = parseInt(val, 10);
-        return (!isNaN(n) && n >= 0) ? n : Infinity;
+        return (!isNaN(n) && n >= 0) ? n : 0;
+    };
+
+    const idx = (col) => {
+        const i = headers.indexOf(col);
+        return i !== -1 ? campaignRow[i] : null;
     };
 
     return {
-        shootContactsLimit: parseLimit(shootIdx !== -1 ? campaignRow[shootIdx] : null),
-        interactionLimit: parseLimit(interactIdx !== -1 ? campaignRow[interactIdx] : null),
+        validateLimit: parseLimit(idx("validateLimit")),
+        enrichLimit: parseLimit(idx("enrichLimit")),
+        personalizeLimit: parseLimit(idx("personalizeLimit")),
+        shootCampaignLimit: parseLimit(idx("shootCampaignLimit")),
+        interactionLimit: parseLimit(idx("interactionLimit")),
     };
 }
 

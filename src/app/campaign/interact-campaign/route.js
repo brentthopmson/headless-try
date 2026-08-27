@@ -6,6 +6,7 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings } from "../_shared/pipelineUtils.js";
+import { getCampaignLimits } from "../../socials/_shared/limits.js";
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
@@ -169,6 +170,15 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
   const maxReplies = settings.interactionMaxReplies || 100;
   const interactionStartedAt = settings.interactionStartedAt || new Date().toISOString();
 
+  // Fetch interactionLimit from Limits sheet
+  let interactionLimit = 0;
+  try {
+    const campaignLimits = await getCampaignLimits();
+    interactionLimit = campaignLimits.interactionLimit;
+  } catch (limitErr) {
+    logger.warn(`[Interact Campaign] Failed to fetch interactionLimit: ${limitErr.message}`);
+  }
+
   const batchCount = Math.ceil(sentRows.length / BATCH_SIZE);
   for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
     if (await isCampaignPaused(campaignId)) {
@@ -201,6 +211,20 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
       return NextResponse.json({
         success: true,
         message: `Interaction stopped: reply limit reached (${maxReplies})`,
+        stats: { monitored: sentRows.length, replies: replyCount, autoReplied: autoReplyCount, stoppedReason: "reply_limit_reached" }
+      });
+    }
+
+    // Stop guard: check plan interactionLimit
+    if (interactionLimit > 0 && replyCount >= interactionLimit) {
+      logger.info(`[Interact Campaign] Stop guard: plan interactionLimit reached (${replyCount} >= ${interactionLimit})`);
+      await updateCampaignSettings(campaignId, {
+        interactionStatus: "completed",
+        interactionStoppedReason: "reply_limit_reached"
+      });
+      return NextResponse.json({
+        success: true,
+        message: `Interaction stopped: plan limit reached (${interactionLimit})`,
         stats: { monitored: sentRows.length, replies: replyCount, autoReplied: autoReplyCount, stoppedReason: "reply_limit_reached" }
       });
     }
@@ -322,6 +346,15 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
   const maxReplies = settings.interactionMaxReplies || 100;
   const interactionStartedAt = settings.interactionStartedAt || new Date().toISOString();
 
+  // Fetch interactionLimit from Limits sheet
+  let interactionLimit = 0;
+  try {
+    const campaignLimits = await getCampaignLimits();
+    interactionLimit = campaignLimits.interactionLimit;
+  } catch (limitErr) {
+    logger.warn(`[Interact Campaign][Worker] Failed to fetch interactionLimit: ${limitErr.message}`);
+  }
+
   const batchCount = Math.ceil(mySentRows.length / BATCH_SIZE);
   for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
     if (await isCampaignPaused(campaignId)) break;
@@ -340,6 +373,16 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
     // Stop guard: check reply limit
     if (replyCount >= maxReplies) {
       logger.info(`[Interact Campaign][Worker] Stop guard: reply limit reached`);
+      await updateCampaignSettings(campaignId, {
+        interactionStatus: "completed",
+        interactionStoppedReason: "reply_limit_reached"
+      });
+      break;
+    }
+
+    // Stop guard: check plan interactionLimit
+    if (interactionLimit > 0 && replyCount >= interactionLimit) {
+      logger.info(`[Interact Campaign][Worker] Stop guard: plan interactionLimit reached`);
       await updateCampaignSettings(campaignId, {
         interactionStatus: "completed",
         interactionStoppedReason: "reply_limit_reached"

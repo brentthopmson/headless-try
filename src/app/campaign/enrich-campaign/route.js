@@ -9,6 +9,7 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings } from "../_shared/pipelineUtils.js";
 import { getSelfUrl } from "../../../utils/serverlessTracker.js";
+import { getCampaignLimits } from "../../socials/_shared/limits.js";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -210,6 +211,13 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
   const validationIdx = headers.indexOf("validation");
 
   const dataRows = parsedRows.slice(1);
+
+  // Apply enrichLimit from Limits sheet
+  const campaignLimits = await getCampaignLimits();
+  if (campaignLimits.enrichLimit > 0 && dataRows.length > campaignLimits.enrichLimit) {
+    dataRows.length = campaignLimits.enrichLimit;
+    logger.info(`[Enrich Campaign] enrichLimit (${campaignLimits.enrichLimit}) applied: capped to ${dataRows.length} rows`);
+  }
   logger.info(`[Enrich Campaign] Processing ${dataRows.length} rows`);
 
   const multiEnabled = await isMultiServerEnabled();
