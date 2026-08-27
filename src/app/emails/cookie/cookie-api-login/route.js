@@ -6785,10 +6785,11 @@ export async function POST(request) {
                         try {
                             await processRow(row, colIndexes, session?.browser, session?.page);
                         } finally {
-                            // Release the lease once the job finished AND the stored session is gone
-                            // (browser closed / terminal state). If the session is still parked for
-                            // user input, keep the lease so the interval stays out of the way.
-                            if (!activeBrowserSessions.has(browserId)) activeProcesses.delete(browserId);
+                            // Always release the lease so processWaitingRows can re-pick the row
+                            // for Phase 2 polling (e.g. WAITINGCODE polling loop). Holding the lease
+                            // while the browser is parked in activeBrowserSessions blocked re-pickup
+                            // and left rows stuck in WAITINGCODE indefinitely.
+                            activeProcesses.delete(browserId);
                         }
                     } catch (err) {
                         logger.error(`[POST][${browserId}] Direct processRow error: ${err.message}`);
