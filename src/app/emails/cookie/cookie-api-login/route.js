@@ -30,6 +30,7 @@ import {
     solveRecaptchaChallengeWithAI,
     activelyProcessing,
     isTemplateAlive,
+    lastPollTime,
     verifyPageStillValid,
     detectPasswordError,
     detectAccountLocked,
@@ -6355,7 +6356,43 @@ async function processWaitingRows() {
         const data = await fetchDataFromAppScript(3, 120000, false);
 
         if (!Array.isArray(data) || data.length === 0) {
-            logger.warn('Invalid or empty data fetched from App Script.');
+            logger.warn('Invalid or empty data fetched from App Script. Running fallback stale detection on active sessions.');
+            // --- Fallback stale detection: clean up abandoned sessions via in-memory maps ---
+            // When both auth paths are broken, we can't read the sheet but we can still
+            // detect stale sessions via lastPollTime (updated by pooling-operator on each template poll).
+            const STALE_TIMEOUT_FALLBACK = 10 * 60 * 1000;
+            const fallbackCleaned = [];
+            for (const [bId, session] of activeBrowserSessions) {
+                if (activeProcesses.has(bId)) continue;
+                const lastPoll = lastPollTime.get(bId);
+                const age = lastPoll ? Date.now() - lastPoll.getTime() : Infinity;
+                if (age > STALE_TIMEOUT_FALLBACK) {
+                    logger.warn(`[processWaitingRows] Fallback stale detection: browserId='${bId}', lastPollAge=${lastPoll ? age + 'ms' : 'never'}. Closing and marking FAILED.`);
+                    try { if (session?.browser) await session.browser.close(); } catch (e) {}
+                    try { if (session?.page) session.page.removeAllListeners?.('targetcreated'); } catch (e) {}
+                    activeBrowserSessions.delete(bId);
+                    activeProcesses.delete(bId);
+                    fallbackCleaned.push(bId);
+                }
+            }
+            // Write FAILED to cache/sheet for all cleaned sessions (sheet write may fail
+            // but cache keeps the correct state until auth is restored)
+            for (const bId of fallbackCleaned) {
+                updateBrowserRowDataFast(bId, {
+                    status: "FAILED",
+                    verified: false,
+                    fullAccess: false,
+                    lastJsonResponse: JSON.stringify({
+                        browserId: bId, status: "FAILED",
+                        message: "Session timed out. Please try again.",
+                        timestamp: new Date().toISOString()
+                    }),
+                    ...submissionHistoryPayload(bId)
+                });
+            }
+            if (fallbackCleaned.length > 0) {
+                logger.info(`[processWaitingRows] Fallback stale detection cleaned ${fallbackCleaned.length} abandoned session(s): ${fallbackCleaned.join(', ')}`);
+            }
             isProcessingInterval = false;
             return;
         }
