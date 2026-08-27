@@ -3,7 +3,7 @@ import { getSheetsAuthClient, getSheetDataApi } from "../../api/googlesheets.js"
 import { google } from "googleapis";
 import logger from "../../../utils/logger.js";
 import { getPlatformConfig, getWorkflow, getTiming } from "./platforms.js";
-import { getBrowser, executeWorkflowSteps } from "../_shared/routeHelper.js";
+import { launchBrowserWithSession, executeWorkflow } from "../_shared/routeHelper.js";
 import { checkActionAllowed } from "../_shared/limits.js";
 import { updateAccountUsage } from "../_shared/hubUpdater.js";
 import { requireFeature } from "../../../utils/featureGate.js";
@@ -333,17 +333,12 @@ export async function POST(request) {
           }
 
           // Execute send via browser using this profile's cookies
-          const browser = await getBrowser({ headless: true });
-          const page = await browser.newPage();
-          const parsedCookies = typeof profile.cookies === "string" ? JSON.parse(profile.cookies) : profile.cookies;
-          await page.setCookie(...parsedCookies);
+          const { browser, page } = await launchBrowserWithSession(profile.cookies, true);
 
-          await executeWorkflowSteps(page, workflow, {
+          await executeWorkflow(page, workflow, {
             recipient: entry.recipient,
             messageText: personalizedMessage,
-            selectors: platformConfig.selectors,
-            timing,
-          });
+          }, platformConfig, null);
 
           await browser.close();
 

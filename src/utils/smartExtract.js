@@ -1,5 +1,6 @@
 import logger from './logger.js';
-import aiService from './aiService.js';
+import MultiProviderAI from './multiProviderAI.js';
+const aiService = new MultiProviderAI();
 import { launchBrowserWithSession, DOMHelpers } from '../app/socials/_shared/routeHelper.js';
 import { getSheetDataApi, updateSheetRowApi, ensureSheetColumns } from '../app/api/googlesheets.js';
 import { getPlatformConfig, getExtractor } from '../app/socials/social-extract/platforms.js';

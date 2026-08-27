@@ -10,7 +10,6 @@ import {
 import { applyIdentityToPage, identitySummary } from "../../../../utils/identity.js";
 import { maskProxy } from "../../../../utils/proxy.js";
 import logger from "../../../../utils/logger.js";
-import aiService from "../../../../utils/aiService.js";
 import { platformConfigs } from "./platforms.js";
 import { keyboardNavigate } from "../../../../utils/KeyboardHandlers.js";
 import { uploadBrowserData } from '../../../api/googledrive.mjs';

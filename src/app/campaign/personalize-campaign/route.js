@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSheetsAuthClient, updateSheetRowApi, getSheetDataApi } from "../../api/googlesheets.js";
 import { google } from "googleapis";
-import geminiHelper from "../../api/gemini.js";
+import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
@@ -100,7 +100,7 @@ async function updateCampaignSettings(campaignId, updates) {
 }
 
 async function personalizeBatch(batch, personalizationPrompt, headers) {
-  if (!geminiHelper.model || batch.length === 0) return batch.map(() => null);
+  if (batch.length === 0) return batch.map(() => null);
 
   const batchDescription = batch.map((contact, i) =>
     `${i + 1}. Name: ${contact.firstName}, Company: ${contact.company}, Email: ${contact.email}${contact.context ? `, Context: ${contact.context.slice(0, 200)}` : ""}`
@@ -124,8 +124,8 @@ Rules:
 5. Return ONLY the JSON array, no markdown or explanations`;
 
   try {
-    const result = await geminiHelper.model.generateContent(prompt);
-    const text = result.response.text().trim();
+    const ai = new MultiProviderAI();
+    const text = await ai.generate(prompt);
     const jsonMatch = text.match(/\[[\s\S]*\]/);
     if (jsonMatch) {
       return JSON.parse(jsonMatch[0]);
@@ -137,7 +137,7 @@ Rules:
 }
 
 async function personalizeSocialBatch(batch, personalizationPrompt) {
-  if (!geminiHelper.model || batch.length === 0) return batch.map(() => null);
+  if (batch.length === 0) return batch.map(() => null);
 
   const batchDescription = batch.map((contact, i) =>
     `${i + 1}. Name: ${contact.firstName}, Platform: ${contact.platform}, Username: ${contact.username}${contact.context ? `, About: ${contact.context.slice(0, 200)}` : ""}`
@@ -160,8 +160,8 @@ Rules:
 4. Return ONLY the JSON array`;
 
   try {
-    const result = await geminiHelper.model.generateContent(prompt);
-    const text = result.response.text().trim();
+    const ai = new MultiProviderAI();
+    const text = await ai.generate(prompt);
     const jsonMatch = text.match(/\[[\s\S]*\]/);
     if (jsonMatch) {
       return JSON.parse(jsonMatch[0]);

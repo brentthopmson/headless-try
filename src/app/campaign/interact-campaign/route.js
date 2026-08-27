@@ -4,7 +4,7 @@ import { google } from "googleapis";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { launchBrowser } from "../../../utils/utils.js";
-import geminiHelper from "../../api/gemini.js";
+import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
 
 export const maxDuration = 120;
@@ -101,10 +101,6 @@ async function updateCampaignSettings(campaignId, updates) {
 }
 
 async function classifyReply(replyBody) {
-  if (!geminiHelper.model) {
-    return { type: "neutral", confidence: 0.5 };
-  }
-
   const prompt = `Classify this email reply into one of these categories:
 - positive: interested, wants to connect, scheduling meeting
 - negative: not interested, rejection, do not contact
@@ -118,8 +114,8 @@ ${replyBody.slice(0, 1000)}
 Return ONLY a JSON object: {"type": "category", "confidence": 0.0-1.0}`;
 
   try {
-    const result = await geminiHelper.model.generateContent(prompt);
-    const text = result.response.text().trim();
+    const ai = new MultiProviderAI();
+    const text = await ai.generate(prompt);
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       return JSON.parse(jsonMatch[0]);
@@ -131,10 +127,6 @@ Return ONLY a JSON object: {"type": "category", "confidence": 0.0-1.0}`;
 }
 
 async function generateAutoReply(replyType, campaignContext, senderEmail) {
-  if (!geminiHelper.model) {
-    return null;
-  }
-
   const prompt = `Generate a brief, professional auto-reply for an email campaign response.
 
 Response type: ${replyType}
@@ -152,8 +144,9 @@ Rules:
 Return ONLY the reply text, no JSON or formatting.`;
 
   try {
-    const result = await geminiHelper.model.generateContent(prompt);
-    return result.response.text().trim();
+    const ai = new MultiProviderAI();
+    const text = await ai.generate(prompt);
+    return text.trim();
   } catch (err) {
     logger.warn(`[Interact Campaign] Auto-reply generation failed: ${err.message}`);
   }

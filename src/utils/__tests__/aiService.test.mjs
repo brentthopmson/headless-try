@@ -1,5 +1,5 @@
 /**
- * ISOLATION TESTS for AIService v3 (aiLimitRetry per-row)
+ * ISOLATION TESTS for MultiProviderAI (SETTINGS-driven waterfall + aiLimitRetry cooldown)
  * Run: node --experimental-vm-modules src/utils/__tests__/aiService.test.mjs
  */
 
@@ -68,7 +68,7 @@ function reset() {
 }
 
 // ============================================================
-// TESTABLE AIService (mirrors real logic)
+// TESTABLE MultiProviderAI (mirrors real logic from multiProviderAI.js)
 // ============================================================
 
 const FAILED_COOLDOWN_MS = 24 * 60 * 60 * 1000;
@@ -247,7 +247,7 @@ class TestableAIService {
 // TESTS
 // ============================================================
 
-console.log('\n=== AIService v3 Isolation Tests (aiLimitRetry) ===\n');
+console.log('\n=== MultiProviderAI Isolation Tests (SETTINGS-driven + aiLimitRetry) ===\n');
 
 // ---- 1. aiLimitRetry per-row cooldown ----
 console.log('1. aiLimitRetry Per-Row Cooldown');

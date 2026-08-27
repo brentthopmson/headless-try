@@ -736,6 +736,21 @@ export async function POST(request) {
         "activities-interact": processActivitiesInteractTask,
       };
 
+      // Build SOCIALUSERNAME → enhancedSocialMessage lookup for per-row DM personalization
+      const socialMessageMap = {};
+      if (socialCsvRows) {
+        const h = socialCsvRows[0];
+        const uidIdx = h.indexOf("SOCIALUSERNAME");
+        const msgIdx = h.indexOf("enhancedSocialMessage");
+        if (uidIdx !== -1 && msgIdx !== -1) {
+          for (let r = 1; r < socialCsvRows.length; r++) {
+            const uid = String(socialCsvRows[r][uidIdx] || "").trim();
+            const msg = String(socialCsvRows[r][msgIdx] || "").trim();
+            if (uid && msg) socialMessageMap[uid] = msg;
+          }
+        }
+      }
+
       // Live-progress CSV flush: writes per-row interaction outcomes back to Drive
       // (Drive API only, no Apps Script) so the file view updates mid-run.
       let csvUpdated = false;
@@ -787,12 +802,13 @@ export async function POST(request) {
           logger.info(`[Execute Campaign] Executing ${task.operation} task: ${task.taskId}`);
 
           // Enrich task payload with campaign context
+          const perRowMessage = socialMessageMap[task.searchQuery] || "";
           const taskPayload = {
             ...task,
-            profileId: task.platform === "twitter" || task.platform === "tiktok" ? task.searchQuery : null,
+            profileId: task.searchQuery || null,
             socialStrategyPrompt: settings.socialStrategyPrompt || null,
             projectId: settings.projectId || null,
-            messageText: settings.socialMessage || "",
+            messageText: perRowMessage || settings.socialMessage || "",
           };
 
           const result = await handler(taskPayload);

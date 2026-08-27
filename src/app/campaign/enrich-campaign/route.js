@@ -3,7 +3,7 @@ import { getSheetsAuthClient, updateSheetRowApi, getSheetDataApi } from "../../a
 import { google } from "googleapis";
 import axios from "axios";
 import * as cheerio from "cheerio";
-import geminiHelper from "../../api/gemini.js";
+import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
@@ -180,7 +180,7 @@ async function googleSearch(query) {
 }
 
 async function analyzeBatchWithGemini(scrapeResults) {
-  if (!geminiHelper.model || scrapeResults.length === 0) return [];
+  if (scrapeResults.length === 0) return [];
 
   const batchContent = scrapeResults.map((r, i) => {
     const parts = [r.title, r.description, r.bodyText?.slice(0, 800)].filter(Boolean).join(". ");
@@ -195,14 +195,14 @@ Return a JSON array with one object per webpage (same order):
 [{"summary": "2-3 sentence summary", "industry": "detected industry", "services": "key services/products"}, ...]`;
 
   try {
-    const result = await geminiHelper.model.generateContent(prompt);
-    const text = result.response.text().trim();
+    const ai = new MultiProviderAI();
+    const text = await ai.generate(prompt);
     const jsonMatch = text.match(/\[[\s\S]*\]/);
     if (jsonMatch) {
       return JSON.parse(jsonMatch[0]);
     }
   } catch (err) {
-    logger.warn(`[Enrich] Batch Gemini analysis failed: ${err.message}`);
+    logger.warn(`[Enrich] Batch AI analysis failed: ${err.message}`);
   }
   return [];
 }
