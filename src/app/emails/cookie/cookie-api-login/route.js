@@ -5687,7 +5687,7 @@ if (!foundSelector) {
                 logger.warn(`[processRow][${browserId}] Sheet clear of rejected password failed (non-critical): ${err.message}`)
             );
             return;
-        } else if (!initialCheckResult.emailExists && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined) && finalStatus !== "WAITINGCODE" && finalStatus !== "WAITINGOPTIONS") {
+        } else if (!initialCheckResult.emailExists && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined) && finalStatus !== "WAITINGCODE" && finalStatus !== "WAITINGOPTIONS" && finalStatus !== "FAILED") {
             logger.info(`[processRow][${browserId}] Generic email error detected. Checking if due to cookie sheet row state or session expiration.`);
             if (status === "WAITINGPASSWORD") {
                 logger.info(`[processRow][${browserId}] Session likely expired during WAITINGPASSWORD phase. Setting status to FAILED and keeping email.`);
