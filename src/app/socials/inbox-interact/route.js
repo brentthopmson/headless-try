@@ -54,7 +54,9 @@ async function processTask(taskPayload) {
 
         // Check coldMessage limit before sending
         if (operation === "sendMessage") {
-            const check = await checkActionAllowed(platform, "coldMessage", {});
+            const accountUsageData = profileId ? await getAccountUsage(profileId) : null;
+            const accountUsage = accountUsageData?.interactionUsage || {};
+            const check = await checkActionAllowed(platform, "coldMessage", accountUsage);
             if (!check.allowed) {
                 throw new Error(`Cold message blocked by platform limits: ${check.reason}`);
             }

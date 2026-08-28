@@ -55,8 +55,10 @@ async function processTask(taskPayload) {
 
         // Check limits
         const relevantActions = ["follow", "unfollow", "like"];
+        const accountUsageData = profileId ? await getAccountUsage(profileId) : null;
+        const accountUsage = accountUsageData?.interactionUsage || {};
         for (const action of relevantActions) {
-            const check = await checkActionAllowed(platform, ACTION_LIMIT_MAP[action] || action, {});
+            const check = await checkActionAllowed(platform, ACTION_LIMIT_MAP[action] || action, accountUsage);
             if (!check.allowed) {
                 logger.warn(`[processTask] ${action} blocked: ${check.reason}`);
             }

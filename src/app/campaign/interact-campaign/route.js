@@ -111,6 +111,12 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
   const campaignData = await getCampaignSettings(campaignId);
   const settings = campaignData?.settings || {};
 
+  // Read selected interaction accounts
+  const interactionAccountIds = settings.interactionAccounts || [];
+  const channel = settings.channel || "email";
+
+  logger.info(`[Interact Campaign] Channel: ${channel}, Selected interaction accounts: ${interactionAccountIds.length}`);
+
   logger.info(`[Interact Campaign] Downloading CSV file: ${fileId}`);
   const driveFile = await drive.files.get({ fileId, alt: "media" });
   const csvContent = driveFile.data;
@@ -296,6 +302,10 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
   // Read per-campaign settings for stop guard
   const campaignData = await getCampaignSettings(campaignId);
   const settings = campaignData?.settings || {};
+
+  // Read selected interaction accounts
+  const interactionAccountIds = settings.interactionAccounts || [];
+  const channel = settings.channel || "email";
 
   const driveFile = await drive.files.get({ fileId, alt: "media" });
   const csvContent = driveFile.data;

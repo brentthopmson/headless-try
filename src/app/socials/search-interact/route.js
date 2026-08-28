@@ -76,8 +76,10 @@ async function processTask(taskRow, columnIndexes) {
 
         // Check platform limits for all likely actions
         const actions = mapOperationToActions(operation);
+        const accountUsageData = profileId ? await getAccountUsage(profileId) : null;
+        const accountUsage = accountUsageData?.interactionUsage || {};
         for (const action of actions) {
-            const limit = await checkActionAllowed(platform, action, {});
+            const limit = await checkActionAllowed(platform, action, accountUsage);
             if (!limit.allowed) {
                 throw new Error(`Action '${action}' blocked by platform limits: ${limit.reason}`);
             }

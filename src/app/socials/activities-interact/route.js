@@ -51,11 +51,13 @@ async function processTask(taskPayload) {
 
         // Check limits before engaging
         if (operation === "engageWithNotifications" || operation === "followBack") {
-            const likeCheck = await checkActionAllowed(platform, "likesOnPost", {});
+            const accountUsageData = profileId ? await getAccountUsage(profileId) : null;
+            const accountUsage = accountUsageData?.interactionUsage || {};
+            const likeCheck = await checkActionAllowed(platform, "likesOnPost", accountUsage);
             if (!likeCheck.allowed) {
                 logger.warn(`[processTask] Likes blocked: ${likeCheck.reason}`);
             }
-            const followCheck = await checkActionAllowed(platform, "follow", {});
+            const followCheck = await checkActionAllowed(platform, "follow", accountUsage);
             if (!followCheck.allowed) {
                 logger.warn(`[processTask] Follows blocked: ${followCheck.reason}`);
             }
