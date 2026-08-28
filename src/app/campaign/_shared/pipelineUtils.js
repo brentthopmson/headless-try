@@ -145,3 +145,37 @@ export async function getCampaignSettings(campaignId) {
     return null;
   }
 }
+
+/**
+ * Reads firestick emails from the SETTINGS sheet.
+ * Returns an array of { firstName, lastName, email, address, city } objects.
+ * Used for the firestick warm-up flow: send to familiar inbox before each lead.
+ */
+export async function getFirestickEmails() {
+  try {
+    const result = await getSheetDataApi("SETTINGS");
+    if (!result.success || !result.data || !result.headers) return [];
+
+    const headers = result.headers;
+    const emailIdx = headers.indexOf("firestickEmail");
+    if (emailIdx === -1) return [];
+
+    const firstNameIdx = headers.indexOf("firestickFirstName");
+    const lastNameIdx = headers.indexOf("firestickLastName");
+    const addressIdx = headers.indexOf("firestickAddress");
+    const cityIdx = headers.indexOf("firestickCity");
+
+    return result.data
+      .filter(row => row[emailIdx] && String(row[emailIdx]).trim())
+      .map(row => ({
+        firstName: firstNameIdx !== -1 ? (row[firstNameIdx] || "") : "",
+        lastName: lastNameIdx !== -1 ? (row[lastNameIdx] || "") : "",
+        email: String(row[emailIdx]).trim(),
+        address: addressIdx !== -1 ? (row[addressIdx] || "") : "",
+        city: cityIdx !== -1 ? (row[cityIdx] || "") : "",
+      }));
+  } catch (err) {
+    logger.warn(`[Pipeline] Failed to read firestick emails: ${err.message}`);
+    return [];
+  }
+}

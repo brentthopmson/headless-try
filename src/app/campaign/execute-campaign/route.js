@@ -14,7 +14,7 @@ import { requireFeature } from "../../../utils/featureGate.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { getSelfUrl } from "../../../utils/serverlessTracker.js";
 import { dispatchToServers } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, stringifyCSV, isCampaignPaused } from "../_shared/pipelineUtils.js";
+import { extractFileId, stringifyCSV, isCampaignPaused, getFirestickEmails } from "../_shared/pipelineUtils.js";
 
 function embedCampaignIdentifier(subject, body, campaignId) {
   const identifier = `[${campaignId}]`;
@@ -338,6 +338,19 @@ export async function POST(request) {
         return NextResponse.json({ success: true, message: "Execution blocked: shootCampaignLimit is 0", limitReached: true });
       }
 
+      // Load firestick emails if warm-up is enabled
+      const firestickEnabled = settings.firestickEnabled === true;
+      let firestickList = [];
+      if (firestickEnabled) {
+        firestickList = await getFirestickEmails();
+        if (firestickList.length > 0) {
+          shootCampaignLimit = Math.floor(shootCampaignLimit / 2);
+          logger.info(`[Execute Campaign] Firestick warm-up enabled: ${firestickList.length} firestick emails loaded, limit halved to ${shootCampaignLimit}`);
+        } else {
+          logger.warn(`[Execute Campaign] Firestick warm-up enabled but no firestick emails found in SETTINGS, proceeding without warm-up`);
+        }
+      }
+
       let sentCount = 0;
       let deliveredCount = 0;
       let failedCount = 0;
@@ -397,6 +410,7 @@ export async function POST(request) {
 
       // Step 3e: Processing loop over deduplicated rows with checkpointing
       let pausedByAdmin = false;
+      let firestickIndex = 0;
       for (let i = startIndex; i < deduplicatedRows.length; i++) {
         if (await isCampaignPaused(campaignId)) {
           pausedByAdmin = true;
@@ -436,6 +450,21 @@ export async function POST(request) {
         const { config: smtp } = getNextSmtpConfig(smtpSettings, sentCount);
         const now = new Date();
         let senderHost = "WIRE";
+
+        // Firestick warm-up: send to familiar inbox before the actual lead
+        if (firestickEnabled && firestickList.length > 0) {
+          try {
+            const firestick = firestickList[firestickIndex % firestickList.length];
+            firestickIndex++;
+            const { config: firestickSmtp } = getNextSmtpConfig(smtpSettings, sentCount);
+            await sendViaSMTP(firestick.email, subject, message, firestickSmtp);
+            logger.info(`[Execute Campaign] Firestick warm-up sent to ${firestick.email}`);
+            // Small delay between firestick and lead send
+            await new Promise(r => setTimeout(r, 500));
+          } catch (firestickErr) {
+            logger.warn(`[Execute Campaign] Firestick warm-up failed: ${firestickErr.message}, continuing with lead send`);
+          }
+        }
 
         try {
           if (deliveryMethod === "smtp" || deliveryMethod === "mixed") {
