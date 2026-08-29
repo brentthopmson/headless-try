@@ -6,6 +6,7 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings } from "../_shared/pipelineUtils.js";
+import { getSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits } from "../../socials/_shared/limits.js";
 
 export const maxDuration = 120;
@@ -67,6 +68,7 @@ Return ONLY the reply text, no JSON or formatting.`;
 export async function POST(request) {
   let browser = null;
   try {
+    await identifySelfFromHost(request.headers.get('host'));
     const body = await request.json();
     const { campaignId, fileUrl, serverBatch } = body;
 
@@ -276,6 +278,16 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
     interactionStartedAt: new Date().toISOString()
   });
 
+  // Auto-advance pipeline
+  try {
+    const selfUrl = getSelfUrl();
+    fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ campaignId })
+    }).catch(err => logger.warn(`[Interact Campaign] Auto-advance failed: ${err.message}`));
+  } catch {}
+
   return NextResponse.json({
     success: true,
     message: "Campaign interaction monitoring started",
@@ -434,6 +446,14 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
       interactionStatus: "completed",
       interactionStartedAt: settings.interactionStartedAt || new Date().toISOString()
     });
+    try {
+      const selfUrl = getSelfUrl();
+      fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaignId })
+      }).catch(err => logger.warn(`[Interact Campaign] Worker auto-advance failed: ${err.message}`));
+    } catch {}
   }
 
   return NextResponse.json({

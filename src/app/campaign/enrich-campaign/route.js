@@ -8,7 +8,7 @@ import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings } from "../_shared/pipelineUtils.js";
-import { getSelfUrl } from "../../../utils/serverlessTracker.js";
+import { getSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits } from "../../socials/_shared/limits.js";
 
 export const maxDuration = 60;
@@ -139,6 +139,7 @@ Return a JSON array with one object per webpage (same order):
 
 export async function POST(request) {
   try {
+    await identifySelfFromHost(request.headers.get('host'));
     const body = await request.json();
     const { campaignId, fileUrl, serverBatch } = body;
 
@@ -721,6 +722,14 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
   const allDone = await checkAllComplete(campaignId, 'enrich');
   if (allDone) {
     await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
+    try {
+      const selfUrl = getSelfUrl();
+      fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaignId })
+      }).catch(err => logger.warn(`[Enrich Campaign] Worker auto-advance failed: ${err.message}`));
+    } catch {}
   }
 
   return NextResponse.json({

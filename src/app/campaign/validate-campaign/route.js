@@ -9,7 +9,7 @@ import { launchBrowser } from "../../../utils/utils.js";
 import { platformConfigs } from "../../emails/cookie/cookie-api-login/platforms.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings } from "../_shared/pipelineUtils.js";
-import { getSelfUrl } from "../../../utils/serverlessTracker.js";
+import { getSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits } from "../../socials/_shared/limits.js";
 
 const resolveMx = promisify(dns.resolveMx);
@@ -121,6 +121,7 @@ function detectPlatform(domain) {
 export async function POST(request) {
   let browser = null;
   try {
+    await identifySelfFromHost(request.headers.get('host'));
     const body = await request.json();
     const { campaignId, fileUrl, serverBatch } = body;
 
@@ -591,6 +592,14 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
   if (allDone) {
     await updateCampaignSettings(campaignId, { validationStatus: "completed" });
     logger.info(`[Validate Campaign] All workers complete — validation finished`);
+    try {
+      const selfUrl = getSelfUrl();
+      fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaignId })
+      }).catch(err => logger.warn(`[Validate Campaign] Worker auto-advance failed: ${err.message}`));
+    } catch {}
   }
 
   return NextResponse.json({

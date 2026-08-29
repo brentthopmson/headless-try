@@ -6,7 +6,7 @@ import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings } from "../_shared/pipelineUtils.js";
-import { getSelfUrl } from "../../../utils/serverlessTracker.js";
+import { getSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits } from "../../socials/_shared/limits.js";
 
 export const maxDuration = 60;
@@ -503,6 +503,14 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
   const allDone = await checkAllComplete(campaignId, 'personalize');
   if (allDone) {
     await updateCampaignSettings(campaignId, { personalizationStatus: "completed" });
+    try {
+      const selfUrl = getSelfUrl();
+      fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaignId })
+      }).catch(err => logger.warn(`[Personalize Campaign] Worker auto-advance failed: ${err.message}`));
+    } catch {}
   }
 
   return NextResponse.json({
@@ -515,6 +523,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
 
 export async function POST(request) {
   try {
+    await identifySelfFromHost(request.headers.get('host'));
     const body = await request.json();
     const { campaignId, fileUrl, serverBatch } = body;
 

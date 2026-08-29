@@ -25,6 +25,7 @@ const nextConfig = {
       { source: '/api/validate-campaign', destination: '/campaign/validate-campaign' },
       { source: '/api/enrich-campaign', destination: '/campaign/enrich-campaign' },
       { source: '/api/personalize-campaign', destination: '/campaign/personalize-campaign' },
+      { source: '/api/interact-campaign', destination: '/campaign/interact-campaign' },
     ];
   },
 }

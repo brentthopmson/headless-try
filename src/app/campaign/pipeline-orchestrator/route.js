@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
-import { getSelfUrl } from "../../../utils/serverlessTracker.js";
+import { getSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignSettings, updateCampaignSettings, isCampaignPaused } from "../_shared/pipelineUtils.js";
 
 export const maxDuration = 60;
@@ -51,6 +51,7 @@ function resolveCurrentStage(settings) {
     if (config.statusField) {
       const status = settings[config.statusField];
       if (status === "completed") continue;
+      if (status === "monitoring") continue;
       if (status === "processing") return { stage, action: "wait" };
       if (status === "failed") return { stage, action: "fail" };
     }
@@ -72,7 +73,7 @@ async function triggerStage(campaignId, stage, settings) {
 
   const body = { campaignId };
 
-  if (stage !== "execute" && stage !== "interact") {
+  if (stage !== "execute") {
     const fileUrl = settings.fileUrl;
     if (!fileUrl) {
       logger.warn(`[Pipeline Orchestrator] No fileUrl for stage ${stage}`);
@@ -108,6 +109,7 @@ async function triggerStage(campaignId, stage, settings) {
 
 export async function POST(request) {
   try {
+    await identifySelfFromHost(request.headers.get('host'));
     const body = await request.json();
     const { campaignId } = body;
 
