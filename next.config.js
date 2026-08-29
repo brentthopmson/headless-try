@@ -26,6 +26,7 @@ const nextConfig = {
       { source: '/api/enrich-campaign', destination: '/campaign/enrich-campaign' },
       { source: '/api/personalize-campaign', destination: '/campaign/personalize-campaign' },
       { source: '/api/interact-campaign', destination: '/campaign/interact-campaign' },
+      { source: '/api/reset-campaign', destination: '/campaign/reset-campaign' },
     ];
   },
 }

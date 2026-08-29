@@ -372,7 +372,7 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
 
   const aiBatchCount = Math.ceil(rowsNeedingAnalysis.length / AI_BATCH_SIZE);
   for (let batchIdx = 0; batchIdx < aiBatchCount; batchIdx++) {
-    if (await isCampaignPaused(campaignId)) break;
+    if (await isCampaignPaused(campaignId)) { wasPaused = true; break; }
 
     const start = batchIdx * AI_BATCH_SIZE;
     const end = Math.min(start + AI_BATCH_SIZE, rowsNeedingAnalysis.length);
@@ -532,7 +532,9 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
 
   // 5. URL Enrichment (batched)
   let urlScrapedCount = 0;
+  let wasPaused = false;
   const scrapeCache = new Map();
+  try {
   const rowsWithUrl = dataRows.filter(r => {
     const url = r[urlIdx]?.trim();
     return url && url.startsWith("http");
@@ -542,6 +544,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
   for (let batchIdx = 0; batchIdx < enrichBatchCount; batchIdx++) {
     if (await isCampaignPaused(campaignId)) {
       logger.info(`[Enrich Campaign] Worker campaign paused at URL batch ${batchIdx + 1}/${enrichBatchCount}`);
+      wasPaused = true;
       break;
     }
 
@@ -596,6 +599,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
   for (let batchIdx = 0; batchIdx < searchBatchCount; batchIdx++) {
     if (await isCampaignPaused(campaignId)) {
       logger.info(`[Enrich Campaign] Worker campaign paused at search batch ${batchIdx + 1}/${searchBatchCount}`);
+      wasPaused = true;
       break;
     }
 
@@ -651,7 +655,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
 
   const aiBatchCount = Math.ceil(rowsNeedingAnalysis.length / AI_BATCH_SIZE);
   for (let batchIdx = 0; batchIdx < aiBatchCount; batchIdx++) {
-    if (await isCampaignPaused(campaignId)) break;
+    if (await isCampaignPaused(campaignId)) { wasPaused = true; break; }
 
     const start = batchIdx * AI_BATCH_SIZE;
     const end = Math.min(start + AI_BATCH_SIZE, rowsNeedingAnalysis.length);
@@ -705,6 +709,15 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
 
     logger.info(`[Enrich Campaign] Worker AI batch ${batchIdx + 1}/${aiBatchCount} complete`);
   }
+  } catch (error) {
+    logger.error(`[Enrich Campaign][Worker] Error: ${error.message}`, { stack: error.stack });
+    await updateMyAssignment(campaignId, 'enrich', {
+      status: 'failed',
+      processedUpTo: rowEnd,
+      error: error.message
+    });
+    throw error;
+  }
 
   // 8. Final flush
   logger.info(`[Enrich Campaign] Worker final flush to Drive: ${fileId}`);
@@ -714,8 +727,8 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
   });
 
   await updateMyAssignment(campaignId, 'enrich', {
-    status: 'completed',
-    processedUpTo: rowEnd
+    status: wasPaused ? 'paused' : 'completed',
+    processedUpTo: wasPaused ? rowStart + urlScrapedCount + searchFoundCount : rowEnd
   });
 
   // 9. Check if all workers are done

@@ -377,9 +377,10 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
     logger.warn(`[Interact Campaign][Worker] Failed to fetch interactionLimit: ${limitErr.message}`);
   }
 
+  let wasPaused = false;
   const batchCount = Math.ceil(mySentRows.length / BATCH_SIZE);
   for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
-    if (await isCampaignPaused(campaignId)) break;
+    if (await isCampaignPaused(campaignId)) { wasPaused = true; break; }
 
     // Stop guard: check time limit
     const hoursElapsed = (Date.now() - new Date(interactionStartedAt).getTime()) / (1000 * 60 * 60);
@@ -438,7 +439,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
   }
 
   await mergeAndFlush(campaignId, 'interact', rows, fileId);
-  await updateMyAssignment(campaignId, 'interact', { status: 'completed', processedUpTo: rowEnd });
+  await updateMyAssignment(campaignId, 'interact', { status: wasPaused ? 'paused' : 'completed', processedUpTo: rowEnd });
 
   const allDone = await checkAllComplete(campaignId, 'interact');
   if (allDone) {

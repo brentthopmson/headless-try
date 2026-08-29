@@ -380,11 +380,13 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
   const myRows = dataRows.slice(rowStart, Math.min(rowEnd, dataRows.length));
 
   let personalizedCount = 0;
+  let wasPaused = false;
 
   const batchCount = Math.ceil(myRows.length / BATCH_SIZE);
   for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
     if (await isCampaignPaused(campaignId)) {
       logger.info(`[Personalize Campaign] Worker campaign paused at batch ${batchIdx + 1}/${batchCount}`);
+      wasPaused = true;
       break;
     }
 
@@ -498,7 +500,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
   }
 
   await mergeAndFlush(campaignId, 'personalize', rows, fileId);
-  await updateMyAssignment(campaignId, 'personalize', { status: 'completed' });
+  await updateMyAssignment(campaignId, 'personalize', { status: wasPaused ? 'paused' : 'completed' });
 
   const allDone = await checkAllComplete(campaignId, 'personalize');
   if (allDone) {

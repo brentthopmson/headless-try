@@ -464,13 +464,17 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
   const mxCache = new Map();
   let validCount = 0;
   let invalidCount = 0;
+  let wasPaused = false;
+  let currentRow = rowStart;
 
+  try {
   for (let i = rowStart; i < rowEnd; i++) {
+    currentRow = i;
     const fullIdx = i + 1; // +1 for header
     if (fullIdx >= normalizedRows.length) break;
     const row = normalizedRows[fullIdx];
 
-    if (await isCampaignPaused(campaignId)) break;
+    if (await isCampaignPaused(campaignId)) { wasPaused = true; break; }
 
     const email = row[emailColIdx]?.trim();
     if (!email) { row[validationIdx] = "empty"; continue; }
@@ -533,7 +537,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
     if (platformEmails.length > 0) {
       const platformBatchCount = Math.ceil(platformEmails.length / PLATFORM_BATCH_SIZE);
       for (let batchIdx = 0; batchIdx < platformBatchCount; batchIdx++) {
-        if (await isCampaignPaused(campaignId)) break;
+        if (await isCampaignPaused(campaignId)) { wasPaused = true; break; }
         const batch = platformEmails.slice(batchIdx * PLATFORM_BATCH_SIZE, (batchIdx + 1) * PLATFORM_BATCH_SIZE);
 
         let platformBrowser = null;
@@ -574,13 +578,22 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
       }
     }
   }
+  } catch (error) {
+    logger.error(`[Validate Campaign][Worker] Error: ${error.message}`, { stack: error.stack });
+    await updateMyAssignment(campaignId, 'validate', {
+      status: 'failed',
+      processedUpTo: currentRow,
+      error: error.message
+    });
+    throw error;
+  }
 
   // 6. Final flush
   await mergeAndFlush(campaignId, 'validate', normalizedRows, fileId);
 
   const assignmentUpdates = {
-    status: 'completed',
-    processedUpTo: rowEnd,
+    status: wasPaused ? 'paused' : 'completed',
+    processedUpTo: wasPaused ? currentRow : rowEnd,
     validMx: validCount,
     invalidMx: invalidCount,
   };

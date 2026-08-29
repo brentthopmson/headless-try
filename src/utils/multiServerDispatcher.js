@@ -3,6 +3,7 @@ import { getSetting } from './settingsCache.js';
 import { getSelfUrl, getSelfId } from './serverlessTracker.js';
 import { google } from 'googleapis';
 import { getSheetsAuthClient } from '../app/api/googlesheets.js';
+import { isCampaignPaused } from '../app/campaign/_shared/pipelineUtils.js';
 import logger from './logger.js';
 
 /**
@@ -65,6 +66,11 @@ export async function dispatchToServers(campaignId, stage, fileUrl, totalRows) {
   const multiServerSetting = await getSetting('multiServerEnabled');
   if (multiServerSetting?.value1 !== 'true') return null;
 
+  if (await isCampaignPaused(campaignId)) {
+    logger.info(`[MultiServer][${stage}] Campaign ${campaignId} is paused, skipping dispatch`);
+    return null;
+  }
+
   const servers = await getAvailableServers();
   if (servers.length === 0) return null;
 
@@ -103,6 +109,11 @@ export async function dispatchToServers(campaignId, stage, fileUrl, totalRows) {
       })
       .catch(err => {
         logger.error(`[MultiServer][${stage}] Worker ${assignment.serverId} failed: ${err.message}`);
+        updateStageAssignments(campaignId, stage, [{
+          ...assignment,
+          status: 'failed',
+          error: err.message
+        }]).catch(() => {});
         return { serverId: assignment.serverId, error: err.message };
       });
   });
