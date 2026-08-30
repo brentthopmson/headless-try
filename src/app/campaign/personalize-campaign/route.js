@@ -126,6 +126,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
   const enhancedSocialMsgIdx = headers.findIndex(h => h.toLowerCase().trim() === "enhancedsocialmessage");
   const socialPlatformIdx = headers.findIndex(h => h.toUpperCase() === "SOCIALPLATFORM");
   const socialUsernameIdx = headers.findIndex(h => h.toUpperCase() === "SOCIALUSERNAME");
+  const personalizationStatusIdx = headers.findIndex(h => h.toLowerCase().trim() === "personalizationstatus");
 
   let personalizationPrompt = "Write a short, professional cold outreach email. Address by first name, reference company. Keep it engaging, under 150 words. Vary subject lines.";
 
@@ -286,6 +287,11 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
   }
 
   logger.info(`[Personalize Campaign] Final CSV flush to Drive: ${fileId}`);
+  if (personalizationStatusIdx !== -1) {
+    for (let i = 1; i < rows.length; i++) {
+      rows[i][personalizationStatusIdx] = "personalized";
+    }
+  }
   await drive.files.update({
     fileId,
     media: { mimeType: "text/csv", body: stringifyCSV(rows) }
@@ -355,6 +361,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
   const enhancedSocialMsgIdx = headers.findIndex(h => h.toLowerCase().trim() === "enhancedsocialmessage");
   const socialPlatformIdx = headers.findIndex(h => h.toUpperCase() === "SOCIALPLATFORM");
   const socialUsernameIdx = headers.findIndex(h => h.toUpperCase() === "SOCIALUSERNAME");
+  const personalizationStatusIdx = headers.findIndex(h => h.toLowerCase().trim() === "personalizationstatus");
 
   let personalizationPrompt = "Write a short, professional cold outreach email. Address by first name, reference company. Keep it engaging, under 150 words. Vary subject lines.";
 
@@ -499,6 +506,11 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
     logger.info(`[Personalize Campaign] Worker batch ${batchIdx + 1}/${batchCount} complete (processedUpTo: ${processedUpTo})`);
   }
 
+  if (personalizationStatusIdx !== -1) {
+    for (let i = rowStart + 1; i < Math.min(rowEnd + 1, rows.length); i++) {
+      rows[i][personalizationStatusIdx] = "personalized";
+    }
+  }
   await mergeAndFlush(campaignId, 'personalize', rows, fileId);
   await updateMyAssignment(campaignId, 'personalize', { status: wasPaused ? 'paused' : 'completed' });
 

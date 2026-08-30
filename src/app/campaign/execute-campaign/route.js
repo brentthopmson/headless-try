@@ -298,6 +298,9 @@ export async function POST(request) {
       const providerMXIdx = nHeaders.indexOf("providerMXResult");
       const enhancedSubjectIdx = nHeaders.indexOf("enhancedSubject");
       const enhancedBodyIdx = nHeaders.indexOf("enhancedBody");
+      const emailSubjectIdx = nHeaders.indexOf("emailSubject");
+      const emailBodyIdx = nHeaders.indexOf("emailBody");
+      const executionStatusIdx = nHeaders.findIndex(h => h.toLowerCase().trim() === "executionstatus");
 
       if (emailColIdx === -1) {
         throw new Error("EMAIL column not found in 88-column schema");
@@ -434,16 +437,18 @@ export async function POST(request) {
         const email = row[emailColIdx]?.trim();
         if (!email) continue;
 
-        const firstName = nameColIdx !== -1 && row[nameColIdx] ? row[nameColIdx] : "there";
-        const company = companyColIdx !== -1 && row[companyColIdx] ? row[companyColIdx] : "your company";
+        const firstName = nameColIdx !== -1 && row[nameColIdx] ? row[nameColIdx] : "";
+        const company = companyColIdx !== -1 && row[companyColIdx] ? row[companyColIdx] : "";
 
-        // Priority: personalized (enhanced) > campaign settings > default
+        // Priority: AI personalized > merged template > campaign settings > default
         let subject = (enhancedSubjectIdx !== -1 && row[enhancedSubjectIdx]?.trim())
+          || (emailSubjectIdx !== -1 && row[emailSubjectIdx]?.trim())
           || settings.subject
-          || `Outreach to ${company}`;
+          || "";
         let message = (enhancedBodyIdx !== -1 && row[enhancedBodyIdx]?.trim())
+          || (emailBodyIdx !== -1 && row[emailBodyIdx]?.trim())
           || settings.body
-          || `Hello ${firstName}, let's connect.`;
+          || "";
 
         // Embed campaign identifier for interaction tracking
         const tagged = embedCampaignIdentifier(subject, message, campaignId);
@@ -498,7 +503,7 @@ export async function POST(request) {
           if (sendDateIdx !== -1) row[sendDateIdx] = now.toLocaleDateString();
           if (sendTimeIdx !== -1) row[sendTimeIdx] = now.toLocaleTimeString();
           if (sendStampIdx !== -1) row[sendStampIdx] = now.toISOString();
-          if (validationIdx !== -1) row[validationIdx] = "sent";
+          if (executionStatusIdx !== -1) row[executionStatusIdx] = "sent";
           if (providerMXIdx !== -1) row[providerMXIdx] = senderHost;
         } catch (err) {
           logger.error(`[Execute Campaign] Failed to send to ${email} via ${senderHost}: ${err.message}`);
@@ -506,7 +511,7 @@ export async function POST(request) {
           sentCount++;
           failureDetails.push({ email, error: err.message, host: senderHost });
 
-          if (validationIdx !== -1) row[validationIdx] = "failed";
+          if (executionStatusIdx !== -1) row[executionStatusIdx] = "failed";
           if (providerMXIdx !== -1) row[providerMXIdx] = err.message;
         }
 

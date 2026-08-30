@@ -1,17 +1,38 @@
 import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import { identifySelfFromHost } from "../../../utils/serverlessTracker.js";
-import { getCampaignSettings, updateCampaignSettings } from "../_shared/pipelineUtils.js";
+import { getCampaignSettings, updateCampaignSettings, extractFileId, parseCSV, stringifyCSV } from "../_shared/pipelineUtils.js";
+import { getDriveClient } from "../../../utils/multiServerDispatcher.js";
 
-export const maxDuration = 30;
+export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 
 const STAGE_CONFIG = {
-  validate: { statusField: "validationStatus", label: "Validation" },
-  enrich: { statusField: "enrichmentStatus", label: "Enrichment" },
-  personalize: { statusField: "personalizationStatus", label: "AI Personalization" },
-  execute: { statusField: null, label: "Execute" },
-  interact: { statusField: "interactionStatus", label: "Interaction" },
+  validate: {
+    statusField: "validationStatus",
+    label: "Validation",
+    csvColumns: ["validation", "providerMXResult"],
+  },
+  enrich: {
+    statusField: "enrichmentStatus",
+    label: "Enrichment",
+    csvColumns: ["enrichmentStatus"],
+  },
+  personalize: {
+    statusField: "personalizationStatus",
+    label: "AI Personalization",
+    csvColumns: ["personalizationStatus", "enhancedSubject", "enhancedBody", "enhancedSocialMessage"],
+  },
+  execute: {
+    statusField: null,
+    label: "Execute",
+    csvColumns: ["executionStatus", "sendDate", "sendTime", "sendStamp"],
+  },
+  interact: {
+    statusField: "interactionStatus",
+    label: "Interaction",
+    csvColumns: ["interactCount", "interactStatus", "interactStamp"],
+  },
 };
 
 export async function POST(request) {
@@ -47,10 +68,10 @@ export async function POST(request) {
 
     if (config.statusField) {
       const currentStatus = campaignData.settings?.[config.statusField];
-      if (currentStatus !== "failed" && currentStatus !== "paused") {
+      if (currentStatus !== "failed" && currentStatus !== "paused" && currentStatus !== "completed") {
         return NextResponse.json({
           success: false,
-          error: `Stage "${stage}" is currently "${currentStatus || "null"}". Can only reset "failed" or "paused" stages.`,
+          error: `Stage "${stage}" is currently "${currentStatus || "null"}". Can only reset "failed", "paused", or "completed" stages.`,
         });
       }
       updates[config.statusField] = null;
@@ -73,13 +94,55 @@ export async function POST(request) {
 
     await updateCampaignSettings(campaignId, updates);
 
+    let csvCleared = 0;
+    const fileUrl = campaignData.settings?.fileUrl;
+    if (fileUrl && config.csvColumns.length > 0) {
+      const fileId = extractFileId(fileUrl);
+      if (fileId) {
+        const drive = await getDriveClient();
+        if (drive) {
+          try {
+            const driveFile = await drive.files.get({ fileId, alt: "media" });
+            const csvContent = driveFile.data;
+            if (typeof csvContent === "string") {
+              const rows = parseCSV(csvContent);
+              if (rows.length > 1) {
+                const headers = rows[0];
+                const colsToClear = config.csvColumns.map(name => {
+                  const idx = headers.findIndex(h => h.toLowerCase().trim() === name.toLowerCase());
+                  return idx !== -1 ? idx : -1;
+                }).filter(idx => idx !== -1);
+
+                if (colsToClear.length > 0) {
+                  for (let i = 1; i < rows.length; i++) {
+                    for (const colIdx of colsToClear) {
+                      rows[i][colIdx] = "";
+                    }
+                    csvCleared++;
+                  }
+                  await drive.files.update({
+                    fileId,
+                    media: { mimeType: "text/csv", body: stringifyCSV(rows) },
+                  });
+                  logger.info(`[Reset Campaign] Cleared ${colsToClear.length} CSV columns for ${csvCleared} rows`);
+                }
+              }
+            }
+          } catch (csvErr) {
+            logger.warn(`[Reset Campaign] CSV column clear failed (non-fatal): ${csvErr.message}`);
+          }
+        }
+      }
+    }
+
     logger.info(`[Reset Campaign] Stage "${stage}" reset for campaign ${campaignId}`);
 
     return NextResponse.json({
       success: true,
-      message: `Stage "${config.label}" has been reset. You can now re-run the pipeline.`,
+      message: `Stage "${config.label}" has been reset. ${csvCleared > 0 ? `Cleared status columns for ${csvCleared} CSV rows. ` : ""}You can now re-run the pipeline.`,
       campaignId,
       stage,
+      csvRowsCleared: csvCleared,
     });
   } catch (error) {
     logger.error(`[Reset Campaign] Error: ${error.message}`, { stack: error.stack });

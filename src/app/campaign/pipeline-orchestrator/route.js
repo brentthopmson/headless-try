@@ -130,6 +130,20 @@ export async function POST(request) {
       return NextResponse.json({ success: true, message: "Campaign is paused", paused: true });
     }
 
+    // Mail merge: merge subject/body templates with CSV data before any stage
+    try {
+      const selfUrl = getSelfUrl();
+      const mailMergeResp = await fetch(`${selfUrl}/campaign/mail-merge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaignId, fileUrl: settings.fileUrl }),
+      });
+      const mailMergeResult = await mailMergeResp.json();
+      logger.info(`[Pipeline Orchestrator] Mail merge result: ${JSON.stringify(mailMergeResult).slice(0, 300)}`);
+    } catch (mmErr) {
+      logger.warn(`[Pipeline Orchestrator] Mail merge failed (non-fatal): ${mmErr.message}`);
+    }
+
     const resolution = resolveCurrentStage(settings);
 
     if (!resolution) {
