@@ -485,14 +485,15 @@ export async function POST(request) {
           }
 
           if (deliveryMethod === "wire" || deliveryMethod === "mixed") {
-            // Use WIRE account from settings for browser-based sending
-            const wireAccount = settings.wireAccount || settings.accounts?.[0];
-            const wireCookies = wireAccount?.cookieJSON || wireAccount?.cookies;
+            // Fetch stored browser session from cookie sheet by profile ID
+            const profileId = settings.accounts?.[0] || settings.wireAccount;
+            const profileData = profileId ? await getSocialProfileCookies(profileId) : null;
+            const wireCookies = profileData?.cookies;
             if (wireCookies) {
-              const provider = detectProvider(wireAccount?.email || smtp?.user || email) || "gmail";
+              const provider = profileData?.platform || detectProvider(smtp?.user || email) || "gmail";
               await sendViaBrowser(email, subject, message, wireCookies, provider);
             } else {
-              logger.info(`[Execute Campaign] No WIRE browser session available for ${email}, using SMTP fallback`);
+              logger.info(`[Execute Campaign] No WIRE browser session available for profile ${profileId}, using SMTP fallback`);
               if (deliveryMethod === "wire") {
                 await sendViaSMTP(email, subject, message, smtp);
                 senderHost = smtp?.host || "SMTP_FALLBACK";
