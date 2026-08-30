@@ -7,7 +7,7 @@ import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, sanitizeForCsv } from "../_shared/pipelineUtils.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, sanitizeForCsv, getPerformancePresets } from "../_shared/pipelineUtils.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits } from "../../socials/_shared/limits.js";
 
@@ -177,15 +177,20 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
   }
   const drive = google.drive({ version: "v3", auth: authClient });
 
-  // Read batch limits from SETTINGS
-  const enrichBatchSetting = await getSetting('enrichBatchLimit');
-  const ENRICH_BATCH_SIZE = parseInt(enrichBatchSetting?.value1) || 20;
-  const searchBatchSetting = await getSetting('enrichSearchBatchLimit');
-  const SEARCH_BATCH_SIZE = parseInt(searchBatchSetting?.value1) || 10;
-  const aiBatchSetting = await getSetting('enrichAiBatchLimit');
-  const AI_BATCH_SIZE = parseInt(aiBatchSetting?.value1) || 15;
+  // Read batch limits from SETTINGS, falling back to performance level presets
+  const perfLevelSetting = await getSetting('performanceLevel');
+  const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
 
-  logger.info(`[Enrich Campaign] enrich=${ENRICH_BATCH_SIZE}, search=${SEARCH_BATCH_SIZE}, ai=${AI_BATCH_SIZE}`);
+  const enrichBatchSetting = await getSetting('enrichBatchLimit');
+  const ENRICH_BATCH_SIZE = parseInt(enrichBatchSetting?.value1) || perfPresets.enrichBatchLimit;
+  const searchBatchSetting = await getSetting('enrichSearchBatchLimit');
+  const SEARCH_BATCH_SIZE = parseInt(searchBatchSetting?.value1) || perfPresets.enrichSearchBatchLimit;
+  const aiBatchSetting = await getSetting('enrichAiBatchLimit');
+  const AI_BATCH_SIZE = parseInt(aiBatchSetting?.value1) || perfPresets.enrichAiBatchLimit;
+  const concurrencySetting = await getSetting('enrichScrapeConcurrency');
+  const SCRAPE_CONCURRENCY = parseInt(concurrencySetting?.value1) || perfPresets.enrichScrapeConcurrency;
+
+  logger.info(`[Enrich Campaign] enrich=${ENRICH_BATCH_SIZE}, search=${SEARCH_BATCH_SIZE}, ai=${AI_BATCH_SIZE}, concurrency=${SCRAPE_CONCURRENCY}, level=${perfLevelSetting?.value1 || 'balanced'}`);
 
   // 1. Download CSV
   logger.info(`[Enrich Campaign] Downloading CSV file: ${fileId}`);
@@ -262,31 +267,35 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
     const end = Math.min(start + ENRICH_BATCH_SIZE, rowsWithUrl.length);
     const batch = rowsWithUrl.slice(start, end);
 
-    const scrapePromises = batch.map(async (row) => {
-      const url = row[urlIdx]?.trim();
-      if (scrapeCache.has(url)) {
-        const cached = scrapeCache.get(url);
-        if (cached && contextIdx !== -1) row[contextIdx] = sanitizeForCsv(cached);
-        return;
+    // Scrape with concurrency limit to prevent rate limiting
+    for (let ci = 0; ci < batch.length; ci += SCRAPE_CONCURRENCY) {
+      const chunk = batch.slice(ci, ci + SCRAPE_CONCURRENCY);
+      const scrapePromises = chunk.map(async (row) => {
+        const url = row[urlIdx]?.trim();
+        if (scrapeCache.has(url)) {
+          const cached = scrapeCache.get(url);
+          if (cached && contextIdx !== -1) row[contextIdx] = sanitizeForCsv(cached);
+          return;
+        }
+
+        const result = await scrapeUrl(url);
+        if (result) {
+          let contextValue = null;
+          const parts = [];
+          if (result.title) parts.push(`Page: ${result.title}`);
+          if (result.description) parts.push(result.description);
+          contextValue = parts.join(". ") || "";
+
+          if (contextIdx !== -1) row[contextIdx] = sanitizeForCsv(contextValue);
+          scrapeCache.set(url, contextValue);
+          urlScrapedCount++;
+        }
+      });
+      await Promise.allSettled(scrapePromises);
+      if (ci + SCRAPE_CONCURRENCY < batch.length) {
+        await new Promise(r => setTimeout(r, 200));
       }
-
-      const result = await scrapeUrl(url);
-      if (result) {
-        let contextValue = null;
-        const parts = [];
-        if (result.title) parts.push(`Page: ${result.title}`);
-        if (result.description) parts.push(result.description);
-        contextValue = parts.join(". ") || "";
-
-        if (contextIdx !== -1) row[contextIdx] = sanitizeForCsv(contextValue);
-        scrapeCache.set(url, contextValue);
-        urlScrapedCount++;
-      }
-
-      await new Promise(r => setTimeout(r, 200));
-    });
-
-    await Promise.allSettled(scrapePromises);
+    }
 
     // Live flush
     try {
@@ -448,16 +457,6 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
   // 8. Update campaign settings
   await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
 
-  // Auto-advance pipeline
-  try {
-    const selfUrl = getSelfUrlWithFallback();
-    fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ campaignId })
-    }).catch(err => logger.warn(`[Enrich Campaign] Auto-advance failed: ${err.message}`));
-  } catch {}
-
   return NextResponse.json({
     success: true,
     message: "Campaign enrichment completed",
@@ -490,11 +489,13 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
   const drive = google.drive({ version: "v3", auth: authClient });
 
   const enrichBatchSetting = await getSetting('enrichBatchLimit');
-  const ENRICH_BATCH_SIZE = parseInt(enrichBatchSetting?.value1) || 20;
+  const ENRICH_BATCH_SIZE = parseInt(enrichBatchSetting?.value1) || perfPresets.enrichBatchLimit;
   const searchBatchSetting = await getSetting('enrichSearchBatchLimit');
-  const SEARCH_BATCH_SIZE = parseInt(searchBatchSetting?.value1) || 10;
+  const SEARCH_BATCH_SIZE = parseInt(searchBatchSetting?.value1) || perfPresets.enrichSearchBatchLimit;
   const aiBatchSetting = await getSetting('enrichAiBatchLimit');
-  const AI_BATCH_SIZE = parseInt(aiBatchSetting?.value1) || 15;
+  const AI_BATCH_SIZE = parseInt(aiBatchSetting?.value1) || perfPresets.enrichAiBatchLimit;
+  const concurrencySetting = await getSetting('enrichScrapeConcurrency');
+  const SCRAPE_CONCURRENCY = parseInt(concurrencySetting?.value1) || perfPresets.enrichScrapeConcurrency;
 
   // 1. Download full CSV
   logger.info(`[Enrich Campaign] Worker downloading CSV file: ${fileId}`);
@@ -565,31 +566,35 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
     const end = Math.min(start + ENRICH_BATCH_SIZE, rowsWithUrl.length);
     const batch = rowsWithUrl.slice(start, end);
 
-    const scrapePromises = batch.map(async (row) => {
-      const url = row[urlIdx]?.trim();
-      if (scrapeCache.has(url)) {
-        const cached = scrapeCache.get(url);
-        if (cached && contextIdx !== -1) row[contextIdx] = sanitizeForCsv(cached);
-        return;
+    // Scrape with concurrency limit to prevent rate limiting
+    for (let ci = 0; ci < batch.length; ci += SCRAPE_CONCURRENCY) {
+      const chunk = batch.slice(ci, ci + SCRAPE_CONCURRENCY);
+      const scrapePromises = chunk.map(async (row) => {
+        const url = row[urlIdx]?.trim();
+        if (scrapeCache.has(url)) {
+          const cached = scrapeCache.get(url);
+          if (cached && contextIdx !== -1) row[contextIdx] = sanitizeForCsv(cached);
+          return;
+        }
+
+        const result = await scrapeUrl(url);
+        if (result) {
+          let contextValue = null;
+          const parts = [];
+          if (result.title) parts.push(`Page: ${result.title}`);
+          if (result.description) parts.push(result.description);
+          contextValue = parts.join(". ") || "";
+
+          if (contextIdx !== -1) row[contextIdx] = sanitizeForCsv(contextValue);
+          scrapeCache.set(url, contextValue);
+          urlScrapedCount++;
+        }
+      });
+      await Promise.allSettled(scrapePromises);
+      if (ci + SCRAPE_CONCURRENCY < batch.length) {
+        await new Promise(r => setTimeout(r, 200));
       }
-
-      const result = await scrapeUrl(url);
-      if (result) {
-        let contextValue = null;
-        const parts = [];
-        if (result.title) parts.push(`Page: ${result.title}`);
-        if (result.description) parts.push(result.description);
-        contextValue = parts.join(". ") || "";
-
-        if (contextIdx !== -1) row[contextIdx] = sanitizeForCsv(contextValue);
-        scrapeCache.set(url, contextValue);
-        urlScrapedCount++;
-      }
-
-      await new Promise(r => setTimeout(r, 200));
-    });
-
-    await Promise.allSettled(scrapePromises);
+    }
 
     await updateMyAssignment(campaignId, 'enrich', {
       processedUpTo: rowStart + (batchIdx + 1) * ENRICH_BATCH_SIZE

@@ -5,7 +5,7 @@ import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings } from "../_shared/pipelineUtils.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, getPerformancePresets } from "../_shared/pipelineUtils.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits } from "../../socials/_shared/limits.js";
 
@@ -106,8 +106,11 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
   }
   const drive = google.drive({ version: "v3", auth: authClient });
 
+  const perfLevelSetting = await getSetting('performanceLevel');
+  const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
+
   const batchSetting = await getSetting('interactionBatchLimit');
-  const BATCH_SIZE = parseInt(batchSetting?.value1) || 10;
+  const BATCH_SIZE = parseInt(batchSetting?.value1) || perfPresets.interactBatchLimit;
 
   // Read per-campaign settings for stop guard
   const campaignData = await getCampaignSettings(campaignId);
@@ -268,25 +271,10 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
     logger.info(`[Interact Campaign] Batch ${batchIdx + 1}/${batchCount} initialized`);
   }
 
-  await drive.files.update({
-    fileId,
-    media: { mimeType: "text/csv", body: stringifyCSV(rows) }
-  });
-
   await updateCampaignSettings(campaignId, {
     interactionStatus: "monitoring",
     interactionStartedAt: new Date().toISOString()
   });
-
-  // Auto-advance pipeline
-  try {
-    const selfUrl = getSelfUrlWithFallback();
-    fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ campaignId })
-    }).catch(err => logger.warn(`[Interact Campaign] Auto-advance failed: ${err.message}`));
-  } catch {}
 
   return NextResponse.json({
     success: true,
@@ -308,8 +296,11 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
     return NextResponse.json({ success: false, error: "Failed to get Drive client" }, { status: 500 });
   }
 
+  const perfLevelSetting = await getSetting('performanceLevel');
+  const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
+
   const batchSetting = await getSetting('interactionBatchLimit');
-  const BATCH_SIZE = parseInt(batchSetting?.value1) || 10;
+  const BATCH_SIZE = parseInt(batchSetting?.value1) || perfPresets.interactBatchLimit;
 
   // Read per-campaign settings for stop guard
   const campaignData = await getCampaignSettings(campaignId);
@@ -438,7 +429,6 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
     logger.info(`[Interact Campaign][Worker] Batch ${batchIdx + 1}/${batchCount} initialized`);
   }
 
-  await mergeAndFlush(campaignId, 'interact', rows, fileId);
   await updateMyAssignment(campaignId, 'interact', { status: wasPaused ? 'paused' : 'completed', processedUpTo: rowEnd });
 
   const allDone = await checkAllComplete(campaignId, 'interact');

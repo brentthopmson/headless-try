@@ -14,7 +14,7 @@ import { requireFeature } from "../../../utils/featureGate.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { dispatchToServers } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getFirestickEmails } from "../_shared/pipelineUtils.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getFirestickEmails, getPerformancePresets } from "../_shared/pipelineUtils.js";
 
 function embedCampaignIdentifier(subject, body, campaignId) {
   const identifier = `[${campaignId}]`;
@@ -233,16 +233,19 @@ export async function POST(request) {
     const channel = settings.channel || "email";
 
     // Read batch limits from SETTINGS
+    const perfLevelSetting = await getSetting('performanceLevel');
+    const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
+
     const shootingBatchSetting = await getSetting('shootingBatchLimit');
-    const SHOOTING_BATCH_SIZE = parseInt(shootingBatchSetting?.value1) || 20;
+    const SHOOTING_BATCH_SIZE = parseInt(shootingBatchSetting?.value1) || perfPresets.shootingBatchLimit;
     const checkpointSetting = await getSetting('checkpointInterval');
-    const CHECKPOINT_INTERVAL = parseInt(checkpointSetting?.value1) || 5;
+    const CHECKPOINT_INTERVAL = parseInt(checkpointSetting?.value1) || perfPresets.checkpointInterval;
     const delaySetting = await getSetting('interBatchDelayMs');
-    const INTER_BATCH_DELAY = parseInt(delaySetting?.value1) || 500;
+    const INTER_BATCH_DELAY = parseInt(delaySetting?.value1) || perfPresets.interBatchDelayMs;
     const multiServerSetting = await getSetting('multiServerEnabled');
     const MULTI_SERVER_ENABLED = multiServerSetting?.value1 === 'true';
 
-    logger.info(`[Execute Campaign] shooting=${SHOOTING_BATCH_SIZE}, checkpoint=${CHECKPOINT_INTERVAL}, delay=${INTER_BATCH_DELAY}ms, multiServer=${MULTI_SERVER_ENABLED}`);
+    logger.info(`[Execute Campaign] shooting=${SHOOTING_BATCH_SIZE}, checkpoint=${CHECKPOINT_INTERVAL}, delay=${INTER_BATCH_DELAY}ms, multiServer=${MULTI_SERVER_ENABLED}, level=${perfLevelSetting?.value1 || 'balanced'}`);
     
     // Update campaign status to running
     await updateSheetRowApi("campaigns", "campaignId", campaignId, {
@@ -515,6 +518,11 @@ export async function POST(request) {
           if (providerMXIdx !== -1) row[providerMXIdx] = err.message;
         }
 
+        // Inter-email delay to prevent SMTP rate limiting
+        if (INTER_BATCH_DELAY > 0) {
+          await new Promise(r => setTimeout(r, INTER_BATCH_DELAY));
+        }
+
         // Checkpoint: save progress every N rows (configurable from SETTINGS)
         if ((i + 1) % CHECKPOINT_INTERVAL === 0) {
           logger.info(`[Execute Campaign] Checkpoint at row ${i + 1}/${deduplicatedRows.length}`);
@@ -581,17 +589,6 @@ export async function POST(request) {
         statusUpdate.status = "paused";
       }
       await updateSheetRowApi("campaigns", "campaignId", campaignId, statusUpdate);
-
-      // Auto-advance pipeline (fire-and-forget)
-      if (finalStatus === "completed") {
-        try {
-          fetch(`${getSelfUrlWithFallback()}/campaign/pipeline-orchestrator`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ campaignId })
-          }).catch(err => logger.warn(`[Execute Campaign] Auto-advance failed: ${err.message}`));
-        } catch {}
-      }
 
       return NextResponse.json({
         success: true,
@@ -844,13 +841,6 @@ export async function POST(request) {
         }
       }
 
-      // Step 4g: Final Drive flush if CSV was used
-      try {
-        await flushSocialCsv();
-      } catch (flushErr) {
-        logger.warn(`[Execute Campaign] Final social CSV flush failed: ${flushErr.message}`);
-      }
-
       // Step 4g: Single campaign status update
       const limitReached = executedCount < pendingSocialTasks.length || executedCount >= shootCampaignLimit;
       const finalStatus = pausedByAdmin ? "paused" : (limitReached ? "Limit Reached" : "completed");
@@ -871,17 +861,6 @@ export async function POST(request) {
         status: finalStatus,
         updatedOn: new Date().toISOString()
       });
-
-      // Auto-advance pipeline (fire-and-forget)
-      if (finalStatus === "completed") {
-        try {
-          fetch(`${getSelfUrlWithFallback()}/campaign/pipeline-orchestrator`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ campaignId })
-          }).catch(err => logger.warn(`[Execute Campaign] Auto-advance failed: ${err.message}`));
-        } catch {}
-      }
 
       return NextResponse.json({
         success: true,

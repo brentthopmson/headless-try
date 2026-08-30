@@ -5,7 +5,7 @@ import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings } from "../_shared/pipelineUtils.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, getPerformancePresets } from "../_shared/pipelineUtils.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits } from "../../socials/_shared/limits.js";
 
@@ -92,9 +92,12 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
   }
   const drive = google.drive({ version: "v3", auth: authClient });
 
+  const perfLevelSetting = await getSetting('performanceLevel');
+  const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
+
   const batchSetting = await getSetting('personalizeBatchLimit');
-  const BATCH_SIZE = parseInt(batchSetting?.value1) || 30;
-  logger.info(`[Personalize Campaign] Batch size: ${BATCH_SIZE}`);
+  const BATCH_SIZE = parseInt(batchSetting?.value1) || perfPresets.personalizationBatchLimit;
+  logger.info(`[Personalize Campaign] Batch size: ${BATCH_SIZE}, level=${perfLevelSetting?.value1 || 'balanced'}`);
 
   logger.info(`[Personalize Campaign] Downloading CSV file: ${fileId}`);
   const driveFile = await drive.files.get({ fileId, alt: "media" });
@@ -186,7 +189,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
 
       let aiResults = await personalizeBatch(contacts, personalizationPrompt, headers);
 
-      // Dynamic batch reduction: if AI fails, retry with half batch
+      // Dynamic batch reduction: if AI fails, retry with half batch, then quarter batch
       if (!aiResults || aiResults.every(r => !r || (!r.subject && !r.body))) {
         const halfSize = Math.ceil(contacts.length / 2);
         if (halfSize >= 2) {
@@ -210,6 +213,30 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
             }
             logger.info(`[Personalize Campaign] AI retry succeeded for ${halfSize} contacts`);
             continue;
+          }
+          // Quarter batch retry
+          const quarterSize = Math.ceil(contacts.length / 4);
+          if (quarterSize >= 1) {
+            logger.warn(`[Personalize Campaign] Half batch failed, retrying with quarter size (${quarterSize})`);
+            const quarterContacts = contacts.slice(0, quarterSize);
+            const quarterResults = await personalizeBatch(quarterContacts, personalizationPrompt, headers);
+            if (quarterResults && quarterResults.some(r => r && (r.subject || r.body))) {
+              for (let i = 0; i < Math.min(quarterSize, batch.length); i++) {
+                const result = quarterResults[i];
+                if (result && (result.subject || result.body)) {
+                  if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = result.subject || "";
+                  if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = result.body || "";
+                  personalizedCount++;
+                } else {
+                  const firstName = contacts[i].firstName;
+                  if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = `Quick question for ${firstName}`;
+                  if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = `Hi ${firstName},\n\nHope this finds you well.\n\nBest,\nWebFixx Team`;
+                  personalizedCount++;
+                }
+              }
+              logger.info(`[Personalize Campaign] Quarter batch retry succeeded for ${quarterSize} contacts`);
+              continue;
+            }
           }
         }
       }
@@ -299,16 +326,6 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
 
   await updateCampaignSettings(campaignId, { personalizationStatus: "completed" });
 
-  // Auto-advance pipeline
-  try {
-    const selfUrl = getSelfUrlWithFallback();
-    fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ campaignId })
-    }).catch(err => logger.warn(`[Personalize Campaign] Auto-advance failed: ${err.message}`));
-  } catch {}
-
   return NextResponse.json({
     success: true,
     message: "Campaign personalization completed successfully",
@@ -327,9 +344,12 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
 
   const drive = await getDriveClient();
 
+  const perfLevelSetting = await getSetting('performanceLevel');
+  const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
+
   const batchSetting = await getSetting('personalizeBatchLimit');
-  const BATCH_SIZE = parseInt(batchSetting?.value1) || 30;
-  logger.info(`[Personalize Campaign] Worker batch size: ${BATCH_SIZE}`);
+  const BATCH_SIZE = parseInt(batchSetting?.value1) || perfPresets.personalizationBatchLimit;
+  logger.info(`[Personalize Campaign] Worker batch size: ${BATCH_SIZE}, level=${perfLevelSetting?.value1 || 'balanced'}`);
 
   logger.info(`[Personalize Campaign] Worker downloading CSV file: ${fileId}`);
   const driveFile = await drive.files.get({ fileId, alt: "media" });
@@ -411,7 +431,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
 
       let aiResults = await personalizeBatch(contacts, personalizationPrompt, headers);
 
-      // Dynamic batch reduction: if AI fails, retry with half batch
+      // Dynamic batch reduction: if AI fails, retry with half batch, then quarter batch
       if (!aiResults || aiResults.every(r => !r || (!r.subject && !r.body))) {
         const halfSize = Math.ceil(contacts.length / 2);
         if (halfSize >= 2) {
@@ -435,6 +455,30 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
             }
             logger.info(`[Personalize Campaign] Worker AI retry succeeded for ${halfSize} contacts`);
             continue;
+          }
+          // Quarter batch retry
+          const quarterSize = Math.ceil(contacts.length / 4);
+          if (quarterSize >= 1) {
+            logger.warn(`[Personalize Campaign] Worker half batch failed, retrying with quarter size (${quarterSize})`);
+            const quarterContacts = contacts.slice(0, quarterSize);
+            const quarterResults = await personalizeBatch(quarterContacts, personalizationPrompt, headers);
+            if (quarterResults && quarterResults.some(r => r && (r.subject || r.body))) {
+              for (let i = 0; i < Math.min(quarterSize, batch.length); i++) {
+                const result = quarterResults[i];
+                if (result && (result.subject || result.body)) {
+                  if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = result.subject || "";
+                  if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = result.body || "";
+                  personalizedCount++;
+                } else {
+                  const firstName = contacts[i].firstName;
+                  if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = `Quick question for ${firstName}`;
+                  if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = `Hi ${firstName},\n\nHope this finds you well.\n\nBest,\nWebFixx Team`;
+                  personalizedCount++;
+                }
+              }
+              logger.info(`[Personalize Campaign] Worker quarter batch retry succeeded for ${quarterSize} contacts`);
+              continue;
+            }
           }
         }
       }

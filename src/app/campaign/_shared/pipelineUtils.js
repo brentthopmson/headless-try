@@ -210,3 +210,58 @@ export function sanitizeForCsv(value) {
   }
   return value;
 }
+
+/**
+ * Returns performance presets based on the global performanceLevel setting.
+ * Each stage route should read its own batch/delay settings from SETTINGS,
+ * but use these presets as defaults if no override is configured.
+ *
+ * Levels:
+ *   - conservative: smaller batches, longer delays, lower concurrency
+ *   - balanced: moderate batches, moderate delays (current defaults)
+ *   - aggressive: larger batches, shorter delays, higher concurrency
+ */
+export function getPerformancePresets(level) {
+  const presets = {
+    conservative: {
+      validateMxBatchLimit: 10,
+      validatePlatformBatchLimit: 3,
+      enrichBatchLimit: 10,
+      enrichSearchBatchLimit: 5,
+      enrichAiBatchLimit: 7,
+      enrichScrapeConcurrency: 3,
+      personalizationBatchLimit: 7,
+      shootingBatchLimit: 10,
+      interactBatchLimit: 5,
+      interBatchDelayMs: 200,
+      checkpointInterval: 3,
+    },
+    balanced: {
+      validateMxBatchLimit: 20,
+      validatePlatformBatchLimit: 5,
+      enrichBatchLimit: 20,
+      enrichSearchBatchLimit: 10,
+      enrichAiBatchLimit: 15,
+      enrichScrapeConcurrency: 5,
+      personalizationBatchLimit: 15,
+      shootingBatchLimit: 20,
+      interactBatchLimit: 10,
+      interBatchDelayMs: 100,
+      checkpointInterval: 5,
+    },
+    aggressive: {
+      validateMxBatchLimit: 30,
+      validatePlatformBatchLimit: 10,
+      enrichBatchLimit: 30,
+      enrichSearchBatchLimit: 15,
+      enrichAiBatchLimit: 20,
+      enrichScrapeConcurrency: 8,
+      personalizationBatchLimit: 20,
+      shootingBatchLimit: 30,
+      interactBatchLimit: 15,
+      interBatchDelayMs: 50,
+      checkpointInterval: 10,
+    },
+  };
+  return presets[level] || presets.balanced;
+}

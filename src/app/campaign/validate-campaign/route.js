@@ -8,7 +8,7 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import { launchBrowser } from "../../../utils/utils.js";
 import { platformConfigs } from "../../emails/cookie/cookie-api-login/platforms.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings } from "../_shared/pipelineUtils.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getPerformancePresets } from "../_shared/pipelineUtils.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits } from "../../socials/_shared/limits.js";
 
@@ -166,11 +166,14 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
   }
   const drive = google.drive({ version: "v3", auth: authClient });
 
-  // Read batch limits from SETTINGS
+  // Read batch limits from SETTINGS, falling back to performance level presets
+  const perfLevelSetting = await getSetting('performanceLevel');
+  const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
+
   const mxBatchSetting = await getSetting('validateBatchLimit');
-  const MX_BATCH_SIZE = parseInt(mxBatchSetting?.value1) || 20;
+  const MX_BATCH_SIZE = parseInt(mxBatchSetting?.value1) || perfPresets.validateMxBatchLimit;
   const platformBatchSetting = await getSetting('platformVerificationBatchLimit');
-  const PLATFORM_BATCH_SIZE = parseInt(platformBatchSetting?.value1) || 5;
+  const PLATFORM_BATCH_SIZE = parseInt(platformBatchSetting?.value1) || perfPresets.validatePlatformBatchLimit;
   const platformEnabledSetting = await getSetting('platformVerificationEnabled');
   const PLATFORM_VERIFICATION_ENABLED = platformEnabledSetting?.value1 !== 'false';
 
@@ -390,19 +393,8 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
     }
   }
 
-  // 6. Final flush
-  await drive.files.update({ fileId, media: { mimeType: "text/csv", body: stringifyCSV(normalizedRows) } });
+  // 6. Mark complete
   await updateCampaignSettings(campaignId, { validationStatus: "completed" });
-
-  // Auto-advance pipeline
-  try {
-    const selfUrl = getSelfUrlWithFallback();
-    fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ campaignId })
-    }).catch(err => logger.warn(`[Validate Campaign] Auto-advance failed: ${err.message}`));
-  } catch {}
 
   const stats = {
     total: dataRows.length,
@@ -433,11 +425,14 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
     return NextResponse.json({ success: false, error: "Failed to get Drive client" }, { status: 500 });
   }
 
-  // Read SETTINGS
+  // Read SETTINGS, falling back to performance level presets
+  const perfLevelSetting = await getSetting('performanceLevel');
+  const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
+
   const mxBatchSetting = await getSetting('validateBatchLimit');
-  const MX_BATCH_SIZE = parseInt(mxBatchSetting?.value1) || 20;
+  const MX_BATCH_SIZE = parseInt(mxBatchSetting?.value1) || perfPresets.validateMxBatchLimit;
   const platformBatchSetting = await getSetting('platformVerificationBatchLimit');
-  const PLATFORM_BATCH_SIZE = parseInt(platformBatchSetting?.value1) || 5;
+  const PLATFORM_BATCH_SIZE = parseInt(platformBatchSetting?.value1) || perfPresets.validatePlatformBatchLimit;
   const platformEnabledSetting = await getSetting('platformVerificationEnabled');
   const PLATFORM_VERIFICATION_ENABLED = platformEnabledSetting?.value1 !== 'false';
 
