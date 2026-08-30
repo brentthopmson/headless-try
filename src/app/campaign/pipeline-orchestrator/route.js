@@ -188,6 +188,12 @@ export async function POST(request) {
       });
     }
 
+    // Race condition guard: if stage is already processing, skip duplicate call
+    if (config.statusField && settings[config.statusField] === "processing") {
+      logger.info(`[Pipeline Orchestrator] ${config.label} already processing, skipping duplicate call`);
+      return NextResponse.json({ success: true, message: `${config.label} already processing`, waitingStage: stage });
+    }
+
     const result = await triggerStage(campaignId, stage, settings);
 
     if (!result || !result.success) {
