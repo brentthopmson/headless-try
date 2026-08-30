@@ -7,7 +7,7 @@ import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings } from "../_shared/pipelineUtils.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, sanitizeForCsv } from "../_shared/pipelineUtils.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits } from "../../socials/_shared/limits.js";
 
@@ -266,7 +266,7 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
       const url = row[urlIdx]?.trim();
       if (scrapeCache.has(url)) {
         const cached = scrapeCache.get(url);
-        if (cached && contextIdx !== -1) row[contextIdx] = cached;
+        if (cached && contextIdx !== -1) row[contextIdx] = sanitizeForCsv(cached);
         return;
       }
 
@@ -278,7 +278,7 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
         if (result.description) parts.push(result.description);
         contextValue = parts.join(". ") || "";
 
-        if (contextIdx !== -1) row[contextIdx] = contextValue;
+        if (contextIdx !== -1) row[contextIdx] = sanitizeForCsv(contextValue);
         scrapeCache.set(url, contextValue);
         urlScrapedCount++;
       }
@@ -347,7 +347,7 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
         if (bestResult.url && contextIdx !== -1) {
           contextValue = `${contextValue} | Profile: ${bestResult.url}`.trim();
         }
-        if (contextIdx !== -1) row[contextIdx] = contextValue;
+        if (contextIdx !== -1) row[contextIdx] = sanitizeForCsv(contextValue);
         searchFoundCount++;
       }
 
@@ -407,7 +407,7 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
                 aiResult.industry ? `Industry: ${aiResult.industry}` : "",
                 aiResult.services ? `Services: ${aiResult.services}` : ""
               ].filter(Boolean).join(". ");
-              if (enriched) batch[i][contextIdx] = enriched;
+              if (enriched) batch[i][contextIdx] = sanitizeForCsv(enriched);
             }
           }
           logger.info(`[Enrich Campaign] AI retry succeeded for ${halfSize} items`);
@@ -424,7 +424,7 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
           aiResult.industry ? `Industry: ${aiResult.industry}` : "",
           aiResult.services ? `Services: ${aiResult.services}` : ""
         ].filter(Boolean).join(". ");
-        if (enriched) batch[i][contextIdx] = enriched;
+        if (enriched) batch[i][contextIdx] = sanitizeForCsv(enriched);
       }
     }
 
@@ -569,7 +569,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
       const url = row[urlIdx]?.trim();
       if (scrapeCache.has(url)) {
         const cached = scrapeCache.get(url);
-        if (cached && contextIdx !== -1) row[contextIdx] = cached;
+        if (cached && contextIdx !== -1) row[contextIdx] = sanitizeForCsv(cached);
         return;
       }
 
@@ -581,7 +581,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
         if (result.description) parts.push(result.description);
         contextValue = parts.join(". ") || "";
 
-        if (contextIdx !== -1) row[contextIdx] = contextValue;
+        if (contextIdx !== -1) row[contextIdx] = sanitizeForCsv(contextValue);
         scrapeCache.set(url, contextValue);
         urlScrapedCount++;
       }
@@ -646,7 +646,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
         if (bestResult.url && contextIdx !== -1) {
           contextValue = `${contextValue} | Profile: ${bestResult.url}`.trim();
         }
-        if (contextIdx !== -1) row[contextIdx] = contextValue;
+        if (contextIdx !== -1) row[contextIdx] = sanitizeForCsv(contextValue);
         searchFoundCount++;
       }
 
@@ -701,7 +701,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
                 aiResult.industry ? `Industry: ${aiResult.industry}` : "",
                 aiResult.services ? `Services: ${aiResult.services}` : ""
               ].filter(Boolean).join(". ");
-              if (enriched) batch[i][contextIdx] = enriched;
+              if (enriched) batch[i][contextIdx] = sanitizeForCsv(enriched);
             }
           }
           logger.info(`[Enrich Campaign] Worker AI retry succeeded for ${halfSize} items`);
@@ -718,7 +718,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
           aiResult.industry ? `Industry: ${aiResult.industry}` : "",
           aiResult.services ? `Services: ${aiResult.services}` : ""
         ].filter(Boolean).join(". ");
-        if (enriched) batch[i][contextIdx] = enriched;
+        if (enriched) batch[i][contextIdx] = sanitizeForCsv(enriched);
       }
     }
 

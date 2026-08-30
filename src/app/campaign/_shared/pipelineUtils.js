@@ -198,3 +198,15 @@ export function mergeTemplate(template, row, headers) {
     .replace(/\{\{company\}\}|\{\{businessName\}\}/gi, getVal("BUSINESSNAME"))
     .replace(/\{\{context\}\}/gi, getVal("CONTEXT"));
 }
+
+/**
+ * Strips raw HTML tags from a value if it looks like HTML content.
+ * Prevents scraped HTML from corrupting CSV data.
+ */
+export function sanitizeForCsv(value) {
+  if (!value || typeof value !== "string") return value;
+  if (/<html|<head|<style|<body|<script|<link\s+rel/i.test(value)) {
+    return value.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 3000);
+  }
+  return value;
+}

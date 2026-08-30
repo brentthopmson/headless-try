@@ -77,6 +77,11 @@ export async function POST(request) {
       updates[config.statusField] = null;
     }
 
+    // Clear mailMerged flag when resetting validate stage so templates re-merge
+    if (stage === "validate") {
+      updates.mailMerged = false;
+    }
+
     if (stage === "execute") {
       const campaignStatus = campaignData.status;
       if (campaignStatus !== "failed" && campaignStatus !== "paused") {

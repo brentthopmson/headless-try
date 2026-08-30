@@ -187,13 +187,13 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
       let aiResults = await personalizeBatch(contacts, personalizationPrompt, headers);
 
       // Dynamic batch reduction: if AI fails, retry with half batch
-      if (!aiResults || aiResults.every(r => !r.subject && !r.body)) {
+      if (!aiResults || aiResults.every(r => !r || (!r.subject && !r.body))) {
         const halfSize = Math.ceil(contacts.length / 2);
         if (halfSize >= 2) {
           logger.warn(`[Personalize Campaign] AI batch failed, retrying with half size (${halfSize})`);
           const halfContacts = contacts.slice(0, halfSize);
           const retryResults = await personalizeBatch(halfContacts, personalizationPrompt, headers);
-          if (retryResults && retryResults.some(r => r.subject || r.body)) {
+          if (retryResults && retryResults.some(r => r && (r.subject || r.body))) {
             for (let i = 0; i < Math.min(halfSize, batch.length); i++) {
               const result = retryResults[i];
               if (result && (result.subject || result.body)) {
@@ -241,13 +241,13 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
       let aiResults = await personalizeSocialBatch(socialContacts, personalizationPrompt);
 
       // Dynamic batch reduction: if AI fails, retry with half batch
-      if (!aiResults || aiResults.every(r => !r.message)) {
+      if (!aiResults || aiResults.every(r => !r || !r.message)) {
         const halfSize = Math.ceil(socialContacts.length / 2);
         if (halfSize >= 2) {
           logger.warn(`[Personalize Campaign] Social AI batch failed, retrying with half size (${halfSize})`);
           const halfContacts = socialContacts.slice(0, halfSize);
           const retryResults = await personalizeSocialBatch(halfContacts, personalizationPrompt);
-          if (retryResults && retryResults.some(r => r.message)) {
+          if (retryResults && retryResults.some(r => r && r.message)) {
             for (let i = 0; i < Math.min(halfSize, batch.length); i++) {
               const result = retryResults[i];
               if (result && result.message) {
@@ -412,13 +412,13 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
       let aiResults = await personalizeBatch(contacts, personalizationPrompt, headers);
 
       // Dynamic batch reduction: if AI fails, retry with half batch
-      if (!aiResults || aiResults.every(r => !r.subject && !r.body)) {
+      if (!aiResults || aiResults.every(r => !r || (!r.subject && !r.body))) {
         const halfSize = Math.ceil(contacts.length / 2);
         if (halfSize >= 2) {
           logger.warn(`[Personalize Campaign] Worker AI batch failed, retrying with half size (${halfSize})`);
           const halfContacts = contacts.slice(0, halfSize);
           const retryResults = await personalizeBatch(halfContacts, personalizationPrompt, headers);
-          if (retryResults && retryResults.some(r => r.subject || r.body)) {
+          if (retryResults && retryResults.some(r => r && (r.subject || r.body))) {
             for (let i = 0; i < Math.min(halfSize, batch.length); i++) {
               const result = retryResults[i];
               if (result && (result.subject || result.body)) {
@@ -466,13 +466,13 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
       let aiResults = await personalizeSocialBatch(socialContacts, personalizationPrompt);
 
       // Dynamic batch reduction: if AI fails, retry with half batch
-      if (!aiResults || aiResults.every(r => !r.message)) {
+      if (!aiResults || aiResults.every(r => !r || !r.message)) {
         const halfSize = Math.ceil(socialContacts.length / 2);
         if (halfSize >= 2) {
           logger.warn(`[Personalize Campaign] Worker social AI batch failed, retrying with half size (${halfSize})`);
           const halfContacts = socialContacts.slice(0, halfSize);
           const retryResults = await personalizeSocialBatch(halfContacts, personalizationPrompt);
-          if (retryResults && retryResults.some(r => r.message)) {
+          if (retryResults && retryResults.some(r => r && r.message)) {
             for (let i = 0; i < Math.min(halfSize, batch.length); i++) {
               const result = retryResults[i];
               if (result && result.message) {

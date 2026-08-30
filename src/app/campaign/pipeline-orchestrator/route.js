@@ -131,17 +131,24 @@ export async function POST(request) {
     }
 
     // Mail merge: merge subject/body templates with CSV data before any stage
-    const mailMergeUrl = getSelfUrlWithFallback();
-    try {
-      const mailMergeResp = await fetch(`${mailMergeUrl}/campaign/mail-merge`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ campaignId, fileUrl: settings.fileUrl }),
-      });
-      const mailMergeResult = await mailMergeResp.json();
-      logger.info(`[Pipeline Orchestrator] Mail merge result: ${JSON.stringify(mailMergeResult).slice(0, 300)}`);
-    } catch (mmErr) {
-      logger.warn(`[Pipeline Orchestrator] Mail merge failed (non-fatal): ${mmErr.message}`);
+    if (!settings.mailMerged) {
+      const mailMergeUrl = getSelfUrlWithFallback();
+      try {
+        const mailMergeResp = await fetch(`${mailMergeUrl}/campaign/mail-merge`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ campaignId, fileUrl: settings.fileUrl }),
+        });
+        const mailMergeResult = await mailMergeResp.json();
+        logger.info(`[Pipeline Orchestrator] Mail merge result: ${JSON.stringify(mailMergeResult).slice(0, 300)}`);
+        if (mailMergeResult.success) {
+          await updateCampaignSettings(campaignId, { mailMerged: true });
+        }
+      } catch (mmErr) {
+        logger.warn(`[Pipeline Orchestrator] Mail merge failed (non-fatal): ${mmErr.message}`);
+      }
+    } else {
+      logger.info(`[Pipeline Orchestrator] Mail merge already done, skipping`);
     }
 
     const resolution = resolveCurrentStage(settings);
