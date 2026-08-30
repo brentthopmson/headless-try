@@ -6,7 +6,7 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings } from "../_shared/pipelineUtils.js";
-import { getSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
+import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits } from "../../socials/_shared/limits.js";
 
 export const maxDuration = 120;
@@ -280,7 +280,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
 
   // Auto-advance pipeline
   try {
-    const selfUrl = getSelfUrl();
+    const selfUrl = getSelfUrlWithFallback();
     fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -448,7 +448,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
       interactionStartedAt: settings.interactionStartedAt || new Date().toISOString()
     });
     try {
-      const selfUrl = getSelfUrl();
+      const selfUrl = getSelfUrlWithFallback();
       fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

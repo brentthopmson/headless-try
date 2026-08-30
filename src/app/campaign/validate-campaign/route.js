@@ -9,7 +9,7 @@ import { launchBrowser } from "../../../utils/utils.js";
 import { platformConfigs } from "../../emails/cookie/cookie-api-login/platforms.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings } from "../_shared/pipelineUtils.js";
-import { getSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
+import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits } from "../../socials/_shared/limits.js";
 
 const resolveMx = promisify(dns.resolveMx);
@@ -396,7 +396,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
 
   // Auto-advance pipeline
   try {
-    const selfUrl = getSelfUrl();
+    const selfUrl = getSelfUrlWithFallback();
     fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -608,7 +608,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
     await updateCampaignSettings(campaignId, { validationStatus: "completed" });
     logger.info(`[Validate Campaign] All workers complete — validation finished`);
     try {
-      const selfUrl = getSelfUrl();
+      const selfUrl = getSelfUrlWithFallback();
       fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

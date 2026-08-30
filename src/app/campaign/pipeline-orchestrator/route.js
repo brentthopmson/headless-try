@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
-import { getSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
+import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignSettings, updateCampaignSettings, isCampaignPaused } from "../_shared/pipelineUtils.js";
 
 export const maxDuration = 60;
@@ -68,7 +68,7 @@ function resolveCurrentStage(settings) {
 
 async function triggerStage(campaignId, stage, settings) {
   const config = STAGE_CONFIG[stage];
-  const selfUrl = getSelfUrl();
+  const selfUrl = getSelfUrlWithFallback();
   const url = `${selfUrl}${config.route}`;
 
   const body = { campaignId };
@@ -131,9 +131,9 @@ export async function POST(request) {
     }
 
     // Mail merge: merge subject/body templates with CSV data before any stage
+    const mailMergeUrl = getSelfUrlWithFallback();
     try {
-      const selfUrl = getSelfUrl();
-      const mailMergeResp = await fetch(`${selfUrl}/campaign/mail-merge`, {
+      const mailMergeResp = await fetch(`${mailMergeUrl}/campaign/mail-merge`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ campaignId, fileUrl: settings.fileUrl }),
@@ -159,12 +159,17 @@ export async function POST(request) {
     const config = STAGE_CONFIG[stage];
 
     if (action === "fail") {
-      logger.warn(`[Pipeline Orchestrator] Campaign ${campaignId} — stage ${config.label} has failed`);
-      return NextResponse.json({
-        success: false,
-        message: `Pipeline stopped: ${config.label} stage failed`,
-        failedStage: stage,
-      });
+      logger.info(`[Pipeline Orchestrator] Campaign ${campaignId} — stage ${config.label} is failed, auto-resetting`);
+      const resetUpdates = {};
+      if (config.statusField) {
+        resetUpdates[config.statusField] = null;
+      }
+      resetUpdates.serverAssignments = settings.serverAssignments || {};
+      if (resetUpdates.serverAssignments[stage]) {
+        delete resetUpdates.serverAssignments[stage];
+      }
+      await updateCampaignSettings(campaignId, resetUpdates);
+      // Re-run this stage
     }
 
     if (action === "wait") {

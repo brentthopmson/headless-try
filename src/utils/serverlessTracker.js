@@ -106,6 +106,10 @@ export function getSelfUrl() {
     return url ? url.replace(/\/+$/, '') : null;
 }
 
+export function getSelfUrlWithFallback() {
+    return getSelfUrl() || `http://localhost:${process.env.PORT || 3001}`;
+}
+
 /**
  * Re-reads our own row from the links sheet so URL / limits / status edits
  * made by the operator take effect WITHOUT a server restart. Called lazily:

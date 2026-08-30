@@ -12,7 +12,7 @@ import { POST as sendMessageHandler } from "../../socials/send-message/route.js"
 import { getCampaignLimits } from "../../socials/_shared/limits.js";
 import { requireFeature } from "../../../utils/featureGate.js";
 import { getSetting } from "../../../utils/settingsCache.js";
-import { getSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
+import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { dispatchToServers } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, stringifyCSV, isCampaignPaused, getFirestickEmails } from "../_shared/pipelineUtils.js";
 
@@ -585,7 +585,7 @@ export async function POST(request) {
       // Auto-advance pipeline (fire-and-forget)
       if (finalStatus === "completed") {
         try {
-          fetch(`${getSelfUrl()}/campaign/pipeline-orchestrator`, {
+          fetch(`${getSelfUrlWithFallback()}/campaign/pipeline-orchestrator`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ campaignId })
@@ -875,7 +875,7 @@ export async function POST(request) {
       // Auto-advance pipeline (fire-and-forget)
       if (finalStatus === "completed") {
         try {
-          fetch(`${getSelfUrl()}/campaign/pipeline-orchestrator`, {
+          fetch(`${getSelfUrlWithFallback()}/campaign/pipeline-orchestrator`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ campaignId })
