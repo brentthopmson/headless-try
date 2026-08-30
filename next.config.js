@@ -27,6 +27,7 @@ const nextConfig = {
       { source: '/api/personalize-campaign', destination: '/campaign/personalize-campaign' },
       { source: '/api/interact-campaign', destination: '/campaign/interact-campaign' },
       { source: '/api/reset-campaign', destination: '/campaign/reset-campaign' },
+      { source: '/api/mail-merge', destination: '/campaign/mail-merge' },
     ];
   },
 }

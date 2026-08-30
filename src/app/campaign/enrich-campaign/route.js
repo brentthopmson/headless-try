@@ -210,6 +210,7 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
   const urlIdx = headers.indexOf("URL");
   const contextIdx = headers.indexOf("CONTEXT");
   const validationIdx = headers.indexOf("validation");
+  const enrichStatusIdx = headers.findIndex(h => h.toLowerCase().trim() === "enrichmentstatus");
 
   const dataRows = parsedRows.slice(1);
 
@@ -231,6 +232,7 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
 
   // 3. Inference pass (firstName, company from email)
   for (const row of dataRows) {
+    if (enrichStatusIdx !== -1 && row[enrichStatusIdx]?.trim() === "enriched") continue;
     const email = row[emailIdx]?.trim();
     if (!email) continue;
     if (firstNameIdx !== -1 && !row[firstNameIdx]?.trim()) {
@@ -302,6 +304,7 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
   // 5. Google Search Fallback (rows without URL, batched)
   let searchFoundCount = 0;
   const rowsWithoutUrl = dataRows.filter(r => {
+    if (enrichStatusIdx !== -1 && r[enrichStatusIdx]?.trim() === "enriched") return false;
     const url = r[urlIdx]?.trim();
     const email = r[emailIdx]?.trim();
     const context = r[contextIdx]?.trim();
@@ -366,6 +369,7 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
 
   // 6. Batch AI Analysis (on scraped content)
   const rowsNeedingAnalysis = dataRows.filter(r => {
+    if (enrichStatusIdx !== -1 && r[enrichStatusIdx]?.trim() === "enriched") return false;
     const context = r[contextIdx]?.trim();
     return context && context.length > 10 && !context.includes("Industry:");
   });
@@ -427,7 +431,14 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
     logger.info(`[Enrich Campaign] AI batch ${batchIdx + 1}/${aiBatchCount} complete`);
   }
 
-  // 7. Final CSV flush
+  // 7. Mark all processed rows as enriched
+  if (enrichStatusIdx !== -1) {
+    for (const row of dataRows) {
+      row[enrichStatusIdx] = "enriched";
+    }
+  }
+
+  // 8. Final CSV flush
   logger.info(`[Enrich Campaign] Final CSV flush to Drive: ${fileId}`);
   await drive.files.update({
     fileId,
@@ -508,6 +519,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
   const urlIdx = headers.indexOf("URL");
   const contextIdx = headers.indexOf("CONTEXT");
   const validationIdx = headers.indexOf("validation");
+  const enrichStatusIdx = headers.findIndex(h => h.toLowerCase().trim() === "enrichmentstatus");
 
   const allDataRows = parsedRows.slice(1);
 
@@ -520,6 +532,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
 
   // 4. Inference pass
   for (const row of dataRows) {
+    if (enrichStatusIdx !== -1 && row[enrichStatusIdx]?.trim() === "enriched") continue;
     const email = row[emailIdx]?.trim();
     if (!email) continue;
     if (firstNameIdx !== -1 && !row[firstNameIdx]?.trim()) {
@@ -589,6 +602,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
   // 6. Google Search Fallback
   let searchFoundCount = 0;
   const rowsWithoutUrl = dataRows.filter(r => {
+    if (enrichStatusIdx !== -1 && r[enrichStatusIdx]?.trim() === "enriched") return false;
     const url = r[urlIdx]?.trim();
     const email = r[emailIdx]?.trim();
     const context = r[contextIdx]?.trim();
@@ -649,6 +663,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
 
   // 7. Batch AI Analysis
   const rowsNeedingAnalysis = dataRows.filter(r => {
+    if (enrichStatusIdx !== -1 && r[enrichStatusIdx]?.trim() === "enriched") return false;
     const context = r[contextIdx]?.trim();
     return context && context.length > 10 && !context.includes("Industry:");
   });
@@ -719,7 +734,14 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
     throw error;
   }
 
-  // 8. Final flush
+  // 8. Mark all processed rows as enriched
+  if (enrichStatusIdx !== -1) {
+    for (const row of dataRows) {
+      row[enrichStatusIdx] = "enriched";
+    }
+  }
+
+  // 9. Final flush
   logger.info(`[Enrich Campaign] Worker final flush to Drive: ${fileId}`);
   await drive.files.update({
     fileId,

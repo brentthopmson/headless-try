@@ -179,3 +179,22 @@ export async function getFirestickEmails() {
     return [];
   }
 }
+
+/**
+ * Merges {{variable}} placeholders in a template string with actual CSV row values.
+ * Supported variables: firstName/first_name, lastName/last_name, email, company/businessName, context.
+ * No fallbacks — empty CSV column means empty string in output.
+ */
+export function mergeTemplate(template, row, headers) {
+  if (!template) return "";
+  const getVal = (col) => {
+    const idx = headers.indexOf(col);
+    return idx !== -1 ? (row[idx]?.trim() || "") : "";
+  };
+  return template
+    .replace(/\{\{firstName\}\}|\{\{first_name\}\}/gi, getVal("FIRSTNAME"))
+    .replace(/\{\{lastName\}\}|\{\{last_name\}\}/gi, getVal("LASTNAME"))
+    .replace(/\{\{email\}\}/gi, getVal("EMAIL"))
+    .replace(/\{\{company\}\}|\{\{businessName\}\}/gi, getVal("BUSINESSNAME"))
+    .replace(/\{\{context\}\}/gi, getVal("CONTEXT"));
+}
