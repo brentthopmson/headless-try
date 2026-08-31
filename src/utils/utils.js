@@ -299,6 +299,9 @@ export async function launchBrowser(customOptions = {}) {
     await new Promise(r => setTimeout(r, 1500));
   }
 
-  return browser;
+    return browser;
+  } finally {
+    releaseBrowserSlot(slotId);
+  }
 }
 
