@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
-import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
+import { getSelfUrl, getSelfUrlWithFallback, getSelfId, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignSettings, updateCampaignSettings, isCampaignPaused } from "../_shared/pipelineUtils.js";
+import { acquireCampaignLock, releaseCampaignLock } from "../../../utils/campaignLock.js";
+import { getCampaignLimits, getSheetDataApi } from "../../socials/_shared/limits.js";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -64,6 +66,47 @@ function resolveCurrentStage(settings) {
     return { stage, action: "run" };
   }
   return null;
+}
+
+/**
+ * Check if the user has exceeded their concurrent campaign limit.
+ * @param {string} userId
+ * @returns {Promise<{ allowed: boolean, current: number, limit: number }>}
+ */
+async function checkConcurrentLimit(userId) {
+  if (!userId) return { allowed: true, current: 0, limit: 3 };
+
+  try {
+    const limits = await getCampaignLimits();
+    const concurrentLimit = limits.campaignConcurrentLimit || 3;
+
+    const campaignsResult = await getSheetDataApi("campaigns");
+    if (!campaignsResult.success) return { allowed: true, current: 0, limit: concurrentLimit };
+
+    const headers = campaignsResult.headers;
+    const userIdIdx = headers.indexOf("userId");
+    const statusIdx = headers.indexOf("status");
+
+    if (userIdIdx === -1) return { allowed: true, current: 0, limit: concurrentLimit };
+
+    // Count active campaigns for this user (running, processing, or staged)
+    const activeStatuses = ["running", "processing", "staged"];
+    const activeCampaigns = campaignsResult.data.filter(r => {
+      const rUserId = String(r[userIdIdx] || "").trim();
+      const rStatus = String(r[statusIdx] || "").trim().toLowerCase();
+      return rUserId === String(userId).trim() && activeStatuses.includes(rStatus);
+    });
+
+    const current = activeCampaigns.length;
+    return {
+      allowed: current < concurrentLimit,
+      current,
+      limit: concurrentLimit,
+    };
+  } catch (err) {
+    logger.warn(`[Pipeline Orchestrator] Failed to check concurrent limit: ${err.message}`);
+    return { allowed: true, current: 0, limit: 3 };
+  }
 }
 
 async function triggerStage(campaignId, stage, settings) {
@@ -130,6 +173,22 @@ export async function POST(request) {
       return NextResponse.json({ success: true, message: "Campaign is paused", paused: true });
     }
 
+    // Check concurrent campaign limit per user
+    const userId = settings.userId || body.userId;
+    if (userId) {
+      const concurrentCheck = await checkConcurrentLimit(userId);
+      if (!concurrentCheck.allowed) {
+        logger.info(`[Pipeline Orchestrator] User ${userId} exceeded concurrent limit: ${concurrentCheck.current}/${concurrentCheck.limit}`);
+        return NextResponse.json({
+          success: false,
+          error: `Concurrent campaign limit reached (${concurrentCheck.current}/${concurrentCheck.limit})`,
+          concurrentLimit: true,
+          current: concurrentCheck.current,
+          limit: concurrentCheck.limit,
+        }, { status: 429 });
+      }
+    }
+
     // Mail merge: merge subject/body templates with CSV data before any stage
     if (!settings.mailMerged) {
       const mailMergeUrl = getSelfUrlWithFallback();
@@ -194,50 +253,67 @@ export async function POST(request) {
       return NextResponse.json({ success: true, message: `${config.label} already processing`, waitingStage: stage });
     }
 
-    const result = await triggerStage(campaignId, stage, settings);
-
-    if (!result || !result.success) {
-      return NextResponse.json({
-        success: false,
-        message: `${config.label} stage failed`,
-        failedStage: stage,
-        details: result,
-      });
-    }
-
-    if (result.dispatched) {
+    // Acquire per-campaign lock before triggering stage
+    const serverlessId = getSelfId() || process.env.SERVERLESS_ID || "unknown";
+    const lockResult = await acquireCampaignLock(campaignId, serverlessId);
+    if (!lockResult.acquired) {
+      logger.info(`[Pipeline Orchestrator] Cannot acquire lock for ${campaignId}: ${lockResult.reason}`);
       return NextResponse.json({
         success: true,
-        message: `${config.label} dispatched to workers`,
-        dispatchedStage: stage,
-        servers: result.servers,
+        message: `Campaign locked (${lockResult.reason}), skipping`,
+        locked: true,
+        lockReason: lockResult.reason,
       });
     }
 
-    const updatedData = await getCampaignSettings(campaignId);
-    if (updatedData) {
-      updatedData.settings._campaignStatus = updatedData.status;
-      const nextResolution = resolveCurrentStage(updatedData.settings);
-      if (nextResolution && nextResolution.action === "run") {
-        const nextConfig = STAGE_CONFIG[nextResolution.stage];
-        logger.info(`[Pipeline Orchestrator] Auto-advancing to ${nextConfig.label}`);
-        const nextResult = await triggerStage(campaignId, nextResolution.stage, updatedData.settings);
+    try {
+      const result = await triggerStage(campaignId, stage, settings);
+
+      if (!result || !result.success) {
         return NextResponse.json({
-          success: true,
-          message: `${config.label} complete, advanced to ${nextConfig.label}`,
-          currentStage: stage,
-          nextStage: nextResolution.stage,
-          nextResult,
+          success: false,
+          message: `${config.label} stage failed`,
+          failedStage: stage,
+          details: result,
         });
       }
-    }
 
-    return NextResponse.json({
-      success: true,
-      message: `${config.label} stage completed`,
-      completedStage: stage,
-      result,
-    });
+      if (result.dispatched) {
+        return NextResponse.json({
+          success: true,
+          message: `${config.label} dispatched to workers`,
+          dispatchedStage: stage,
+          servers: result.servers,
+        });
+      }
+
+      const updatedData = await getCampaignSettings(campaignId);
+      if (updatedData) {
+        updatedData.settings._campaignStatus = updatedData.status;
+        const nextResolution = resolveCurrentStage(updatedData.settings);
+        if (nextResolution && nextResolution.action === "run") {
+          const nextConfig = STAGE_CONFIG[nextResolution.stage];
+          logger.info(`[Pipeline Orchestrator] Auto-advancing to ${nextConfig.label}`);
+          const nextResult = await triggerStage(campaignId, nextResolution.stage, updatedData.settings);
+          return NextResponse.json({
+            success: true,
+            message: `${config.label} complete, advanced to ${nextConfig.label}`,
+            currentStage: stage,
+            nextStage: nextResolution.stage,
+            nextResult,
+          });
+        }
+      }
+
+      return NextResponse.json({
+        success: true,
+        message: `${config.label} stage completed`,
+        completedStage: stage,
+        result,
+      });
+    } finally {
+      await releaseCampaignLock(campaignId, serverlessId);
+    }
 
   } catch (error) {
     logger.error(`[Pipeline Orchestrator] Error: ${error.message}`, { stack: error.stack });

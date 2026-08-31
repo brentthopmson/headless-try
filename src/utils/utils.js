@@ -18,6 +18,69 @@ export const remoteExecutablePath =
 
 export const isDev = process.env.NODE_ENV === "development";
 
+// ==================== Global Browser Semaphore ====================
+// Limits total concurrent Chromium instances across all routes/campaigns to prevent OOM.
+const MAX_GLOBAL_BROWSERS = parseInt(process.env.MAX_GLOBAL_BROWSERS || '4', 10);
+const BROWSER_LAUNCH_TIMEOUT_MS = 30000; // 30s wait for a slot
+
+if (!globalThis.__browserSemaphore) {
+  globalThis.__browserSemaphore = {
+    active: new Set(),
+    waitQueue: [],
+  };
+}
+const sem = globalThis.__browserSemaphore;
+
+/**
+ * Acquire a slot from the global browser semaphore.
+ * Returns a release function that MUST be called when the browser is closed.
+ */
+async function acquireBrowserSlot() {
+  // Fast path: slot available
+  if (sem.active.size < MAX_GLOBAL_BROWSERS) {
+    const slotId = `browser-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    sem.active.add(slotId);
+    return slotId;
+  }
+
+  // Wait for a slot to free up
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      const idx = sem.waitQueue.findIndex(w => w.resolve === resolve);
+      if (idx !== -1) sem.waitQueue.splice(idx, 1);
+      reject(new Error(`Browser semaphore timeout: ${sem.active.size}/${MAX_GLOBAL_BROWSERS} slots in use after ${BROWSER_LAUNCH_TIMEOUT_MS}ms`));
+    }, BROWSER_LAUNCH_TIMEOUT_MS);
+
+    sem.waitQueue.push({ resolve, timeout });
+  });
+}
+
+/**
+ * Release a slot from the global browser semaphore.
+ */
+function releaseBrowserSlot(slotId) {
+  sem.active.delete(slotId);
+  // Wake up next waiter if any
+  if (sem.waitQueue.length > 0 && sem.active.size < MAX_GLOBAL_BROWSERS) {
+    const next = sem.waitQueue.shift();
+    clearTimeout(next.timeout);
+    const newSlotId = `browser-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    sem.active.add(newSlotId);
+    next.resolve(newSlotId);
+  }
+}
+
+/**
+ * Get current browser semaphore stats.
+ */
+export function getBrowserSemaphoreStats() {
+  return {
+    active: sem.active.size,
+    max: MAX_GLOBAL_BROWSERS,
+    waiting: sem.waitQueue.length,
+  };
+}
+
 import logger from "./logger.js";
 import { generateIdentity, launchArgsForIdentity } from "./identity.js";
 import { resolveProxyForRun, maskProxy } from "./proxy.js";
@@ -121,16 +184,19 @@ async function getPuppeteerExtra() {
  * locked to standard widescreen dimensions (1920x1080) for automation safety.
  */
 export async function launchBrowser(customOptions = {}) {
+  // Acquire global browser slot (limits total Chromium instances)
+  const slotId = await acquireBrowserSlot();
 
-  // 1. Per-run browser identity (fingerprint): random UA, screen/viewport+DPR,
-  //    timezone, locale/lang, WebGL vendor/renderer, canvas/audio noise, and
-  //    hardware signals. Consistent within a single run, unique across runs.
-  const identity = customOptions.identity || generateIdentity();
-  if (customOptions.userAgent) identity.userAgent = customOptions.userAgent;
+  try {
+    // 1. Per-run browser identity (fingerprint): random UA, screen/viewport+DPR,
+    //    timezone, locale/lang, WebGL vendor/renderer, canvas/audio noise, and
+    //    hardware signals. Consistent within a single run, unique across runs.
+    const identity = customOptions.identity || generateIdentity();
+    if (customOptions.userAgent) identity.userAgent = customOptions.userAgent;
 
-  // 2. Per-run proxy (IP rotation). Optional — if none is configured we still
-  //    rotate the browser fingerprint, but IP correlation remains.
-  const proxy = await resolveProxyForRun();
+    // 2. Per-run proxy (IP rotation). Optional — if none is configured we still
+    //    rotate the browser fingerprint, but IP correlation remains.
+    const proxy = await resolveProxyForRun();
 
   // 3. Build launch args: identity + proxy args override the fixed defaults.
   const identityArgs = launchArgsForIdentity(identity);
@@ -206,6 +272,17 @@ export async function launchBrowser(customOptions = {}) {
   browser.identity = identity;
   browser.proxy = proxy;
   browser.selectedUserAgent = identity.userAgent;
+  browser._semaphoreSlotId = slotId;
+
+  // Release semaphore slot when browser is closed
+  const originalClose = browser.close.bind(browser);
+  browser.close = async () => {
+    try {
+      await originalClose();
+    } finally {
+      releaseBrowserSlot(slotId);
+    }
+  };
 
   if (!proxy) {
     logger.warn(`[launchBrowser] No IP rotation configured — browser fingerprint rotates per run, but outbound IP stays constant. Set PROXY_HOSTS / PROXY_LIST_URL / PROXY_PROVIDER_URL to enable IP rotation.`);

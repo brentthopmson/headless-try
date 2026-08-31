@@ -1,5 +1,6 @@
 import nodemailer from "nodemailer";
 import logger from "../../../utils/logger.js";
+import { checkSendAllowed, incrementSendCount, detectEmailProvider } from "../../../utils/sendRateLimiter.js";
 
 export function createTransporter(smtpConfig) {
   const host = smtpConfig.host || smtpConfig.server;
@@ -17,6 +18,16 @@ export function createTransporter(smtpConfig) {
 }
 
 export async function sendViaSMTP(recipient, subject, body, smtpConfig) {
+  // Rate limit check: detect provider from host, use smtp.user as account ID
+  const platform = detectEmailProvider(smtpConfig.host || smtpConfig.user);
+  const accountId = smtpConfig.user || smtpConfig.username || "unknown";
+
+  const rateCheck = await checkSendAllowed(platform, accountId);
+  if (!rateCheck.allowed) {
+    logger.warn(`[smtpSender] Rate limited for ${accountId} (${platform}): ${rateCheck.reason}`);
+    throw new Error(`Rate limited: ${rateCheck.reason}`);
+  }
+
   const transporter = createTransporter(smtpConfig);
   const fromName = smtpConfig.senderName || "Outreach Manager";
   const fromEmail = smtpConfig.user || smtpConfig.username;
@@ -28,6 +39,9 @@ export async function sendViaSMTP(recipient, subject, body, smtpConfig) {
     text: body,
     html: body.replace(/\n/g, "<br>"),
   });
+
+  // Increment counter after successful send
+  incrementSendCount(platform, accountId);
 
   logger.info(`[smtpSender] Sent to ${recipient} via ${smtpConfig.host}: ${info.messageId}`);
   return { success: true, messageId: info.messageId, host: smtpConfig.host };

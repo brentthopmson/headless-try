@@ -1,5 +1,6 @@
 import logger from "../../../utils/logger.js";
 import { launchBrowserWithSession, DOMHelpers } from "../../socials/_shared/routeHelper.js";
+import { checkSendAllowed, incrementSendCount, detectEmailProvider } from "../../../utils/sendRateLimiter.js";
 
 const PROVIDER_CONFIGS = {
   gmail: {
@@ -64,6 +65,16 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
     throw new Error(`Unsupported email provider: ${providerName}. Supported: ${Object.keys(PROVIDER_CONFIGS).join(", ")}`);
   }
 
+  // Rate limit check: detect platform, use recipient as account ID
+  const platform = detectEmailProvider(providerName);
+  const accountId = recipient || "unknown";
+
+  const rateCheck = await checkSendAllowed(platform, accountId);
+  if (!rateCheck.allowed) {
+    logger.warn(`[wireSender] Rate limited for ${accountId} (${platform}): ${rateCheck.reason}`);
+    throw new Error(`Rate limited: ${rateCheck.reason}`);
+  }
+
   logger.info(`[wireSender] Sending via ${providerName} to ${recipient}`);
 
   const { browser, page } = await launchBrowserWithSession(cookieJSON, false);
@@ -110,6 +121,9 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
     }
 
     await DOMHelpers.randomDelay(2000, 3000);
+
+    // Increment counter after successful send
+    incrementSendCount(platform, accountId);
 
     logger.info(`[wireSender] Email sent to ${recipient} via ${providerName}`);
     return { success: true, provider: providerName, recipient };

@@ -136,14 +136,14 @@ export async function checkActionAllowed(platform, action, accountUsage = {}) {
 export async function getCampaignLimits() {
     const sheet = await getLimitsSheet();
     // Default to 0 (block) when sheet is unavailable
-    if (!sheet) return { validateLimit: 0, enrichLimit: 0, personalizeLimit: 0, shootCampaignLimit: 0, interactionLimit: 0 };
+    if (!sheet) return { validateLimit: 0, enrichLimit: 0, personalizeLimit: 0, shootCampaignLimit: 0, interactionLimit: 0, campaignConcurrentLimit: 3 };
 
     const headers = sheet.headers;
     const categoryIdx = headers.indexOf("category");
-    if (categoryIdx === -1) return { validateLimit: 0, enrichLimit: 0, personalizeLimit: 0, shootCampaignLimit: 0, interactionLimit: 0 };
+    if (categoryIdx === -1) return { validateLimit: 0, enrichLimit: 0, personalizeLimit: 0, shootCampaignLimit: 0, interactionLimit: 0, campaignConcurrentLimit: 3 };
 
     const campaignRow = sheet.data.find(r => String(r[categoryIdx]).trim().toLowerCase() === "campaign");
-    if (!campaignRow) return { validateLimit: 0, enrichLimit: 0, personalizeLimit: 0, shootCampaignLimit: 0, interactionLimit: 0 };
+    if (!campaignRow) return { validateLimit: 0, enrichLimit: 0, personalizeLimit: 0, shootCampaignLimit: 0, interactionLimit: 0, campaignConcurrentLimit: 3 };
 
     const parseLimit = (val) => {
         if (!val) return 0;
@@ -162,6 +162,7 @@ export async function getCampaignLimits() {
         personalizeLimit: parseLimit(idx("personalizeLimit")),
         shootCampaignLimit: parseLimit(idx("shootCampaignLimit")),
         interactionLimit: parseLimit(idx("interactionLimit")),
+        campaignConcurrentLimit: parseLimit(idx("campaignConcurrentLimit")) || 3,
     };
 }
 

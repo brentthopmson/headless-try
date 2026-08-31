@@ -83,32 +83,43 @@ export async function isCampaignPaused(campaignId) {
 
 /**
  * Merges updates into the campaign's settings JSON and writes it back to the campaigns sheet.
+ * Uses optimistic concurrency control via _settingsVersion to prevent write conflicts.
  */
-export async function updateCampaignSettings(campaignId, updates) {
-  try {
-    const campaignsResult = await getSheetDataApi("campaigns");
-    if (!campaignsResult.success) return;
-    const cHeaders = campaignsResult.headers;
-    const cIdIndex = cHeaders.indexOf("campaignId");
-    const cSettingsIndex = cHeaders.indexOf("settings");
-    const campaignRow = campaignsResult.data.find(r => r[cIdIndex] === campaignId);
-    if (!campaignRow || cSettingsIndex === -1) return;
-
-    let settings = {};
+export async function updateCampaignSettings(campaignId, updates, retries = 3) {
+  for (let attempt = 0; attempt < retries; attempt++) {
     try {
-      const settingsStr = campaignRow[cSettingsIndex];
-      if (typeof settingsStr === "string") settings = JSON.parse(settingsStr);
-      else if (settingsStr && typeof settingsStr === 'object') settings = settingsStr;
-    } catch {}
+      const campaignsResult = await getSheetDataApi("campaigns");
+      if (!campaignsResult.success) return;
+      const cHeaders = campaignsResult.headers;
+      const cIdIndex = cHeaders.indexOf("campaignId");
+      const cSettingsIndex = cHeaders.indexOf("settings");
+      const campaignRow = campaignsResult.data.find(r => r[cIdIndex] === campaignId);
+      if (!campaignRow || cSettingsIndex === -1) return;
 
-    Object.assign(settings, updates);
+      let settings = {};
+      try {
+        const settingsStr = campaignRow[cSettingsIndex];
+        if (typeof settingsStr === "string") settings = JSON.parse(settingsStr);
+        else if (settingsStr && typeof settingsStr === 'object') settings = settingsStr;
+      } catch {}
 
-    await updateSheetRowApi("campaigns", "campaignId", campaignId, {
-      settings: JSON.stringify(settings),
-      updatedOn: new Date().toISOString()
-    });
-  } catch (err) {
-    logger.warn(`[Pipeline] Failed to update campaign settings for ${campaignId}: ${err.message}`);
+      const currentVersion = settings._settingsVersion || 0;
+
+      Object.assign(settings, updates);
+      settings._settingsVersion = currentVersion + 1;
+
+      await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+        settings: JSON.stringify(settings),
+        updatedOn: new Date().toISOString()
+      });
+      return; // success
+    } catch (err) {
+      if (attempt < retries - 1) {
+        await new Promise(r => setTimeout(r, 100 * (attempt + 1)));
+      } else {
+        logger.warn(`[Pipeline] Failed to update campaign settings for ${campaignId} after ${retries} attempts: ${err.message}`);
+      }
+    }
   }
 }
 
@@ -264,4 +275,82 @@ export function getPerformancePresets(level) {
     },
   };
   return presets[level] || presets.balanced;
+}
+
+// ==================== Per-Campaign Quota Budget ====================
+
+const QUOTA_BUDGET_LIMITS = {
+  maxReadsPerHour: 50,
+  maxWritesPerHour: 30,
+};
+
+/**
+ * Get the quota budget for a campaign from its settings.
+ */
+export function getCampaignQuotaBudget(settings) {
+  return settings._quotaBudget || {
+    readsUsed: 0,
+    writesUsed: 0,
+    lastResetAt: new Date().toISOString(),
+    backoffUntil: 0,
+    backoffLevel: 0,
+  };
+}
+
+/**
+ * Check if a campaign has exceeded its quota budget.
+ * @param {object} settings - campaign settings
+ * @param {'read'|'write'} type
+ * @returns {{ allowed: boolean, reason?: string }}
+ */
+export function checkQuotaBudget(settings, type) {
+  const budget = getCampaignQuotaBudget(settings);
+  const now = Date.now();
+  const lastReset = new Date(budget.lastResetAt).getTime();
+  const hourElapsed = now - lastReset > 3600000;
+
+  // Reset if hour has passed
+  if (hourElapsed) {
+    return { allowed: true, reason: "budget_reset" };
+  }
+
+  // Check backoff
+  if (budget.backoffUntil > now) {
+    return { allowed: false, reason: `backoff_until_${new Date(budget.backoffUntil).toISOString()}` };
+  }
+
+  if (type === "read" && budget.readsUsed >= QUOTA_BUDGET_LIMITS.maxReadsPerHour) {
+    return { allowed: false, reason: `read_budget_exceeded: ${budget.readsUsed}/${QUOTA_BUDGET_LIMITS.maxReadsPerHour}` };
+  }
+
+  if (type === "write" && budget.writesUsed >= QUOTA_BUDGET_LIMITS.maxWritesPerHour) {
+    return { allowed: false, reason: `write_budget_exceeded: ${budget.writesUsed}/${QUOTA_BUDGET_LIMITS.maxWritesPerHour}` };
+  }
+
+  return { allowed: true };
+}
+
+/**
+ * Increment the quota budget counter for a campaign.
+ */
+export async function incrementQuotaBudget(campaignId, settings, type) {
+  const budget = getCampaignQuotaBudget(settings);
+  const now = Date.now();
+  const lastReset = new Date(budget.lastResetAt).getTime();
+  const hourElapsed = now - lastReset > 3600000;
+
+  // Reset if hour has passed
+  if (hourElapsed) {
+    budget.readsUsed = 0;
+    budget.writesUsed = 0;
+    budget.lastResetAt = new Date().toISOString();
+    budget.backoffUntil = 0;
+    budget.backoffLevel = 0;
+  }
+
+  if (type === "read") budget.readsUsed++;
+  if (type === "write") budget.writesUsed++;
+
+  // Don't await - fire and forget to avoid blocking
+  updateCampaignSettings(campaignId, { _quotaBudget: budget }).catch(() => {});
 }
