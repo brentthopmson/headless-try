@@ -89,7 +89,7 @@ export const platformConfigs = {
                 },
                 action: {
                     type: 'click',
-                    selector: ['button::-p-text("Cancel")'],
+                    selector: ['button[aria-label="Save"]', 'button::-p-text("Save")', 'button[aria-label="Cancel"]', 'button::-p-text("Cancel")'],
                     navigationWaitUntil: 'domcontentloaded'
                 }
             },

