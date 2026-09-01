@@ -8,7 +8,7 @@ import {
     launchBrowser,
 } from "../../../../utils/utils.js";
 import logger from "../../../../utils/logger.js";
-import { applyIdentityToPage } from "../../../../utils/identity.js";
+import { applyIdentityToPage, applyUserAgentViaCDP } from "../../../../utils/identity.js";
 import { platformConfigs } from "./platforms.js";
 import { uploadBrowserData } from '../../../api/googledrive.mjs';
 import { stripFormulaColumns } from '../../../api/googlesheets.js';
@@ -672,7 +672,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             if (browser.identity) {
                 await applyIdentityToPage(page, browser.identity);
             } else {
-                await page.setUserAgent(browser.selectedUserAgent);
+                await applyUserAgentViaCDP(page, browser.selectedUserAgent);
                 await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
             }
             await page.evaluateOnNewDocument(() => {

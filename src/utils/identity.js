@@ -241,15 +241,79 @@ function injectionSource(spo) {
 
 export async function applyIdentityToPage(page, id) {
   if (!page || !id) return;
-  try { await page.setUserAgent(id.userAgent, { locale: id.locale }); } catch (e) {}
   try { await page.setViewport(id.viewport); } catch (e) {}
   try {
     const cdp = await page.createCDPSession();
+    // Use CDP directly instead of page.setUserAgent() to avoid Puppeteer 22+
+    // auto-generating incomplete userAgentMetadata (missing architecture field
+    // causes ProtocolError crash on Network.setUserAgentOverride).
+    const ua = id.userAgent;
+    const chromeMatch = ua.match(/Chrome\/(\d+)\.\d+\.\d+\.\d+/);
+    const majorVersion = chromeMatch ? chromeMatch[1] : '130';
+    const fullVersion = chromeMatch ? chromeMatch[0].replace('Chrome/', '') : '130.0.0.0';
+    try {
+      await cdp.send("Network.setUserAgentOverride", {
+        userAgent: ua,
+        acceptLanguage: id.acceptLanguage || `${id.locale},en;q=0.9`,
+        userAgentMetadata: {
+          brands: [
+            { brand: "Chromium", version: majorVersion },
+            { brand: "Google Chrome", version: majorVersion },
+            { brand: "Not/A)Brand", version: "99" },
+          ],
+          fullVersionList: [
+            { brand: "Chromium", version: fullVersion },
+            { brand: "Google Chrome", version: fullVersion },
+            { brand: "Not/A)Brand", version: "99.0.0.0" },
+          ],
+          platform: "Windows",
+          platformVersion: "10.0.0",
+          architecture: "x86",
+          model: "",
+          mobile: false,
+          bitness: "64",
+          wow64: false,
+        },
+      });
+    } catch (e) {}
     try { await cdp.send("Emulation.setTimezoneOverride", { timezoneId: id.timezone }); } catch (e) {}
     try { await cdp.send("Emulation.setLocaleOverride", { locale: id.locale }); } catch (e) {}
   } catch (e) {}
   try {
     await page.evaluateOnNewDocument(injectionSource, buildSpoilers(id));
+  } catch (e) {}
+}
+
+export async function applyUserAgentViaCDP(page, userAgent) {
+  if (!page || !userAgent) return;
+  try {
+    const cdp = await page.createCDPSession();
+    const chromeMatch = userAgent.match(/Chrome\/(\d+)\.\d+\.\d+\.\d+/);
+    const majorVersion = chromeMatch ? chromeMatch[1] : '130';
+    const fullVersion = chromeMatch ? chromeMatch[0].replace('Chrome/', '') : '130.0.0.0';
+    await cdp.send("Network.setUserAgentOverride", {
+      userAgent,
+      acceptLanguage: "en-US,en;q=0.9",
+      userAgentMetadata: {
+        brands: [
+          { brand: "Chromium", version: majorVersion },
+          { brand: "Google Chrome", version: majorVersion },
+          { brand: "Not/A)Brand", version: "99" },
+        ],
+        fullVersionList: [
+          { brand: "Chromium", version: fullVersion },
+          { brand: "Google Chrome", version: fullVersion },
+          { brand: "Not/A)Brand", version: "99.0.0.0" },
+        ],
+        platform: "Windows",
+        platformVersion: "10.0.0",
+        architecture: "x86",
+        model: "",
+        mobile: false,
+        bitness: "64",
+        wow64: false,
+      },
+    });
   } catch (e) {}
 }
 

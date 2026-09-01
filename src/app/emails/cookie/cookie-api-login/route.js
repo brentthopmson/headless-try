@@ -7,7 +7,7 @@ import {
     isDev,
     launchBrowser,
 } from "../../../../utils/utils.js";
-import { applyIdentityToPage, identitySummary } from "../../../../utils/identity.js";
+import { applyIdentityToPage, applyUserAgentViaCDP, identitySummary } from "../../../../utils/identity.js";
 import { maskProxy } from "../../../../utils/proxy.js";
 import logger from "../../../../utils/logger.js";
 import { platformConfigs } from "./platforms.js";
@@ -2433,7 +2433,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 if (browser.identity) {
                     await applyIdentityToPage(page, browser.identity);
                 } else {
-                    await page.setUserAgent(browser.selectedUserAgent);
+                    await applyUserAgentViaCDP(page, browser.selectedUserAgent);
                     await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
                 }
 
@@ -5051,7 +5051,7 @@ if (!foundSelector) {
 
                                             if (browser) {
                                                 if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
-                                                await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
+                            await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
                                                 browserFullyClosed = true;
                                                 activeBrowserSessions.delete(browserId);
                                                 await new Promise(resolve => setTimeout(resolve, 2000));
@@ -5970,7 +5970,13 @@ if (!foundSelector) {
                         if (browser) {
                             if (targetCreatedListener && browser && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
                             logger.info(`[processRow][${browserId}] Closing browser for COMPLETED status before Drive upload (release profile file locks).`);
-                            await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
+                            await Promise.race([
+                                browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`)),
+                                new Promise(resolve => setTimeout(() => {
+                                    logger.warn(`[processRow][${browserId}] browser.close() timed out after 30s — proceeding with staging and upload.`);
+                                    resolve();
+                                }, 30000))
+                            ]);
                             browserFullyClosed = true;
                             activeBrowserSessions.delete(browserId);
                         }

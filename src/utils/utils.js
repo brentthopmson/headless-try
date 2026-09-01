@@ -111,7 +111,8 @@ let _puppeteerExtra = null;
 // print unhandled rejection details to stderr unless caught at process level.
 process.on('unhandledRejection', (reason) => {
   if (reason?.name === 'TargetCloseError' || reason?.name === 'ProtocolError' ||
-      reason?.message?.includes('Session closed') || reason?.message?.includes('Target closed')) {
+      reason?.message?.includes('Session closed') || reason?.message?.includes('Target closed') ||
+      reason?.message?.includes('userAgentMetadata')) {
     return;
   }
 });
