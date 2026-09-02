@@ -4810,6 +4810,7 @@ if (!foundSelector) {
                                     }
                                 }
                                 // Transition to COMPLETED as the final terminal status.
+                                finalStatus = "COMPLETED";
                                 updateData.status = "COMPLETED";
                                 break;
                             }
