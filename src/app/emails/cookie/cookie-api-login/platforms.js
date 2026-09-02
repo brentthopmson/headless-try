@@ -104,6 +104,17 @@ export const platformConfigs = {
                     selector: ['button::-p-text("Skip")'],
                     navigationWaitUntil: 'domcontentloaded'
                 }
+            },
+            {
+                name: 'Gmail Recovery Options Setup',
+                match: {
+                    url: ['gds.google.com/web/recoveryoptions']
+                },
+                action: {
+                    type: 'click',
+                    selector: ['button::-p-text("Not now")', 'button::-p-text("Skip")', 'button::-p-text("Confirm")', 'button::-p-text("Done")', 'button::-p-text("Cancel")'],
+                    navigationWaitUntil: 'domcontentloaded'
+                }
             }
             // If any other transient pop-ups appear, they would go here with an action.
         ],
@@ -539,11 +550,17 @@ export const platformConfigs = {
                     await new Promise(r => setTimeout(r, 300));
                     await page.keyboard.press('Enter');
                     await new Promise(r => setTimeout(r, 2000));
-                    // Fallback 2: goBack if still on FIDO
+                    // Fallback 2: ESC to dismiss browser WebAuthn dialog
                     if (page.url().includes('fido/')) {
-                        logger.info(`[handleAdditionalViews][${instanceId}] Still on FIDO, going back`);
-                        await page.goBack({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => null);
+                        logger.info(`[handleAdditionalViews][${instanceId}] Still on FIDO, pressing Escape to dismiss dialog`);
+                        await page.keyboard.press('Escape');
                         await new Promise(r => setTimeout(r, 2000));
+                    }
+                    // Fallback 3: Navigate to inbox if still on FIDO (avoid goBack which regresses to password page)
+                    if (page.url().includes('fido/')) {
+                        logger.info(`[handleAdditionalViews][${instanceId}] Still on FIDO after ESC, navigating to inbox`);
+                        await page.goto('https://outlook.live.com/mail/', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
+                        await new Promise(r => setTimeout(r, 3000));
                     }
                 }
             },

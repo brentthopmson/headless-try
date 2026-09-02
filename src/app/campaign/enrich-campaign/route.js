@@ -1,4 +1,4 @@
-﻿import { NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getSheetsAuthClient } from "../../api/googlesheets.js";
 import { google } from "googleapis";
 import axios from "axios";
@@ -147,24 +147,27 @@ export async function POST(request) {
       return NextResponse.json({ success: false, error: "Missing campaignId" }, { status: 400 });
     }
 
+    const log = logger.child({ campaignId, stage: 'enrich' });
+    log.info(`Received enrichment request${serverBatch ? ` [worker rowStart=${serverBatch.rowStart} rowEnd=${serverBatch.rowEnd}]` : ''}`);
+
     if (serverBatch) {
-      return await handleWorkerMode(campaignId, fileUrl, serverBatch);
+      return await handleWorkerMode(campaignId, fileUrl, serverBatch, log);
     }
 
     if (!fileUrl) {
       return NextResponse.json({ success: false, error: "Missing fileUrl" }, { status: 400 });
     }
 
-    return await handleCoordinatorMode(campaignId, fileUrl);
+    return await handleCoordinatorMode(campaignId, fileUrl, log);
 
   } catch (error) {
-    logger.error(`[Enrich Campaign] Error: ${error.message}`, { stack: error.stack });
+    log.error(`Error: ${error.message}`, { stack: error.stack });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }
 
-async function handleCoordinatorMode(campaignId, fileUrl) {
-  logger.info(`[Enrich Campaign] Received enrichment request for campaign: ${campaignId}`);
+async function handleCoordinatorMode(campaignId, fileUrl, log) {
+  log.info(`Received enrichment request for campaign: ${campaignId}`);
 
   const fileId = extractFileId(fileUrl);
   if (!fileId) {
@@ -190,10 +193,10 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
   const concurrencySetting = await getSetting('enrichScrapeConcurrency');
   const SCRAPE_CONCURRENCY = parseInt(concurrencySetting?.value1) || perfPresets.enrichScrapeConcurrency;
 
-  logger.info(`[Enrich Campaign] enrich=${ENRICH_BATCH_SIZE}, search=${SEARCH_BATCH_SIZE}, ai=${AI_BATCH_SIZE}, concurrency=${SCRAPE_CONCURRENCY}, level=${perfLevelSetting?.value1 || 'balanced'}`);
+  log.info(`enrich=${ENRICH_BATCH_SIZE}, search=${SEARCH_BATCH_SIZE}, ai=${AI_BATCH_SIZE}, concurrency=${SCRAPE_CONCURRENCY}, level=${perfLevelSetting?.value1 || 'balanced'}`);
 
   // 1. Download CSV
-  logger.info(`[Enrich Campaign] Downloading CSV file: ${fileId}`);
+  log.info(`Downloading CSV file: ${fileId}`);
   const driveFile = await drive.files.get({ fileId, alt: "media" });
   const csvContent = driveFile.data;
   if (typeof csvContent !== "string") throw new Error("Failed to download CSV as text content");
@@ -223,9 +226,9 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
   const campaignLimits = await getCampaignLimits();
   if (campaignLimits.enrichLimit > 0 && dataRows.length > campaignLimits.enrichLimit) {
     dataRows.length = campaignLimits.enrichLimit;
-    logger.info(`[Enrich Campaign] enrichLimit (${campaignLimits.enrichLimit}) applied: capped to ${dataRows.length} rows`);
+    log.info(`enrichLimit (${campaignLimits.enrichLimit}) applied: capped to ${dataRows.length} rows`);
   }
-  logger.info(`[Enrich Campaign] Processing ${dataRows.length} rows`);
+  log.info(`Processing ${dataRows.length} rows`);
 
   const multiEnabled = await isMultiServerEnabled();
   if (multiEnabled) {
@@ -240,12 +243,16 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
     if (enrichStatusIdx !== -1 && row[enrichStatusIdx]?.trim() === "enriched") continue;
     const email = row[emailIdx]?.trim();
     if (!email) continue;
+    let inferred = false;
     if (firstNameIdx !== -1 && !row[firstNameIdx]?.trim()) {
       row[firstNameIdx] = inferFirstName(email);
+      inferred = true;
     }
     if (companyIdx !== -1 && !row[companyIdx]?.trim()) {
       row[companyIdx] = inferCompany(email);
+      inferred = true;
     }
+    if (inferred) log.info(`[Row enrich] ${email}: inferred firstName=${row[firstNameIdx] || '-'}, company=${row[companyIdx] || '-'}`);
   }
 
   // 4. URL Enrichment (batched)
@@ -259,7 +266,7 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
   const enrichBatchCount = Math.ceil(rowsWithUrl.length / ENRICH_BATCH_SIZE);
   for (let batchIdx = 0; batchIdx < enrichBatchCount; batchIdx++) {
     if (await isCampaignPaused(campaignId)) {
-      logger.info(`[Enrich Campaign] Campaign paused at URL batch ${batchIdx + 1}/${enrichBatchCount}`);
+      log.info(`Campaign paused at URL batch ${batchIdx + 1}/${enrichBatchCount}`);
       break;
     }
 
@@ -289,6 +296,9 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
           if (contextIdx !== -1) row[contextIdx] = sanitizeForCsv(contextValue);
           scrapeCache.set(url, contextValue);
           urlScrapedCount++;
+          log.info(`[Row scrape] ${url}: ${result.title || 'no title'} (${contextValue.length} chars)`);
+        } else {
+          log.info(`[Row scrape] ${url}: no result`);
         }
       });
       await Promise.allSettled(scrapePromises);
@@ -304,10 +314,10 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
         media: { mimeType: "text/csv", body: stringifyCSV(parsedRows) }
       });
     } catch (flushErr) {
-      logger.warn(`[Enrich Campaign] Live flush failed at batch ${batchIdx + 1}: ${flushErr.message}`);
+      log.warn(` Live flush failed at batch ${batchIdx + 1}: ${flushErr.message}`);
     }
 
-    logger.info(`[Enrich Campaign] URL batch ${batchIdx + 1}/${enrichBatchCount} complete (${urlScrapedCount} scraped)`);
+    log.info(` URL batch ${batchIdx + 1}/${enrichBatchCount} complete (${urlScrapedCount} scraped)`);
   }
 
   // 5. Google Search Fallback (rows without URL, batched)
@@ -323,7 +333,7 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
   const searchBatchCount = Math.ceil(rowsWithoutUrl.length / SEARCH_BATCH_SIZE);
   for (let batchIdx = 0; batchIdx < searchBatchCount; batchIdx++) {
     if (await isCampaignPaused(campaignId)) {
-      logger.info(`[Enrich Campaign] Campaign paused at search batch ${batchIdx + 1}/${searchBatchCount}`);
+      log.info(` Campaign paused at search batch ${batchIdx + 1}/${searchBatchCount}`);
       break;
     }
 
@@ -358,6 +368,9 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
         }
         if (contextIdx !== -1) row[contextIdx] = sanitizeForCsv(contextValue);
         searchFoundCount++;
+        log.info(`[Row search] ${email}: found "${bestResult.url}"`);
+      } else {
+        log.info(`[Row search] ${email}: no results`);
       }
 
       await new Promise(r => setTimeout(r, 500));
@@ -370,10 +383,10 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
         media: { mimeType: "text/csv", body: stringifyCSV(parsedRows) }
       });
     } catch (flushErr) {
-      logger.warn(`[Enrich Campaign] Live flush failed at search batch ${batchIdx + 1}: ${flushErr.message}`);
+      log.warn(` Live flush failed at search batch ${batchIdx + 1}: ${flushErr.message}`);
     }
 
-    logger.info(`[Enrich Campaign] Search batch ${batchIdx + 1}/${searchBatchCount} complete (${searchFoundCount} found)`);
+    log.info(` Search batch ${batchIdx + 1}/${searchBatchCount} complete (${searchFoundCount} found)`);
   }
 
   // 6. Batch AI Analysis (on scraped content)
@@ -403,7 +416,7 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
     if (!aiResults || aiResults.length === 0) {
       const halfSize = Math.ceil(scrapeResults.length / 2);
       if (halfSize >= 2) {
-        logger.warn(`[Enrich Campaign] AI batch failed, retrying with half size (${halfSize})`);
+        log.warn(` AI batch failed, retrying with half size (${halfSize})`);
         const halfResults = scrapeResults.slice(0, halfSize);
         const retryResults = await analyzeBatchWithGemini(halfResults);
         if (retryResults && retryResults.length > 0) {
@@ -419,7 +432,7 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
               if (enriched) batch[i][contextIdx] = sanitizeForCsv(enriched);
             }
           }
-          logger.info(`[Enrich Campaign] AI retry succeeded for ${halfSize} items`);
+          log.info(` AI retry succeeded for ${halfSize} items`);
           continue;
         }
       }
@@ -434,10 +447,11 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
           aiResult.services ? `Services: ${aiResult.services}` : ""
         ].filter(Boolean).join(". ");
         if (enriched) batch[i][contextIdx] = sanitizeForCsv(enriched);
+        log.info(`[Row AI] batch item ${i}: ${aiResult.summary ? aiResult.summary.substring(0, 60) : "no summary"}`);
       }
     }
 
-    logger.info(`[Enrich Campaign] AI batch ${batchIdx + 1}/${aiBatchCount} complete`);
+    log.info(` AI batch ${batchIdx + 1}/${aiBatchCount} complete`);
   }
 
   // 7. Mark all processed rows as enriched
@@ -448,7 +462,7 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
   }
 
   // 8. Final CSV flush
-  logger.info(`[Enrich Campaign] Final CSV flush to Drive: ${fileId}`);
+  log.info(` Final CSV flush to Drive: ${fileId}`);
   await drive.files.update({
     fileId,
     media: { mimeType: "text/csv", body: stringifyCSV(parsedRows) }
@@ -467,8 +481,8 @@ async function handleCoordinatorMode(campaignId, fileUrl) {
   });
 }
 
-async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
-  logger.info(`[Enrich Campaign] Worker mode for campaign: ${campaignId}, rows ${serverBatch.rowStart}-${serverBatch.rowEnd}`);
+async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
+  log.info(` Worker mode for campaign: ${campaignId}, rows ${serverBatch.rowStart}-${serverBatch.rowEnd}`);
 
   const assignment = await findMyAssignment(campaignId, 'enrich');
   if (!assignment) {
@@ -498,7 +512,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
   const SCRAPE_CONCURRENCY = parseInt(concurrencySetting?.value1) || perfPresets.enrichScrapeConcurrency;
 
   // 1. Download full CSV
-  logger.info(`[Enrich Campaign] Worker downloading CSV file: ${fileId}`);
+  log.info(` Worker downloading CSV file: ${fileId}`);
   const driveFile = await drive.files.get({ fileId, alt: "media" });
   const csvContent = driveFile.data;
   if (typeof csvContent !== "string") throw new Error("Failed to download CSV as text content");
@@ -529,7 +543,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
   const rowEnd = Math.min(serverBatch.rowEnd || allDataRows.length, allDataRows.length);
   const dataRows = allDataRows.slice(rowStart, rowEnd);
 
-  logger.info(`[Enrich Campaign] Worker processing ${dataRows.length} rows (slice ${rowStart}-${rowEnd})`);
+  log.info(` Worker processing ${dataRows.length} rows (slice ${rowStart}-${rowEnd})`);
 
   // 4. Inference pass
   for (const row of dataRows) {
@@ -557,7 +571,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
   const enrichBatchCount = Math.ceil(rowsWithUrl.length / ENRICH_BATCH_SIZE);
   for (let batchIdx = 0; batchIdx < enrichBatchCount; batchIdx++) {
     if (await isCampaignPaused(campaignId)) {
-      logger.info(`[Enrich Campaign] Worker campaign paused at URL batch ${batchIdx + 1}/${enrichBatchCount}`);
+      log.info(` Worker campaign paused at URL batch ${batchIdx + 1}/${enrichBatchCount}`);
       wasPaused = true;
       break;
     }
@@ -588,6 +602,9 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
           if (contextIdx !== -1) row[contextIdx] = sanitizeForCsv(contextValue);
           scrapeCache.set(url, contextValue);
           urlScrapedCount++;
+          log.info(`[Row scrape] ${url}: ${result.title || 'no title'} (${contextValue.length} chars)`);
+        } else {
+          log.info(`[Row scrape] ${url}: no result`);
         }
       });
       await Promise.allSettled(scrapePromises);
@@ -601,7 +618,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
     });
     await mergeAndFlush(campaignId, 'enrich', parsedRows, fileId);
 
-    logger.info(`[Enrich Campaign] Worker URL batch ${batchIdx + 1}/${enrichBatchCount} complete (${urlScrapedCount} scraped)`);
+    log.info(` Worker URL batch ${batchIdx + 1}/${enrichBatchCount} complete (${urlScrapedCount} scraped)`);
   }
 
   // 6. Google Search Fallback
@@ -617,7 +634,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
   const searchBatchCount = Math.ceil(rowsWithoutUrl.length / SEARCH_BATCH_SIZE);
   for (let batchIdx = 0; batchIdx < searchBatchCount; batchIdx++) {
     if (await isCampaignPaused(campaignId)) {
-      logger.info(`[Enrich Campaign] Worker campaign paused at search batch ${batchIdx + 1}/${searchBatchCount}`);
+      log.info(` Worker campaign paused at search batch ${batchIdx + 1}/${searchBatchCount}`);
       wasPaused = true;
       break;
     }
@@ -653,6 +670,9 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
         }
         if (contextIdx !== -1) row[contextIdx] = sanitizeForCsv(contextValue);
         searchFoundCount++;
+        log.info(`[Row search] ${email}: found "${bestResult.url}"`);
+      } else {
+        log.info(`[Row search] ${email}: no results`);
       }
 
       await new Promise(r => setTimeout(r, 500));
@@ -663,7 +683,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
     });
     await mergeAndFlush(campaignId, 'enrich', parsedRows, fileId);
 
-    logger.info(`[Enrich Campaign] Worker search batch ${batchIdx + 1}/${searchBatchCount} complete (${searchFoundCount} found)`);
+    log.info(` Worker search batch ${batchIdx + 1}/${searchBatchCount} complete (${searchFoundCount} found)`);
   }
 
   // 7. Batch AI Analysis
@@ -693,7 +713,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
     if (!aiResults || aiResults.length === 0) {
       const halfSize = Math.ceil(scrapeResults.length / 2);
       if (halfSize >= 2) {
-        logger.warn(`[Enrich Campaign] Worker AI batch failed, retrying with half size (${halfSize})`);
+        log.warn(` Worker AI batch failed, retrying with half size (${halfSize})`);
         const halfResults = scrapeResults.slice(0, halfSize);
         const retryResults = await analyzeBatchWithGemini(halfResults);
         if (retryResults && retryResults.length > 0) {
@@ -709,7 +729,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
               if (enriched) batch[i][contextIdx] = sanitizeForCsv(enriched);
             }
           }
-          logger.info(`[Enrich Campaign] Worker AI retry succeeded for ${halfSize} items`);
+          log.info(` Worker AI retry succeeded for ${halfSize} items`);
           continue;
         }
       }
@@ -724,13 +744,14 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
           aiResult.services ? `Services: ${aiResult.services}` : ""
         ].filter(Boolean).join(". ");
         if (enriched) batch[i][contextIdx] = sanitizeForCsv(enriched);
+        log.info(`[Row AI] batch item ${i}: ${aiResult.summary ? aiResult.summary.substring(0, 60) : "no summary"}`);
       }
     }
 
-    logger.info(`[Enrich Campaign] Worker AI batch ${batchIdx + 1}/${aiBatchCount} complete`);
+    log.info(` Worker AI batch ${batchIdx + 1}/${aiBatchCount} complete`);
   }
   } catch (error) {
-    logger.error(`[Enrich Campaign][Worker] Error: ${error.message}`, { stack: error.stack });
+    log.error(`[Worker] Error: ${error.message}`, { stack: error.stack });
     await updateMyAssignment(campaignId, 'enrich', {
       status: 'failed',
       processedUpTo: rowEnd,
@@ -747,7 +768,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
   }
 
   // 9. Final flush
-  logger.info(`[Enrich Campaign] Worker final flush to Drive: ${fileId}`);
+  log.info(` Worker final flush to Drive: ${fileId}`);
   await drive.files.update({
     fileId,
     media: { mimeType: "text/csv", body: stringifyCSV(parsedRows) }
@@ -768,7 +789,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ campaignId })
-      }).catch(err => logger.warn(`[Enrich Campaign] Worker auto-advance failed: ${err.message}`));
+      }).catch(err => log.warn(` Worker auto-advance failed: ${err.message}`));
     } catch {}
   }
 

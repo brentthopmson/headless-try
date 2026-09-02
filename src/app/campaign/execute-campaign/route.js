@@ -178,11 +178,12 @@ export async function POST(request) {
     const body = await request.json();
     const { campaignId } = body;
 
-    logger.info(`[Execute Campaign] Received execution trigger for campaign: ${campaignId}`);
-
     if (!campaignId) {
       return NextResponse.json({ success: false, error: "Missing campaignId" }, { status: 400 });
     }
+
+    const log = logger.child({ campaignId, stage: 'execute' });
+    log.info(`Received execution trigger`);
 
     // 1. Fetch Campaign Details
     const campaignsResult = await getSheetDataApi("campaigns");
@@ -224,7 +225,7 @@ export async function POST(request) {
       }
     } catch (e) {
       settingsParseError = e.message;
-      logger.error(`[Execute Campaign] Failed to parse settings JSON for campaign ${campaignId}: ${e.message}. Raw value: ${String(settingsStr).substring(0, 200)}`);
+      log.error(` Failed to parse settings JSON for campaign ${campaignId}: ${e.message}. Raw value: ${String(settingsStr).substring(0, 200)}`);
     }
     if (settingsParseError) {
       settings._parseError = settingsParseError;
@@ -245,7 +246,7 @@ export async function POST(request) {
     const multiServerSetting = await getSetting('multiServerEnabled');
     const MULTI_SERVER_ENABLED = multiServerSetting?.value1 === 'true';
 
-    logger.info(`[Execute Campaign] shooting=${SHOOTING_BATCH_SIZE}, checkpoint=${CHECKPOINT_INTERVAL}, delay=${INTER_BATCH_DELAY}ms, multiServer=${MULTI_SERVER_ENABLED}, level=${perfLevelSetting?.value1 || 'balanced'}`);
+    log.info(` shooting=${SHOOTING_BATCH_SIZE}, checkpoint=${CHECKPOINT_INTERVAL}, delay=${INTER_BATCH_DELAY}ms, multiServer=${MULTI_SERVER_ENABLED}, level=${perfLevelSetting?.value1 || 'balanced'}`);
     
     // Update campaign status to running
     await updateSheetRowApi("campaigns", "campaignId", campaignId, {
@@ -271,7 +272,7 @@ export async function POST(request) {
       }
       const drive = google.drive({ version: "v3", auth: authClient });
 
-      logger.info(`[Execute Campaign] Downloading CSV file for campaign sending: ${fileId}`);
+      log.info(` Downloading CSV file for campaign sending: ${fileId}`);
       const driveFile = await drive.files.get({
         fileId: fileId,
         alt: "media"
@@ -338,11 +339,11 @@ export async function POST(request) {
         const campaignLimits = await getCampaignLimits();
         shootCampaignLimit = campaignLimits.shootCampaignLimit;
       } catch (limitErr) {
-        logger.warn(`[Execute Campaign] Failed to fetch limits, blocking: ${limitErr.message}`);
+        log.warn(` Failed to fetch limits, blocking: ${limitErr.message}`);
       }
 
       if (shootCampaignLimit <= 0) {
-        logger.info(`[Execute Campaign] shootCampaignLimit is 0 or unavailable, blocking execution`);
+        log.info(` shootCampaignLimit is 0 or unavailable, blocking execution`);
         await updateCampaignSettings(campaignId, { executionStatus: "completed" });
         return NextResponse.json({ success: true, message: "Execution blocked: shootCampaignLimit is 0", limitReached: true });
       }
@@ -354,9 +355,9 @@ export async function POST(request) {
         firestickList = await getFirestickEmails();
         if (firestickList.length > 0) {
           shootCampaignLimit = Math.floor(shootCampaignLimit / 2);
-          logger.info(`[Execute Campaign] Firestick warm-up enabled: ${firestickList.length} firestick emails loaded, limit halved to ${shootCampaignLimit}`);
+          log.info(` Firestick warm-up enabled: ${firestickList.length} firestick emails loaded, limit halved to ${shootCampaignLimit}`);
         } else {
-          logger.warn(`[Execute Campaign] Firestick warm-up enabled but no firestick emails found in SETTINGS, proceeding without warm-up`);
+          log.warn(` Firestick warm-up enabled but no firestick emails found in SETTINGS, proceeding without warm-up`);
         }
       }
 
@@ -380,7 +381,7 @@ export async function POST(request) {
         }
 
         if (uniqueEmails.has(email)) {
-          logger.warn(`[Execute Campaign] Skipping duplicate email: ${email}`);
+          log.warn(` Skipping duplicate email: ${email}`);
           duplicateCount++;
           continue; // Skip duplicate
         }
@@ -390,7 +391,7 @@ export async function POST(request) {
       }
 
       if (duplicateCount > 0) {
-        logger.info(`[Execute Campaign] Removed ${duplicateCount} duplicate email(s) from recipient list`);
+        log.info(` Removed ${duplicateCount} duplicate email(s) from recipient list`);
       }
 
       // ─── MULTI-SERVER DISPATCH ────────────────────────────────────
@@ -410,12 +411,12 @@ export async function POST(request) {
       // Step 3d: Check for checkpoint to resume partial execution
       const lastProcessedRow = settings.lastProcessedRow || 0;
       if (lastProcessedRow > 0) {
-        logger.info(`[Execute Campaign] Resuming from checkpoint row ${lastProcessedRow} (previously processed ${lastProcessedRow} rows)`);
+        log.info(` Resuming from checkpoint row ${lastProcessedRow} (previously processed ${lastProcessedRow} rows)`);
       }
 
       const startIndex = Math.max(0, lastProcessedRow);
       const maxToProcess = Math.min(deduplicatedRows.length, shootCampaignLimit, SHOOTING_BATCH_SIZE);
-      logger.info(`[Execute Campaign] Sending emails: limit=${shootCampaignLimit === Infinity ? 'unlimited' : shootCampaignLimit}, batch=${maxToProcess} contacts (after dedup: ${deduplicatedRows.length}/${dataRows.length})`);
+      log.info(` Sending emails: limit=${shootCampaignLimit === Infinity ? 'unlimited' : shootCampaignLimit}, batch=${maxToProcess} contacts (after dedup: ${deduplicatedRows.length}/${dataRows.length})`);
 
       // Step 3e: Processing loop over deduplicated rows with checkpointing
       let pausedByAdmin = false;
@@ -423,16 +424,16 @@ export async function POST(request) {
       for (let i = startIndex; i < deduplicatedRows.length; i++) {
         if (await isCampaignPaused(campaignId)) {
           pausedByAdmin = true;
-          logger.info(`[Execute Campaign] Campaign ${campaignId} was paused during run. Stopping at row ${i}.`);
+          log.info(` Campaign ${campaignId} was paused during run. Stopping at row ${i}.`);
           break;
         }
         if (sentCount >= shootCampaignLimit) {
           limitReached = true;
-          logger.info(`[Execute Campaign] shootCampaignLimit (${shootCampaignLimit}) reached, stopping.`);
+          log.info(` shootCampaignLimit (${shootCampaignLimit}) reached, stopping.`);
           break;
         }
         if (sentCount >= 30) {
-          logger.info(`[Execute Campaign] Vercel timeout safety cap (30) reached, stopping.`);
+          log.info(` Vercel timeout safety cap (30) reached, stopping.`);
           break;
         }
 
@@ -469,11 +470,11 @@ export async function POST(request) {
             firestickIndex++;
             const { config: firestickSmtp } = getNextSmtpConfig(smtpSettings, sentCount);
             await sendViaSMTP(firestick.email, subject, message, firestickSmtp);
-            logger.info(`[Execute Campaign] Firestick warm-up sent to ${firestick.email}`);
+            log.info(` Firestick warm-up sent to ${firestick.email}`);
             // Small delay between firestick and lead send
             await new Promise(r => setTimeout(r, 500));
           } catch (firestickErr) {
-            logger.warn(`[Execute Campaign] Firestick warm-up failed: ${firestickErr.message}, continuing with lead send`);
+            log.warn(` Firestick warm-up failed: ${firestickErr.message}, continuing with lead send`);
           }
         }
 
@@ -493,7 +494,7 @@ export async function POST(request) {
               const provider = profileData?.platform || detectProvider(smtp?.user || email) || "gmail";
               await sendViaBrowser(email, subject, message, wireCookies, provider);
             } else {
-              logger.info(`[Execute Campaign] No WIRE browser session available for profile ${profileId}, using SMTP fallback`);
+              log.info(` No WIRE browser session available for profile ${profileId}, using SMTP fallback`);
               if (deliveryMethod === "wire") {
                 await sendViaSMTP(email, subject, message, smtp);
                 senderHost = smtp?.host || "SMTP_FALLBACK";
@@ -503,6 +504,7 @@ export async function POST(request) {
           }
 
           sentCount++;
+          log.info(`[Row send] ${email}: sent via ${senderHost} (${sentCount}/${maxToProcess})`);
 
           if (sendDateIdx !== -1) row[sendDateIdx] = now.toLocaleDateString();
           if (sendTimeIdx !== -1) row[sendTimeIdx] = now.toLocaleTimeString();
@@ -510,7 +512,7 @@ export async function POST(request) {
           if (executionStatusIdx !== -1) row[executionStatusIdx] = "sent";
           if (providerMXIdx !== -1) row[providerMXIdx] = senderHost;
         } catch (err) {
-          logger.error(`[Execute Campaign] Failed to send to ${email} via ${senderHost}: ${err.message}`);
+          log.error(` Failed to send to ${email} via ${senderHost}: ${err.message}`);
           failedCount++;
           sentCount++;
           failureDetails.push({ email, error: err.message, host: senderHost });
@@ -526,7 +528,7 @@ export async function POST(request) {
 
         // Checkpoint: save progress every N rows (configurable from SETTINGS)
         if ((i + 1) % CHECKPOINT_INTERVAL === 0) {
-          logger.info(`[Execute Campaign] Checkpoint at row ${i + 1}/${deduplicatedRows.length}`);
+          log.info(` Checkpoint at row ${i + 1}/${deduplicatedRows.length}`);
           try {
             settings.lastProcessedRow = i + 1;
             await updateSheetRowApi("campaigns", "campaignId", campaignId, {
@@ -534,7 +536,7 @@ export async function POST(request) {
               updatedOn: new Date().toISOString()
             });
           } catch (cpErr) {
-            logger.warn(`[Execute Campaign] Checkpoint save failed at row ${i + 1}: ${cpErr.message}`);
+            log.warn(` Checkpoint save failed at row ${i + 1}: ${cpErr.message}`);
           }
           // Live-progress flush: overwrite the Drive CSV so the file view reflects
           // progress mid-run. Uses the Drive API directly (no Apps Script), so the
@@ -545,13 +547,13 @@ export async function POST(request) {
               media: { mimeType: "text/csv", body: stringifyCSV(normalizedRows) }
             });
           } catch (flushErr) {
-            logger.warn(`[Execute Campaign] Live CSV flush failed at row ${i + 1}: ${flushErr.message}`);
+            log.warn(` Live CSV flush failed at row ${i + 1}: ${flushErr.message}`);
           }
         }
       }
 
       // Step 3d: Single-flush Drive save — rebuild CSV and overwrite file
-      logger.info(`[Execute Campaign] Flushing updated CSV back to Drive: ${fileId}`);
+      log.info(` Flushing updated CSV back to Drive: ${fileId}`);
       const updatedCSVContent = stringifyCSV(normalizedRows);
       await drive.files.update({
         fileId: fileId,
@@ -621,7 +623,7 @@ export async function POST(request) {
           const auth = await getSheetsAuthClient();
           if (auth) {
             drive = google.drive({ version: "v3", auth });
-            logger.info(`[Execute Campaign] Downloading social CSV file: ${socialFileId}`);
+            log.info(` Downloading social CSV file: ${socialFileId}`);
             const dFile = await drive.files.get({ fileId: socialFileId, alt: "media" });
             if (typeof dFile.data === "string") {
               const normalized = normalizeAndMapCSV(dFile.data, STANDARD_88_COLUMNS);
@@ -639,16 +641,16 @@ export async function POST(request) {
         shootCampaignLimit = campaignLimits.shootCampaignLimit;
         interactionLimit = campaignLimits.interactionLimit;
       } catch (limitErr) {
-        logger.warn(`[Execute Campaign] Failed to fetch social limits, blocking: ${limitErr.message}`);
+        log.warn(` Failed to fetch social limits, blocking: ${limitErr.message}`);
       }
 
       if (shootCampaignLimit <= 0) {
-        logger.info(`[Execute Campaign] shootCampaignLimit is 0 or unavailable, blocking social execution`);
+        log.info(` shootCampaignLimit is 0 or unavailable, blocking social execution`);
         await updateCampaignSettings(campaignId, { executionStatus: "completed" });
         return NextResponse.json({ success: true, message: "Execution blocked: shootCampaignLimit is 0", limitReached: true });
       }
 
-      logger.info(`[Execute Campaign] Queueing social tasks for ${activeProfiles.length} profiles (interactionLimit=${interactionLimit})...`);
+      log.info(` Queueing social tasks for ${activeProfiles.length} profiles (interactionLimit=${interactionLimit})...`);
 
       // Step 4c: Accumulate all tasks in-memory with priority ordering
       const PRIORITY_MAP = { "inbox-interact": 0, "activities-interact": 1, "page-interact": 2, "search-interact": 3 };
@@ -657,7 +659,7 @@ export async function POST(request) {
       for (const profileId of activeProfiles) {
         const profileData = await getSocialProfileCookies(profileId);
         if (!profileData || !profileData.cookies) {
-          logger.warn(`[Execute Campaign] No cookies found for active profile: ${profileId}`);
+          log.warn(` No cookies found for active profile: ${profileId}`);
           continue;
         }
 
@@ -765,18 +767,18 @@ export async function POST(request) {
       for (const task of tasksToExecute) {
         if (await isCampaignPaused(campaignId)) {
           pausedByAdmin = true;
-          logger.info(`[Execute Campaign] Campaign ${campaignId} was paused during social run. Stopping.`);
+          log.info(` Campaign ${campaignId} was paused during social run. Stopping.`);
           break;
         }
         const handler = ROUTE_MAP[task.operation];
         if (!handler) {
-          logger.warn(`[Execute Campaign] No handler for operation: ${task.operation}`);
+          log.warn(` No handler for operation: ${task.operation}`);
           failedCount++;
           continue;
         }
 
         try {
-          logger.info(`[Execute Campaign] Executing ${task.operation} task: ${task.taskId}`);
+          log.info(` Executing ${task.operation} task: ${task.taskId}`);
 
           // Enrich task payload with campaign context
           const perRowMessage = socialMessageMap[task.searchQuery] || "";
@@ -791,16 +793,16 @@ export async function POST(request) {
           const result = await handler(taskPayload);
           executionResults.push(result);
           executedCount++;
-          logger.info(`[Execute Campaign] Task ${task.taskId} completed: ${result.status}`);
+          log.info(` Task ${task.taskId} completed: ${result.status}`);
 
           // Live-progress CSV flush after each task so the file view advances mid-run
           try {
             await flushSocialCsv();
           } catch (flushErr) {
-            logger.warn(`[Execute Campaign] Social CSV flush failed after task ${task.taskId}: ${flushErr.message}`);
+            log.warn(` Social CSV flush failed after task ${task.taskId}: ${flushErr.message}`);
           }
         } catch (taskError) {
-          logger.error(`[Execute Campaign] Task ${task.taskId} failed: ${taskError.message}`);
+          log.error(` Task ${task.taskId} failed: ${taskError.message}`);
           executionResults.push({ taskId: task.taskId, status: "FAILED", error: taskError.message });
           failedCount++;
 
@@ -808,7 +810,7 @@ export async function POST(request) {
           try {
             await flushSocialCsv();
           } catch (flushErr) {
-            logger.warn(`[Execute Campaign] Social CSV flush failed after failed task ${task.taskId}: ${flushErr.message}`);
+            log.warn(` Social CSV flush failed after failed task ${task.taskId}: ${flushErr.message}`);
           }
         }
 
@@ -819,7 +821,7 @@ export async function POST(request) {
       // Step 4f: Send direct messages to all social profiles in CSV if enabled
       const shouldSendMessage = settings.shouldSendMessage === true || settings.shouldSendMessage === "true" || settings.sendToAll === true;
       if (shouldSendMessage && socialFileUrl) {
-        logger.info(`[Execute Campaign] sendToAll enabled — sending DMs to all CSV social profiles`);
+        log.info(` sendToAll enabled — sending DMs to all CSV social profiles`);
         try {
           const dmRequest = new Request("http://localhost/send-message", {
             method: "POST",
@@ -834,10 +836,10 @@ export async function POST(request) {
           });
           const dmResponse = await sendMessageHandler(dmRequest);
           const dmResult = await dmResponse.json();
-          logger.info(`[Execute Campaign] send-message result: ${dmResult.message}`);
+          log.info(` send-message result: ${dmResult.message}`);
           settings.dmResults = dmResult;
         } catch (dmErr) {
-          logger.error(`[Execute Campaign] send-message failed: ${dmErr.message}`);
+          log.error(` send-message failed: ${dmErr.message}`);
           settings.dmResults = { error: dmErr.message };
         }
       }
@@ -876,7 +878,7 @@ export async function POST(request) {
     return NextResponse.json({ success: false, error: "Invalid channel type" }, { status: 400 });
 
   } catch (error) {
-    logger.error(`[Execute Campaign] Error executing campaign: ${error.message}`, { stack: error.stack });
+    log.error(` Error executing campaign: ${error.message}`, { stack: error.stack });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }

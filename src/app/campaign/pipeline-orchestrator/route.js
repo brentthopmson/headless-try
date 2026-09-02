@@ -4,7 +4,8 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import { getSelfUrl, getSelfUrlWithFallback, getSelfId, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignSettings, updateCampaignSettings, isCampaignPaused } from "../_shared/pipelineUtils.js";
 import { acquireCampaignLock, releaseCampaignLock } from "../../../utils/campaignLock.js";
-import { getCampaignLimits, getSheetDataApi } from "../../socials/_shared/limits.js";
+import { getCampaignLimits } from "../../socials/_shared/limits.js";
+import { getSheetDataApi } from "../../api/googlesheets.js";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -113,19 +114,20 @@ async function triggerStage(campaignId, stage, settings) {
   const config = STAGE_CONFIG[stage];
   const selfUrl = getSelfUrlWithFallback();
   const url = `${selfUrl}${config.route}`;
+  const log = logger.child({ campaignId, stage: 'orchestrator' });
 
   const body = { campaignId };
 
   if (stage !== "execute") {
     const fileUrl = settings.fileUrl;
     if (!fileUrl) {
-      logger.warn(`[Pipeline Orchestrator] No fileUrl for stage ${stage}`);
+      log.warn(`No fileUrl for stage ${stage}`);
       return null;
     }
     body.fileUrl = fileUrl;
   }
 
-  logger.info(`[Pipeline Orchestrator] Triggering ${config.label} for campaign ${campaignId}`);
+  log.info(`Triggering ${config.label}`);
 
   try {
     if (config.statusField) {
@@ -139,10 +141,10 @@ async function triggerStage(campaignId, stage, settings) {
     });
 
     const result = await response.json();
-    logger.info(`[Pipeline Orchestrator] ${config.label} response: ${JSON.stringify(result).slice(0, 500)}`);
+    log.info(`${config.label} response: ${JSON.stringify(result).slice(0, 500)}`);
     return result;
   } catch (err) {
-    logger.error(`[Pipeline Orchestrator] ${config.label} failed: ${err.message}`);
+    log.error(`${config.label} failed: ${err.message}`);
     if (config.statusField) {
       await updateCampaignSettings(campaignId, { [config.statusField]: "failed" });
     }
@@ -160,6 +162,7 @@ export async function POST(request) {
       return NextResponse.json({ success: false, error: "Missing campaignId" }, { status: 400 });
     }
 
+    const log = logger.child({ campaignId, stage: 'orchestrator' });
     const campaignData = await getCampaignSettings(campaignId);
     if (!campaignData) {
       return NextResponse.json({ success: false, error: "Campaign not found" }, { status: 404 });
@@ -169,7 +172,7 @@ export async function POST(request) {
     settings._campaignStatus = campaignData.status;
 
     if (await isCampaignPaused(campaignId)) {
-      logger.info(`[Pipeline Orchestrator] Campaign ${campaignId} is paused, skipping`);
+      log.info(`Campaign is paused, skipping`);
       return NextResponse.json({ success: true, message: "Campaign is paused", paused: true });
     }
 
@@ -178,7 +181,7 @@ export async function POST(request) {
     if (userId) {
       const concurrentCheck = await checkConcurrentLimit(userId);
       if (!concurrentCheck.allowed) {
-        logger.info(`[Pipeline Orchestrator] User ${userId} exceeded concurrent limit: ${concurrentCheck.current}/${concurrentCheck.limit}`);
+        log.info(`User ${userId} exceeded concurrent limit: ${concurrentCheck.current}/${concurrentCheck.limit}`);
         return NextResponse.json({
           success: false,
           error: `Concurrent campaign limit reached (${concurrentCheck.current}/${concurrentCheck.limit})`,
@@ -199,21 +202,21 @@ export async function POST(request) {
           body: JSON.stringify({ campaignId, fileUrl: settings.fileUrl }),
         });
         const mailMergeResult = await mailMergeResp.json();
-        logger.info(`[Pipeline Orchestrator] Mail merge result: ${JSON.stringify(mailMergeResult).slice(0, 300)}`);
+        log.info(`Mail merge result: ${JSON.stringify(mailMergeResult).slice(0, 300)}`);
         if (mailMergeResult.success) {
           await updateCampaignSettings(campaignId, { mailMerged: true });
         }
       } catch (mmErr) {
-        logger.warn(`[Pipeline Orchestrator] Mail merge failed (non-fatal): ${mmErr.message}`);
+        log.warn(`Mail merge failed (non-fatal): ${mmErr.message}`);
       }
     } else {
-      logger.info(`[Pipeline Orchestrator] Mail merge already done, skipping`);
+      log.info(`Mail merge already done, skipping`);
     }
 
     const resolution = resolveCurrentStage(settings);
 
     if (!resolution) {
-      logger.info(`[Pipeline Orchestrator] Campaign ${campaignId} — all enabled stages complete`);
+      log.info(`All enabled stages complete`);
       return NextResponse.json({
         success: true,
         message: "All enabled pipeline stages are complete",
@@ -225,7 +228,7 @@ export async function POST(request) {
     const config = STAGE_CONFIG[stage];
 
     if (action === "fail") {
-      logger.info(`[Pipeline Orchestrator] Campaign ${campaignId} — stage ${config.label} is failed, auto-resetting`);
+      log.info(`Stage ${config.label} is failed, auto-resetting`);
       const resetUpdates = {};
       if (config.statusField) {
         resetUpdates[config.statusField] = null;
@@ -239,7 +242,7 @@ export async function POST(request) {
     }
 
     if (action === "wait") {
-      logger.info(`[Pipeline Orchestrator] Campaign ${campaignId} — waiting for ${config.label} to complete`);
+      log.info(`Waiting for ${config.label} to complete`);
       return NextResponse.json({
         success: true,
         message: `Waiting for ${config.label} to complete`,
@@ -249,7 +252,7 @@ export async function POST(request) {
 
     // Race condition guard: if stage is already processing, skip duplicate call
     if (config.statusField && settings[config.statusField] === "processing") {
-      logger.info(`[Pipeline Orchestrator] ${config.label} already processing, skipping duplicate call`);
+      log.info(`${config.label} already processing, skipping duplicate call`);
       return NextResponse.json({ success: true, message: `${config.label} already processing`, waitingStage: stage });
     }
 
@@ -257,7 +260,7 @@ export async function POST(request) {
     const serverlessId = getSelfId() || process.env.SERVERLESS_ID || "unknown";
     const lockResult = await acquireCampaignLock(campaignId, serverlessId);
     if (!lockResult.acquired) {
-      logger.info(`[Pipeline Orchestrator] Cannot acquire lock for ${campaignId}: ${lockResult.reason}`);
+      log.info(`Cannot acquire lock: ${lockResult.reason}`);
       return NextResponse.json({
         success: true,
         message: `Campaign locked (${lockResult.reason}), skipping`,
@@ -293,7 +296,7 @@ export async function POST(request) {
         const nextResolution = resolveCurrentStage(updatedData.settings);
         if (nextResolution && nextResolution.action === "run") {
           const nextConfig = STAGE_CONFIG[nextResolution.stage];
-          logger.info(`[Pipeline Orchestrator] Auto-advancing to ${nextConfig.label}`);
+          log.info(`Auto-advancing to ${nextConfig.label}`);
           const nextResult = await triggerStage(campaignId, nextResolution.stage, updatedData.settings);
           return NextResponse.json({
             success: true,
@@ -316,7 +319,7 @@ export async function POST(request) {
     }
 
   } catch (error) {
-    logger.error(`[Pipeline Orchestrator] Error: ${error.message}`, { stack: error.stack });
+    log.error(`Error: ${error.message}`, { stack: error.stack });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }

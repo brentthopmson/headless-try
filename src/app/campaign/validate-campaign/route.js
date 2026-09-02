@@ -127,11 +127,12 @@ export async function POST(request) {
     const body = await request.json();
     const { campaignId, fileUrl, serverBatch } = body;
 
-    logger.info(`[Validate Campaign] Received validation request for campaign: ${campaignId}${serverBatch ? ` [worker rowStart=${serverBatch.rowStart} rowEnd=${serverBatch.rowEnd}]` : ''}`);
-
     if (!campaignId || !fileUrl) {
       return NextResponse.json({ success: false, error: "Missing campaignId or fileUrl" }, { status: 400 });
     }
+
+    const log = logger.child({ campaignId, stage: 'validate' });
+    log.info(`Received validation request${serverBatch ? ` [worker rowStart=${serverBatch.rowStart} rowEnd=${serverBatch.rowEnd}]` : ''}`);
 
     const fileId = extractFileId(fileUrl);
     if (!fileId) {
@@ -140,14 +141,14 @@ export async function POST(request) {
 
     // ─── WORKER MODE ────────────────────────────────────────────────
     if (serverBatch) {
-      return await handleWorkerMode(campaignId, fileId, serverBatch);
+      return await handleWorkerMode(campaignId, fileId, serverBatch, log);
     }
 
     // ─── COORDINATOR / SINGLE-SERVER MODE ──────────────────────────
-    return await handleCoordinatorMode(campaignId, fileId, fileUrl);
+    return await handleCoordinatorMode(campaignId, fileId, fileUrl, log);
 
   } catch (error) {
-    logger.error(`[Validate Campaign] Error: ${error.message}`, { stack: error.stack });
+    log.error(`Error: ${error.message}`, { stack: error.stack });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   } finally {
     if (browser) {
@@ -159,7 +160,7 @@ export async function POST(request) {
 /**
  * Coordinator mode: check multi-server, dispatch if enabled, otherwise run single-server.
  */
-async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
+async function handleCoordinatorMode(campaignId, fileId, fileUrl, log) {
   const authClient = await getSheetsAuthClient();
   if (!authClient) {
     return NextResponse.json({ success: false, error: "Failed to authenticate with Google APIs" }, { status: 500 });
@@ -178,7 +179,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
   const PLATFORM_VERIFICATION_ENABLED = platformEnabledSetting?.value1 !== 'false';
 
   // 1. Download CSV
-  logger.info(`[Validate Campaign] Downloading CSV file: ${fileId}`);
+  log.info(` Downloading CSV file: ${fileId}`);
   const driveFile = await drive.files.get({ fileId, alt: "media" });
   const csvContent = driveFile.data;
   if (typeof csvContent !== "string") throw new Error("Failed to download CSV as text content");
@@ -207,7 +208,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
   if (campaignLimits.validateLimit > 0 && dataRows.length > campaignLimits.validateLimit) {
     dataRows.length = campaignLimits.validateLimit;
     limitApplied = true;
-    logger.info(`[Validate Campaign] validateLimit (${campaignLimits.validateLimit}) applied: ${originalCount} → ${dataRows.length} rows`);
+    log.info(` validateLimit (${campaignLimits.validateLimit}) applied: ${originalCount} → ${dataRows.length} rows`);
   }
 
   // 3. Dedup by email
@@ -218,13 +219,14 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
     if (!email) continue;
     if (uniqueEmails.has(email)) {
       dataRows[i][validationIdx] = "duplicate";
+      log.info(`[Row ${i + 1}] ${email}: duplicate`);
       duplicateCount++;
     } else {
       uniqueEmails.set(email, i);
     }
   }
   if (duplicateCount > 0) {
-    logger.info(`[Validate Campaign] Marked ${duplicateCount} duplicate emails`);
+    log.info(` Marked ${duplicateCount} duplicate emails`);
   }
 
   // 3b. Social channel validation
@@ -238,6 +240,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
       const socialPlatform = row[socialPlatformIdx]?.trim();
       if (!email && socialUsername) {
         row[validationIdx] = socialPlatform ? "social_valid" : "social_no_platform";
+        log.info(`[Row social] ${socialUsername}@${socialPlatform || 'unknown'}: ${row[validationIdx]}`);
       }
     }
   }
@@ -256,8 +259,8 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
   }
 
   // ─── SINGLE-SERVER FALLBACK ────────────────────────────────────
-  logger.info(`[Validate Campaign] MX batch=${MX_BATCH_SIZE}, platform batch=${PLATFORM_BATCH_SIZE}, platform verification=${PLATFORM_VERIFICATION_ENABLED}`);
-  logger.info(`[Validate Campaign] Processing ${dataRows.length} rows (single-server)`);
+  log.info(` MX batch=${MX_BATCH_SIZE}, platform batch=${PLATFORM_BATCH_SIZE}, platform verification=${PLATFORM_VERIFICATION_ENABLED}`);
+  log.info(` Processing ${dataRows.length} rows (single-server)`);
 
   // 4. MX Record Check (batched)
   const mxCache = new Map();
@@ -269,7 +272,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
 
   for (let batchIdx = 0; batchIdx < mxBatchCount; batchIdx++) {
     if (await isCampaignPaused(campaignId)) {
-      logger.info(`[Validate Campaign] Campaign paused at MX batch ${batchIdx + 1}/${mxBatchCount}`);
+      log.info(` Campaign paused at MX batch ${batchIdx + 1}/${mxBatchCount}`);
       break;
     }
 
@@ -279,10 +282,10 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
 
     const mxPromises = batch.map(async (row) => {
       const email = row[emailColIdx]?.trim();
-      if (!email) { row[validationIdx] = "empty"; return; }
+      if (!email) { row[validationIdx] = "empty"; log.info(`[Row MX] empty: empty`); return; }
 
       const parts = email.split("@");
-      if (parts.length !== 2) { row[validationIdx] = "invalid_format"; return; }
+      if (parts.length !== 2) { row[validationIdx] = "invalid_format"; log.info(`[Row MX] ${email}: invalid_format`); return; }
 
       const domain = parts[1].toLowerCase().trim();
 
@@ -299,17 +302,20 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
           row[validationIdx] = "valid_mx";
           row[providerMXIdx] = mxRecords[0].exchange;
           mxCache.set(domain, { status: "valid_mx", mx: mxRecords[0].exchange });
+          log.info(`[Row MX] ${email}: valid_mx (${mxRecords[0].exchange})`);
           validCount++;
         } else {
           row[validationIdx] = "no_mx";
           row[providerMXIdx] = "none";
           mxCache.set(domain, { status: "no_mx", mx: "none" });
+          log.info(`[Row MX] ${email}: no_mx`);
           invalidCount++;
         }
       } catch (err) {
         row[validationIdx] = "invalid_domain";
         row[providerMXIdx] = "error";
         mxCache.set(domain, { status: "invalid_domain", mx: "error" });
+        log.info(`[Row MX] ${email}: invalid_domain (${err.message})`);
         invalidCount++;
       }
     });
@@ -322,10 +328,10 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
         media: { mimeType: "text/csv", body: stringifyCSV(normalizedRows) }
       });
     } catch (flushErr) {
-      logger.warn(`[Validate Campaign] Live CSV flush failed at MX batch ${batchIdx + 1}: ${flushErr.message}`);
+      log.warn(` Live CSV flush failed at MX batch ${batchIdx + 1}: ${flushErr.message}`);
     }
 
-    logger.info(`[Validate Campaign] MX batch ${batchIdx + 1}/${mxBatchCount} complete (${validCount} valid, ${invalidCount} invalid so far)`);
+    log.info(` MX batch ${batchIdx + 1}/${mxBatchCount} complete (${validCount} valid, ${invalidCount} invalid so far)`);
   }
 
   // 5. Platform Browser Verification (batched)
@@ -338,7 +344,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
     });
 
     if (platformEmails.length > 0) {
-      logger.info(`[Validate Campaign] ${platformEmails.length} emails match known platforms, verifying...`);
+      log.info(` ${platformEmails.length} emails match known platforms, verifying...`);
       const platformBatchCount = Math.ceil(platformEmails.length / PLATFORM_BATCH_SIZE);
 
       for (let batchIdx = 0; batchIdx < platformBatchCount; batchIdx++) {
@@ -376,8 +382,10 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
               const hasError = errorPatterns.some(p => pageContent.includes(p));
               row[validationIdx] = hasError ? "not_exists" : "verified_exists";
               row[providerMXIdx] = platform;
+              log.info(`[Row verify] ${email} @${platform}: ${row[validationIdx]}`);
             } catch (err) {
               row[validationIdx] = "unverifiable";
+              log.info(`[Row verify] ${email} @${platform}: unverifiable (${err.message})`);
             }
           }
         } catch (browserErr) {
@@ -412,7 +420,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
 /**
  * Worker mode: process only the assigned row range.
  */
-async function handleWorkerMode(campaignId, fileId, serverBatch) {
+async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
   const myAssignment = await findMyAssignment(campaignId, 'validate');
   if (!myAssignment) {
     return NextResponse.json({ success: false, error: "No assignment found for this server" }, { status: 400 });
@@ -455,7 +463,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
 
   // 3. Extract assigned rows
   const { rowStart, rowEnd } = serverBatch;
-  logger.info(`[Validate Campaign][Worker] Processing rows ${rowStart}-${rowEnd - 1}`);
+  log.info(`[Worker] Processing rows ${rowStart}-${rowEnd - 1}`);
 
   // 4. MX Record Check on assigned rows
   const mxCache = new Map();
@@ -474,10 +482,10 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
     if (await isCampaignPaused(campaignId)) { wasPaused = true; break; }
 
     const email = row[emailColIdx]?.trim();
-    if (!email) { row[validationIdx] = "empty"; continue; }
+    if (!email) { row[validationIdx] = "empty"; log.info(`[Row MX] empty: empty`); continue; }
 
     const parts = email.split("@");
-    if (parts.length !== 2) { row[validationIdx] = "invalid_format"; continue; }
+    if (parts.length !== 2) { row[validationIdx] = "invalid_format"; log.info(`[Row MX] ${email}: invalid_format`); continue; }
 
     const domain = parts[1].toLowerCase().trim();
 
@@ -485,6 +493,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
       const cached = mxCache.get(domain);
       row[validationIdx] = cached.status;
       row[providerMXIdx] = cached.mx;
+      log.info(`[Row MX] ${email}: ${cached.status} (cached)`);
       if (cached.status === "valid_mx") validCount++;
       else invalidCount++;
       continue;
@@ -496,17 +505,20 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
         row[validationIdx] = "valid_mx";
         row[providerMXIdx] = mxRecords[0].exchange;
         mxCache.set(domain, { status: "valid_mx", mx: mxRecords[0].exchange });
+        log.info(`[Row MX] ${email}: valid_mx (${mxRecords[0].exchange})`);
         validCount++;
       } else {
         row[validationIdx] = "no_mx";
         row[providerMXIdx] = "none";
         mxCache.set(domain, { status: "no_mx", mx: "none" });
+        log.info(`[Row MX] ${email}: no_mx`);
         invalidCount++;
       }
     } catch (err) {
       row[validationIdx] = "invalid_domain";
       row[providerMXIdx] = "error";
       mxCache.set(domain, { status: "invalid_domain", mx: "error" });
+      log.info(`[Row MX] ${email}: invalid_domain (${err.message})`);
       invalidCount++;
     }
 
@@ -563,8 +575,10 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
               const errorPatterns = ["Couldn't find your Google Account", "Enter a valid email", "We couldn't find an account", "That account doesn't exist", "Incorrect email or password", "isn't a valid email"];
               row[validationIdx] = errorPatterns.some(p => pageContent.includes(p)) ? "not_exists" : "verified_exists";
               row[providerMXIdx] = platform;
+              log.info(`[Row verify] ${email} @${platform}: ${row[validationIdx]}`);
             } catch {
               row[validationIdx] = "unverifiable";
+              log.info(`[Row verify] ${email} @${platform}: unverifiable`);
             }
           }
         } catch {
@@ -576,7 +590,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
     }
   }
   } catch (error) {
-    logger.error(`[Validate Campaign][Worker] Error: ${error.message}`, { stack: error.stack });
+    log.error(`[Worker] Error: ${error.message}`, { stack: error.stack });
     await updateMyAssignment(campaignId, 'validate', {
       status: 'failed',
       processedUpTo: currentRow,
@@ -601,14 +615,14 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
   const allDone = await checkAllComplete(campaignId, 'validate');
   if (allDone) {
     await updateCampaignSettings(campaignId, { validationStatus: "completed" });
-    logger.info(`[Validate Campaign] All workers complete — validation finished`);
+    log.info(` All workers complete — validation finished`);
     try {
       const selfUrl = getSelfUrlWithFallback();
       fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ campaignId })
-      }).catch(err => logger.warn(`[Validate Campaign] Worker auto-advance failed: ${err.message}`));
+      }).catch(err => log.warn(` Worker auto-advance failed: ${err.message}`));
     } catch {}
   }
 

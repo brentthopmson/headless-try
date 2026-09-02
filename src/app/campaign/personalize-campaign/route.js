@@ -44,7 +44,7 @@ Rules:
       return JSON.parse(jsonMatch[0]);
     }
   } catch (err) {
-    logger.warn(`[Personalize Campaign] Batch AI failed: ${err.message}`);
+    log.warn(` Batch AI failed: ${err.message}`);
   }
   return batch.map(() => null);
 }
@@ -80,12 +80,12 @@ Rules:
       return JSON.parse(jsonMatch[0]);
     }
   } catch (err) {
-    logger.warn(`[Personalize Campaign] Social batch AI failed: ${err.message}`);
+    log.warn(` Social batch AI failed: ${err.message}`);
   }
   return batch.map(() => null);
 }
 
-async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
+async function handleCoordinatorMode(campaignId, fileId, fileUrl, log) {
   const authClient = await getSheetsAuthClient();
   if (!authClient) {
     return NextResponse.json({ success: false, error: "Failed to authenticate with Google APIs" }, { status: 500 });
@@ -97,9 +97,9 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
 
   const batchSetting = await getSetting('personalizeBatchLimit');
   const BATCH_SIZE = parseInt(batchSetting?.value1) || perfPresets.personalizationBatchLimit;
-  logger.info(`[Personalize Campaign] Batch size: ${BATCH_SIZE}, level=${perfLevelSetting?.value1 || 'balanced'}`);
+  log.info(` Batch size: ${BATCH_SIZE}, level=${perfLevelSetting?.value1 || 'balanced'}`);
 
-  logger.info(`[Personalize Campaign] Downloading CSV file: ${fileId}`);
+  log.info(` Downloading CSV file: ${fileId}`);
   const driveFile = await drive.files.get({ fileId, alt: "media" });
   const csvContent = driveFile.data;
   if (typeof csvContent !== "string") throw new Error("Failed to download CSV as text content");
@@ -155,7 +155,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
   const campaignLimits = await getCampaignLimits();
   if (campaignLimits.personalizeLimit > 0 && dataRows.length > campaignLimits.personalizeLimit) {
     dataRows.length = campaignLimits.personalizeLimit;
-    logger.info(`[Personalize Campaign] personalizeLimit (${campaignLimits.personalizeLimit}) applied: capped to ${dataRows.length} rows`);
+    log.info(` personalizeLimit (${campaignLimits.personalizeLimit}) applied: capped to ${dataRows.length} rows`);
   }
 
   const multiEnabled = await isMultiServerEnabled();
@@ -171,7 +171,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
   const batchCount = Math.ceil(dataRows.length / BATCH_SIZE);
   for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
     if (await isCampaignPaused(campaignId)) {
-      logger.info(`[Personalize Campaign] Campaign paused at batch ${batchIdx + 1}/${batchCount}`);
+      log.info(` Campaign paused at batch ${batchIdx + 1}/${batchCount}`);
       break;
     }
 
@@ -193,7 +193,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
       if (!aiResults || aiResults.every(r => !r || (!r.subject && !r.body))) {
         const halfSize = Math.ceil(contacts.length / 2);
         if (halfSize >= 2) {
-          logger.warn(`[Personalize Campaign] AI batch failed, retrying with half size (${halfSize})`);
+          log.warn(` AI batch failed, retrying with half size (${halfSize})`);
           const halfContacts = contacts.slice(0, halfSize);
           const retryResults = await personalizeBatch(halfContacts, personalizationPrompt, headers);
           if (retryResults && retryResults.some(r => r && (r.subject || r.body))) {
@@ -211,13 +211,13 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
                 personalizedCount++;
               }
             }
-            logger.info(`[Personalize Campaign] AI retry succeeded for ${halfSize} contacts`);
+            log.info(` AI retry succeeded for ${halfSize} contacts`);
             continue;
           }
           // Quarter batch retry
           const quarterSize = Math.ceil(contacts.length / 4);
           if (quarterSize >= 1) {
-            logger.warn(`[Personalize Campaign] Half batch failed, retrying with quarter size (${quarterSize})`);
+            log.warn(` Half batch failed, retrying with quarter size (${quarterSize})`);
             const quarterContacts = contacts.slice(0, quarterSize);
             const quarterResults = await personalizeBatch(quarterContacts, personalizationPrompt, headers);
             if (quarterResults && quarterResults.some(r => r && (r.subject || r.body))) {
@@ -234,7 +234,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
                   personalizedCount++;
                 }
               }
-              logger.info(`[Personalize Campaign] Quarter batch retry succeeded for ${quarterSize} contacts`);
+              log.info(` Quarter batch retry succeeded for ${quarterSize} contacts`);
               continue;
             }
           }
@@ -243,16 +243,19 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
 
       for (let i = 0; i < batch.length; i++) {
         const result = aiResults[i];
+        const email = contacts[i].email || "unknown";
         if (result) {
           if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = result.subject || "";
           if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = result.body || "";
           personalizedCount++;
+          log.info(`[Row personalize] ${email}: subject="${(result.subject || "").substring(0, 50)}"`);
         } else {
           const firstName = contacts[i].firstName;
           const company = contacts[i].company;
           if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = `Quick question for ${firstName}`;
           if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = `Hi ${firstName},\n\nHope this finds you well. I wanted to reach out about ${company}.\n\nBest,\nWebFixx Team`;
           personalizedCount++;
+          log.info(`[Row personalize] ${email}: fallback template`);
         }
       }
     }
@@ -271,7 +274,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
       if (!aiResults || aiResults.every(r => !r || !r.message)) {
         const halfSize = Math.ceil(socialContacts.length / 2);
         if (halfSize >= 2) {
-          logger.warn(`[Personalize Campaign] Social AI batch failed, retrying with half size (${halfSize})`);
+          log.warn(` Social AI batch failed, retrying with half size (${halfSize})`);
           const halfContacts = socialContacts.slice(0, halfSize);
           const retryResults = await personalizeSocialBatch(halfContacts, personalizationPrompt);
           if (retryResults && retryResults.some(r => r && r.message)) {
@@ -284,7 +287,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
                 batch[i][enhancedSocialMsgIdx] = `Hi ${contact.firstName}, came across your ${contact.platform || 'social'} profile and wanted to connect!`;
               }
             }
-            logger.info(`[Personalize Campaign] Social AI retry succeeded for ${halfSize} contacts`);
+            log.info(` Social AI retry succeeded for ${halfSize} contacts`);
             continue;
           }
         }
@@ -292,11 +295,13 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
 
       for (let i = 0; i < batch.length; i++) {
         const result = aiResults[i];
+        const contact = socialContacts[i];
         if (result && result.message) {
           batch[i][enhancedSocialMsgIdx] = result.message;
+          log.info(`[Row social] ${contact.username || "unknown"}: AI personalized`);
         } else {
-          const contact = socialContacts[i];
           batch[i][enhancedSocialMsgIdx] = `Hi ${contact.firstName}, came across your ${contact.platform || 'social'} profile and wanted to connect!`;
+          log.info(`[Row social] ${contact.username || "unknown"}: fallback template`);
         }
       }
     }
@@ -307,13 +312,13 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
         media: { mimeType: "text/csv", body: stringifyCSV(rows) }
       });
     } catch (flushErr) {
-      logger.warn(`[Personalize Campaign] Live flush failed at batch ${batchIdx + 1}: ${flushErr.message}`);
+      log.warn(` Live flush failed at batch ${batchIdx + 1}: ${flushErr.message}`);
     }
 
-    logger.info(`[Personalize Campaign] Batch ${batchIdx + 1}/${batchCount} complete`);
+    log.info(` Batch ${batchIdx + 1}/${batchCount} complete`);
   }
 
-  logger.info(`[Personalize Campaign] Final CSV flush to Drive: ${fileId}`);
+  log.info(` Final CSV flush to Drive: ${fileId}`);
   if (personalizationStatusIdx !== -1) {
     for (let i = 1; i < rows.length; i++) {
       rows[i][personalizationStatusIdx] = "personalized";
@@ -334,7 +339,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
   });
 }
 
-async function handleWorkerMode(campaignId, fileId, serverBatch) {
+async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
   const myAssignment = await findMyAssignment(campaignId, 'personalize');
   if (!myAssignment) {
     return NextResponse.json({ success: false, error: "No assignment found for this server" }, { status: 400 });
@@ -349,9 +354,9 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
 
   const batchSetting = await getSetting('personalizeBatchLimit');
   const BATCH_SIZE = parseInt(batchSetting?.value1) || perfPresets.personalizationBatchLimit;
-  logger.info(`[Personalize Campaign] Worker batch size: ${BATCH_SIZE}, level=${perfLevelSetting?.value1 || 'balanced'}`);
+  log.info(` Worker batch size: ${BATCH_SIZE}, level=${perfLevelSetting?.value1 || 'balanced'}`);
 
-  logger.info(`[Personalize Campaign] Worker downloading CSV file: ${fileId}`);
+  log.info(` Worker downloading CSV file: ${fileId}`);
   const driveFile = await drive.files.get({ fileId, alt: "media" });
   const csvContent = driveFile.data;
   if (typeof csvContent !== "string") throw new Error("Failed to download CSV as text content");
@@ -412,7 +417,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
   const batchCount = Math.ceil(myRows.length / BATCH_SIZE);
   for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
     if (await isCampaignPaused(campaignId)) {
-      logger.info(`[Personalize Campaign] Worker campaign paused at batch ${batchIdx + 1}/${batchCount}`);
+      log.info(` Worker campaign paused at batch ${batchIdx + 1}/${batchCount}`);
       wasPaused = true;
       break;
     }
@@ -435,7 +440,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
       if (!aiResults || aiResults.every(r => !r || (!r.subject && !r.body))) {
         const halfSize = Math.ceil(contacts.length / 2);
         if (halfSize >= 2) {
-          logger.warn(`[Personalize Campaign] Worker AI batch failed, retrying with half size (${halfSize})`);
+          log.warn(` Worker AI batch failed, retrying with half size (${halfSize})`);
           const halfContacts = contacts.slice(0, halfSize);
           const retryResults = await personalizeBatch(halfContacts, personalizationPrompt, headers);
           if (retryResults && retryResults.some(r => r && (r.subject || r.body))) {
@@ -453,13 +458,13 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
                 personalizedCount++;
               }
             }
-            logger.info(`[Personalize Campaign] Worker AI retry succeeded for ${halfSize} contacts`);
+            log.info(` Worker AI retry succeeded for ${halfSize} contacts`);
             continue;
           }
           // Quarter batch retry
           const quarterSize = Math.ceil(contacts.length / 4);
           if (quarterSize >= 1) {
-            logger.warn(`[Personalize Campaign] Worker half batch failed, retrying with quarter size (${quarterSize})`);
+            log.warn(` Worker half batch failed, retrying with quarter size (${quarterSize})`);
             const quarterContacts = contacts.slice(0, quarterSize);
             const quarterResults = await personalizeBatch(quarterContacts, personalizationPrompt, headers);
             if (quarterResults && quarterResults.some(r => r && (r.subject || r.body))) {
@@ -476,7 +481,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
                   personalizedCount++;
                 }
               }
-              logger.info(`[Personalize Campaign] Worker quarter batch retry succeeded for ${quarterSize} contacts`);
+              log.info(` Worker quarter batch retry succeeded for ${quarterSize} contacts`);
               continue;
             }
           }
@@ -485,16 +490,19 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
 
       for (let i = 0; i < batch.length; i++) {
         const result = aiResults[i];
+        const email = contacts[i].email || "unknown";
         if (result) {
           if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = result.subject || "";
           if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = result.body || "";
           personalizedCount++;
+          log.info(`[Row personalize] ${email}: subject="${(result.subject || "").substring(0, 50)}"`);
         } else {
           const firstName = contacts[i].firstName;
           const company = contacts[i].company;
           if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = `Quick question for ${firstName}`;
           if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = `Hi ${firstName},\n\nHope this finds you well. I wanted to reach out about ${company}.\n\nBest,\nWebFixx Team`;
           personalizedCount++;
+          log.info(`[Row personalize] ${email}: fallback template`);
         }
       }
     }
@@ -513,7 +521,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
       if (!aiResults || aiResults.every(r => !r || !r.message)) {
         const halfSize = Math.ceil(socialContacts.length / 2);
         if (halfSize >= 2) {
-          logger.warn(`[Personalize Campaign] Worker social AI batch failed, retrying with half size (${halfSize})`);
+          log.warn(` Worker social AI batch failed, retrying with half size (${halfSize})`);
           const halfContacts = socialContacts.slice(0, halfSize);
           const retryResults = await personalizeSocialBatch(halfContacts, personalizationPrompt);
           if (retryResults && retryResults.some(r => r && r.message)) {
@@ -526,7 +534,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
                 batch[i][enhancedSocialMsgIdx] = `Hi ${contact.firstName}, came across your ${contact.platform || 'social'} profile and wanted to connect!`;
               }
             }
-            logger.info(`[Personalize Campaign] Worker social AI retry succeeded for ${halfSize} contacts`);
+            log.info(` Worker social AI retry succeeded for ${halfSize} contacts`);
             continue;
           }
         }
@@ -534,11 +542,13 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
 
       for (let i = 0; i < batch.length; i++) {
         const result = aiResults[i];
+        const contact = socialContacts[i];
         if (result && result.message) {
           batch[i][enhancedSocialMsgIdx] = result.message;
+          log.info(`[Row social] ${contact.username || "unknown"}: AI personalized`);
         } else {
-          const contact = socialContacts[i];
           batch[i][enhancedSocialMsgIdx] = `Hi ${contact.firstName}, came across your ${contact.platform || 'social'} profile and wanted to connect!`;
+          log.info(`[Row social] ${contact.username || "unknown"}: fallback template`);
         }
       }
     }
@@ -547,7 +557,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
     await updateMyAssignment(campaignId, 'personalize', { processedUpTo });
     await mergeAndFlush(campaignId, 'personalize', rows, fileId);
 
-    logger.info(`[Personalize Campaign] Worker batch ${batchIdx + 1}/${batchCount} complete (processedUpTo: ${processedUpTo})`);
+    log.info(` Worker batch ${batchIdx + 1}/${batchCount} complete (processedUpTo: ${processedUpTo})`);
   }
 
   if (personalizationStatusIdx !== -1) {
@@ -567,7 +577,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ campaignId })
-      }).catch(err => logger.warn(`[Personalize Campaign] Worker auto-advance failed: ${err.message}`));
+      }).catch(err => log.warn(` Worker auto-advance failed: ${err.message}`));
     } catch {}
   }
 
@@ -585,11 +595,12 @@ export async function POST(request) {
     const body = await request.json();
     const { campaignId, fileUrl, serverBatch } = body;
 
-    logger.info(`[Personalize Campaign] Received personalization request for campaign: ${campaignId}`);
-
     if (!campaignId || !fileUrl) {
       return NextResponse.json({ success: false, error: "Missing campaignId or fileUrl" }, { status: 400 });
     }
+
+    const log = logger.child({ campaignId, stage: 'personalize' });
+    log.info(`Received personalization request`);
 
     const fileId = extractFileId(fileUrl);
     if (!fileId) {
@@ -597,13 +608,13 @@ export async function POST(request) {
     }
 
     if (serverBatch) {
-      return await handleWorkerMode(campaignId, fileId, serverBatch);
+      return await handleWorkerMode(campaignId, fileId, serverBatch, log);
     } else {
-      return await handleCoordinatorMode(campaignId, fileId, fileUrl);
+      return await handleCoordinatorMode(campaignId, fileId, fileUrl, log);
     }
 
   } catch (error) {
-    logger.error(`[Personalize Campaign] Error: ${error.message}`, { stack: error.stack });
+    log.error(`Error: ${error.message}`, { stack: error.stack });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }

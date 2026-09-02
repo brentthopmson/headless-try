@@ -33,7 +33,7 @@ Return ONLY a JSON object: {"type": "category", "confidence": 0.0-1.0}`;
       return JSON.parse(jsonMatch[0]);
     }
   } catch (err) {
-    logger.warn(`[Interact Campaign] Classification failed: ${err.message}`);
+    log.warn(` Classification failed: ${err.message}`);
   }
   return { type: "neutral", confidence: 0.5 };
 }
@@ -60,7 +60,7 @@ Return ONLY the reply text, no JSON or formatting.`;
     const text = await ai.generate(prompt);
     return text.trim();
   } catch (err) {
-    logger.warn(`[Interact Campaign] Auto-reply generation failed: ${err.message}`);
+    log.warn(` Auto-reply generation failed: ${err.message}`);
   }
   return null;
 }
@@ -72,11 +72,12 @@ export async function POST(request) {
     const body = await request.json();
     const { campaignId, fileUrl, serverBatch } = body;
 
-    logger.info(`[Interact Campaign] Received interaction request for campaign: ${campaignId}${serverBatch ? ` [worker rowStart=${serverBatch.rowStart} rowEnd=${serverBatch.rowEnd}]` : ''}`);
-
     if (!campaignId || !fileUrl) {
       return NextResponse.json({ success: false, error: "Missing campaignId or fileUrl" }, { status: 400 });
     }
+
+    const log = logger.child({ campaignId, stage: 'interact' });
+    log.info(`Received interaction request${serverBatch ? ` [worker rowStart=${serverBatch.rowStart} rowEnd=${serverBatch.rowEnd}]` : ''}`);
 
     const fileId = extractFileId(fileUrl);
     if (!fileId) {
@@ -84,13 +85,13 @@ export async function POST(request) {
     }
 
     if (serverBatch) {
-      return await handleWorkerMode(campaignId, fileId, serverBatch);
+      return await handleWorkerMode(campaignId, fileId, serverBatch, log);
     }
 
-    return await handleCoordinatorMode(campaignId, fileId, fileUrl);
+    return await handleCoordinatorMode(campaignId, fileId, fileUrl, log);
 
   } catch (error) {
-    logger.error(`[Interact Campaign] Error: ${error.message}`, { stack: error.stack });
+    log.error(`Error: ${error.message}`, { stack: error.stack });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   } finally {
     if (browser) {
@@ -99,7 +100,7 @@ export async function POST(request) {
   }
 }
 
-async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
+async function handleCoordinatorMode(campaignId, fileId, fileUrl, log) {
   const authClient = await getSheetsAuthClient();
   if (!authClient) {
     return NextResponse.json({ success: false, error: "Failed to authenticate with Google APIs" }, { status: 500 });
@@ -120,9 +121,9 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
   const interactionAccountIds = settings.interactionAccounts || [];
   const channel = settings.channel || "email";
 
-  logger.info(`[Interact Campaign] Channel: ${channel}, Selected interaction accounts: ${interactionAccountIds.length}`);
+  log.info(` Channel: ${channel}, Selected interaction accounts: ${interactionAccountIds.length}`);
 
-  logger.info(`[Interact Campaign] Downloading CSV file: ${fileId}`);
+  log.info(` Downloading CSV file: ${fileId}`);
   const driveFile = await drive.files.get({ fileId, alt: "media" });
   const csvContent = driveFile.data;
   if (typeof csvContent !== "string") throw new Error("Failed to download CSV as text content");
@@ -149,7 +150,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
     return status === "sent";
   });
 
-  logger.info(`[Interact Campaign] Found ${sentRows.length} sent rows to monitor for replies`);
+  log.info(` Found ${sentRows.length} sent rows to monitor for replies`);
 
   if (sentRows.length === 0) {
     return NextResponse.json({
@@ -187,20 +188,20 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
     const campaignLimits = await getCampaignLimits();
     interactionLimit = campaignLimits.interactionLimit;
   } catch (limitErr) {
-    logger.warn(`[Interact Campaign] Failed to fetch interactionLimit: ${limitErr.message}`);
+    log.warn(` Failed to fetch interactionLimit: ${limitErr.message}`);
   }
 
   const batchCount = Math.ceil(sentRows.length / BATCH_SIZE);
   for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
     if (await isCampaignPaused(campaignId)) {
-      logger.info(`[Interact Campaign] Campaign paused at batch ${batchIdx + 1}/${batchCount}`);
+      log.info(` Campaign paused at batch ${batchIdx + 1}/${batchCount}`);
       break;
     }
 
     // Stop guard: check time limit
     const hoursElapsed = (Date.now() - new Date(interactionStartedAt).getTime()) / (1000 * 60 * 60);
     if (hoursElapsed >= stopAfterHours) {
-      logger.info(`[Interact Campaign] Stop guard: time limit reached (${hoursElapsed.toFixed(1)}h >= ${stopAfterHours}h)`);
+      log.info(` Stop guard: time limit reached (${hoursElapsed.toFixed(1)}h >= ${stopAfterHours}h)`);
       await updateCampaignSettings(campaignId, {
         interactionStatus: "completed",
         interactionStoppedReason: "time_limit_reached"
@@ -214,7 +215,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
 
     // Stop guard: check reply limit
     if (replyCount >= maxReplies) {
-      logger.info(`[Interact Campaign] Stop guard: reply limit reached (${replyCount} >= ${maxReplies})`);
+      log.info(` Stop guard: reply limit reached (${replyCount} >= ${maxReplies})`);
       await updateCampaignSettings(campaignId, {
         interactionStatus: "completed",
         interactionStoppedReason: "reply_limit_reached"
@@ -228,7 +229,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
 
     // Stop guard: check plan interactionLimit
     if (interactionLimit > 0 && replyCount >= interactionLimit) {
-      logger.info(`[Interact Campaign] Stop guard: plan interactionLimit reached (${replyCount} >= ${interactionLimit})`);
+      log.info(` Stop guard: plan interactionLimit reached (${replyCount} >= ${interactionLimit})`);
       await updateCampaignSettings(campaignId, {
         interactionStatus: "completed",
         interactionStoppedReason: "reply_limit_reached"
@@ -257,6 +258,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
       if (interactStampIdx !== -1 && !row[interactStampIdx]?.trim()) {
         row[interactStampIdx] = new Date().toISOString();
       }
+      log.info(`[Row monitor] ${email}: monitoring`);
     }
 
     try {
@@ -265,10 +267,10 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
         media: { mimeType: "text/csv", body: stringifyCSV(rows) }
       });
     } catch (flushErr) {
-      logger.warn(`[Interact Campaign] Live flush failed at batch ${batchIdx + 1}: ${flushErr.message}`);
+      log.warn(` Live flush failed at batch ${batchIdx + 1}: ${flushErr.message}`);
     }
 
-    logger.info(`[Interact Campaign] Batch ${batchIdx + 1}/${batchCount} initialized`);
+    log.info(` Batch ${batchIdx + 1}/${batchCount} initialized`);
   }
 
   await updateCampaignSettings(campaignId, {
@@ -283,7 +285,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl) {
   });
 }
 
-async function handleWorkerMode(campaignId, fileId, serverBatch) {
+async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
   const myAssignment = await findMyAssignment(campaignId, 'interact');
   if (!myAssignment) {
     return NextResponse.json({ success: false, error: "No assignment found for this server" }, { status: 400 });
@@ -342,7 +344,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
   const { rowStart, rowEnd } = serverBatch;
   const mySentRows = sentRowsWithIndex.filter(r => r.index >= rowStart && r.index < rowEnd);
 
-  logger.info(`[Interact Campaign][Worker] Processing ${mySentRows.length} sent rows in range ${rowStart}-${rowEnd - 1}`);
+  log.info(`[Worker] Processing ${mySentRows.length} sent rows in range ${rowStart}-${rowEnd - 1}`);
 
   let replyCount = 0;
   let autoReplyCount = 0;
@@ -365,7 +367,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
     const campaignLimits = await getCampaignLimits();
     interactionLimit = campaignLimits.interactionLimit;
   } catch (limitErr) {
-    logger.warn(`[Interact Campaign][Worker] Failed to fetch interactionLimit: ${limitErr.message}`);
+    log.warn(`[Worker] Failed to fetch interactionLimit: ${limitErr.message}`);
   }
 
   let wasPaused = false;
@@ -376,7 +378,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
     // Stop guard: check time limit
     const hoursElapsed = (Date.now() - new Date(interactionStartedAt).getTime()) / (1000 * 60 * 60);
     if (hoursElapsed >= stopAfterHours) {
-      logger.info(`[Interact Campaign][Worker] Stop guard: time limit reached`);
+      log.info(`[Worker] Stop guard: time limit reached`);
       await updateCampaignSettings(campaignId, {
         interactionStatus: "completed",
         interactionStoppedReason: "time_limit_reached"
@@ -386,7 +388,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
 
     // Stop guard: check reply limit
     if (replyCount >= maxReplies) {
-      logger.info(`[Interact Campaign][Worker] Stop guard: reply limit reached`);
+      log.info(`[Worker] Stop guard: reply limit reached`);
       await updateCampaignSettings(campaignId, {
         interactionStatus: "completed",
         interactionStoppedReason: "reply_limit_reached"
@@ -396,7 +398,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
 
     // Stop guard: check plan interactionLimit
     if (interactionLimit > 0 && replyCount >= interactionLimit) {
-      logger.info(`[Interact Campaign][Worker] Stop guard: plan interactionLimit reached`);
+      log.info(`[Worker] Stop guard: plan interactionLimit reached`);
       await updateCampaignSettings(campaignId, {
         interactionStatus: "completed",
         interactionStoppedReason: "reply_limit_reached"
@@ -421,12 +423,13 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
       if (interactStampIdx !== -1 && !row[interactStampIdx]?.trim()) {
         row[interactStampIdx] = new Date().toISOString();
       }
+      log.info(`[Row monitor] ${email}: monitoring`);
     }
 
     await mergeAndFlush(campaignId, 'interact', rows, fileId);
     await updateMyAssignment(campaignId, 'interact', { processedUpTo: rowStart + end });
 
-    logger.info(`[Interact Campaign][Worker] Batch ${batchIdx + 1}/${batchCount} initialized`);
+    log.info(`[Worker] Batch ${batchIdx + 1}/${batchCount} initialized`);
   }
 
   await updateMyAssignment(campaignId, 'interact', { status: wasPaused ? 'paused' : 'completed', processedUpTo: rowEnd });
@@ -443,7 +446,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ campaignId })
-      }).catch(err => logger.warn(`[Interact Campaign] Worker auto-advance failed: ${err.message}`));
+      }).catch(err => log.warn(` Worker auto-advance failed: ${err.message}`));
     } catch {}
   }
 
