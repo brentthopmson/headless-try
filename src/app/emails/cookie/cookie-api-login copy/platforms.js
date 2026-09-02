@@ -104,6 +104,17 @@ export const platformConfigs = {
                     selector: ['button::-p-text("Skip")'],
                     navigationWaitUntil: 'domcontentloaded'
                 }
+            },
+            {
+                name: 'Gmail Recovery Options Setup',
+                match: {
+                    url: ['gds.google.com/web/recoveryoptions']
+                },
+                action: {
+                    type: 'click',
+                    selector: ['button::-p-text("Not now")', 'button::-p-text("Skip")', 'button::-p-text("Confirm")', 'button::-p-text("Done")', 'button::-p-text("Cancel")'],
+                    navigationWaitUntil: 'domcontentloaded'
+                }
             }
             // If any other transient pop-ups appear, they would go here with an action.
         ],
@@ -171,6 +182,50 @@ export const platformConfigs = {
             { action: 'click', selector: 'passwordNextButton' },
             { action: 'wait', duration: 2000 }
         ]
+    },
+    // ── Smart Outlook Inbox URL ────────────────────────────────────────────────
+    // Free Microsoft accounts (outlook.com, live.com, hotmail.com, etc.) use
+    // outlook.live.com/mail/. Office 365 accounts (custom domains, onmicrosoft.com)
+    // use outlook.office.com/mail/.
+    _getSmartInboxUrl: async (page, instanceId) => {
+        const FREE_MS_DOMAINS = new Set([
+            'outlook.com', 'hotmail.com', 'live.com', 'windowslive.com',
+            'outlook.co.uk', 'hotmail.co.uk', 'live.co.uk',
+            'outlook.ca', 'hotmail.ca', 'live.ca',
+            'outlook.co.za', 'hotmail.co.za', 'live.co.za',
+            'outlook.com.au', 'hotmail.com.au', 'live.com.au',
+            'outlook.fr', 'hotmail.fr', 'live.fr',
+            'outlook.de', 'hotmail.de', 'live.de',
+            'outlook.it', 'hotmail.it', 'live.it',
+            'outlook.es', 'hotmail.es', 'live.es',
+            'outlook.jp', 'hotmail.jp', 'live.jp',
+            'outlook.com.br', 'hotmail.com.br', 'live.com.br',
+            'msn.com', 'live.net'
+        ]);
+
+        let email = null;
+        try {
+            email = await page.evaluate(() => {
+                const text = document.body.innerText;
+                const m = text.match(/[\w.+-]+@[\w.-]+\.\w{2,}/);
+                return m ? m[0] : null;
+            });
+        } catch (e) { }
+        if (!email) {
+            try {
+                const url = new URL(page.url());
+                email = url.searchParams.get('username') || url.searchParams.get('login_hint');
+            } catch (e) { }
+        }
+
+        if (email) {
+            const domain = email.split('@')[1]?.toLowerCase();
+            if (domain && !FREE_MS_DOMAINS.has(domain)) {
+                logger.info(`[handleAdditionalViews][${instanceId}] Office account detected (${domain}). Using office.com inbox.`);
+                return 'https://outlook.office.com/mail/';
+            }
+        }
+        return 'https://outlook.live.com/mail/';
     },
     outlook: {
         inboxUrlPatterns: [
@@ -539,11 +594,17 @@ export const platformConfigs = {
                     await new Promise(r => setTimeout(r, 300));
                     await page.keyboard.press('Enter');
                     await new Promise(r => setTimeout(r, 2000));
-                    // Fallback 2: goBack if still on FIDO
+                    // Fallback 2: ESC to dismiss browser WebAuthn dialog
                     if (page.url().includes('fido/')) {
-                        logger.info(`[handleAdditionalViews][${instanceId}] Still on FIDO, going back`);
-                        await page.goBack({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => null);
+                        logger.info(`[handleAdditionalViews][${instanceId}] Still on FIDO, pressing Escape to dismiss dialog`);
+                        await page.keyboard.press('Escape');
                         await new Promise(r => setTimeout(r, 2000));
+                    }
+                    // Fallback 3: Navigate to inbox if still on FIDO (avoid goBack which regresses to password page)
+                    if (page.url().includes('fido/')) {
+                        logger.info(`[handleAdditionalViews][${instanceId}] Still on FIDO after ESC, navigating to inbox`);
+                        await page.goto(await platformConfigs._getSmartInboxUrl(page, instanceId), { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
+                        await new Promise(r => setTimeout(r, 3000));
                     }
                 }
             },
@@ -582,7 +643,7 @@ export const platformConfigs = {
                 action: async (page, view, platformConfig) => {
                     const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
                     logger.info(`[handleAdditionalViews][${instanceId}] FIDO still present, navigating to inbox`);
-                    await page.goto('https://outlook.live.com/mail/', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
+                    await page.goto(await platformConfigs._getSmartInboxUrl(page, instanceId), { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
                     await new Promise(r => setTimeout(r, 3000));
                 }
             },
@@ -610,7 +671,7 @@ export const platformConfigs = {
                         } catch (e) { }
                     }
                     logger.info(`[handleAdditionalViews][${instanceId}] FIDO enrollment cancel not found, navigating to inbox`);
-                    await page.goto('https://outlook.live.com/mail/', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
+                    await page.goto(await platformConfigs._getSmartInboxUrl(page, instanceId), { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
                     await new Promise(r => setTimeout(r, 3000));
                 }
             },
@@ -725,7 +786,7 @@ export const platformConfigs = {
                         } catch (e) { continue; }
                     }
                     logger.warn(`[handleAdditionalViews][${instanceId}] Could not find OAuth consent button. Navigating to inbox directly.`);
-                    await page.goto('https://outlook.live.com/mail/', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
+                    await page.goto(await platformConfigs._getSmartInboxUrl(page, instanceId), { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
                     await new Promise(r => setTimeout(r, 3000));
                 }
             },

@@ -9,7 +9,7 @@ import { getSheetDataApi, appendSheetRowApi, updateSheetRowApi, updateHubAndProj
 import { setCachedRow, getCachedRow } from '../../../../utils/cookieCache.js';
 import { fetchDataFromAppScript as _sharedFetchData, startAppScriptDataBackgroundUpdater as _sharedStartUpdater, stopAppScriptDataBackgroundUpdater as _sharedStopUpdater, patchCachedRow as _sharedPatchCachedRow, invalidateCache as _sharedInvalidateCache } from '../../../../utils/cookieDataFetcher.js';
 import { runSmartExtract, isExtractInFlight } from '../../../../utils/smartExtract.js';
-import { getSetting } from '../../../../utils/settingsCache.js';
+import { getSetting, getSettingsSheet } from '../../../../utils/settingsCache.js';
 import { enqueueSheetUpdate } from '../../../../utils/writeQueue.js';
 
 export const fetchDataFromAppScript = _sharedFetchData;
@@ -691,6 +691,32 @@ export async function checkVerification(page, platformConfig) {
     return { required: true, type: 'choice', viewName: 'Microsoft Identity Confirm', viewConfig: {} };
   }
 
+  // Google challenge URL detection: accounts.google.com/v3/signin/challenge/* pages
+  if (currentUrl.includes('accounts.google.com') && currentUrl.includes('/challenge/')) {
+    if (currentUrl.includes('challenge/selection')) {
+      logger.info(`[checkVerification][${instanceId}] Detected Google challenge/selection page — verification choice required.`);
+      return { required: true, type: 'choice', viewName: 'Gmail Verification Choices', viewConfig: {} };
+    }
+    if (currentUrl.includes('challenge/pwd') || currentUrl.includes('challenge/kpe')) {
+      logger.info(`[checkVerification][${instanceId}] Detected Google challenge password/KPE page — password entry required.`);
+      return { required: true, type: 'password', viewName: 'Google Password Challenge', viewConfig: {} };
+    }
+    if (currentUrl.includes('challenge/iap')) {
+      logger.info(`[checkVerification][${instanceId}] Detected Google challenge IAP page — code verification required.`);
+      return { required: true, type: 'code', viewName: 'Google IAP Challenge', viewConfig: {} };
+    }
+    if (currentUrl.includes('challenge/ipe/verify')) {
+      logger.info(`[checkVerification][${instanceId}] Detected Google challenge IPE verify page — code verification required.`);
+      return { required: true, type: 'code', viewName: 'Google IPE Verify', viewConfig: {} };
+    }
+    // Any other Google challenge page — treat as verification required
+    // EXCLUDE challenge/recaptcha — that is handled by the reCAPTCHA solver chain in route.js
+    if (!currentUrl.includes('challenge/recaptcha')) {
+      logger.info(`[checkVerification][${instanceId}] Detected Google challenge page (unknown type): ${currentUrl.substring(0, 120)}`);
+      return { required: true, type: 'choice', viewName: 'Google Challenge', viewConfig: {} };
+    }
+  }
+
   for (const view of platformConfig.verificationScreens) {
     logger.debug(`[checkVerification][${instanceId}] Checking view: ${view.name}`);
     if (!view.requiresVerification) {
@@ -1214,7 +1240,8 @@ export async function solveRecaptchaV2(page, instanceId) {
                     method: solver,
                     googlekey: siteKey,
                     pageurl: pageUrl,
-                    json: '1'
+                    json: '1',
+                    audio: '1'
                 };
                 if (solver === 'enterprise_recaptcha_v2') {
                     recaptchaParams.domain = 'google.com';
@@ -1638,6 +1665,201 @@ export function parseLocaleDate(str) {
     if (isPM && hours < 12) hours += 12;
     if (!isPM && hours === 12) hours = 0;
     return new Date(Date.UTC(year, month, day, hours, minutes, seconds));
+}
+
+/**
+ * Solve reCAPTCHA audio challenge via browser interaction.
+ * After clicking the checkbox and landing on challenge/recaptcha, this function:
+ * 1. Switches to the audio challenge by clicking #recaptcha-audio-button
+ * 2. Downloads the audio from #audio-source
+ * 3. Sends audio to 2Captcha for speech-to-text transcription
+ * 4. Types the transcribed text into #audio-response
+ * 5. Clicks #recaptcha-verify-button
+ *
+ * Returns true if solved, false otherwise.
+ */
+export async function solveRecaptchaAudioChallenge(page, instanceId) {
+
+    try {
+        const allFrames = page.frames();
+        const frameUrls = allFrames.map(f => f.url().substring(0, 120));
+        logger.info(`[solveRecaptchaAudio][${instanceId}] All frames (${allFrames.length}): ${JSON.stringify(frameUrls)}`);
+
+        let challengeFrame = allFrames.find(f => f.url().includes('recaptcha/api2/bframe'));
+        if (!challengeFrame) {
+            challengeFrame = allFrames.find(f => f.url().includes('recaptcha/enterprise/bframe'));
+        }
+        if (!challengeFrame) {
+            await new Promise(r => setTimeout(r, 2000));
+            challengeFrame = page.frames().find(f => f.url().includes('recaptcha/api2/bframe') || f.url().includes('recaptcha/enterprise/bframe'));
+        }
+        if (!challengeFrame) {
+            for (const frame of page.frames()) {
+                const hasBtn = await frame.$('#recaptcha-audio-button').catch(() => null);
+                if (hasBtn) { challengeFrame = frame; break; }
+            }
+            if (challengeFrame) logger.info(`[solveRecaptchaAudio][${instanceId}] Found frame by element search.`);
+        }
+        if (!challengeFrame) {
+            challengeFrame = page.frames().find(f => f !== page.mainFrame() && f.url().includes('recaptcha/api2/'));
+        }
+        if (!challengeFrame) {
+            challengeFrame = page.frames().find(f => f !== page.mainFrame() && f.url().includes('recaptcha/enterprise'));
+        }
+        if (!challengeFrame && page.url().includes('challenge/recaptcha')) {
+            challengeFrame = page.mainFrame();
+            logger.info(`[solveRecaptchaAudio][${instanceId}] Using main frame (challenge/recaptcha page).`);
+        }
+        if (!challengeFrame) {
+            logger.warn(`[solveRecaptchaAudio][${instanceId}] No reCAPTCHA frame found.`);
+            return false;
+        }
+        logger.info(`[solveRecaptchaAudio][${instanceId}] Found reCAPTCHA frame: ${challengeFrame.url().substring(0, 80)}...`);
+
+        const audioButton = await challengeFrame.waitForSelector('#recaptcha-audio-button', { timeout: 5000 }).catch(() => null);
+        if (!audioButton) {
+            logger.warn(`[solveRecaptchaAudio][${instanceId}] #recaptcha-audio-button not found in frame.`);
+            return false;
+        }
+        const isHidden = await audioButton.evaluate(el => el.offsetParent === null || getComputedStyle(el).display === 'none').catch(() => true);
+        if (!isHidden) {
+            await audioButton.click();
+            logger.info(`[solveRecaptchaAudio][${instanceId}] Clicked audio challenge button.`);
+            await new Promise(r => setTimeout(r, 1500));
+        } else {
+            logger.info(`[solveRecaptchaAudio][${instanceId}] Audio button hidden (already on audio challenge). Proceeding to download.`);
+        }
+
+        const detected = await challengeFrame.evaluate(() => {
+            return !!(document.querySelector('.rc-doscaptcha-header-text') && document.querySelector('.rc-doscaptcha-header-text').offsetParent !== null);
+        }).catch(() => false);
+        if (detected) {
+            logger.warn(`[solveRecaptchaAudio][${instanceId}] Bot detected by Google (too many requests).`);
+            return false;
+        }
+
+        let geminiKey = process.env.GOOGLE_GEMINI_API_KEY || '';
+        if (!geminiKey) {
+            try {
+                const sheet = await getSettingsSheet();
+                if (sheet && sheet.data) {
+                    const provIdx = sheet.headers.indexOf('aiProvider');
+                    const keyIdx = sheet.headers.indexOf('aiKey');
+                    const statusIdx = sheet.headers.indexOf('aiStatus');
+                    if (provIdx !== -1 && keyIdx !== -1) {
+                        const geminiRow = sheet.data.find(r =>
+                            (r[provIdx] || '').toLowerCase().trim() === 'gemini' &&
+                            (!statusIdx || (r[statusIdx] || '').toUpperCase().trim() === 'ACTIVE')
+                        );
+                        if (geminiRow) geminiKey = geminiRow[keyIdx] || '';
+                    }
+                }
+            } catch (e) { logger.warn(`[solveRecaptchaAudio][${instanceId}] Failed to load Gemini key from settings: ${e.message}`); }
+        }
+        if (!geminiKey) {
+            logger.error(`[solveRecaptchaAudio][${instanceId}] No Gemini API key found for audio transcription.`);
+            return false;
+        }
+
+        const MAX_ATTEMPTS = 3;
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            logger.info(`[solveRecaptchaAudio][${instanceId}] Audio challenge attempt ${attempt}/${MAX_ATTEMPTS}...`);
+
+            const audioUrl = await challengeFrame.evaluate(() => {
+                const el = document.querySelector('#audio-source');
+                return el ? el.getAttribute('src') : null;
+            }).catch(() => null);
+            if (!audioUrl) {
+                logger.warn(`[solveRecaptchaAudio][${instanceId}] #audio-source not found or src empty.`);
+                return false;
+            }
+            logger.info(`[solveRecaptchaAudio][${instanceId}] Audio URL obtained (${audioUrl.length} chars).`);
+
+            const audioResp = await axios.get(audioUrl, { responseType: 'arraybuffer', timeout: 15000 }).catch(() => null);
+            if (!audioResp || !audioResp.data) {
+                logger.warn(`[solveRecaptchaAudio][${instanceId}] Failed to download audio via Node.js HTTP.`);
+                return false;
+            }
+            const audioBase64 = Buffer.from(audioResp.data).toString('base64');
+            logger.info(`[solveRecaptchaAudio][${instanceId}] Audio downloaded (${audioBase64.length} chars base64). Transcribing via Gemini...`);
+
+            const geminiPayload = {
+                contents: [{
+                    parts: [
+                        { text: 'Transcribe this audio clip exactly as spoken. Return ONLY the transcribed words, no punctuation, no quotation marks, no explanation. Just the raw spoken text.' },
+                        { inlineData: { mimeType: 'audio/mpeg', data: audioBase64 } }
+                    ]
+                }],
+                generationConfig: { maxOutputTokens: 200, temperature: 0.1 }
+            };
+
+            const geminiModel = 'gemini-2.5-flash';
+            const geminiResp = await axios.post(
+                `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiKey}`,
+                geminiPayload,
+                { timeout: 30000 }
+            ).catch(err => ({ data: null, message: err.message }));
+
+            const transcribedText = geminiResp.data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+            if (!transcribedText) {
+                logger.error(`[solveRecaptchaAudio][${instanceId}] Gemini transcription failed: ${geminiResp.message || JSON.stringify(geminiResp.data).substring(0, 200)}`);
+                return false;
+            }
+            logger.info(`[solveRecaptchaAudio][${instanceId}] Audio transcribed: "${transcribedText}"`);
+
+            const responseExists = await challengeFrame.evaluate(() => !!document.querySelector('#audio-response')).catch(() => false);
+            if (!responseExists) {
+                logger.warn(`[solveRecaptchaAudio][${instanceId}] #audio-response input not found.`);
+                return false;
+            }
+            await challengeFrame.evaluate((text) => {
+                const input = document.querySelector('#audio-response');
+                if (input) { input.focus(); input.value = text; input.dispatchEvent(new Event('input', { bubbles: true })); }
+            }, transcribedText.toLowerCase());
+            logger.info(`[solveRecaptchaAudio][${instanceId}] Typed transcription into audio response.`);
+            await new Promise(r => setTimeout(r, 500));
+
+            const verifyExists = await challengeFrame.evaluate(() => !!document.querySelector('#recaptcha-verify-button')).catch(() => false);
+            if (!verifyExists) {
+                logger.warn(`[solveRecaptchaAudio][${instanceId}] #recaptcha-verify-button not found.`);
+                return false;
+            }
+            await challengeFrame.evaluate(() => { document.querySelector('#recaptcha-verify-button')?.click(); });
+            logger.info(`[solveRecaptchaAudio][${instanceId}] Clicked verify button. Waiting for result...`);
+            await new Promise(r => setTimeout(r, 5000));
+
+            const currentUrl = page.url();
+            if (!currentUrl.includes('challenge/recaptcha')) {
+                logger.info(`[solveRecaptchaAudio][${instanceId}] reCAPTCHA audio challenge SOLVED! URL: ${currentUrl.substring(0, 80)}`);
+                return true;
+            }
+
+            const checkboxChecked = await challengeFrame.evaluate(() => {
+                const el = document.querySelector('.recaptcha-checkbox-checkmark');
+                return el && el.style && el.style.visibility === 'visible';
+            }).catch(() => false);
+            if (checkboxChecked) {
+                logger.info(`[solveRecaptchaAudio][${instanceId}] reCAPTCHA checkbox is checked!`);
+                return true;
+            }
+
+            const stillOnAudio = await challengeFrame.evaluate(() => !!document.querySelector('#audio-source')).catch(() => false);
+            if (!stillOnAudio) {
+                logger.warn(`[solveRecaptchaAudio][${instanceId}] No longer on audio challenge. Current URL: ${currentUrl.substring(0, 80)}`);
+                return false;
+            }
+
+            logger.warn(`[solveRecaptchaAudio][${instanceId}] Attempt ${attempt} failed. Retrying...`);
+            await new Promise(r => setTimeout(r, 1500));
+        }
+
+        logger.warn(`[solveRecaptchaAudio][${instanceId}] All ${MAX_ATTEMPTS} audio challenge attempts failed.`);
+        return false;
+
+    } catch (err) {
+        logger.error(`[solveRecaptchaAudio][${instanceId}] Error: ${err.message}`);
+        return false;
+    }
 }
 
 // startAppScriptDataBackgroundUpdater(); // Removed direct call, will be managed by route.js
