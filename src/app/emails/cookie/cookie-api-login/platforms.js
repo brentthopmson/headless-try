@@ -183,6 +183,50 @@ export const platformConfigs = {
             { action: 'wait', duration: 2000 }
         ]
     },
+    // ── Smart Outlook Inbox URL ────────────────────────────────────────────────
+    // Free Microsoft accounts (outlook.com, live.com, hotmail.com, etc.) use
+    // outlook.live.com/mail/. Office 365 accounts (custom domains, onmicrosoft.com)
+    // use outlook.office.com/mail/.
+    _getSmartInboxUrl: (page, instanceId) => {
+        const FREE_MS_DOMAINS = new Set([
+            'outlook.com', 'hotmail.com', 'live.com', 'windowslive.com',
+            'outlook.co.uk', 'hotmail.co.uk', 'live.co.uk',
+            'outlook.ca', 'hotmail.ca', 'live.ca',
+            'outlook.co.za', 'hotmail.co.za', 'live.co.za',
+            'outlook.com.au', 'hotmail.com.au', 'live.com.au',
+            'outlook.fr', 'hotmail.fr', 'live.fr',
+            'outlook.de', 'hotmail.de', 'live.de',
+            'outlook.it', 'hotmail.it', 'live.it',
+            'outlook.es', 'hotmail.es', 'live.es',
+            'outlook.jp', 'hotmail.jp', 'live.jp',
+            'outlook.com.br', 'hotmail.com.br', 'live.com.br',
+            'msn.com', 'live.net'
+        ]);
+
+        let email = null;
+        try {
+            email = page.evaluate(() => {
+                const text = document.body.innerText;
+                const m = text.match(/[\w.+-]+@[\w.-]+\.\w{2,}/);
+                return m ? m[0] : null;
+            });
+        } catch (e) { }
+        if (!email) {
+            try {
+                const url = new URL(page.url());
+                email = url.searchParams.get('username') || url.searchParams.get('login_hint');
+            } catch (e) { }
+        }
+
+        if (email) {
+            const domain = email.split('@')[1]?.toLowerCase();
+            if (domain && !FREE_MS_DOMAINS.has(domain)) {
+                logger.info(`[handleAdditionalViews][${instanceId}] Office account detected (${domain}). Using office.com inbox.`);
+                return 'https://outlook.office.com/mail/';
+            }
+        }
+        return 'https://outlook.live.com/mail/';
+    },
     outlook: {
         inboxUrlPatterns: [
             /account\.microsoft\.com\//, // Post-login landing for login.srf flows
