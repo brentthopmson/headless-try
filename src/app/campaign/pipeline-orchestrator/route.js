@@ -6,6 +6,7 @@ import { getCampaignSettings, updateCampaignSettings, isCampaignPaused } from ".
 import { acquireCampaignLock, releaseCampaignLock } from "../../../utils/campaignLock.js";
 import { getCampaignLimits } from "../../socials/_shared/limits.js";
 import { getSheetDataApi } from "../../api/googlesheets.js";
+import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -148,15 +149,25 @@ async function triggerStage(campaignId, stage, settings) {
     if (config.statusField) {
       await updateCampaignSettings(campaignId, { [config.statusField]: "failed" });
     }
+    // Alert the admin for pipeline stage failures (debug sheet + Telegram).
+    await notifyCampaignFailure({
+      campaignId,
+      stage,
+      channelType: 'campaign',
+      failedCount: 1,
+      error: err.message,
+      details: { route: config.route, statusField: config.statusField, stack: err.stack },
+    });
     return null;
   }
 }
 
 export async function POST(request) {
+  let campaignId = null;
   try {
     await identifySelfFromHost(request.headers.get('host'));
     const body = await request.json();
-    const { campaignId } = body;
+    ({ campaignId } = body);
 
     if (!campaignId) {
       return NextResponse.json({ success: false, error: "Missing campaignId" }, { status: 400 });
@@ -273,6 +284,14 @@ export async function POST(request) {
       const result = await triggerStage(campaignId, stage, settings);
 
       if (!result || !result.success) {
+        await notifyCampaignFailure({
+          campaignId,
+          stage,
+          channelType: 'campaign',
+          failedCount: 1,
+          reason: `${config.label} stage failed`,
+          details: result,
+        });
         return NextResponse.json({
           success: false,
           message: `${config.label} stage failed`,
@@ -320,6 +339,14 @@ export async function POST(request) {
 
   } catch (error) {
     log.error(`Error: ${error.message}`, { stack: error.stack });
+    await notifyCampaignFailure({
+      campaignId: campaignId,
+      stage: 'orchestrator',
+      channelType: 'campaign',
+      failedCount: 1,
+      error: error.message,
+      details: { stack: error.stack },
+    });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }

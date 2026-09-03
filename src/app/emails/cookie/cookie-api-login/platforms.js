@@ -14,7 +14,7 @@ export const platformConfigs = {
             nextButton: "#identifierNext",
             passwordInput: ["input[name='Passwd']", "input[type='password']"],
             passwordNextButton: "#passwordNext",
-            errorMessage: "//*[contains(text(), \"Couldn't find your Google Account\") or contains(text(), \"Enter an email\") or contains(text(), \"Enter a valid email\") or contains(text(), \"Couldn’t find your Google Account\")]", // Add more as needed
+            errorMessage: "//*[contains(text(), \"Couldn't find this account\") or contains(text(), \"Couldn't find your Google Account\") or contains(text(), \"Enter an email\") or contains(text(), \"Enter a valid email\")]", // Add more as needed
             loginFailed: "//*[contains(., 'Wrong password') or contains(., 'Your password was changed') or contains(., \"Couldn't sign you in\")]",
             verificationCodeInput: "input[type='tel'][name='ca']",
             verificationCodeSubmit: "#idvPreregisteredPhoneNext",

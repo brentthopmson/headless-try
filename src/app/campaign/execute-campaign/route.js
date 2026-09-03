@@ -14,7 +14,8 @@ import { requireFeature } from "../../../utils/featureGate.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { dispatchToServers } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getFirestickEmails, getPerformancePresets } from "../_shared/pipelineUtils.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getFirestickEmails, getPerformancePresets, updateCampaignSettings } from "../_shared/pipelineUtils.js";
+import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
 
 function embedCampaignIdentifier(subject, body, campaignId) {
   const identifier = `[${campaignId}]`;
@@ -171,12 +172,13 @@ async function getSocialProfileCookies(profileId) {
 }
 
 export async function POST(request) {
+  let campaignId = null;
   try {
     await identifySelfFromHost(request.headers.get('host'));
     const gate = await requireFeature('allowShooting', 'campaign shooting');
     if (gate) return gate;
     const body = await request.json();
-    const { campaignId } = body;
+    ({ campaignId } = body);
 
     if (!campaignId) {
       return NextResponse.json({ success: false, error: "Missing campaignId" }, { status: 400 });
@@ -858,6 +860,18 @@ export async function POST(request) {
         executionResults,
       };
 
+      // Alert the admin when the campaign run had any failed tasks (debug sheet + Telegram).
+      if (failedCount > 0) {
+        await notifyCampaignFailure({
+          campaignId,
+          stage: 'execute',
+          channelType: 'social',
+          failedCount,
+          reason: analytics.limitReached ? 'Some social tasks failed during run' : `${failedCount} social task(s) failed during run`,
+          details: { status: finalStatus, executedCount, totalRows: tasksToExecute.length, executionResults },
+        });
+      }
+
       settings.analytics = analytics;
       await updateSheetRowApi("campaigns", "campaignId", campaignId, {
         settings: JSON.stringify(settings),
@@ -878,7 +892,15 @@ export async function POST(request) {
     return NextResponse.json({ success: false, error: "Invalid channel type" }, { status: 400 });
 
   } catch (error) {
-    log.error(` Error executing campaign: ${error.message}`, { stack: error.stack });
+    logger.error(` Error executing campaign: ${error.message}`, { stack: error.stack });
+    await notifyCampaignFailure({
+      campaignId: campaignId,
+      stage: 'execute',
+      channelType: 'campaign',
+      failedCount: 1,
+      error: error.message,
+      details: { stack: error.stack },
+    });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }

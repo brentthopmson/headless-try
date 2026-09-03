@@ -32,7 +32,7 @@ const ACTION_TYPES = [
  * @param {boolean} forceRefresh - bypass the TTL and re-read the sheet.
  * @returns {Promise<{ headers: string[], data: string[][] } | null>}
  */
-async function getLimitsSheet(forceRefresh = false) {
+export async function getLimitsSheet(forceRefresh = false) {
     const now = Date.now();
     if (!forceRefresh && state.data && state.headers && (now - state.fetchedAt < LIMITS_CACHE_TTL_MS)) {
         logger.debug('[limits] Returning cached Limits data.');

@@ -580,6 +580,28 @@ export const resolveA = (domain, timeoutMs = 5000) =>
         new Promise((_, reject) => setTimeout(() => reject(new Error('A-record DNS timeout')), timeoutMs))
     ]);
 
+// ── Gmail email error detection (URL-based) ──────────────────────────────────
+// Google's login page uses a closed shadow DOM (jsshadow on <section>), so
+// document.querySelector('.Ekjuhf') cannot pierce it. Instead, detect the
+// invalid-email state by checking whether the page is still on /signin/identifier
+// after email submission. Valid emails navigate to /challenge/pwd, /challenge/selection,
+// etc. Invalid emails stay on /signin/identifier with the error.
+export async function detectGmailEmailError(page, instanceId) {
+  const url = page.url();
+  if (!url.includes('/signin/identifier')) return { found: false };
+
+  // CAPTCHA also keeps us on /signin/identifier — let the CAPTCHA solver handle it
+  const hasCaptcha = await page.$('#captchaimg').catch(() => null);
+  if (hasCaptcha) return { found: false };
+
+  // reCAPTCHA iframe also keeps us on /signin/identifier
+  const hasRecaptcha = await page.$('iframe[title*="reCAPTCHA"]').catch(() => null);
+  if (hasRecaptcha) return { found: false };
+
+  logger.info(`[detectGmailEmailError][${instanceId}] Still on /signin/identifier with no CAPTCHA — email invalid. URL: ${url.substring(0, 120)}`);
+  return { found: true, message: "Couldn't find this account." };
+}
+
 export async function isInbox(page, platformConfig) {
   const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
   try {
@@ -604,6 +626,7 @@ export async function isInbox(page, platformConfig) {
     // passwords to be marked COMPLETED. The URL-pattern and DOM-selector checks below must
     // never run while we're still on an auth surface.
     const isInboxAuthMarkers = [
+      'accounts.google.com',
       'login.live.com',
       'login.microsoftonline.com',
       'account.live.com',
@@ -1630,7 +1653,7 @@ export async function isPageResponsive(page, browserId, instanceId) {
     try {
         await Promise.race([
             page.evaluate(() => document.readyState),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Page navigation in progress - evaluate timed out')), 20000))
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Page navigation in progress - evaluate timed out')), 5000))
         ]);
         return true;
     } catch (e) {
