@@ -679,7 +679,7 @@ let browserId = null;
 let pollingIntervalId = null;
 let pollingStartTime = null;
 const POLLING_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes global timeout
-const PROCESSING_TIMEOUT_MS = 60000; // 60 seconds per-processing timeout
+const PROCESSING_TIMEOUT_MS = 180000; // 180 seconds per-processing timeout
 let processingStartTime = null;
 let currentStatus = null;
 let lastShownStatus = '';
@@ -1294,7 +1294,7 @@ async function pollOperator() {
     const response = await fetch(apiBaseUrl + "/pooling-operator", {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: objectToFormData(pollingPayload)
+      body: objectToFormData({ ...pollingPayload, _t: Date.now() })
     });
 
     if (!response.ok) {

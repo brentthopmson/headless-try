@@ -144,36 +144,78 @@ async function triggerStage(campaignId, stage, settings) {
 
   log.info(`Triggering ${config.label}`);
 
-  try {
-    if (config.statusField) {
-      await updateCampaignSettings(campaignId, { [config.statusField]: "processing" });
-    }
+  // Stage-specific timeouts (validation has browser verification which is slow)
+  const stageTimeouts = { validate: 600_000, enrich: 300_000, personalize: 300_000, execute: 600_000, interact: 300_000 };
+  const timeoutMs = stageTimeouts[stage] || 300_000;
+  const maxRetries = 1;
 
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      if (config.statusField) {
+        await updateCampaignSettings(campaignId, { [config.statusField]: "processing" });
+      }
 
-    const result = await response.json();
-    log.info(`${config.label} response: ${JSON.stringify(result).slice(0, 500)}`);
-    return result;
-  } catch (err) {
-    log.error(`${config.label} failed: ${err.message}`);
-    if (config.statusField) {
-      await updateCampaignSettings(campaignId, { [config.statusField]: "failed" });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeout);
+
+      const result = await response.json();
+      log.info(`${config.label} response: ${JSON.stringify(result).slice(0, 500)}`);
+      return result;
+    } catch (err) {
+      const isLastAttempt = attempt === maxRetries;
+      const errName = err.name || "";
+      const errMsg = err.message || "unknown error";
+
+      if (errName === "AbortError") {
+        log.error(`${config.label} timed out after ${timeoutMs}ms`);
+        // Don't retry on timeout — the route may still be running; check status below
+      } else if (!isLastAttempt) {
+        log.warn(`${config.label} fetch failed (attempt ${attempt + 1}/${maxRetries + 1}): ${errMsg} — retrying in 30s`);
+        await new Promise(r => setTimeout(r, 30_000));
+        continue;
+      } else {
+        log.error(`${config.label} failed: ${errMsg}`);
+      }
+
+      // Before marking as failed, check if the route is still processing
+      // (it may have continued running after the fetch failed)
+      if (config.statusField) {
+        try {
+          const currentSettings = await getCampaignSettings(campaignId);
+          const currentStatus = currentSettings?.[config.statusField];
+          if (currentStatus === "processing") {
+            log.info(`${config.label} still processing — not marking as failed, skipping stage advancement`);
+            return { success: false, skipped: true, message: `${config.label} still processing in background` };
+          }
+        } catch (checkErr) {
+          log.warn(`Failed to check stage status: ${checkErr.message}`);
+        }
+
+        await updateCampaignSettings(campaignId, { [config.statusField]: "failed" });
+      }
+
+      // Alert the admin for pipeline stage failures (debug sheet + Telegram).
+      await notifyCampaignFailure({
+        campaignId,
+        stage,
+        channelType: 'campaign',
+        failedCount: 1,
+        error: errMsg,
+        details: { route: config.route, statusField: config.statusField, stack: err.stack },
+      });
+      return null;
     }
-    // Alert the admin for pipeline stage failures (debug sheet + Telegram).
-    await notifyCampaignFailure({
-      campaignId,
-      stage,
-      channelType: 'campaign',
-      failedCount: 1,
-      error: err.message,
-      details: { route: config.route, statusField: config.statusField, stack: err.stack },
-    });
-    return null;
   }
+  return null;
 }
 
 export async function POST(request) {

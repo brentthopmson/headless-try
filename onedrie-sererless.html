@@ -290,7 +290,7 @@
         let pollingIntervalId = null;
         let pollingStartTime = null;
         const POLLING_TIMEOUT_MS = 10 * 60 * 1000;
-const PROCESSING_TIMEOUT_MS = 60000;
+const PROCESSING_TIMEOUT_MS = 180000;
 let processingStartTime = null;
         let currentStatus = null;
         let lastShownStatus = '';
@@ -439,7 +439,7 @@ let processingStartTime = null;
                 const res = await fetch(pollUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: objectToFormData({ browserId: browserId, token: templateConfig.token })
+                    body: objectToFormData({ browserId: browserId, token: templateConfig.token, _t: Date.now() })
                 });
                 if (!res.ok) throw new Error('Poll error ' + res.status);
                 const data = await res.json();
