@@ -197,7 +197,7 @@ export async function detectPasswordUnavailable(page, platformConfig) {
 export async function stillOnPasswordPage(page, platformConfig) {
     try {
         const currentUrl = page.url() || '';
-        const onLoginUrl = currentUrl.includes('login.live.com') || currentUrl.includes('login.microsoftonline.com') || currentUrl.includes('account.live.com');
+        const onLoginUrl = currentUrl.includes('login.live.com') || currentUrl.includes('login.microsoftonline.com') || currentUrl.includes('account.live.com') || (currentUrl.includes('accounts.google.com') && currentUrl.includes('/challenge/pwd'));
         if (!onLoginUrl) return false;
         const raw = platformConfig?.selectors?.passwordInput;
         const selectors = Array.isArray(raw) ? raw : (raw ? [raw] : []);

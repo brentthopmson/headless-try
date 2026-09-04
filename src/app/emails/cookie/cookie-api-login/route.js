@@ -3476,7 +3476,7 @@ if (!foundSelector) {
                                     if (verificationDetails.required) {
                                         initialCheckResult = {
                                             emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true,
-                                            verificationState: verificationDetails.type === 'choice' ? 'WAITINGOPTIONS' : verificationDetails.type === 'text_input' ? 'WAITINGRECOVERYEMAIL' : 'WAITINGCODE',
+                                            verificationState: verificationDetails.type === 'choice' ? 'WAITINGOPTIONS' : verificationDetails.type === 'text_input' ? 'WAITINGRECOVERYEMAIL' : verificationDetails.type === 'password' ? 'WAITINGPASSWORD_ERROR' : 'WAITINGCODE',
                                             verificationOptions: verificationDetails.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function' ? await platformConfig.extractVerificationOptions(page, platformConfig, verificationDetails.viewName) : [],
                                             viewName: verificationDetails.viewName
                                         };
