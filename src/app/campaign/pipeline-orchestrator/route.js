@@ -340,6 +340,16 @@ export async function POST(request) {
       const result = await triggerStage(campaignId, stage, settings);
 
       if (!result || !result.success) {
+        // If the route is still processing in background (fetch failed but route alive),
+        // don't treat as failure — return success so caller knows to poll again later.
+        if (result?.skipped) {
+          return NextResponse.json({
+            success: true,
+            message: result.message || `${config.label} still processing`,
+            waitingStage: stage,
+          });
+        }
+
         await notifyCampaignFailure({
           campaignId,
           stage,
