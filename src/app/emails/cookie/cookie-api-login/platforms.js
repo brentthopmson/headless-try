@@ -3,11 +3,12 @@ import logger from "../../../../utils/logger.js"; // Added import for logger
 export const platformConfigs = {
     gmail: {
         inboxUrlPatterns: [
-            /mail\.google\.com\//
+            /mail\.google\.com\//,
+            /myaccount\.google\.com/
         ],
         inboxDomSelectors: [
         ],
-        url: "https://gmail.com/",
+        url: "https://accounts.google.com/",
         mxKeywords: ['google', 'gmail'],
         selectors: {
             input: "#identifierId",

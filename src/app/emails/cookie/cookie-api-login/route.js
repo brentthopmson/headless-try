@@ -2778,6 +2778,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     message: "Login page failed to render. Please try again."
                                 });
                                 exitingEarly = true;
+                                setCachedRow(browserId, { ...(getCachedRow(browserId) || {}), ...updateData, email: email || '', password: password || '' });
                                 return; // finally() restores WAITINGEMAIL; email stays in cache for the next wake-up
                             }
                             emailProvidedAndProcessed = false;

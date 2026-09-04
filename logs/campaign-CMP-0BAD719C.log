@@ -1,0 +1,58 @@
+[INFO] 2026-09-04T19:17:08.152Z - [validate] Received validation request
+[INFO] 2026-09-04T19:17:08.855Z - [validate]  Downloading CSV file: 1swnMC-O3i8sknB5xXFts1jTPl0TvhtD8
+[INFO] 2026-09-04T19:17:10.409Z - [validate]  MX batch=20, platform batch=5, platform verification=true
+[INFO] 2026-09-04T19:17:10.410Z - [validate]  Processing 30 rows (single-server)
+[INFO] 2026-09-04T19:17:10.982Z - [validate] [Row MX] mayganchattin@gmail.com: valid_mx (gmail-smtp-in.l.google.com)
+[INFO] 2026-09-04T19:17:10.983Z - [validate] [Row MX] rluckhaupt@gmail.com: valid_mx (gmail-smtp-in.l.google.com)
+[INFO] 2026-09-04T19:17:10.984Z - [validate] [Row MX] kierstyn01@gmail.com: valid_mx (gmail-smtp-in.l.google.com)
+[INFO] 2026-09-04T19:17:10.986Z - [validate] [Row MX] jsmitty1622@gmail.com: valid_mx (gmail-smtp-in.l.google.com)
+[INFO] 2026-09-04T19:17:10.983Z - [validate] [Row MX] sapaepaw007@gmail.com: valid_mx (gmail-smtp-in.l.google.com)
+[INFO] 2026-09-04T19:17:10.988Z - [validate] [Row MX] lobergsummer8@gmail.com: valid_mx (gmail-smtp-in.l.google.com)
+[INFO] 2026-09-04T19:17:10.989Z - [validate] [Row MX] monette.lowery@gmail.com: valid_mx (gmail-smtp-in.l.google.com)
+[INFO] 2026-09-04T19:17:10.991Z - [validate] [Row MX] scottdeboraht@gmail.com: valid_mx (gmail-smtp-in.l.google.com)
+[INFO] 2026-09-04T19:17:10.992Z - [validate] [Row MX] jayleemiles7@gmail.com: valid_mx (gmail-smtp-in.l.google.com)
+[INFO] 2026-09-04T19:17:10.994Z - [validate] [Row MX] attillah.williams@gmail.com: valid_mx (gmail-smtp-in.l.google.com)
+[INFO] 2026-09-04T19:17:10.996Z - [validate] [Row MX] tusbuffy@gmail.com: valid_mx (gmail-smtp-in.l.google.com)
+[INFO] 2026-09-04T19:17:10.997Z - [validate] [Row MX] woodhousedelon2@gmail.com: valid_mx (gmail-smtp-in.l.google.com)
+[INFO] 2026-09-04T19:17:11.001Z - [validate] [Row MX] walt2d22@gmail.com: valid_mx (gmail-smtp-in.l.google.com)
+[INFO] 2026-09-04T19:17:11.006Z - [validate] [Row MX] royclxtn@gmail.com: valid_mx (gmail-smtp-in.l.google.com)
+[INFO] 2026-09-04T19:17:11.007Z - [validate] [Row MX] karenmiller1of11@gmail.com: valid_mx (gmail-smtp-in.l.google.com)
+[INFO] 2026-09-04T19:17:11.008Z - [validate] [Row MX] dustinphansen@gmail.com: valid_mx (gmail-smtp-in.l.google.com)
+[INFO] 2026-09-04T19:17:11.010Z - [validate] [Row MX] simeonnatebc@gmail.com: valid_mx (gmail-smtp-in.l.google.com)
+[INFO] 2026-09-04T19:17:19.054Z - [validate] [Row MX] macaylamanderson@icloud.com: valid_mx (mx01.mail.icloud.com)
+[INFO] 2026-09-04T19:17:19.055Z - [validate] [Row MX] msmith5@tampabay.rr.com: valid_mx (pkvw-mx.msg.pkvw.co.charter.net)
+[INFO] 2026-09-04T19:17:19.056Z - [validate] [Row MX] ahoffman83@yahoo.com: valid_mx (mta5.am0.yahoodns.net)
+[INFO] 2026-09-04T19:17:20.855Z - [validate]  MX batch 1/2 complete (20 valid, 0 invalid so far)
+[INFO] 2026-09-04T19:17:23.910Z - [validate] [Row MX] labardo69@comcast.net: valid_mx (mx1.mxge.comcast.net)
+[INFO] 2026-09-04T19:17:29.980Z - [validate] [Row MX] jay143@bellsouth.net: valid_mx (mx-att.mail.am0.yahoodns.net)
+[INFO] 2026-09-04T19:17:29.981Z - [validate] [Row MX] fla336@aol.com: valid_mx (mx-aol.mail.gm0.yahoodns.net)
+[INFO] 2026-09-04T19:17:50.442Z - [validate] [Row MX] pat@stsbb.com: invalid_domain (queryMx ENODATA stsbb.com)
+[INFO] 2026-09-04T19:17:52.340Z - [validate]  MX batch 2/2 complete (23 valid, 1 invalid so far)
+[INFO] 2026-09-04T19:17:52.344Z - [validate]  26 emails match known platforms, verifying...
+[INFO] 2026-09-04T19:18:17.249Z - [validate] [Row verify] mayganchattin@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:18:26.471Z - [validate] [Row verify] rluckhaupt@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:18:34.547Z - [validate] [Row verify] sapaepaw007@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:18:42.174Z - [validate] [Row verify] kierstyn01@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:18:56.487Z - [validate] [Row verify] jsmitty1622@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:19:12.126Z - [validate] [Row verify] lobergsummer8@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:19:20.138Z - [validate] [Row verify] monette.lowery@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:19:26.805Z - [validate] [Row verify] scottdeboraht@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:19:33.182Z - [validate] [Row verify] jayleemiles7@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:19:39.539Z - [validate] [Row verify] attillah.williams@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:20:02.189Z - [validate] [Row verify] ahoffman83@yahoo.com @yahoo: verified_exists
+[INFO] 2026-09-04T19:20:11.220Z - [validate] [Row verify] tusbuffy@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:20:18.858Z - [validate] [Row verify] woodhousedelon2@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:20:25.435Z - [validate] [Row verify] walt2d22@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:20:32.390Z - [validate] [Row verify] royclxtn@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:20:50.634Z - [validate] [Row verify] macaylamanderson@icloud.com @apple: unverifiable (Waiting for selector `#account_name_text_field` failed: Waiting failed: 8000ms exceeded)
+[INFO] 2026-09-04T19:20:59.219Z - [validate] [Row verify] karenmiller1of11@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:21:06.217Z - [validate] [Row verify] dustinphansen@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:21:13.044Z - [validate] [Row verify] simeonnatebc@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:21:19.924Z - [validate] [Row verify] glamprincess13@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:21:33.894Z - [validate] [Row verify] jbuggy1988@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:21:40.535Z - [validate] [Row verify] joss.vamplew@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:21:46.555Z - [validate] [Row verify] dangrahams222@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:21:54.940Z - [validate] [Row verify] sharladoll66@gmail.com @gmail: verified_exists
+[INFO] 2026-09-04T19:22:04.691Z - [validate] [Row verify] fla336@aol.com @aol: unverifiable (Waiting for selector `#login-username` failed: Waiting failed: 8000ms exceeded)
+[ERROR] 2026-09-04T19:22:04.908Z - [orchestrator] Validation failed: fetch failed undefined
+[INFO] 2026-09-04T19:22:27.215Z - [validate] [Row verify] hr_columbia@yahoo.com @yahoo: verified_exists
