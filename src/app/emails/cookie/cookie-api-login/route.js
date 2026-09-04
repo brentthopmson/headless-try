@@ -512,6 +512,13 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     let imageCaptchaHandled = false;
                     const maxCaptchaRetries = 3;
                     for (let captchaAttempt = 0; captchaAttempt < maxCaptchaRetries; captchaAttempt++) {
+                        if (isAccountCheckBailed(browserId)) {
+                            logger.warn(`[checkAccountAccess][${instanceId}] Watchdog bailed during CAPTCHA handling — stopping solve attempts (no further 2Captcha spend).`);
+                            return { emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'RETRY_TECHNICAL', error: 'bailed during CAPTCHA handling (watchdog deadline)' };
+                        }
+                        // Each 2Captcha solve round trip can take ~30-45s; Google may chain
+                        // multiple CAPTCHAs. Extend the watchdog budget before each attempt.
+                        extendAccountCheckTimeout(browserId, 60000);
                         logger.info(`[checkAccountAccess][${instanceId}] Checking for text image CAPTCHA (attempt ${captchaAttempt + 1}/${maxCaptchaRetries})...`);
                         const captchaSolved = await solveImageCaptcha(page, instanceId).catch(() => false);
                         if (!captchaSolved) {
@@ -1026,6 +1033,11 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                             logger.info(`[checkAccountAccess][${instanceId}] Inline image CAPTCHA detected on identifier page. Solving...`);
                             const maxInlineRetries = 3;
                             for (let attempt = 0; attempt < maxInlineRetries; attempt++) {
+                                if (isAccountCheckBailed(browserId)) {
+                                    logger.warn(`[checkAccountAccess][${instanceId}] Watchdog bailed during inline CAPTCHA handling — stopping solve attempts.`);
+                                    return { emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'RETRY_TECHNICAL', error: 'bailed during inline CAPTCHA handling (watchdog deadline)' };
+                                }
+                                extendAccountCheckTimeout(browserId, 60000);
                                 const solved = await solveImageCaptcha(page, instanceId).catch(() => false);
                                 if (!solved) break;
                                 logger.info(`[checkAccountAccess][${instanceId}] Inline CAPTCHA answer submitted (attempt ${attempt + 1}). Waiting...`);
@@ -1045,7 +1057,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     // After CAPTCHA solving, check if the email error persists. Uses URL-based
                     // detection instead of DOM querySelector (shadow DOM blocks it).
                     if (platform === 'gmail') {
-                        const emailErrPostCaptcha = await detectGmailEmailError(page, instanceId).catch(() => ({ found: false }));
+                        const emailErrPostCaptcha = await detectGmailEmailError(page, instanceId, true).catch(() => ({ found: false }));
                         if (emailErrPostCaptcha.found) {
                             logger.info(`[checkAccountAccess][${instanceId}] Email error detected (normal path, post-CAPTCHA): "${emailErrPostCaptcha.message}"`);
                             return { emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: null, message: emailErrPostCaptcha.message };
@@ -1064,6 +1076,11 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                             // Step 1: Image CAPTCHA (text captcha like #captchaimg)
                             const maxCaptchaRetries = 3;
                             for (let captchaAttempt = 0; captchaAttempt < maxCaptchaRetries; captchaAttempt++) {
+                                if (isAccountCheckBailed(browserId)) {
+                                    logger.warn(`[checkAccountAccess][${instanceId}] Watchdog bailed during challenge CAPTCHA handling — stopping solve attempts.`);
+                                    return { emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'RETRY_TECHNICAL', error: 'bailed during challenge CAPTCHA handling (watchdog deadline)' };
+                                }
+                                extendAccountCheckTimeout(browserId, 60000);
                                 const captchaSolved = await solveImageCaptcha(page, instanceId).catch(() => false);
                                 if (!captchaSolved) break;
                                 logger.info(`[checkAccountAccess][${instanceId}] Image CAPTCHA answer submitted (attempt ${captchaAttempt + 1}). Waiting...`);
@@ -1472,16 +1489,53 @@ function submissionHistoryPayload(browserId) {
 // post-launch setup) can never leave a row stuck in processRow forever. On timeout we
 // resolve with RETRY_TECHNICAL — the poll loop either retries or fails gracefully with
 // the email kept, and a WRONG_EMAIL alert is never fired.
+//
+// CAPTCHA-aware budget: Google's inline image CAPTCHAs are solved by 2Captcha human
+// workers (~30-45s per round trip) and Google may chain MULTIPLE CAPTCHAs back to back.
+// A fixed 90s deadline fired mid-solve and marked valid rows FAILED (2026-09-03 trial:
+// 2 CAPTCHAs solved, then WAITINGPASSWORD reached at 96s — but the 90s bail at 90s had
+// already killed the row). solveImageCaptcha call sites now call
+// extendAccountCheckTimeout() before each solve attempt, and check
+// isAccountCheckBailed() between attempts so a bailed row stops spending 2Captcha
+// credits immediately.
 const CHECK_ACCOUNT_ACCESS_TIMEOUT_MS = 90000;
+const CHECK_ACCOUNT_ACCESS_MAX_EXTRA_MS = 210000; // total budget cap: 90s + 210s = 300s
+const accountCheckDeadlineRefs = new Map(); // browserId -> { extraMs, bailed }
+
+function extendAccountCheckTimeout(browserId, extraMs = 60000) {
+    const ref = accountCheckDeadlineRefs.get(browserId);
+    if (!ref) return; // no watchdog in flight for this browserId
+    const maxExtra = CHECK_ACCOUNT_ACCESS_MAX_EXTRA_MS;
+    ref.extraMs = Math.min(ref.extraMs + extraMs, maxExtra);
+    logger.info(`[processRow][${browserId}] checkAccountAccess deadline extended by ${extraMs}ms (total budget ${(CHECK_ACCOUNT_ACCESS_TIMEOUT_MS + ref.extraMs) / 1000}s).`);
+}
+
+function isAccountCheckBailed(browserId) {
+    const ref = accountCheckDeadlineRefs.get(browserId);
+    return !!(ref && ref.bailed);
+}
+
 function withAccountCheckTimeout(promise, browserId) {
+    const ref = { extraMs: 0, bailed: false };
+    accountCheckDeadlineRefs.set(browserId, ref);
     let timer;
+    const start = Date.now();
     const timeoutPromise = new Promise((resolve) => {
-        timer = setTimeout(() => {
-            logger.warn(`[processRow][${browserId}] checkAccountAccess exceeded ${CHECK_ACCOUNT_ACCESS_TIMEOUT_MS / 1000}s — bailing (RETRY_TECHNICAL) to prevent permanent stall.`);
-            resolve({ emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'RETRY_TECHNICAL', error: `checkAccountAccess timed out after ${CHECK_ACCOUNT_ACCESS_TIMEOUT_MS / 1000}s (page/CDP stalled)` });
-        }, CHECK_ACCOUNT_ACCESS_TIMEOUT_MS);
+        const tick = () => {
+            if (Date.now() - start >= CHECK_ACCOUNT_ACCESS_TIMEOUT_MS + ref.extraMs) {
+                ref.bailed = true;
+                logger.warn(`[processRow][${browserId}] checkAccountAccess exceeded ${((CHECK_ACCOUNT_ACCESS_TIMEOUT_MS + ref.extraMs) / 1000).toFixed(0)}s — bailing (RETRY_TECHNICAL) to prevent permanent stall.`);
+                resolve({ emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'RETRY_TECHNICAL', error: `checkAccountAccess timed out after ${((CHECK_ACCOUNT_ACCESS_TIMEOUT_MS + ref.extraMs) / 1000).toFixed(0)}s (page/CDP stalled)` });
+                return;
+            }
+            timer = setTimeout(tick, 2000); // re-check: the deadline is extensible
+        };
+        timer = setTimeout(tick, CHECK_ACCOUNT_ACCESS_TIMEOUT_MS);
     });
-    return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
+    return Promise.race([promise, timeoutPromise]).finally(() => {
+        clearTimeout(timer);
+        accountCheckDeadlineRefs.delete(browserId);
+    });
 }
 
 // Bounded auto-retry for Microsoft's transient "Password sign-in isn't available". The error

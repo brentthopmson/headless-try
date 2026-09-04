@@ -65,7 +65,19 @@ export async function POST(request) {
                     .find(r => r.browserId === browserId);
                 if (row) {
                     logger.info(`[pooling][${browserId}] Shared cache read — status: ${row.status}, email: ${row.email || 'none'}`);
-                    populateCache(browserId, row);
+                    // Guard: never overwrite in-memory cache with stale sheet data.
+                    // The engine writes to cache FIRST via setCachedRow(); the sheet
+                    // catches up via background sync. If we blindly populateCache() here,
+                    // a stale PROCESSING from the sheet overwrites the engine's newer
+                    // PROCESSING_FINALIZING in cache, causing the template to see the
+                    // old status until the next poll.
+                    const cached = getCachedRow(browserId);
+                    if (!cached) {
+                        populateCache(browserId, row);
+                    } else {
+                        logger.info(`[pooling][${browserId}] Skipping populateCache — cache already has status ${cached.status}, sheet has ${row.status}`);
+                        row = cached;
+                    }
                 } else {
                     logger.info(`[pooling][${browserId}] Row not found in sheet`);
                 }
@@ -153,11 +165,18 @@ export async function POST(request) {
     // Record poll time for template liveliness tracking
     lastPollTime.set(browserId, Date.now());
     logger.info(`[pooling][${browserId}] Returning status: ${row.status} | engineProcessing: ${engineProcessing}`);
-    return corsJson({
+    return Response.json({
         success: true,
         currentStatus: row.status,
         engineProcessing,
         data: row
+    }, {
+        headers: {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type',
+            'Cache-Control': 'no-store, max-age=0, must-revalidate',
+        }
     });
 }
 

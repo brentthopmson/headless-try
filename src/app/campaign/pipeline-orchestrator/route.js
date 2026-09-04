@@ -114,19 +114,33 @@ async function checkConcurrentLimit(userId) {
 async function triggerStage(campaignId, stage, settings) {
   const config = STAGE_CONFIG[stage];
   const selfUrl = getSelfUrlWithFallback();
-  const url = `${selfUrl}${config.route}`;
+  let route = config.route;
   const log = logger.child({ campaignId, stage: 'orchestrator' });
 
   const body = { campaignId };
 
   if (stage !== "execute") {
     const fileUrl = settings.fileUrl;
-    if (!fileUrl) {
+    // Interaction-only email campaigns have no fileUrl — their interact stage
+    // is handled by the AI inbox watcher which doesn't need a contact list.
+    const isInteractionOnlyInteract = stage === "interact"
+      && !fileUrl
+      && (settings.campaignMode === "interactions-only"
+        || (settings.interactionAccounts?.length
+          && (settings.emailKeywords?.length || settings.emailStrategyPrompt)));
+
+    if (isInteractionOnlyInteract) {
+      route = "/campaign/interact-inbox";
+      log.info(` Interaction-only campaign — routing interact stage to AI inbox watcher`);
+    } else if (!fileUrl) {
       log.warn(`No fileUrl for stage ${stage}`);
       return null;
+    } else {
+      body.fileUrl = fileUrl;
     }
-    body.fileUrl = fileUrl;
   }
+
+  const url = `${selfUrl}${route}`;
 
   log.info(`Triggering ${config.label}`);
 

@@ -69,9 +69,11 @@ async function processTask(taskPayload) {
         if (!finalMessageText && socialStrategyPrompt && operation === "sendMessage") {
             try {
                 const promptTemplate = platformConfig.aiPrompts?.generateColdMessage || "";
+                const targetLink = taskPayload.targetLink || "";
                 const fullPrompt = promptTemplate
                     .replace('{{socialStrategyPrompt}}', socialStrategyPrompt)
-                    .replace('{context}', keyword || "a user on this platform");
+                    .replace('{context}', keyword || "a user on this platform")
+                    + (targetLink ? `\nCampaign target link: ${targetLink} — reference this destination naturally in the message (plain URL, only if it fits the conversation).` : "");
                 finalMessageText = await MultiProviderAI.generate(fullPrompt);
                 logger.info(`[processTask] AI generated message for ${taskId}`);
             } catch (e) {

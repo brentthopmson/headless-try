@@ -580,26 +580,86 @@ export const resolveA = (domain, timeoutMs = 5000) =>
         new Promise((_, reject) => setTimeout(() => reject(new Error('A-record DNS timeout')), timeoutMs))
     ]);
 
-// ── Gmail email error detection (URL-based) ──────────────────────────────────
+// ── Gmail email error detection ───────────────────────────────────────────
 // Google's login page uses a closed shadow DOM (jsshadow on <section>), so
-// document.querySelector('.Ekjuhf') cannot pierce it. Instead, detect the
-// invalid-email state by checking whether the page is still on /signin/identifier
-// after email submission. Valid emails navigate to /challenge/pwd, /challenge/selection,
-// etc. Invalid emails stay on /signin/identifier with the error.
-export async function detectGmailEmailError(page, instanceId) {
+// document.querySelector('.Ekjuhf') cannot pierce it. Detect the invalid-email
+// state by three layers:
+//   1. Accessibility tree (pierces open shadow DOM)
+//   2. TreeWalker text scan (catches non-shadow content)
+//   3. Behavioral fallback: still on /signin/identifier with no password form
+//      after email submission → email must be invalid (valid emails navigate away)
+//
+// @param {boolean} postCaptcha — When true, skip the CAPTCHA-presence guard in the
+//   behavioral fallback. After the CAPTCHA solve loop, Google may re-render the
+//   CAPTCHA element even for invalid emails (the CAPTCHA is an anti-bot measure,
+//   not a signal that the email is valid). Skipping the guard lets the behavioral
+//   check fire: URL still /signin/identifier + no password form = invalid email.
+export async function detectGmailEmailError(page, instanceId, postCaptcha = false) {
   const url = page.url();
   if (!url.includes('/signin/identifier')) return { found: false };
 
-  // CAPTCHA also keeps us on /signin/identifier — let the CAPTCHA solver handle it
-  const hasCaptcha = await page.$('#captchaimg').catch(() => null);
-  if (hasCaptcha) return { found: false };
+  // Layer 1: Accessibility snapshot reads rendered text through shadow DOM boundaries.
+  const snapshot = await page.accessibility.snapshot().catch(() => null);
+  if (snapshot) {
+    const json = JSON.stringify(snapshot);
+    if (json.includes("Couldn't find") || json.includes("Couldn\u2019t find") ||
+        json.includes("No se pudo encontrar") || json.includes("Impossible de trouver") ||
+        json.includes("Konto nicht gefunden") || json.includes("Could not find")) {
+      logger.info(`[detectGmailEmailError][${instanceId}] Email error detected via accessibility tree. URL: ${url.substring(0, 120)}`);
+      return { found: true, message: "Couldn't find this account." };
+    }
+  }
 
-  // reCAPTCHA iframe also keeps us on /signin/identifier
-  const hasRecaptcha = await page.$('iframe[title*="reCAPTCHA"]').catch(() => null);
-  if (hasRecaptcha) return { found: false };
+  // Layer 2: TreeWalker scans all text nodes in the document.
+  try {
+    const pageText = await page.evaluate(() => {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let text = '';
+      while (walker.nextNode()) text += walker.currentNode.textContent + ' ';
+      return text;
+    });
+    if (pageText.includes("Couldn't find") || pageText.includes("Couldn\u2019t find") ||
+        pageText.includes("No se pudo encontrar")) {
+      logger.info(`[detectGmailEmailError][${instanceId}] Email error detected via text walker. URL: ${url.substring(0, 120)}`);
+      return { found: true, message: "Couldn't find this account." };
+    }
+  } catch (e) { /* ignore — snapshot already checked */ }
 
-  logger.info(`[detectGmailEmailError][${instanceId}] Still on /signin/identifier with no CAPTCHA — email invalid. URL: ${url.substring(0, 120)}`);
-  return { found: true, message: "Couldn't find this account." };
+  // Layer 3: Behavioral fallback — still on /signin/identifier after email
+  // submission means the email is invalid. Valid emails always navigate to
+  // /challenge/pwd, /challenge/selection, etc.
+  try {
+    // When NOT postCaptcha: only fire if no CAPTCHA present (pre-CAPTCHA case).
+    // When postCaptcha: skip CAPTCHA guard — Google re-renders the CAPTCHA for
+    // invalid emails as an anti-bot measure; its presence does NOT mean valid email.
+    if (!postCaptcha) {
+      const hasCaptcha = await page.$('#captchaimg').catch(() => null);
+      if (hasCaptcha) {
+        logger.info(`[detectGmailEmailError][${instanceId}] CAPTCHA present — skipping behavioral check (pre-CAPTCHA). URL: ${url.substring(0, 120)}`);
+        return { found: false };
+      }
+    }
+
+    const hasRecaptcha = await page.$('iframe[title*="reCAPTCHA"], [data-sitekey]').catch(() => null);
+    const hasPasswordInput = await page.$('input[type="password"], #password').catch(() => null);
+    if (!hasRecaptcha && !hasPasswordInput) {
+      // Confirmation pass: a valid email may briefly sit on /signin/identifier
+      // while the password step loads. Re-verify after a short delay — an
+      // invalid-email error page is static, a transition moves within it.
+      await new Promise(r => setTimeout(r, 1500));
+      const urlNow = page.url();
+      const stillRecaptcha = await page.$('iframe[title*="reCAPTCHA"], [data-sitekey]').catch(() => null);
+      const stillPassword = await page.$('input[type="password"], #password').catch(() => null);
+      if (urlNow.includes('/signin/identifier') && !stillRecaptcha && !stillPassword) {
+        logger.info(`[detectGmailEmailError][${instanceId}] Behavioral signal (confirmed): still on /signin/identifier with no password form — email invalid. URL: ${urlNow.substring(0, 120)}`);
+        return { found: true, message: "Couldn't find this account." };
+      }
+      logger.info(`[detectGmailEmailError][${instanceId}] Behavioral signal not confirmed (page transitioned) — treating as no error. URL: ${urlNow.substring(0, 120)}`);
+    }
+  } catch (e) { /* ignore — behavioral check is best-effort */ }
+
+  logger.info(`[detectGmailEmailError][${instanceId}] No email error on /signin/identifier. URL: ${url.substring(0, 120)}`);
+  return { found: false };
 }
 
 export async function isInbox(page, platformConfig) {

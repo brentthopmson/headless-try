@@ -259,8 +259,33 @@ export async function POST(request) {
     if (channel === "email") {
       // ===== EMAIL CAMPAIGN EXECUTION =====
       const fileUrl = settings.fileUrl || campaignRow[cHeaders.indexOf("fileUrl")];
-      if (!fileUrl) {
+      const interactionOnly = !fileUrl && (settings.campaignMode === "interactions-only" || settings.interactionStaged === true);
+
+      if (!fileUrl && !interactionOnly) {
         throw new Error("No CSV contact list fileUrl configured for email campaign");
+      }
+
+      if (interactionOnly) {
+        // ===== EMAIL INTERACTIONS-ONLY MODE (no contact list) =====
+        // The AI inbox watcher (interact-inbox) handles keyword discovery and
+        // AI replies against the selected hub email accounts. Nothing to send here.
+        log.info(` Interaction-only email campaign (no contact list) — marking execute complete, AI inbox watcher will drive interactions`);
+        await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+          status: "completed",
+          updatedOn: new Date().toISOString()
+        });
+        await updateCampaignSettings(campaignId, {
+          executionStatus: "completed",
+          campaignMode: "interactions-only",
+          targetLink: settings.targetLink || "",
+          interactionStatus: settings.interactionStatus || "idle",
+          interactionStartedAt: settings.interactionStartedAt || ""
+        });
+        return NextResponse.json({
+          success: true,
+          message: "Interaction-only email campaign: no send phase. AI inbox interactions will be driven by the interact stage.",
+          interactionOnly: true
+        });
       }
 
       const fileId = extractFileId(fileUrl);
@@ -692,6 +717,10 @@ export async function POST(request) {
               priority: PRIORITY_MAP[operation] !== undefined ? PRIORITY_MAP[operation] : 99,
               searchQuery: keyword,
               cookieJSON: typeof profileData.cookies === "string" ? profileData.cookies : JSON.stringify(profileData.cookies),
+              // AI context: strategy + target link so messages are crafted with the destination in mind
+              targetLink: settings.targetLink || "",
+              socialStrategyPrompt: settings.socialStrategyPrompt || "",
+              campaignMode: settings.campaignMode || "",
               status: "PENDING",
               createdAt: new Date().toISOString()
             });
