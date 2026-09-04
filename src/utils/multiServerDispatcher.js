@@ -8,26 +8,52 @@ import logger from './logger.js';
 
 /**
  * Discover available servers from the links sheet.
- * Returns [{ id, url }] for all active, non-disabled servers.
+ * Filters by severlessCategory (e.g. 'LINK', 'CAMPAIGN') and excludes FAILED/disabled rows.
+ * Returns [{ id, url, rph, rphUsage, rpd, rpdUsage, status }] for all matching servers.
  */
-export async function getAvailableServers() {
+export async function getAvailableServers(category) {
   try {
     const linksResult = await getSheetDataApi('links');
     if (!linksResult.success || !linksResult.data) return [];
     const idIdx = linksResult.headers.indexOf('severlessId');
     const urlIdx = linksResult.headers.indexOf('severlessURL');
     const statusIdx = linksResult.headers.indexOf('status');
+    const categoryIdx = linksResult.headers.indexOf('severlessCategory');
+    const severlessStatusIdx = linksResult.headers.indexOf('severlessStatus');
+    const rphIdx = linksResult.headers.indexOf('serverlessRph');
+    const rphUsageIdx = linksResult.headers.indexOf('serverlessRphUsage');
+    const rpdIdx = linksResult.headers.indexOf('serverlessRpd');
+    const rpdUsageIdx = linksResult.headers.indexOf('serverlessRpdUsage');
     if (idIdx === -1 || urlIdx === -1) return [];
 
     return linksResult.data
       .filter(r => {
         const url = r[urlIdx]?.trim();
         const status = statusIdx !== -1 ? r[statusIdx]?.trim().toLowerCase() : 'active';
-        return url && url.startsWith('http') && status !== 'disabled';
+        if (!url || !url.startsWith('http') || status === 'disabled') return false;
+
+        // Exclude servers marked FAILED
+        if (severlessStatusIdx !== -1) {
+          const ss = String(r[severlessStatusIdx] || '').trim().toUpperCase();
+          if (ss === 'FAILED') return false;
+        }
+
+        // Filter by severlessCategory if a category was requested
+        if (category && categoryIdx !== -1) {
+          const serverCategories = String(r[categoryIdx] || '').toUpperCase().split(',').map(s => s.trim());
+          if (!serverCategories.includes(category.toUpperCase())) return false;
+        }
+
+        return true;
       })
       .map(r => ({
         id: r[idIdx],
         url: r[urlIdx].replace(/\/+$/, ''),
+        rph: parseInt(r[rphIdx] || '999', 10),
+        rphUsage: parseInt(r[rphUsageIdx] || '0', 10),
+        rpd: parseInt(r[rpdIdx] || '999999', 10),
+        rpdUsage: parseInt(r[rpdUsageIdx] || '0', 10),
+        status: severlessStatusIdx !== -1 ? String(r[severlessStatusIdx] || 'ACTIVE').trim().toUpperCase() : 'ACTIVE',
       }));
   } catch (err) {
     logger.warn(`[MultiServer] Failed to fetch server pool: ${err.message}`);
@@ -60,9 +86,10 @@ export function splitRowRanges(totalRows, numServers) {
  * @param {string} stage - 'validate'|'enrich'|'personalize'|'execute'|'interact'
  * @param {string} fileUrl - the CSV file URL (for routes that need it)
  * @param {number} totalRows - total data row count (after dedup if applicable)
+ * @param {string} category - server category filter (e.g. 'CAMPAIGN')
  * @returns {Promise<{ dispatched: boolean, servers: Array } | null>} null = single-server mode
  */
-export async function dispatchToServers(campaignId, stage, fileUrl, totalRows) {
+export async function dispatchToServers(campaignId, stage, fileUrl, totalRows, category) {
   const multiServerSetting = await getSetting('multiServerEnabled');
   if (multiServerSetting?.value1 !== 'true') return null;
 
@@ -71,7 +98,7 @@ export async function dispatchToServers(campaignId, stage, fileUrl, totalRows) {
     return null;
   }
 
-  const servers = await getAvailableServers();
+  const servers = await getAvailableServers(category || 'CAMPAIGN');
   if (servers.length === 0) return null;
 
   const ranges = splitRowRanges(totalRows, servers.length);
