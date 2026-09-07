@@ -828,7 +828,7 @@ export async function createOrUpdateJsonFile(parentFolderId, folderName, fileNam
         parents: [parentFolderId],
       };
       const createFolderResponse = await drive.files.create({
-        resource: fileMetadata,
+        resource: folderMetadata,
         fields: 'id',
         supportsAllDrives: true, // Enable support for Shared Drives
       });

