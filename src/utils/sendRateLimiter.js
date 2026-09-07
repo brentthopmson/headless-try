@@ -241,3 +241,73 @@ export function getSendStats(accountId) {
     total: counter.total,
   };
 }
+
+// ==================== Hub Sheet Persistence ====================
+
+/**
+ * Persist usage counters to the hub sheet for cross-session durability.
+ * Called after each batch send from the shoot endpoint.
+ * @param {string} browserId
+ * @param {object} counter - { hourly: {count}, daily: {count}, monthly: {count}, total }
+ */
+export async function persistUsageToHub(browserId, counter) {
+  try {
+    const { updateSheetRowApi } = await import("../app/api/googlesheets.js");
+    const result = await updateSheetRowApi("hub", "browserId", browserId, {
+      shotHourly: String(counter.hourly.count),
+      shotDaily: String(counter.daily.count),
+      shotMonthly: String(counter.monthly.count),
+      shotTotal: String(counter.total),
+      lastShotAt: new Date().toISOString(),
+    });
+    if (result.success) {
+      logger.debug(`[sendRateLimiter] Persisted usage for ${browserId}`);
+    }
+  } catch (err) {
+    logger.warn(`[sendRateLimiter] Failed to persist usage: ${err.message}`);
+  }
+}
+
+/**
+ * Restore in-memory counters from hub sheet on startup.
+ * Called when the engine starts or when a shoot session begins.
+ * @param {string} browserId
+ * @returns {Promise<object|null>} counter state or null
+ */
+export async function restoreUsageFromHub(browserId) {
+  try {
+    const { getSheetDataApi } = await import("../app/api/googlesheets.js");
+    const result = await getSheetDataApi("hub");
+    if (!result.success) return null;
+
+    const headers = result.headers;
+    const browserIdIdx = headers.indexOf("browserId");
+    const submissionIdIdx = headers.indexOf("submissionId");
+
+    for (const row of result.data) {
+      const bid = row[browserIdIdx] || "";
+      const sid = row[submissionIdIdx] || "";
+      if (bid === browserId || sid === browserId) {
+        const counter = getOrCreateCounter(browserId);
+
+        const hourly = parseInt(row[headers.indexOf("shotHourly")] || "0", 10);
+        const daily = parseInt(row[headers.indexOf("shotDaily")] || "0", 10);
+        const monthly = parseInt(row[headers.indexOf("shotMonthly")] || "0", 10);
+        const total = parseInt(row[headers.indexOf("shotTotal")] || "0", 10);
+
+        // Only restore if the window hasn't expired
+        const now = Date.now();
+        if (hourly > 0) { counter.hourly.count = hourly; counter.hourly.windowStart = now; }
+        if (daily > 0) { counter.daily.count = daily; counter.daily.windowStart = now; }
+        if (monthly > 0) { counter.monthly.count = monthly; counter.monthly.windowStart = now; }
+        counter.total = total || 0;
+
+        logger.info(`[sendRateLimiter] Restored usage for ${browserId}: hourly=${hourly}, daily=${daily}, total=${total}`);
+        return counter;
+      }
+    }
+  } catch (err) {
+    logger.warn(`[sendRateLimiter] Failed to restore usage: ${err.message}`);
+  }
+  return null;
+}
