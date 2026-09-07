@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import logger from "../../../utils/logger.js";
-import { launchBrowserWithSession, DOMHelpers } from "../../socials/_shared/routeHelper.js";
-import { getSheetDataApi } from "../../api/googlesheets.js";
-import { getPlatformConfig, detectEmailPlatform } from "../_shared/platforms.js";
+import logger from "../../../../utils/logger.js";
+import { launchBrowserWithSession, DOMHelpers } from "../../../socials/_shared/routeHelper.js";
+import { getSheetDataApi } from "../../../api/googlesheets.js";
+import { getPlatformConfig, detectEmailPlatform } from "../../_shared/platforms.js";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
