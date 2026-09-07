@@ -92,7 +92,7 @@ async function sendSingleEmail(page, config, recipient, subject, body) {
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { browserId, contacts, subject, body: emailBody, method, mailMerge } = body;
+    const { browserId, contacts, subject, body: emailBody, method, mailMerge, projectId } = body;
 
     if (!browserId || !contacts || !Array.isArray(contacts) || contacts.length === 0) {
       return NextResponse.json({ success: false, error: "Missing browserId or contacts" }, { status: 400 });
@@ -103,7 +103,7 @@ export async function POST(request) {
     }
 
     const log = logger.child({ browserId, action: "shoot-send" });
-    log.info(`Shoot send requested: ${contacts.length} contacts, method=${method}`);
+    log.info(`Shoot send requested: ${contacts.length} contacts, method=${method}, project=${projectId || "none"}`);
 
     // 1. Get hub row
     const hubRow = await getHubRowByBrowserId(browserId);
@@ -202,6 +202,7 @@ export async function POST(request) {
           method: method || "manual",
           sentAt: r.sentAt || now,
           status: "sent",
+          projectId: projectId || null,
         }));
 
       await updateSheetRow("hub", "browserId", browserId, {

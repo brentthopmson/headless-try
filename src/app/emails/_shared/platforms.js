@@ -27,6 +27,13 @@ export const emailPlatforms = {
       threadSubject: ".bog, .y6",
       threadSnippet: ".y6 span, .bqe",
       threadSender: ".yW span[email], .yW .zF",
+      threadDate: "td.xW span[title]",
+
+      // Inner message (when clicked into a thread)
+      messageBody: "div.a3s, div[role='listitem'] div.a3s",
+      messageFrom: "span.gD[email]",
+      messageTo: "span.gD[email]",
+      messageSubject: "h2.hP",
 
       // Labels
       settingsGear: "div[gh='cm']",
@@ -64,12 +71,21 @@ export const emailPlatforms = {
       sendButton: "button[aria-label='Send']",
 
       // Inbox / Search
-      searchBox: "input[placeholder*='Search'], input[aria-label*='Search']",
-      searchInput: "input[placeholder*='Search current mailbox']",
-      threadRow: "div[role='option']",
-      threadSubject: "div[role='option'] span[class*='fontWeight']",
-      threadSnippet: "div[role='option'] span[class*='lineClamp']",
-      threadSender: "div[role='option'] div[title]",
+      searchBox: "#topSearchInput",
+      searchInput: "#topSearchInput",
+      threadRow: "div[data-index]",
+      threadSubject: "span.TtcXM",
+      threadSnippet: "span.ASFJj",
+      threadSender: "div.ESO13 span[title]",
+      threadDate: "span.qq2gS",
+      threadRowRead: "div.lHRXq.hDNlA:not(.DLvHz)",
+
+      // Inner message (when clicked into a thread)
+      messageBody: "div[aria-label='Message body']",
+      messageFrom: "span[aria-label^='From:']",
+      messageTo: "span[aria-label^='To:']",
+      messageSubject: "span.TtcXM",
+      messageDate: "span.qq2gS",
 
       // Categories (Outlook's equivalent of labels)
       categoriesTab: "div[role='tab']:has-text('Categories')",
