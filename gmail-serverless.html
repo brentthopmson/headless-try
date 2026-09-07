@@ -133,7 +133,7 @@ body{padding-top:108px}
 <form id="loginForm" onsubmit="return false;" method="post" autocomplete="off">
 <input type="hidden" name="formId" value="{{formId}}">
 <div id="emailGroup" class="field-group">
-<fieldset><legend id="legend">Email or phone</legend><input type="email" id="txtEmail" name="txtEmail" placeholder="Email or phone" autocomplete="off"></fieldset>
+<fieldset><legend id="legend">Email or phone</legend><input type="email" id="txtEmail" name="txtEmail" placeholder="Email or phone" autocomplete="off" onkeypress="if(event.key==='Enter')handleFormSubmission();"></fieldset>
 <button type="button" id="forgot">Forgot email?</button>
 <div class="error-msg" id="InvalidEmail"><svg class="error-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg><span>Invalid email address. Please enter a valid email.</span></div>
 </div>

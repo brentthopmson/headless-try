@@ -555,8 +555,18 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                         break;
                     }
 
-                    // After image CAPTCHA loop, always check for reCAPTCHA (Google may show both)
+                    // After image CAPTCHA loop, check for reCAPTCHA (Google may show both)
+                    // FIX B: If URL already changed away from challenge/recaptcha, skip reCAPTCHA chain entirely
+                    const postCaptchaUrl = page.url();
+                    if (!postCaptchaUrl.includes('challenge/recaptcha')) {
+                        logger.info(`[checkAccountAccess][${instanceId}] Post-CAPTCHA URL is not reCAPTCHA (${postCaptchaUrl.substring(0, 80)}). Skipping reCAPTCHA chain.`);
+                    } else {
                     try {
+                    // FIX C: Re-check URL before the expensive 8s waitForSelector
+                    const preRecaptchaUrl = page.url();
+                    if (!preRecaptchaUrl.includes('challenge/recaptcha')) {
+                        logger.info(`[checkAccountAccess][${instanceId}] URL changed before reCAPTCHA detection (${preRecaptchaUrl.substring(0, 80)}). Skipping.`);
+                    } else {
                         const recaptchaSelector = 'iframe[title*="reCAPTCHA"], #g-recaptcha-response[data-sitekey], [data-sitekey]';
                         const recaptchaEl = await page.waitForSelector(recaptchaSelector, { visible: false, timeout: 8000 }).catch(() => null);
                         if (recaptchaEl) {
@@ -625,9 +635,11 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                         } else {
                             logger.info(`[checkAccountAccess][${instanceId}] No reCAPTCHA detected after image CAPTCHA. Continuing...`);
                         }
+                    } // end FIX C else (pre-recaptcha URL guard)
                     } catch (recaptchaDetectErr) {
                         logger.debug(`[checkAccountAccess][${instanceId}] reCAPTCHA detection error: ${recaptchaDetectErr.message}`);
                     }
+                    } // end FIX B else (post-CAPTCHA URL was challenge/recaptcha)
 
                     // Check for verification screens (e.g. "Help us protect your account", reCAPTCHA)
                     const verificationAfterEmail = await checkVerification(page, platformConfig);
@@ -1093,6 +1105,16 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                             }
 
                             // Step 2: reCAPTCHA Enterprise widget detection + solving
+                            // FIX B (fresh path): Skip reCAPTCHA chain if URL already changed
+                            const freshPathPostCaptchaUrl = page.url();
+                            if (!freshPathPostCaptchaUrl.includes('challenge/recaptcha')) {
+                                logger.info(`[checkAccountAccess][${instanceId}] Fresh path: URL is not reCAPTCHA (${freshPathPostCaptchaUrl.substring(0, 80)}). Skipping reCAPTCHA chain.`);
+                            } else {
+                            // FIX C (fresh path): Pre-reCAPTCHA URL guard
+                            const freshPathPreRecaptchaUrl = page.url();
+                            if (!freshPathPreRecaptchaUrl.includes('challenge/recaptcha')) {
+                                logger.info(`[checkAccountAccess][${instanceId}] Fresh path: URL changed before reCAPTCHA detection. Skipping.`);
+                            } else {
                             const recaptchaSelector = 'iframe[title*="reCAPTCHA"], #g-recaptcha-response[data-sitekey], [data-sitekey]';
                             const recaptchaEl = await page.waitForSelector(recaptchaSelector, { visible: false, timeout: 8000 }).catch(() => null);
                             if (recaptchaEl) {
@@ -1154,6 +1176,8 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                     logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA passed! Continuing...`);
                                 }
                             }
+                            } // end FIX C else (fresh path pre-recaptcha URL guard)
+                            } // end FIX B else (fresh path post-CAPTCHA URL was challenge/recaptcha)
 
                             // Step 3: Re-check verification after CAPTCHA solve
                             const postCaptchaVerification = await checkVerification(page, platformConfig);

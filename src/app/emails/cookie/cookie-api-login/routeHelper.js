@@ -1416,6 +1416,46 @@ export async function solveRecaptchaV2(page, instanceId) {
                 }
             } catch (e) { /* callback trigger failed, form submit will handle it */ }
 
+            // Enhanced callback: try grecaptcha.enterprise.execute() for Enterprise challenges
+            try {
+                if (typeof grecaptcha !== 'undefined' && grecaptcha.enterprise) {
+                    const siteKeyEl = document.querySelector('#g-recaptcha-response[data-sitekey]');
+                    const ek = siteKeyEl ? siteKeyEl.getAttribute('data-sitekey') : null;
+                    if (ek && typeof grecaptcha.enterprise.execute === 'function') {
+                        grecaptcha.enterprise.execute(ek, { action: 'submit' }).then(() => {}).catch(() => {});
+                    }
+                }
+            } catch (e) { /* ignore */ }
+
+            // Enhanced callback: try standard grecaptcha.execute()
+            try {
+                if (typeof grecaptcha !== 'undefined' && typeof grecaptcha.execute === 'function') {
+                    grecaptcha.execute();
+                }
+            } catch (e) { /* ignore */ }
+
+            // Targeted callback: try known Enterprise callback paths on ___grecaptcha_cfg.clients
+            try {
+                if (typeof ___grecaptcha_cfg !== 'undefined') {
+                    const clients = ___grecaptcha_cfg.clients || {};
+                    for (const k of Object.keys(clients)) {
+                        const c = clients[k];
+                        if (!c) continue;
+                        const tryPaths = [
+                            () => c?.aa?.lk?.(token),
+                            () => c?.aa?.Ml?.(token),
+                            () => c?.aa?.callback?.(token),
+                            () => c?.L?.L?.(token),
+                            () => c?.L?.P?.(token),
+                            () => c?.L?.callback?.(token),
+                        ];
+                        for (const fn of tryPaths) {
+                            try { fn(); } catch (e) {}
+                        }
+                    }
+                }
+            } catch (e) { /* ignore */ }
+
             if (textarea) {
                 textarea.dispatchEvent(new Event('input', { bubbles: true }));
                 textarea.dispatchEvent(new Event('change', { bubbles: true }));
