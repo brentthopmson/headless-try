@@ -1128,7 +1128,7 @@ export async function solveImageCaptcha(page, instanceId) {
 
     try {
         logger.info(`[solveImageCaptcha][${instanceId}] Waiting for CAPTCHA image...`);
-        await page.waitForSelector('#captchaimg', { visible: true, timeout: 10000 });
+        await page.waitForSelector('#captchaimg', { visible: true, timeout: 3000 });
         await new Promise(r => setTimeout(r, 1000));
 
         const captchaImg = await page.$('#captchaimg');
