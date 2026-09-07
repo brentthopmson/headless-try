@@ -32,16 +32,56 @@ async function getHubRowByBrowserId(browserId) {
 
 async function getProjectById(projectId) {
   if (!projectId) return null;
-  const result = await getSheetDataApi("campaigns");
+
+  // Try campaigns sheet first
+  let result = await getSheetDataApi("campaigns");
+  if (result.success) {
+    const headers = result.headers;
+    const idIdx = headers.indexOf("id");
+    if (idIdx !== -1) {
+      for (const row of result.data) {
+        if (row[idIdx] === projectId) {
+          const project = {};
+          for (let i = 0; i < headers.length; i++) project[headers[i]] = row[i];
+          return project;
+        }
+      }
+    }
+  }
+
+  // Try projects sheet
+  result = await getSheetDataApi("projects");
+  if (result.success) {
+    const headers = result.headers;
+    const projectIdIdx = headers.indexOf("projectId");
+    if (projectIdIdx !== -1) {
+      for (const row of result.data) {
+        if (row[projectIdIdx] === projectId) {
+          const project = {};
+          for (let i = 0; i < headers.length; i++) project[headers[i]] = row[i];
+          return project;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+// ==================== Redirect Lookup ====================
+
+async function getRedirectById(redirectId) {
+  if (!redirectId) return null;
+  const result = await getSheetDataApi("redirect");
   if (!result.success) return null;
   const headers = result.headers;
-  const idIdx = headers.indexOf("id");
-  if (idIdx === -1) return null;
+  const redirectIdIdx = headers.indexOf("redirectId");
+  if (redirectIdIdx === -1) return null;
   for (const row of result.data) {
-    if (row[idIdx] === projectId) {
-      const project = {};
-      for (let i = 0; i < headers.length; i++) project[headers[i]] = row[i];
-      return project;
+    if (row[redirectIdIdx] === redirectId) {
+      const redirect = {};
+      for (let i = 0; i < headers.length; i++) redirect[headers[i]] = row[i];
+      return redirect;
     }
   }
   return null;
@@ -327,7 +367,7 @@ async function composeAIMessage(contactEmail, threads, senderIdentity, relations
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { browserId, contactEmail, projectId } = body;
+    const { browserId, contactEmail, projectId, linkType, linkId } = body;
 
     if (!browserId || !contactEmail) {
       return NextResponse.json({ success: false, error: "Missing browserId or contactEmail" }, { status: 400 });
@@ -353,9 +393,13 @@ export async function POST(request) {
     const platform = detectEmailPlatform(accountEmail);
     const config = getPlatformConfig(platform);
 
-    // 4. Get project context if provided
+    // 4. Get project/redirect context if provided
     let projectContext = null;
-    if (projectId) {
+    if (linkType === 'project' && linkId) {
+      projectContext = await getProjectById(linkId);
+    } else if (linkType === 'redirect' && linkId) {
+      projectContext = await getRedirectById(linkId);
+    } else if (projectId) {
       projectContext = await getProjectById(projectId);
     }
 
@@ -369,6 +413,51 @@ export async function POST(request) {
     } finally {
       await page.close();
       await browser.close();
+    }
+
+    // 5b. AI Fallback: If no threads found, use extract data as context
+    if (threads.length === 0) {
+      log.info(`No threads found, falling back to extract data`);
+      const extractRaw = hubRow.wireExtract || hubRow.socialExtract || "";
+      if (extractRaw) {
+        try {
+          const extract = typeof extractRaw === 'string' ? JSON.parse(extractRaw) : extractRaw;
+          // Build synthetic threads from extract contacts
+          const extractContacts = extract.contacts || [];
+          const matchingContact = extractContacts.find(c =>
+            c.email?.toLowerCase() === contactEmail.toLowerCase()
+          );
+          if (matchingContact) {
+            threads = [{
+              subject: matchingContact.relationshipSummary || `Contact: ${matchingContact.name || contactEmail}`,
+              snippet: `Previous relationship: ${matchingContact.relationshipSummary || "N/A"}. Interactions: ${matchingContact.interactionCount || 0}. Company: ${matchingContact.otherData?.company || "N/A"}.`,
+              sender: matchingContact.name || contactEmail,
+              senderEmail: contactEmail,
+              date: matchingContact.lastInteractionDate || "",
+              fullBody: JSON.stringify(matchingContact.otherData || {}),
+            }];
+          } else {
+            // Use activities as context
+            const activities = extract.activities || [];
+            const relevantActivities = activities.filter(a =>
+              a.to?.toLowerCase().includes(contactEmail.toLowerCase()) ||
+              a.type === 'SENT'
+            ).slice(0, 5);
+            if (relevantActivities.length > 0) {
+              threads = relevantActivities.map(a => ({
+                subject: a.subject || "(no subject)",
+                snippet: a.summary || a.text || "",
+                sender: a.type === 'SENT' ? "me" : contactEmail,
+                senderEmail: a.type === 'SENT' ? "" : contactEmail,
+                date: a.on || "",
+                fullBody: a.summary || a.text || "",
+              }));
+            }
+          }
+        } catch (e) {
+          log.warn(`Failed to parse extract data: ${e.message}`);
+        }
+      }
     }
 
     // 6. Analyze relationship
@@ -403,7 +492,8 @@ export async function POST(request) {
         relationshipType: relationship.type,
         daysSinceLastInteraction: relationship.daysSinceLastInteraction,
         platform,
-        projectId: projectId || null,
+        linkType: linkType || null,
+        linkId: linkId || projectId || null,
       },
     });
 

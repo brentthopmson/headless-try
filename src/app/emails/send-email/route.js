@@ -156,7 +156,13 @@ export async function POST(request) {
         const rateCheck = await checkSendAllowed(rateLimitPlatform, browserId);
         if (!rateCheck.allowed) {
           log.warn(`Rate limited: ${rateCheck.reason}`);
-          results.push({ email: contactEmail, status: "rate_limited", reason: rateCheck.reason });
+          const cooldownSeconds = rateCheck.retryAfterMs ? Math.ceil(rateCheck.retryAfterMs / 1000) : 60;
+          results.push({
+            email: contactEmail,
+            status: "rate_limited",
+            reason: rateCheck.reason,
+            cooldownSeconds,
+          });
           break;
         }
 
