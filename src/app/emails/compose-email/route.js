@@ -187,8 +187,15 @@ async function readMailboxHistory(page, config, contactEmail, maxThreads = 10) {
           thread.fullBody = fullBody;
 
           // Go back to search results
-          await page.goBack({ waitUntil: "domcontentloaded" }).catch(() => {});
+          const searchUrl = `https://mail.google.com/mail/u/0/#search/from%3A${encodeURIComponent(contactEmail)}+OR+to%3A${encodeURIComponent(contactEmail)}`;
+          await page.goBack({ waitUntil: "domcontentloaded" }).catch(async () => {
+            // Fallback: re-navigate to search results
+            await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 30000 }).catch(() => {});
+          });
           await DOMHelpers.randomDelay(1500, 2500);
+        } else {
+          // Thread click failed, use snippet only
+          thread.fullBody = thread.snippet;
         }
       } catch (e) {
         // Thread click failed, use snippet only
