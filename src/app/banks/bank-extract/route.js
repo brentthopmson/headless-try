@@ -3,6 +3,7 @@ import logger from "../../../utils/logger.js";
 import { launchBrowserWithSession, DOMHelpers, setCorsHeaders } from '../../socials/_shared/routeHelper.js';
 import { runSmartExtract } from '../../../utils/smartExtract.js';
 import { requireFeature } from '../../../utils/featureGate.js';
+import { updateSheetRowApi } from '../../api/googlesheets.js';
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
@@ -154,11 +155,27 @@ export async function POST(request) {
 
         // New path: full smart extract + hub persist when a browserId is supplied.
         if (browserId) {
-            const result = await runSmartExtract(browserId, body.category || 'BANK', undefined, platform);
+            // Mark extraction as started
+            try {
+                await updateSheetRowApi('hub', 'submissionId', browserId, {
+                    extractStatus: 'started',
+                    extractStatusAt: new Date().toISOString(),
+                });
+            } catch (e) {
+                logger.warn(`[bank-extract] initial status update failed: ${e.message}`);
+            }
+
+            // Fire-and-forget extraction
+            setTimeout(() => {
+                runSmartExtract(browserId, body.category || 'BANK', undefined, platform).catch(e => {
+                    logger.error(`[bank-extract] background extraction failed: ${e.message}`);
+                });
+            }, 0);
+
             return setCorsHeaders(NextResponse.json({
                 success: true,
-                platform: platform || body.category || 'BANK',
-                data: result.data,
+                status: 'started',
+                browserId,
             }));
         }
 

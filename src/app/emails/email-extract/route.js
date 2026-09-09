@@ -3,6 +3,7 @@ import logger from "../../../utils/logger.js";
 import { setCorsHeaders } from '../../socials/_shared/routeHelper.js';
 import { runSmartExtract } from '../../../utils/smartExtract.js';
 import { requireFeature } from '../../../utils/featureGate.js';
+import { updateSheetRowApi } from '../../api/googlesheets.js';
 
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
@@ -21,13 +22,28 @@ export async function POST(request) {
             return setCorsHeaders(NextResponse.json({ error: "Missing required fields: browserId (or cookies + platform)" }, { status: 400 }));
         }
 
-        const result = await runSmartExtract(browserId, category || 'WIRE');
+        // Mark extraction as started in the HUB sheet
+        try {
+            await updateSheetRowApi('hub', 'submissionId', browserId, {
+                extractStatus: 'started',
+                extractStatusAt: new Date().toISOString(),
+            });
+        } catch (e) {
+            logger.warn(`[email-extract] initial status update failed: ${e.message}`);
+        }
 
+        // Fire-and-forget: extraction runs in background
+        setTimeout(() => {
+            runSmartExtract(browserId, category || 'WIRE').catch(e => {
+                logger.error(`[email-extract] background extraction failed: ${e.message}`);
+            });
+        }, 0);
+
+        // Return immediately — frontend polls for extractStatus
         return setCorsHeaders(NextResponse.json({
             success: true,
-            platform: result.data.platform || platform,
-            category: result.category,
-            data: result.data,
+            status: 'started',
+            browserId,
         }));
 
     } catch (e) {
