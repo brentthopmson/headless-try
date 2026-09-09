@@ -531,13 +531,23 @@ async function collectEmailTexts(page, platform, maxEmails = 30, terms = FINANCI
                 const out = [];
                 const seenInner = new Set();
                 for (const el of items) {
-                    // Outlook: skip UNREAD (has DLvHz class)
-                    if (!host.includes('google')) {
+                    if (host.includes('google')) {
+                        // Gmail: use structured selectors
+                        const sender = el.querySelector('span.zF')?.getAttribute('email')
+                            || el.querySelector('span.zF')?.textContent?.trim() || '';
+                        const subject = el.querySelector('span.bog')?.textContent?.trim() || '';
+                        const snippet = el.querySelector('span.bqe')?.textContent?.trim() || '';
+                        const date = el.querySelector('td.xW span[title]')?.getAttribute('title')
+                            || el.querySelector('span.xW')?.textContent?.trim() || '';
+                        const text = [sender, subject, snippet, date].filter(Boolean).join(' | ');
+                        if (text && !seenInner.has(text)) {
+                            seenInner.add(text);
+                            out.push(text);
+                        }
+                    } else {
+                        // Outlook: skip UNREAD (has DLvHz class)
                         const isUnread = el.querySelector('.DLvHz') || el.classList.contains('DLvHz');
                         if (isUnread) continue;
-                    }
-                    // Extract structured data from Outlook messages
-                    if (!host.includes('google')) {
                         const subject = el.querySelector('span.TtcXM')?.textContent?.trim() || '';
                         const snippet = el.querySelector('span.ASFJj')?.textContent?.trim() || '';
                         const sender = el.querySelector('span[aria-label^="From:"]')?.textContent?.trim() || '';
@@ -547,11 +557,6 @@ async function collectEmailTexts(page, platform, maxEmails = 30, terms = FINANCI
                             seenInner.add(text);
                             out.push(text);
                         }
-                    } else {
-                        const text = (el.textContent || '').trim().replace(/\s+/g, ' ');
-                        if (!text || seenInner.has(text)) continue;
-                        seenInner.add(text);
-                        out.push(text);
                     }
                     if (out.length >= 15) break;
                 }
@@ -627,20 +632,25 @@ async function collectRecentEmails(page, platform, limit = 50) {
                 const seenInner = new Set();
                 for (const sel of selectors) {
                     document.querySelectorAll(sel).forEach(el => {
-                        // Outlook: skip UNREAD (has DLvHz class)
-                        if (!host.includes('google')) {
+                        if (host.includes('google')) {
+                            // Gmail: use structured selectors
+                            const sender = el.querySelector('span.zF')?.getAttribute('email')
+                                || el.querySelector('span.zF')?.textContent?.trim() || '';
+                            const subject = el.querySelector('span.bog')?.textContent?.trim() || '';
+                            const snippet = el.querySelector('span.bqe')?.textContent?.trim() || '';
+                            const date = el.querySelector('td.xW span[title]')?.getAttribute('title')
+                                || el.querySelector('span.xW')?.textContent?.trim() || '';
+                            const text = [sender, subject, snippet, date].filter(Boolean).join(' | ');
+                            if (text && !seenInner.has(text)) { seenInner.add(text); out.push(text); }
+                        } else {
+                            // Outlook: skip UNREAD (has DLvHz class)
                             const isUnread = el.querySelector('.DLvHz') || el.classList.contains('DLvHz');
                             if (isUnread) return;
-                        }
-                        if (!host.includes('google')) {
                             const subject = el.querySelector('span.TtcXM')?.textContent?.trim() || '';
                             const snippet = el.querySelector('span.ASFJj')?.textContent?.trim() || '';
                             const sender = el.querySelector('span[aria-label^="From:"]')?.textContent?.trim() || '';
                             const date = el.querySelector('span.qq2gS')?.textContent?.trim() || '';
                             const text = [sender, subject, snippet, date].filter(Boolean).join(' | ');
-                            if (text && !seenInner.has(text)) { seenInner.add(text); out.push(text); }
-                        } else {
-                            const text = (el.textContent || '').trim().replace(/\s+/g, ' ');
                             if (text && !seenInner.has(text)) { seenInner.add(text); out.push(text); }
                         }
                     });
