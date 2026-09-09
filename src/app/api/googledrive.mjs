@@ -876,6 +876,17 @@ export async function createOrUpdateJsonFile(parentFolderId, folderName, fileNam
       fileId = createFileResponse.data.id;
     }
 
+    // Set public access so frontend can fetch via download URL
+    try {
+      await drive.permissions.create({
+        fileId: fileId,
+        requestBody: { role: 'reader', type: 'anyone' },
+        supportsAllDrives: true,
+      });
+    } catch (permErr) {
+      logger.warn(`[Drive API] Failed to set public permission on ${fileId}: ${permErr.message}`);
+    }
+
     return { success: true, fileId: fileId };
   } catch (error) {
     logger.error(`[Drive API] Error in createOrUpdateJsonFile: ${error.message}`);
