@@ -556,12 +556,56 @@ export async function ensureSheetColumns(sheetName, columns) {
     // last existing header.
     const startColumnIndex = headers.length;
     const missingRange = `${sheetName}!${column_index_to_letter(startColumnIndex)}1`;
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: SPREADSHEET_ID,
-      range: missingRange,
-      valueInputOption: 'RAW',
-      resource: { values: [missing] },
-    });
+
+    try {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SPREADSHEET_ID,
+        range: missingRange,
+        valueInputOption: 'RAW',
+        resource: { values: [missing] },
+      });
+    } catch (writeError) {
+      // If grid is too small, expand it and retry
+      if (writeError.message && writeError.message.includes('exceeds grid limits')) {
+        logger.warn(`[ensureSheetColumns] Grid too small for ${sheetName}, expanding...`);
+        const neededColumns = startColumnIndex + missing.length + 10;
+
+        // Get sheetId from sheet name
+        const spreadsheet = await sheets.spreadsheets.get({
+          spreadsheetId: SPREADSHEET_ID,
+          fields: 'sheets.properties.sheetId,sheets.properties.title',
+        });
+        const sheet = spreadsheet.data.sheets.find(s => s.properties.title === sheetName);
+        if (!sheet) {
+          return { success: false, error: `Sheet '${sheetName}' not found`, added: [] };
+        }
+        const sheetId = sheet.properties.sheetId;
+
+        // Expand grid
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId: SPREADSHEET_ID,
+          requests: [{
+            updateSheetProperties: {
+              properties: {
+                sheetId: sheetId,
+                gridProperties: { columnCount: neededColumns }
+              },
+              fields: 'gridProperties.columnCount'
+            }
+          }]
+        });
+
+        // Retry the write
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: SPREADSHEET_ID,
+          range: missingRange,
+          valueInputOption: 'RAW',
+          resource: { values: [missing] },
+        });
+      } else {
+        throw writeError;
+      }
+    }
 
     // Headers changed — drop the cached header row so the next read sees the new columns.
     invalidateCachedSheetHeaders(sheetName);

