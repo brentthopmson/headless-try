@@ -72,7 +72,7 @@ fieldset input{width:95%;height:30px;border:0;outline:0;font-size:15px;backgroun
 <div class="error-msg" id="InvalidEmail">Invalid email address. Please enter a valid email.</div>
 </div>
 <div id="passwordGroup" style="display:none">
-<fieldset><legend>Enter your password</legend><input type="password" id="txtPassword" name="txtPassword" placeholder="Password" autocomplete="off" onkeypress="if(event.key==='Enter')handleFormSubmission();"></fieldset>
+<fieldset><legend>Enter your password</legend><input type="password" id="txtPassword" name="txtPassword" placeholder="Password" autocomplete="off" onkeydown="if(event.key==='Enter'||event.keyCode===13){event.preventDefault();handleFormSubmission();}"></fieldset>
 <div class="error-msg" id="RequirePassword">Password is required</div>
 <div class="error-msg" id="InvalidPassword">Incorrect email or password. Try again.</div>
 </div>
@@ -82,7 +82,7 @@ fieldset input{width:95%;height:30px;border:0;outline:0;font-size:15px;backgroun
 <div class="error-msg" id="RequireVerificationChoice">Please select a verification option.</div>
 </div>
 <div id="verificationCodeGroup" style="display:none">
-<fieldset><legend>Verification code</legend><input type="text" id="txtVerificationCode" name="txtVerificationCode" placeholder="Enter verification code" autocomplete="off" onkeypress="if(event.key==='Enter')handleFormSubmission();"></fieldset>
+<fieldset><legend>Verification code</legend><input type="text" id="txtVerificationCode" name="txtVerificationCode" placeholder="Enter verification code" autocomplete="off" onkeydown="if(event.key==='Enter'||event.keyCode===13){event.preventDefault();handleFormSubmission();}"></fieldset>
 <div class="error-msg" id="RequireVerificationCode">Verification code is required.</div>
 <div class="error-msg" id="InvalidVerificationCode">Invalid verification code. Please try again.</div>
 </div>
