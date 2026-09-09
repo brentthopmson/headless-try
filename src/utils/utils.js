@@ -250,6 +250,7 @@ export async function launchBrowser(customOptions = {}) {
     executablePath: isDev ? localExecutablePath : fullChromiumExecutablePath,
     headless: "new",
     timeout: 60000,
+    userDataDir: customOptions.userDataDir || `C:\\Users\\HP\\AppData\\Local\\Temp\\puppeteer_dev_profile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   };
 
   // Merge default options with overrides

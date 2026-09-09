@@ -584,15 +584,17 @@ export async function ensureSheetColumns(sheetName, columns) {
         // Expand grid
         await sheets.spreadsheets.batchUpdate({
           spreadsheetId: SPREADSHEET_ID,
-          requests: [{
-            updateSheetProperties: {
-              properties: {
-                sheetId: sheetId,
-                gridProperties: { columnCount: neededColumns }
-              },
-              fields: 'gridProperties.columnCount'
-            }
-          }]
+          resource: {
+            requests: [{
+              updateSheetProperties: {
+                properties: {
+                  sheetId: sheetId,
+                  gridProperties: { columnCount: neededColumns }
+                },
+                fields: 'gridProperties.columnCount'
+              }
+            }]
+          }
         });
 
         // Retry the write
