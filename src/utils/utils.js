@@ -275,6 +275,14 @@ export async function launchBrowser(customOptions = {}) {
   browser.selectedUserAgent = identity.userAgent;
   browser._semaphoreSlotId = slotId;
 
+  // Expose userDataDir for downstream callers (e.g. smartExtract re-upload).
+  // Extract from spawnargs — works for both auto-created and caller-specified dirs.
+  const spawnArgs = browser.process()?.spawnargs || [];
+  const userDataDirArg = spawnArgs.find(a => a.startsWith('--user-data-dir='));
+  browser.userDataDir = userDataDirArg
+    ? userDataDirArg.split('=').slice(1).join('=')
+    : null;
+
   // Release semaphore slot when browser is closed
   const originalClose = browser.close.bind(browser);
   browser.close = async () => {
