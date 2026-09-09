@@ -17,7 +17,7 @@ export async function loadBrowserSession(cookieJSON) {
     }
 }
 
-export async function launchBrowserWithSession(cookieJSON, headless = true) {
+export async function launchBrowserWithSession(cookieJSON, headless = isDev ? false : "new") {
     try {
         const browser = await launchBrowser({
             headless,

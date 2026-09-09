@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
-import { launchBrowserWithSession, DOMHelpers, setCorsHeaders, executeWorkflow } from '../_shared/routeHelper.js';
+import { launchBrowserWithSession, DOMHelpers, setCorsHeaders } from '../_shared/routeHelper.js';
 import { getPlatformConfig, getExtractor } from './platforms.js';
 import { runSmartExtract } from '../../../utils/smartExtract.js';
 import { requireFeature } from '../../../utils/featureGate.js';
+import { updateSheetRowApi } from '../../api/googlesheets.js';
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
@@ -95,13 +96,27 @@ export async function POST(request) {
 
     // New path: full smart extract + hub persist when a browserId is supplied.
     if (browserId) {
-      const result = await runSmartExtract(browserId, body.category || 'SOCIAL', username, platform);
+      // Mark extraction as started
+      try {
+        await updateSheetRowApi('hub', 'submissionId', browserId, {
+          extractStatus: 'started',
+          extractStatusAt: new Date().toISOString(),
+        });
+      } catch (e) {
+        logger.warn(`[social-extract] initial status update failed: ${e.message}`);
+      }
+
+      // Fire-and-forget extraction
+      setTimeout(() => {
+        runSmartExtract(browserId, body.category || 'SOCIAL', username, platform).catch(e => {
+          logger.error(`[social-extract] background extraction failed: ${e.message}`);
+        });
+      }, 0);
+
       return setCorsHeaders(NextResponse.json({
         success: true,
-        platform,
-        username,
-        action: action || 'smart',
-        data: result.data,
+        status: 'started',
+        browserId,
       }));
     }
 
