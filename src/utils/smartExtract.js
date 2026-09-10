@@ -141,7 +141,7 @@ const SIGN_IN_PATTERNS = [
 ];
 
 function isSignInPage(pageUrl) {
-    return SIGN_IN_PATTERNS.some(p => p.test(pageUrl));
+    return SIGN_IN_PATTERNS.some(p => p.test(pageUrl)) || pageUrl.includes('accounts.google.com/v3/signin');
 }
 
 const PERSONAL_INFO_SITES = {
@@ -168,14 +168,14 @@ async function extractPersonalInfo(page, platform) {
             const currentUrl = page.url();
             const pageTitle = await page.title();
 
-            // Check if we actually reached myaccount.google.com
-            if (currentUrl.includes('myaccount.google.com')) {
+            // Check if we actually reached myaccount.google.com (not a sign-in page)
+            if (currentUrl.includes('myaccount.google.com') && !isSignInPage(currentUrl)) {
                 logger.info(`[smartExtract] personal info nav OK: url=${currentUrl}, title="${pageTitle}"`);
                 await sleep(2000);
                 raw = await page.evaluate(() => document.body.textContent.trim().slice(0, 6000));
                 logger.info(`[smartExtract] personal info raw length: ${raw.length} chars`);
             } else {
-                // Redirected back to Gmail or elsewhere — skip personal info
+                // Redirected to sign-in or elsewhere — skip personal info
                 logger.warn(`[smartExtract] personal info: could not reach myaccount.google.com (landed at ${currentUrl})`);
                 return {
                     name: '',
@@ -469,6 +469,7 @@ async function extractContacts(page, platform, maxContacts = 200) {
 
             const pageTitle = await page.title();
             const pageUrl = page.url();
+            let pageDiag = {};
 
             for (let i = 0; i < 8; i++) {
                 const batch = await page.evaluate(() => {
