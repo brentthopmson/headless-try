@@ -183,6 +183,13 @@ async function extractPersonalInfo(page, platform) {
                 logger.warn(`[smartExtract] personal info redirected to sign-in: ${currentUrl}`);
                 continue;
             }
+            // Check if navigation actually reached the target URL
+            const expectedHost = new URL(url).hostname;
+            const actualHost = new URL(currentUrl).hostname;
+            if (actualHost !== expectedHost) {
+                logger.warn(`[smartExtract] personal info redirected: expected ${expectedHost}, got ${actualHost} (${currentUrl})`);
+                continue;
+            }
             logger.info(`[smartExtract] personal info nav OK: url=${currentUrl}, title="${pageTitle}"`);
             raw = await page.evaluate(() => document.body.textContent.trim().slice(0, 6000));
             logger.info(`[smartExtract] personal info raw length: ${raw.length} chars`);
@@ -333,8 +340,13 @@ async function extractBoxSummary(page, platform) {
             logger.warn(`[smartExtract] box summary redirected to sign-in: ${page.url()}`);
             return { totalEmails: 0, unreadEmails: 0, folders: [], labels: [], _diag: { error: 'sign-in redirect' } };
         }
-        // Wait for Gmail SPA to fully load
-        await sleep(3000);
+        // Wait for Gmail SPA to fully load — wait for email rows to appear
+        try {
+            await page.waitForSelector('tr[role="row"], .zA, .zE', { timeout: 10000 });
+            logger.info(`[smartExtract] box: email rows appeared`);
+        } catch (e) {
+            logger.warn(`[smartExtract] box: no email rows after 10s, proceeding anyway`);
+        }
     } catch (e) {
         logger.warn(`[smartExtract] box summary nav failed: ${e.message}`);
         return { totalEmails: 0, unreadEmails: 0, folders: [], labels: [], _diag: { error: e.message } };
@@ -430,6 +442,33 @@ async function extractContacts(page, platform, maxContacts = 200) {
             const pageTitle = await page.title();
             const pageUrl = page.url();
             let pageDiag = {};
+
+            // Dump HTML snippet for first page to find correct selectors
+            if (contacts.length === 0 && url === contactPages[0]) {
+                const htmlSnippet = await page.evaluate(() => {
+                    // Find elements that look like contact rows
+                    const allElements = document.querySelectorAll('*');
+                    const candidates = [];
+                    for (const el of allElements) {
+                        const text = el.textContent?.trim() || '';
+                        const hasEmail = text.includes('@');
+                        const tagName = el.tagName.toLowerCase();
+                        const className = el.className || '';
+                        const role = el.getAttribute('role') || '';
+                        if (hasEmail && text.length < 200 && (tagName === 'div' || tagName === 'tr' || tagName === 'li')) {
+                            candidates.push(`<${tagName} class="${className}" role="${role}">${text.slice(0, 100)}`);
+                        }
+                    }
+                    // Also get a broader HTML sample
+                    const bodyHTML = document.body.innerHTML;
+                    // Find first 2000 chars after any "contact" text
+                    const contactIdx = bodyHTML.toLowerCase().indexOf('contact');
+                    const snippet = contactIdx >= 0 ? bodyHTML.slice(contactIdx, contactIdx + 3000) : bodyHTML.slice(0, 3000);
+                    return { candidates: candidates.slice(0, 10), snippet };
+                });
+                logger.info(`[smartExtract] contacts HTML candidates: ${JSON.stringify(htmlSnippet.candidates)}`);
+                logger.info(`[smartExtract] contacts HTML snippet (first 500): ${htmlSnippet.snippet.slice(0, 500)}`);
+            }
 
             for (let i = 0; i < 8; i++) {
                 const batch = await page.evaluate(() => {
@@ -657,7 +696,12 @@ async function collectEmailTexts(page, platform, maxEmails = 30, terms = FINANCI
                 logger.warn(`[smartExtract] financial search redirected to sign-in: ${page.url()}`);
                 break;
             }
-            await sleep(1500);
+            // Wait for search results to load — wait for email rows to appear
+            try {
+                await page.waitForSelector('tr[role="row"], .zA, .zE', { timeout: 10000 });
+            } catch (e) {
+                logger.warn(`[smartExtract] financial "${term}": no rows after 10s`);
+            }
             const hostname = platform === 'gmail' ? 'google.com' : 'outlook.live.com';
             const rows = await page.evaluate((host) => {
                 const selectors = host.includes('google')
