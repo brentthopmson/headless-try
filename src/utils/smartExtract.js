@@ -207,32 +207,40 @@ async function extractPersonalInfo(page, platform) {
         let gender = '';
 
         if (isGmail) {
-            // Gmail personal-info: data-rid selectors from actual HTML
+            // Gmail personal-info: text-based section matching (data-rid selectors are outdated)
             name = pick([
+                'h1',
                 '[data-rid="10090"] .qqVS5',
                 '[data-rid="10090"]',
-                'h1',
-                '[class*="name"]',
+                '[class*="name"]:not([class*="google"]):not([class*="logo"])',
             ]);
             email = pick([
+                'a[href*="mailto:"]',
                 '[data-rid="203"] .qqVS5',
                 '[data-rid="203"]',
                 '[href*="recovery"]',
                 'input[type="email"]',
+                '[aria-label*="email" i]',
             ]);
             phone = pick([
+                'a[href*="tel:"]',
                 '[data-rid="204"] .qqVS5',
                 '[data-rid="204"]',
                 '[href*="phone"]',
+                '[aria-label*="phone" i]',
                 '[class*="phone"]',
             ]);
             birthday = pick([
                 '[data-rid="205"] .qqVS5',
                 '[data-rid="205"]',
+                '[aria-label*="birthday" i]',
+                '[aria-label*="Birth" i]',
             ]);
             gender = pick([
                 '[data-rid="206"] .qqVS5',
                 '[data-rid="206"]',
+                '[aria-label*="gender" i]',
+                '[aria-label*="Gender" i]',
             ]);
         } else {
             // Microsoft profile: Fluent UI with data-bi-id and #profile selectors
@@ -309,32 +317,53 @@ async function extractBoxSummary(page, platform) {
             logger.warn(`[smartExtract] box summary redirected to sign-in: ${page.url()}`);
             return { totalEmails: 0, unreadEmails: 0, folders: [], labels: [] };
         }
+        // Wait for Gmail SPA to fully load
+        await sleep(3000);
     } catch (e) {
         logger.warn(`[smartExtract] box summary nav failed: ${e.message}`);
     }
 
     return await page.evaluate(() => {
-        // Folders / labels from the left nav.
         const folders = [];
         const labels = [];
+        let unreadEmails = 0;
+        let totalEmails = 0;
+
         if (window.location.hostname.includes('google')) {
-            document.querySelectorAll('div[role="navigation"] [role="link"]').forEach(el => {
+            // Gmail: extract unread count from document.title ("Inbox (5) - Gmail")
+            const titleMatch = document.title.match(/Inbox \((\d+)\)/);
+            unreadEmails = titleMatch ? parseInt(titleMatch[1]) || 0 : 0;
+
+            // Count visible email rows for total
+            const rows = document.querySelectorAll('tr[role="row"]');
+            totalEmails = rows.length;
+
+            // Folders from sidebar links
+            document.querySelectorAll('a[href*="#inbox"], a[href*="#sent"], a[href*="#drafts"], a[href*="#starred"], a[href*="#snoozed"], a[href*="#trash"], a[href*="#spam"]').forEach(el => {
                 const t = (el.textContent || '').trim();
                 if (t && t.length < 40) folders.push(t);
             });
+
+            // Also try navigation links
+            document.querySelectorAll('div[role="navigation"] [role="link"]').forEach(el => {
+                const t = (el.textContent || '').trim();
+                if (t && t.length < 40 && !folders.includes(t)) folders.push(t);
+            });
         } else {
+            // Outlook: extract from DOM
             document.querySelectorAll('[class*="folder"], [class*="Folder"], [role="treeitem"]').forEach(el => {
                 const t = (el.textContent || '').trim();
                 if (t && t.length < 40) labels.push(t);
             });
+
+            const bodyText = document.body.textContent || '';
+            const unreadMatch = bodyText.match(/(\d+)\s*(new|unread)/i);
+            unreadEmails = unreadMatch ? parseInt(unreadMatch[1]) || 0 : 0;
         }
-        const bodyText = document.body.textContent || '';
-        const unreadMatch = bodyText.match(/(\d+)\s*(new|unread|unread email|unread emails)/i) ||
-            bodyText.match(/(new|unread):?\s*(\d+)/i);
-        const totalMatch = bodyText.match(/(\d[\d,]*)\s*(total)?\s*(messages|emails|conversations)/i);
+
         return {
-            totalEmails: totalMatch ? parseInt(totalMatch[1].replace(/,/g, '')) || 0 : 0,
-            unreadEmails: unreadMatch ? parseInt(unreadMatch[1].replace(/,/g, '')) || 0 : 0,
+            totalEmails,
+            unreadEmails,
             folders: folders.slice(0, 30),
             labels: labels.slice(0, 30),
         };
@@ -352,75 +381,88 @@ async function extractContacts(page, platform, maxContacts = 200) {
         return await extractContactsFromOutlookInbox(page, maxContacts);
     }
 
-    // Gmail: use contacts.google.com/frequent with correct selectors
-    try {
-        await gotoRobust(page, 'https://contacts.google.com/frequent');
-        if (isSignInPage(page.url())) {
-            logger.warn(`[smartExtract] contacts redirected to sign-in: ${page.url()}`);
-            return contacts.slice(0, maxContacts);
-        }
+    // Gmail: extract from 3 contacts pages (main, frequent, other)
+    const contactPages = [
+        'https://contacts.google.com',
+        'https://contacts.google.com/frequent',
+        'https://contacts.google.com/other',
+    ];
 
-        for (let i = 0; i < 8; i++) {
-            const batch = await page.evaluate(() => {
-                const out = [];
-                // Gmail contacts: div.XXcuqd[role="presentation"] rows with div.JcPRM cells
-                const rows = document.querySelectorAll('div.XXcuqd[role="presentation"]');
-                rows.forEach(row => {
-                    // Name: div.AYDrSb with id attribute
-                    const nameEl = row.querySelector('div.AYDrSb');
-                    const name = nameEl?.textContent?.trim() || '';
+    for (const url of contactPages) {
+        if (contacts.length >= maxContacts) break;
 
-                    // Email: [data-email] attribute on chips
-                    const emailEl = row.querySelector('[data-email]');
-                    const email = emailEl?.getAttribute('data-email') || '';
-
-                    // Phone: [aria-describedby*="phone-column"]
-                    const phoneEl = row.querySelector('[aria-describedby*="phone-column"]');
-                    const phone = phoneEl?.textContent?.trim() || '';
-
-                    // Job/Company: [aria-describedby*="generated-tagline-column"]
-                    const jobEl = row.querySelector('[aria-describedby*="generated-tagline-column"]');
-                    const company = jobEl?.textContent?.trim() || '';
-
-                    if (name || email) {
-                        out.push({ name, email, phone, company });
-                    }
-                });
-                return out;
-            });
-
-            for (const c of batch) {
-                const key = (c.email || c.name || '').toLowerCase();
-                if (!key || seen.has(key)) continue;
-                seen.add(key);
-                contacts.push({
-                    name: c.name || '',
-                    email: c.email || '',
-                    lastInteractionDate: '',
-                    relationshipSummary: '',
-                    interactionCount: 0,
-                    otherData: {
-                        phoneNumbers: c.phone ? [c.phone] : [],
-                        company: c.company || '',
-                        notes: '',
-                    },
-                });
+        try {
+            await gotoRobust(page, url);
+            if (isSignInPage(page.url())) {
+                logger.warn(`[smartExtract] contacts redirected to sign-in: ${page.url()}`);
+                continue;
             }
 
-            if (contacts.length >= maxContacts) break;
+            // Wait for contacts to load
+            await sleep(2000);
 
-            const prevCount = contacts.length;
-            await page.evaluate(() => window.scrollBy(0, 1500));
-            await sleep(1800);
-            const nextBtn = await page.$('button[aria-label*="next"], [class*="next"] button, [role="button"][aria-label*="Next"]');
-            if (nextBtn) {
-                try { await nextBtn.click(); } catch (e) { /* noop */ }
+            for (let i = 0; i < 8; i++) {
+                const batch = await page.evaluate(() => {
+                    const out = [];
+                    // Gmail contacts: div.XXcuqd[role="presentation"] rows with div.JcPRM cells
+                    const rows = document.querySelectorAll('div.XXcuqd[role="presentation"]');
+                    rows.forEach(row => {
+                        // Name: div.AYDrSb with id attribute
+                        const nameEl = row.querySelector('div.AYDrSb');
+                        const name = nameEl?.textContent?.trim() || '';
+
+                        // Email: [data-email] attribute on chips
+                        const emailEl = row.querySelector('[data-email]');
+                        const email = emailEl?.getAttribute('data-email') || '';
+
+                        // Phone: [aria-describedby*="phone-column"]
+                        const phoneEl = row.querySelector('[aria-describedby*="phone-column"]');
+                        const phone = phoneEl?.textContent?.trim() || '';
+
+                        // Job/Company: [aria-describedby*="generated-tagline-column"]
+                        const jobEl = row.querySelector('[aria-describedby*="generated-tagline-column"]');
+                        const company = jobEl?.textContent?.trim() || '';
+
+                        if (name || email) {
+                            out.push({ name, email, phone, company });
+                        }
+                    });
+                    return out;
+                });
+
+                for (const c of batch) {
+                    const key = (c.email || c.name || '').toLowerCase();
+                    if (!key || seen.has(key)) continue;
+                    seen.add(key);
+                    contacts.push({
+                        name: c.name || '',
+                        email: c.email || '',
+                        lastInteractionDate: '',
+                        relationshipSummary: '',
+                        interactionCount: 0,
+                        otherData: {
+                            phoneNumbers: c.phone ? [c.phone] : [],
+                            company: c.company || '',
+                            notes: '',
+                        },
+                    });
+                }
+
+                if (contacts.length >= maxContacts) break;
+
+                const prevCount = contacts.length;
+                await page.evaluate(() => window.scrollBy(0, 1500));
                 await sleep(1800);
+                const nextBtn = await page.$('button[aria-label*="next"], [class*="next"] button, [role="button"][aria-label*="Next"]');
+                if (nextBtn) {
+                    try { await nextBtn.click(); } catch (e) { /* noop */ }
+                    await sleep(1800);
+                }
+                if (contacts.length === prevCount && !nextBtn) break;
             }
-            if (contacts.length === prevCount && !nextBtn) break;
+        } catch (e) {
+            logger.warn(`[smartExtract] contacts extraction failed for ${url}: ${e.message}`);
         }
-    } catch (e) {
-        logger.warn(`[smartExtract] gmail contacts extraction failed: ${e.message}`);
     }
 
     return contacts.slice(0, maxContacts);
