@@ -146,6 +146,7 @@ function isSignInPage(pageUrl) {
 
 const PERSONAL_INFO_SITES = {
     gmail: [
+        'https://mail.google.com/mail/u/0/#inbox',
         'https://myaccount.google.com/personal-info',
         'https://myaccount.google.com/',
         'https://accounts.google.com/SignOutOptions',
@@ -160,13 +161,13 @@ async function extractPersonalInfo(page, platform) {
     const sites = PERSONAL_INFO_SITES[platform] || PERSONAL_INFO_SITES.gmail;
     let raw = '';
 
-    // Gmail: warm up session on accounts.google.com first (myaccount.google.com requires it)
+    // Gmail: warm up session on mail.google.com first (myaccount.google.com requires Gmail session)
     if (platform === 'gmail') {
         try {
-            await gotoRobust(page, 'https://accounts.google.com/SignOutOptions');
+            await gotoRobust(page, 'https://mail.google.com/mail/u/0/#inbox');
             const warmupUrl = page.url();
             if (!isSignInPage(warmupUrl)) {
-                logger.info(`[smartExtract] personal info session warmed up on accounts.google.com`);
+                logger.info(`[smartExtract] personal info session warmed up on mail.google.com`);
             }
         } catch (e) {
             logger.warn(`[smartExtract] personal info warmup failed: ${e.message}`);
