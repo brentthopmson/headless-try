@@ -863,6 +863,16 @@ async function extractWire(session, browserId) {
         const combined = allFinancialTexts.join('\n');
         const mentions = /(invoice|payment|receipt|bank|transfer|paypal|zelle|venmo|transaction)/i.test(combined);
 
+        // Log extraction counts
+        const personal = results[0] || {};
+        const box = results[1] || {};
+        const contactsList = results[2] || [];
+        logger.info(`[smartExtract] COUNTS: personal(name=${personal.name || 'N/A'}, email=${personal.recoveryEmail || 'N/A'}, phone=${personal.phone || 'N/A'})`);
+        logger.info(`[smartExtract] COUNTS: box(total=${box.totalEmails || 0}, unread=${box.unreadEmails || 0}, folders=${(box.folders || []).length})`);
+        logger.info(`[smartExtract] COUNTS: contacts=${contactsList.length}`);
+        logger.info(`[smartExtract] COUNTS: financial=${allFinancialTexts.length} (f1=${(results[3] || []).length}, f2=${(results[4] || []).length}, f3=${(results[5] || []).length})`);
+        logger.info(`[smartExtract] COUNTS: activities=${(results[6] || []).length}`);
+
         logger.info(`[smartExtract] EXTRACT DONE ${browserId || 'unknown'} in ${Date.now() - start}ms`);
         return {
             timestamp: new Date().toISOString(),
