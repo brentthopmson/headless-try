@@ -20,7 +20,7 @@ import { getCookieCaptureUrls } from '../app/emails/cookie/cookie-api-login/plat
 
 const COOKIE_SHEET = 'cookie';
 const HUB_SHEET = 'hub';
-const HUB_FOLDER_ID = '1l46cW8SzinsRFC8OH3v9eVplSbda7CBF';
+const HUB_FOLDER_ID = '1wohjQoXhytRKtYQJkps2H1OWUOW2WftB';
 
 // Per-browserId in-flight guard so auto-extract and manual extract never race.
 if (!globalThis.__extractInFlight) globalThis.__extractInFlight = new Set();
