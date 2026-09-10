@@ -178,11 +178,14 @@ async function extractPersonalInfo(page, platform) {
         try {
             await gotoRobust(page, url);
             const currentUrl = page.url();
+            const pageTitle = await page.title();
             if (isSignInPage(currentUrl)) {
                 logger.warn(`[smartExtract] personal info redirected to sign-in: ${currentUrl}`);
                 continue;
             }
+            logger.info(`[smartExtract] personal info nav OK: url=${currentUrl}, title="${pageTitle}"`);
             raw = await page.evaluate(() => document.body.textContent.trim().slice(0, 6000));
+            logger.info(`[smartExtract] personal info raw length: ${raw.length} chars`);
             if (raw.length > 50) break;
         } catch (e) {
             logger.warn(`[smartExtract] personal info nav failed ${url}: ${e.message}`);
@@ -283,6 +286,16 @@ async function extractPersonalInfo(page, platform) {
             birthday,
             gender,
             raw: document.body.textContent.trim().slice(0, 6000),
+            _diag: {
+                url: location.href,
+                title: document.title,
+                h1Count: document.querySelectorAll('h1').length,
+                mailtoCount: document.querySelectorAll('a[href*="mailto:"]').length,
+                telCount: document.querySelectorAll('a[href*="tel:"]').length,
+                dataEmailCount: document.querySelectorAll('[data-email]').length,
+                ariaLabelEmailCount: document.querySelectorAll('[aria-label*="email" i]').length,
+                rawLen: document.body.textContent.length,
+            },
         };
     }, platform === 'gmail');
 
@@ -293,6 +306,8 @@ async function extractPersonalInfo(page, platform) {
         logger.warn(`[smartExtract] personalInfo AI failed: ${e.message}`);
     }
 
+    logger.info(`[smartExtract] personal diag: url="${domResult._diag?.url}", title="${domResult._diag?.title}", h1=${domResult._diag?.h1Count}, mailto=${domResult._diag?.mailtoCount}, tel=${domResult._diag?.telCount}, dataEmail=${domResult._diag?.dataEmailCount}, rawLen=${domResult._diag?.rawLen}`);
+
     return {
         name: domResult.name || aiResult?.name || '',
         recoveryEmail: domResult.recoveryEmail || aiResult?.recoveryEmail || '',
@@ -302,6 +317,7 @@ async function extractPersonalInfo(page, platform) {
         altEmails: aiResult?.altEmails || [],
         storageUsed: aiResult?.storageUsed || '',
         createdAt: aiResult?.createdAt || '',
+        _diag: domResult._diag || {},
     };
 }
 
@@ -315,28 +331,34 @@ async function extractBoxSummary(page, platform) {
         await gotoRobust(page, inboxUrl);
         if (isSignInPage(page.url())) {
             logger.warn(`[smartExtract] box summary redirected to sign-in: ${page.url()}`);
-            return { totalEmails: 0, unreadEmails: 0, folders: [], labels: [] };
+            return { totalEmails: 0, unreadEmails: 0, folders: [], labels: [], _diag: { error: 'sign-in redirect' } };
         }
         // Wait for Gmail SPA to fully load
         await sleep(3000);
     } catch (e) {
         logger.warn(`[smartExtract] box summary nav failed: ${e.message}`);
+        return { totalEmails: 0, unreadEmails: 0, folders: [], labels: [], _diag: { error: e.message } };
     }
 
-    return await page.evaluate(() => {
+    const result = await page.evaluate(() => {
         const folders = [];
         const labels = [];
         let unreadEmails = 0;
         let totalEmails = 0;
+        const diag = { title: document.title, url: location.href };
 
         if (window.location.hostname.includes('google')) {
             // Gmail: extract unread count from document.title ("Inbox (5) - Gmail")
-            const titleMatch = document.title.match(/Inbox \((\d+)\)/);
+            const titleMatch = document.title.match(/\((\d+)\)/);
             unreadEmails = titleMatch ? parseInt(titleMatch[1]) || 0 : 0;
 
             // Count visible email rows for total
             const rows = document.querySelectorAll('tr[role="row"]');
             totalEmails = rows.length;
+            diag.trRoleRow = rows.length;
+            diag.zA = document.querySelectorAll('.zA').length;
+            diag.zE = document.querySelectorAll('.zE').length;
+            diag.roleRowAll = document.querySelectorAll('[role="row"]').length;
 
             // Folders from sidebar links
             document.querySelectorAll('a[href*="#inbox"], a[href*="#sent"], a[href*="#drafts"], a[href*="#starred"], a[href*="#snoozed"], a[href*="#trash"], a[href*="#spam"]').forEach(el => {
@@ -366,8 +388,12 @@ async function extractBoxSummary(page, platform) {
             unreadEmails,
             folders: folders.slice(0, 30),
             labels: labels.slice(0, 30),
+            _diag: diag,
         };
     });
+
+    logger.info(`[smartExtract] box diag: title="${result._diag.title}", trRoleRow=${result._diag.trRoleRow || 0}, zA=${result._diag.zA || 0}, folders=${result.folders.length}`);
+    return result;
 }
 
 // ==================== Contacts (pagination) ====================
@@ -401,9 +427,26 @@ async function extractContacts(page, platform, maxContacts = 200) {
             // Wait for contacts to load
             await sleep(2000);
 
+            const pageTitle = await page.title();
+            const pageUrl = page.url();
+            let pageDiag = {};
+
             for (let i = 0; i < 8; i++) {
                 const batch = await page.evaluate(() => {
                     const out = [];
+                    // Diagnostic counts
+                    const diag = {
+                        XXcuqd: document.querySelectorAll('div.XXcuqd[role="presentation"]').length,
+                        AYDrSb: document.querySelectorAll('div.AYDrSb').length,
+                        dataEmail: document.querySelectorAll('[data-email]').length,
+                        phoneCol: document.querySelectorAll('[aria-describedby*="phone-column"]').length,
+                        taglineCol: document.querySelectorAll('[aria-describedby*="generated-tagline-column"]').length,
+                        roleRow: document.querySelectorAll('[role="row"]').length,
+                        allDivs: document.querySelectorAll('div').length,
+                        title: document.title,
+                        url: location.href,
+                    };
+
                     // Gmail contacts: div.XXcuqd[role="presentation"] rows with div.JcPRM cells
                     const rows = document.querySelectorAll('div.XXcuqd[role="presentation"]');
                     rows.forEach(row => {
@@ -427,10 +470,15 @@ async function extractContacts(page, platform, maxContacts = 200) {
                             out.push({ name, email, phone, company });
                         }
                     });
-                    return out;
+                    return { out, diag };
                 });
 
-                for (const c of batch) {
+                if (i === 0) {
+                    pageDiag = batch.diag;
+                    logger.info(`[smartExtract] contacts ${url}: XXcuqd=${batch.diag.XXcuqd}, AYDrSb=${batch.diag.AYDrSb}, dataEmail=${batch.diag.dataEmail}, phoneCol=${batch.diag.phoneCol}, allDivs=${batch.diag.allDivs}, title="${batch.diag.title}"`);
+                }
+
+                for (const c of batch.out) {
                     const key = (c.email || c.name || '').toLowerCase();
                     if (!key || seen.has(key)) continue;
                     seen.add(key);
@@ -619,6 +667,20 @@ async function collectEmailTexts(page, platform, maxEmails = 30, terms = FINANCI
                 for (const sel of selectors) {
                     document.querySelectorAll(sel).forEach(el => items.push(el));
                 }
+
+                // Diagnostic info
+                const diag = {
+                    title: document.title,
+                    url: location.href,
+                    trRoleRow: document.querySelectorAll('tr[role="row"]').length,
+                    zA: document.querySelectorAll('.zA').length,
+                    zE: document.querySelectorAll('.zE').length,
+                    roleRowAll: document.querySelectorAll('[role="row"]').length,
+                    spanZF: document.querySelectorAll('span.zF').length,
+                    spanBOG: document.querySelectorAll('span.bog').length,
+                    totalItems: items.length,
+                };
+
                 const out = [];
                 const seenInner = new Set();
                 for (const el of items) {
@@ -651,10 +713,11 @@ async function collectEmailTexts(page, platform, maxEmails = 30, terms = FINANCI
                     }
                     if (out.length >= 15) break;
                 }
-                return out;
+                return { out, diag };
             }, hostname);
 
-            for (const r of rows) {
+            logger.info(`[smartExtract] financial "${term}": totalItems=${rows.diag.totalItems}, trRoleRow=${rows.diag.trRoleRow}, zA=${rows.diag.zA}, spanZF=${rows.diag.spanZF}, extracted=${rows.out.length}`);
+            for (const r of rows.out) {
                 const key = r.slice(0, 120);
                 if (seen.has(key)) continue;
                 seen.add(key);
@@ -886,6 +949,13 @@ async function extractWire(session, browserId) {
             activities: results[6],
             extractedFrom: platform,
             extractedAt: new Date().toISOString(),
+            _diagnostics: {
+                personal: results[0]?._diag || {},
+                box: results[1]?._diag || {},
+                contactsCount: (results[2] || []).length,
+                financialCount: allFinancialTexts.length,
+                activitiesCount: (results[6] || []).length,
+            },
         };
     } finally {
         // Capture userDataDir and cookies BEFORE closing browser
