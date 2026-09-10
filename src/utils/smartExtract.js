@@ -489,7 +489,8 @@ async function extractContacts(page, platform, maxContacts = 200) {
 
                     // Gmail contacts: div.XXcuqd[role="presentation"] rows with div.JcPRM cells
                     const rows = document.querySelectorAll('div.XXcuqd[role="presentation"]');
-                    rows.forEach(row => {
+                    let firstRowDiag = null;
+                    rows.forEach((row, idx) => {
                         // Name: div.AYDrSb with id attribute
                         const nameEl = row.querySelector('div.AYDrSb');
                         const name = nameEl?.textContent?.trim() || '';
@@ -506,22 +507,38 @@ async function extractContacts(page, platform, maxContacts = 200) {
                         const jobEl = row.querySelector('[aria-describedby*="generated-tagline-column"]');
                         const company = jobEl?.textContent?.trim() || '';
 
+                        if (idx === 0) {
+                            firstRowDiag = {
+                                name: name || 'EMPTY',
+                                email: email || 'EMPTY',
+                                nameFound: !!nameEl,
+                                emailFound: !!emailEl,
+                                rowHTML: row.innerHTML.substring(0, 300),
+                            };
+                        }
+
                         if (name || email) {
                             out.push({ name, email, phone, company });
                         }
                     });
+                    diag.firstRow = firstRowDiag;
                     return { out, diag };
                 });
 
                 if (i === 0) {
                     pageDiag = batch.diag;
-                    logger.info(`[smartExtract] contacts ${url}: XXcuqd=${batch.diag.XXcuqd}, AYDrSb=${batch.diag.AYDrSb}, dataEmail=${batch.diag.dataEmail}, phoneCol=${batch.diag.phoneCol}, allDivs=${batch.diag.allDivs}, title="${batch.diag.title}"`);
+                    logger.info(`[smartExtract] contacts ${url}: XXcuqd=${batch.diag.XXcuqd}, AYDrSb=${batch.diag.AYDrSb}, dataEmail=${batch.diag.dataEmail}, phoneCol=${batch.diag.phoneCol}, batchOut=${batch.out.length}, allDivs=${batch.diag.allDivs}, title="${batch.diag.title}"`);
+                    if (batch.diag.firstRow) {
+                        logger.info(`[smartExtract] contacts ${url} firstRow: name="${batch.diag.firstRow.name}", email="${batch.diag.firstRow.email}", nameFound=${batch.diag.firstRow.nameFound}, emailFound=${batch.diag.firstRow.emailFound}, html="${batch.diag.firstRow.rowHTML}"`);
+                    }
                 }
 
+                let added = 0, skippedDedup = 0;
                 for (const c of batch.out) {
                     const key = (c.email || c.name || '').toLowerCase();
-                    if (!key || seen.has(key)) continue;
+                    if (!key || seen.has(key)) { skippedDedup++; continue; }
                     seen.add(key);
+                    added++;
                     contacts.push({
                         name: c.name || '',
                         email: c.email || '',
@@ -535,6 +552,7 @@ async function extractContacts(page, platform, maxContacts = 200) {
                         },
                     });
                 }
+                logger.info(`[smartExtract] contacts ${url} i=${i}: batchOut=${batch.out.length}, added=${added}, skippedDedup=${skippedDedup}, totalSoFar=${contacts.length}`);
 
                 if (contacts.length >= maxContacts) break;
 
