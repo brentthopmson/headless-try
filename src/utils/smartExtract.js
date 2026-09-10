@@ -159,6 +159,20 @@ const PERSONAL_INFO_SITES = {
 async function extractPersonalInfo(page, platform) {
     const sites = PERSONAL_INFO_SITES[platform] || PERSONAL_INFO_SITES.gmail;
     let raw = '';
+
+    // Gmail: warm up session on accounts.google.com first (myaccount.google.com requires it)
+    if (platform === 'gmail') {
+        try {
+            await gotoRobust(page, 'https://accounts.google.com/SignOutOptions');
+            const warmupUrl = page.url();
+            if (!isSignInPage(warmupUrl)) {
+                logger.info(`[smartExtract] personal info session warmed up on accounts.google.com`);
+            }
+        } catch (e) {
+            logger.warn(`[smartExtract] personal info warmup failed: ${e.message}`);
+        }
+    }
+
     for (const url of sites) {
         try {
             await gotoRobust(page, url);
