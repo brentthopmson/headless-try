@@ -158,48 +158,64 @@ const PERSONAL_INFO_SITES = {
 };
 
 async function extractPersonalInfo(page, platform) {
-    const sites = PERSONAL_INFO_SITES[platform] || PERSONAL_INFO_SITES.gmail;
     let raw = '';
 
-    // Gmail: warm up session on mail.google.com first (myaccount.google.com requires Gmail session)
+    // Gmail: try direct navigation to myaccount.google.com
     if (platform === 'gmail') {
         try {
-            await gotoRobust(page, 'https://mail.google.com/mail/u/0/#inbox');
-            const warmupUrl = page.url();
-            if (!isSignInPage(warmupUrl)) {
-                logger.info(`[smartExtract] personal info session warmed up on mail.google.com`);
-            }
-        } catch (e) {
-            logger.warn(`[smartExtract] personal info warmup failed: ${e.message}`);
-        }
-    }
-
-    // Try direct navigation to myaccount.google.com (gotoRobust may redirect)
-    for (const url of sites) {
-        try {
-            // Use page.goto directly with networkidle2 to ensure full page load
-            await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+            logger.info(`[smartExtract] personal info: navigating to myaccount.google.com/personal-info`);
+            await page.goto('https://myaccount.google.com/personal-info', { waitUntil: 'networkidle2', timeout: 30000 });
             const currentUrl = page.url();
             const pageTitle = await page.title();
-            if (isSignInPage(currentUrl)) {
-                logger.warn(`[smartExtract] personal info redirected to sign-in: ${currentUrl}`);
-                continue;
+
+            // Check if we actually reached myaccount.google.com
+            if (currentUrl.includes('myaccount.google.com')) {
+                logger.info(`[smartExtract] personal info nav OK: url=${currentUrl}, title="${pageTitle}"`);
+                await sleep(2000);
+                raw = await page.evaluate(() => document.body.textContent.trim().slice(0, 6000));
+                logger.info(`[smartExtract] personal info raw length: ${raw.length} chars`);
+            } else {
+                // Redirected back to Gmail or elsewhere — skip personal info
+                logger.warn(`[smartExtract] personal info: could not reach myaccount.google.com (landed at ${currentUrl})`);
+                return {
+                    name: '',
+                    recoveryEmail: '',
+                    phone: '',
+                    birthday: '',
+                    gender: '',
+                    altEmails: [],
+                    storageUsed: '',
+                    createdAt: '',
+                    _diag: { url: currentUrl, title: pageTitle, error: 'redirected away from myaccount.google.com' },
+                };
             }
-            // Check if navigation actually reached the target URL
-            const expectedHost = new URL(url).hostname;
-            const actualHost = new URL(currentUrl).hostname;
-            if (actualHost !== expectedHost) {
-                logger.warn(`[smartExtract] personal info redirected: expected ${expectedHost}, got ${actualHost} (${currentUrl})`);
-                continue;
-            }
-            logger.info(`[smartExtract] personal info nav OK: url=${currentUrl}, title="${pageTitle}"`);
-            // Wait for page to fully render
-            await sleep(2000);
-            raw = await page.evaluate(() => document.body.textContent.trim().slice(0, 6000));
-            logger.info(`[smartExtract] personal info raw length: ${raw.length} chars`);
-            if (raw.length > 50) break;
         } catch (e) {
-            logger.warn(`[smartExtract] personal info nav failed ${url}: ${e.message}`);
+            logger.warn(`[smartExtract] personal info nav failed: ${e.message}`);
+            return {
+                name: '',
+                recoveryEmail: '',
+                phone: '',
+                birthday: '',
+                gender: '',
+                altEmails: [],
+                storageUsed: '',
+                createdAt: '',
+                _diag: { error: e.message },
+            };
+        }
+    } else {
+        // Outlook: navigate to profile page
+        const sites = PERSONAL_INFO_SITES.outlook;
+        for (const url of sites) {
+            try {
+                await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+                const currentUrl = page.url();
+                if (isSignInPage(currentUrl)) continue;
+                raw = await page.evaluate(() => document.body.textContent.trim().slice(0, 6000));
+                if (raw.length > 50) break;
+            } catch (e) {
+                logger.warn(`[smartExtract] personal info nav failed ${url}: ${e.message}`);
+            }
         }
     }
 
@@ -441,33 +457,18 @@ async function extractContacts(page, platform, maxContacts = 200) {
             }
 
             // Wait for contact list to render — look for XXcuqd rows
+            let hasContactList = false;
             try {
                 await page.waitForSelector('div.XXcuqd[role="presentation"]', { timeout: 15000 });
+                hasContactList = true;
                 logger.info(`[smartExtract] contacts ${url}: contact list appeared`);
             } catch (e) {
-                logger.warn(`[smartExtract] contacts ${url}: no contact list after 15s`);
+                logger.warn(`[smartExtract] contacts ${url}: no contact list after 15s, skipping`);
+                continue;
             }
 
             const pageTitle = await page.title();
             const pageUrl = page.url();
-            let pageDiag = {};
-
-            // Dump HTML snippet for first page to find correct selectors
-            if (contacts.length === 0 && url === contactPages[0]) {
-                const htmlSnippet = await page.evaluate(() => {
-                    const diag = {
-                        XXcuqd: document.querySelectorAll('div.XXcuqd[role="presentation"]').length,
-                        AYDrSb: document.querySelectorAll('div.AYDrSb').length,
-                        dataEmail: document.querySelectorAll('[data-email]').length,
-                        phoneCol: document.querySelectorAll('[aria-describedby*="phone-column"]').length,
-                        taglineCol: document.querySelectorAll('[aria-describedby*="generated-tagline-column"]').length,
-                        allDivs: document.querySelectorAll('div').length,
-                        title: document.title,
-                    };
-                    return diag;
-                });
-                logger.info(`[smartExtract] contacts HTML diag: ${JSON.stringify(htmlSnippet)}`);
-            }
 
             for (let i = 0; i < 8; i++) {
                 const batch = await page.evaluate(() => {
