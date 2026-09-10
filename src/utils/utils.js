@@ -213,9 +213,8 @@ export async function launchBrowser(customOptions = {}) {
     "--disable-features=site-per-process",
     "--disable-site-isolation-trials",
     "--disable-dev-shm-usage", 
-    "--no-sandbox",
-    "--disable-blink-features=AutomationControlled",
-    "--disable-features=AutomationControlled",
+    // --no-sandbox only on Linux/Docker (triggers Google detection on Windows)
+    ...(process.platform === 'linux' ? ["--no-sandbox"] : []),
     "--enable-features=NetworkService,NetworkServiceInProcess",
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
