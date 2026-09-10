@@ -894,12 +894,26 @@ async function collectRecentEmails(page, platform, limit = 50) {
     return emails;
 }
 
-async function extractActivities(page, platform, limit = 50) {
-    const recentEmails = await collectRecentEmails(page, platform, limit);
+async function extractActivities(page, platform, financialTexts = [], limit = 50) {
+    // Primary source: financial search results (payment/transaction-related messages)
+    // These are the IMPORTANT messages found through keyword searches
+    let sourceTexts = Array.isArray(financialTexts) ? financialTexts : [];
+
+    // Fallback: if no financial texts, collect recent emails
+    if (sourceTexts.length === 0) {
+        logger.info(`[smartExtract] activities: no financial texts, falling back to recent emails`);
+        try {
+            sourceTexts = await collectRecentEmails(page, platform, limit);
+        } catch (e) {
+            logger.warn(`[smartExtract] activities: collectRecentEmails failed: ${e.message}`);
+        }
+    } else {
+        logger.info(`[smartExtract] activities: using ${sourceTexts.length} financial search results as primary source`);
+    }
 
     let aiActivities = [];
     try {
-        aiActivities = await aiService.extractActivitiesAI(recentEmails);
+        aiActivities = await aiService.extractActivitiesAI(sourceTexts);
     } catch (e) {
         logger.warn(`[smartExtract] activities AI failed: ${e.message}`);
     }
@@ -915,7 +929,7 @@ async function extractActivities(page, platform, limit = 50) {
     }
 
     // Fallback: generic activities from raw text.
-    return recentEmails.slice(0, limit).map(text => ({
+    return sourceTexts.slice(0, limit).map(text => ({
         type: 'READ',
         on: '',
         to: '',
@@ -966,10 +980,14 @@ async function extractWire(session, browserId) {
         try { financial3 = await collectEmailTexts(page, platform, 10, BATCH3); } catch (e) { logger.warn(`[smartExtract] financial3 failed: ${e.message}`); }
         update('financial3');
 
-        // Phase 5: Activities (navigates to #inbox, #sent)
+        // Merge financial batches BEFORE activities so we can pass them as primary source
+        const allFinancialTexts = [...financial1, ...financial2, ...financial3];
+        logger.info(`[smartExtract] merged financial texts: ${allFinancialTexts.length} (f1=${financial1.length}, f2=${financial2.length}, f3=${financial3.length})`);
+
+        // Phase 5: Activities (uses financial search results as primary source)
         logger.info(`[smartExtract] phase 5/${PHASES}: activities`);
         let activities = [];
-        try { activities = await extractActivities(page, platform, 50); } catch (e) { logger.warn(`[smartExtract] activities failed: ${e.message}`); }
+        try { activities = await extractActivities(page, platform, allFinancialTexts, 50); } catch (e) { logger.warn(`[smartExtract] activities failed: ${e.message}`); }
         update('activities');
 
         // Phase 6: Personal Info (navigates to myaccount.google.com)
@@ -984,8 +1002,7 @@ async function extractWire(session, browserId) {
         try { contacts = await extractContacts(page, platform); } catch (e) { logger.warn(`[smartExtract] contacts failed: ${e.message}`); }
         update('contacts');
 
-        // Merge financial batches and run AI analysis
-        const allFinancialTexts = [...financial1, ...financial2, ...financial3];
+        // Run AI financial analysis on merged texts
         let financialSummary = {};
         try {
             financialSummary = await aiService.extractFinancialSummaryAI(allFinancialTexts);

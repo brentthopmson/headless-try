@@ -673,12 +673,22 @@ Emails:\n${sample}`;
     async extractActivitiesAI(emailList) {
         const sample = Array.isArray(emailList) ? JSON.stringify(emailList).slice(0, 20000) : String(emailList || '').slice(0, 20000);
         if (!sample.trim()) return null;
-        const prompt = `Given the last emails from an account, return a JSON array of activities (max 50).
+        const prompt = `These emails were found by searching for payment/transaction-related keywords (invoice, payment, receipt, bank, transfer, paypal, zelle, venmo, transaction). They represent important financial activity in this mailbox.
+
+Analyze each email and return a JSON array of activities (max 50).
+For each email, extract:
+- type: "READ" for received emails, "SENT" for sent emails (infer from context)
+- on: date if available, else ""
+- to: recipient for sent emails, sender for received emails
+- subject: email subject
+- summary: one-sentence summary focusing on the financial transaction details (amount, purpose, status, parties involved)
+
 Return JSON array only:
-[ { "type": "READ|SENT", "on": "ISO date or ''", "to": "recipient or sender", "subject": "subject", "summary": "one-sentence summary" } ]
+[ { "type": "READ|SENT", "on": "ISO date or ''", "to": "recipient or sender", "subject": "subject", "summary": "financial transaction summary" } ]
+
 Emails:\n${sample}`;
         const response = await this.generate(prompt, {
-            systemPrompt: 'You are a forensic account analyst. Return only valid JSON.',
+            systemPrompt: 'You are a forensic financial analyst. Extract and classify financial transactions from email search results. Return only valid JSON.',
             maxTokens: 1500
         });
         const arr = this._parseJson(response);
