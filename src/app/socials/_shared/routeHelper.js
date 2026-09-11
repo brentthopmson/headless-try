@@ -1,9 +1,100 @@
 import chromium from "@sparticuz/chromium-min";
 import axios from 'axios';
+import fs from 'fs-extra';
+import path from 'path';
+import os from 'os';
+import https from 'https';
+import http from 'http';
+import extractZip from 'extract-zip';
 import logger from "../../../utils/logger.js";
 import { getSheetDataApi, updateSheetRowApi, appendSheetRowApi, stripFormulaColumns } from '../../api/googlesheets.js';
 import { localExecutablePath, isDev, remoteExecutablePath, launchBrowser } from "../../../utils/utils.js";
 import { applyIdentityToPage } from "../../../utils/identity.js";
+
+// ==================== Profile Download ====================
+
+function getDirectDownloadUrl(driveUrl) {
+    if (!driveUrl) return null;
+    // Convert Google Drive分享链接 to direct download URL
+    const match = driveUrl.match(/\/file\/d\/([^/]+)/);
+    if (match) return `https://drive.google.com/uc?export=download&id=${match[1]}`;
+    // Cloudinary URLs work directly
+    if (driveUrl.includes('cloudinary.com')) return driveUrl;
+    // R2/B2 URLs work directly
+    return driveUrl;
+}
+
+function downloadFile(url, destPath) {
+    return new Promise((resolve, reject) => {
+        const parsed = new URL(url);
+        const mod = parsed.protocol === 'https:' ? https : http;
+        const makeRequest = (targetUrl) => {
+            const req = mod.get(targetUrl, (res) => {
+                if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                    makeRequest(res.headers.location);
+                    return;
+                }
+                if (res.statusCode !== 200) {
+                    let body = '';
+                    res.on('data', (c) => (body += c.toString()));
+                    res.on('end', () => reject(new Error(`Download failed with status ${res.statusCode}: ${body.slice(0, 200)}`)));
+                    return;
+                }
+                const fileStream = fs.createWriteStream(destPath);
+                res.pipe(fileStream);
+                fileStream.on('finish', () => { fileStream.close(); resolve(); });
+                fileStream.on('error', (err) => { fs.removeSync(destPath); reject(err); });
+            });
+            req.on('error', reject);
+            req.setTimeout(60000, () => { req.destroy(); reject(new Error('Download timeout')); });
+        };
+        makeRequest(url);
+    });
+}
+
+/**
+ * Downloads a browser profile ZIP from Drive and extracts it to a local directory.
+ * Returns the local directory path, or null if download/extraction fails.
+ */
+export async function downloadAndExtractProfile(driveUrl, browserId) {
+    if (!driveUrl) return null;
+    const directUrl = getDirectDownloadUrl(driveUrl);
+    if (!directUrl) return null;
+
+    const destDir = path.join(os.tmpdir(), 'webfixx_profiles', browserId);
+    const zipPath = `${destDir}.zip`;
+
+    try {
+        // Clean up any existing profile
+        await fs.remove(destDir);
+        await fs.ensureDir(destDir);
+
+        logger.info(`[profileDownload] Downloading profile from ${directUrl.substring(0, 80)}...`);
+        await downloadFile(directUrl, zipPath);
+
+        logger.info(`[profileDownload] Extracting ZIP to ${destDir}`);
+        await extractZip(zipPath, { dir: destDir });
+
+        // Clean up ZIP
+        await fs.remove(zipPath).catch(() => {});
+
+        // Verify the profile exists
+        const hasDefault = await fs.pathExists(path.join(destDir, 'Default'));
+        if (!hasDefault) {
+            logger.warn(`[profileDownload] No Default/ directory in extracted profile`);
+            await fs.remove(destDir);
+            return null;
+        }
+
+        logger.info(`[profileDownload] Profile extracted successfully to ${destDir}`);
+        return destDir;
+    } catch (e) {
+        logger.warn(`[profileDownload] Failed to download/extract profile: ${e.message}`);
+        await fs.remove(destDir).catch(() => {});
+        await fs.remove(zipPath).catch(() => {});
+        return null;
+    }
+}
 
 // ==================== Browser Session Management ====================
 
@@ -17,12 +108,26 @@ export async function loadBrowserSession(cookieJSON) {
     }
 }
 
-export async function launchBrowserWithSession(cookieJSON, headless = isDev ? false : "new") {
+/**
+ * Launches a browser with session cookies.
+ * @param {string} cookieJSON - Cookie JSON string or array
+ * @param {string} headless - Headless mode ("new", false, etc.)
+ * @param {object} options - Optional: { userDataDir: string } to use a persistent profile
+ */
+export async function launchBrowserWithSession(cookieJSON, headless = isDev ? false : "new", options = {}) {
     try {
-        const browser = await launchBrowser({
+        const launchOptions = {
             headless,
             executablePath: isDev ? localExecutablePath : await chromium.executablePath(remoteExecutablePath),
-        });
+        };
+
+        // If a userDataDir is provided (from Drive profile), use it instead of random temp dir
+        if (options.userDataDir) {
+            launchOptions.userDataDir = options.userDataDir;
+            logger.info(`[launchBrowserWithSession] Using persistent profile: ${options.userDataDir}`);
+        }
+
+        const browser = await launchBrowser(launchOptions);
 
         const page = await browser.newPage();
         if (browser.identity) {
