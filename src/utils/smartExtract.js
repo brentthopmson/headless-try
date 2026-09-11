@@ -1,4 +1,5 @@
 import logger from './logger.js';
+import axios from 'axios';
 import MultiProviderAI from './multiProviderAI.js';
 const aiService = new MultiProviderAI();
 import { launchBrowserWithSession, downloadAndExtractProfile, DOMHelpers } from '../app/socials/_shared/routeHelper.js';
@@ -1321,6 +1322,36 @@ async function extractBank(session, explicitPlatform) {
     }
 }
 
+// ==================== App Script Fallback ====================
+
+async function writeHubViaAppScript(browserId, dataMap) {
+    const appScriptUrl = process.env.SCRIPT_URL;
+    const appScriptKey = process.env.SCRIPT_KEY;
+    if (!appScriptUrl || !appScriptKey) {
+        return { success: false, error: 'SCRIPT_URL or SCRIPT_KEY not configured' };
+    }
+    try {
+        const params = new URLSearchParams({
+            action: 'setMultipleCellDataByColumnSearch',
+            sheetName: HUB_SHEET,
+            searchColumn: 'submissionId',
+            searchValue: browserId,
+            key: appScriptKey,
+            data: JSON.stringify(dataMap),
+        });
+        const resp = await axios.post(appScriptUrl, params, {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            timeout: 60000,
+        });
+        if (resp.data?.success) {
+            return { success: true };
+        }
+        return { success: false, error: resp.data?.error || 'App Script returned success=false' };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+}
+
 // ==================== Orchestrator ====================
 
 async function updateExtractStatus(browserId, status) {
@@ -1410,14 +1441,22 @@ export async function runSmartExtract(browserId, category, username, platform) {
             ? JSON.stringify({ ...driveRef, size: JSON.stringify(data).length })
             : JSON.stringify(data);
 
-        const writeResult = await updateSheetRowApi(HUB_SHEET, 'submissionId', browserId, {
+        const hubWriteMap = {
             [column]: cellValue,
             [`${column}At`]: new Date().toISOString(),
-        });
+        };
 
+        let writeResult = await updateSheetRowApi(HUB_SHEET, 'submissionId', browserId, hubWriteMap);
+
+        // App Script fallback when Sheets API fails (e.g. invalid_grant)
         if (!writeResult.success) {
-            logger.error(`[smartExtract] Hub write failed for ${browserId}: ${writeResult.error}`);
-            throw new Error(`Failed to persist extract to hub: ${writeResult.error}`);
+            logger.warn(`[smartExtract] Sheets API hub write failed for ${browserId}: ${writeResult.error}. Trying App Script fallback.`);
+            const asResult = await writeHubViaAppScript(browserId, hubWriteMap);
+            if (!asResult.success) {
+                logger.error(`[smartExtract] App Script hub write also failed for ${browserId}: ${asResult.error}`);
+                throw new Error(`Failed to persist extract to hub: ${writeResult.error}`);
+            }
+            logger.info(`[smartExtract] Hub write succeeded via App Script fallback for ${browserId}`);
         }
 
         await updateExtractStatus(browserId, 'completed');
