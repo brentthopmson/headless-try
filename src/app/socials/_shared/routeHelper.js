@@ -112,7 +112,7 @@ export async function loadBrowserSession(cookieJSON) {
  * Launches a browser with session cookies.
  * @param {string} cookieJSON - Cookie JSON string or array
  * @param {string} headless - Headless mode ("new", false, etc.)
- * @param {object} options - Optional: { userDataDir: string } to use a persistent profile
+ * @param {object} options - Optional: { userDataDir: string, identity: object } to use a persistent profile + matching fingerprint
  */
 export async function launchBrowserWithSession(cookieJSON, headless = isDev ? false : "new", options = {}) {
     try {
@@ -125,6 +125,13 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
         if (options.userDataDir) {
             launchOptions.userDataDir = options.userDataDir;
             logger.info(`[launchBrowserWithSession] Using persistent profile: ${options.userDataDir}`);
+        }
+
+        // If a saved identity is provided (from cookie-api-login), reuse it so the
+        // extraction browser has the exact same fingerprint and Google won't reject the session.
+        if (options.identity) {
+            launchOptions.identity = options.identity;
+            logger.info(`[launchBrowserWithSession] Reusing saved identity (fingerprint match)`);
         }
 
         const browser = await launchBrowser(launchOptions);

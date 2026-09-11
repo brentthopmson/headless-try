@@ -53,6 +53,11 @@ export async function resolveSession(browserId) {
     const cookieJSON = col('cookieJSON') || col('cookie') || col('formattedCookie') || '';
     const password = col('password') || '';
     const driveUrl = col('driveUrl') || col('cookieFileURL') || '';
+    const browserIdentityRaw = col('browserIdentity') || '';
+    let browserIdentity = null;
+    if (browserIdentityRaw) {
+        try { browserIdentity = typeof browserIdentityRaw === 'string' ? JSON.parse(browserIdentityRaw) : browserIdentityRaw; } catch (_) {}
+    }
 
     if (!cookieJSON) throw new Error(`No cookieJSON found for browserId: ${browserId}`);
 
@@ -79,6 +84,7 @@ export async function resolveSession(browserId) {
         cookieJSON: typeof cookieJSON === 'string' ? cookieJSON : JSON.stringify(cookieJSON),
         driveUrl: driveUrl || '',
         category: col('category') || '',
+        browserIdentity,
     };
 }
 
@@ -963,7 +969,7 @@ async function extractWire(session, browserId) {
         }
     }
 
-    const { browser, page } = await launchBrowserWithSession(cookieJSON, undefined, { userDataDir: profileDir });
+    const { browser, page } = await launchBrowserWithSession(cookieJSON, undefined, { userDataDir: profileDir, identity: session.browserIdentity });
     try {
         let done = 0;
         const update = (label) => { done++; if (browserId) updateExtractStatus(browserId, `extracting ${label} (${done}/${PHASES})`); };
@@ -1089,7 +1095,7 @@ async function extractSocial(session, username, explicitPlatform, browserId) {
         }
     }
 
-    const { browser, page } = await launchBrowserWithSession(cookieJSON, undefined, { userDataDir: profileDir });
+    const { browser, page } = await launchBrowserWithSession(cookieJSON, undefined, { userDataDir: profileDir, identity: session.browserIdentity });
     let tab1;
     try {
         tab1 = await createTab(browser, cookieJSON);
@@ -1226,7 +1232,7 @@ async function extractBank(session, explicitPlatform) {
         }
     }
 
-    const { browser, page } = await launchBrowserWithSession(cookieJSON, undefined, { userDataDir: profileDir });
+    const { browser, page } = await launchBrowserWithSession(cookieJSON, undefined, { userDataDir: profileDir, identity: session.browserIdentity });
     try {
         const accounts = [];
         const transactions = [];
