@@ -141,8 +141,17 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
             await applyIdentityToPage(page, browser.identity);
         }
 
-        const cookies = await loadBrowserSession(cookieJSON);
-        await page.setCookie(...cookies);
+        // When userDataDir is provided (profile from Drive), Chrome loads cookies
+        // directly from the profile's Cookies SQLite database. CDP cookie injection
+        // would overwrite correct attributes (sameSite, secure, partition key, etc.)
+        // with stale/sheet versions, causing Google to reject the session.
+        if (!options.userDataDir) {
+            const cookies = await loadBrowserSession(cookieJSON);
+            await page.setCookie(...cookies);
+            logger.info(`[launchBrowserWithSession] Injected ${cookies.length} cookies via CDP`);
+        } else {
+            logger.info(`[launchBrowserWithSession] Skipping CDP cookie injection — profile has cookies in SQLite DB`);
+        }
 
         logger.info(`[launchBrowserWithSession] Browser launched with session`);
         return { browser, page };
