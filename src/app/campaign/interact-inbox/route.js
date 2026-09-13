@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import MultiProviderAI from "../../../utils/multiProviderAI.js";
-import { launchBrowserWithSession, DOMHelpers } from "../../socials/_shared/routeHelper.js";
+import { launchBrowserWithSession, resolveSocialSession, DOMHelpers } from "../../socials/_shared/routeHelper.js";
 import { getCampaignLimits } from "../../socials/_shared/limits.js";
 import { isCampaignPaused, updateCampaignSettings, getCampaignSettings } from "../_shared/pipelineUtils.js";
 import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
@@ -238,17 +238,25 @@ async function getHubRows(accountIds) {
   const idIdx = headers.indexOf("submissionId");
   const emailIdx = headers.indexOf("email");
   const cookieIdx = headers.indexOf("formattedCookie") !== -1 ? headers.indexOf("formattedCookie") : headers.indexOf("cookieJSON");
+  const identityIdx = headers.indexOf("browserIdentity");
+  const driveUrlIdx = headers.indexOf("driveUrl");
   const idSet = new Set(accountIds);
   const out = [];
   for (const row of result.data) {
     const id = row[idIdx];
     if (!idSet.has(id)) continue;
     const cookie = cookieIdx !== -1 ? row[cookieIdx] : "";
+    let browserIdentity = null;
+    if (identityIdx !== -1 && row[identityIdx]) {
+      try { browserIdentity = typeof row[identityIdx] === 'string' ? JSON.parse(row[identityIdx]) : row[identityIdx]; } catch (_) {}
+    }
     out.push({
       accountId: id,
       identifier: row[emailIdx] || "",
       cookieJSON: cookie && String(cookie).length > 10 ? cookie : "",
       provider: detectInboxProvider(row[emailIdx] || ""),
+      browserIdentity,
+      driveUrl: driveUrlIdx !== -1 ? row[driveUrlIdx] || "" : "",
     });
   }
   return out;
@@ -331,8 +339,22 @@ export async function POST(request) {
       }
 
       let browser, page;
+      let profileDir = null;
       try {
-        ({ browser, page } = await launchBrowserWithSession(account.cookieJSON, false));
+        // Hybrid session: use Drive profile + identity if available
+        try {
+          const sessionResult = await resolveSocialSession({
+            cookies: account.cookieJSON,
+            browserIdentity: account.browserIdentity || null,
+            driveUrl: account.driveUrl || "",
+            profileId: account.accountId,
+          }, false);
+          browser = sessionResult.browser;
+          page = sessionResult.page;
+          profileDir = sessionResult.profileDir;
+        } catch (e) {
+          ({ browser, page } = await launchBrowserWithSession(account.cookieJSON, false));
+        }
         scannedAccounts++;
         await page.goto(cfg.inboxUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
         await DOMHelpers.randomDelay(3000, 5000);
@@ -387,6 +409,7 @@ export async function POST(request) {
       } finally {
         try { if (page) await page.close(); } catch { /* noop */ }
         try { if (browser) await browser.close(); } catch { /* noop */ }
+        if (profileDir) { const fs = await import('fs-extra'); await fs.remove(profileDir).catch(() => {}); }
       }
     }
 

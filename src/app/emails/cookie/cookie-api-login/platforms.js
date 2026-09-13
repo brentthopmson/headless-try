@@ -8,7 +8,7 @@ export const platformConfigs = {
         ],
         inboxDomSelectors: [
         ],
-        url: "https://accounts.google.com/",
+        url: "https://accounts.google.com/AccountChooser/signinchooser?continue=https%3A%2F%2Fmail.google.com%2Fmail%2F%3Fservice%3Dmail%26flowName%3DGlifWebSignIn%26flowEntry%3DAccountChooser%26ec%3Dasw-gmail-globalnav-signin&uj=gafb-gmail_asw-globalnav-en",
         mxKeywords: ['google', 'gmail'],
         selectors: {
             input: "#identifierId",

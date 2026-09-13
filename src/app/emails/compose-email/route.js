@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
+import fs from "fs-extra";
 import logger from "../../../utils/logger.js";
-import { launchBrowserWithSession, DOMHelpers } from "../../socials/_shared/routeHelper.js";
+import { DOMHelpers, resolveShootSession } from "../../socials/_shared/routeHelper.js";
 import { getSheetDataApi } from "../../api/googlesheets.js";
 import { getPlatformConfig, detectEmailPlatform } from "../_shared/platforms.js";
 import MultiProviderAI from "../../../utils/multiProviderAI.js";
@@ -389,13 +390,7 @@ export async function POST(request) {
       return NextResponse.json({ success: false, error: "Profile not found" }, { status: 404 });
     }
 
-    // 2. Get cookies
-    const cookieJSON = hubRow.formattedCookie || hubRow.cookieJSON || "";
-    if (!cookieJSON || String(cookieJSON).length < 10) {
-      return NextResponse.json({ success: false, error: "No valid cookies" }, { status: 400 });
-    }
-
-    // 3. Detect provider
+    // 2. Detect provider
     const accountEmail = hubRow.email || "";
     const platform = detectEmailPlatform(accountEmail);
     const config = getPlatformConfig(platform);
@@ -410,8 +405,8 @@ export async function POST(request) {
       projectContext = await getProjectById(projectId);
     }
 
-    // 5. Launch browser and read mailbox (up to 10 threads)
-    const { browser, page } = await launchBrowserWithSession(cookieJSON, false);
+    // 5. Launch browser and read mailbox (up to 10 threads) — hybrid session
+    const { browser, page, profileDir } = await resolveShootSession(browserId);
 
     let threads = [];
     try {
@@ -420,6 +415,9 @@ export async function POST(request) {
     } finally {
       await page.close();
       await browser.close();
+      if (profileDir) {
+        await fs.remove(profileDir).catch(() => {});
+      }
     }
 
     // 5b. AI Fallback: If no threads found, use extract data as context

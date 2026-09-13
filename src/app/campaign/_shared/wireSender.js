@@ -1,5 +1,5 @@
 import logger from "../../../utils/logger.js";
-import { launchBrowserWithSession, DOMHelpers } from "../../socials/_shared/routeHelper.js";
+import { resolveSocialSession, DOMHelpers } from "../../socials/_shared/routeHelper.js";
 import { checkSendAllowed, incrementSendCount, detectEmailProvider } from "../../../utils/sendRateLimiter.js";
 
 const PROVIDER_CONFIGS = {
@@ -58,7 +58,7 @@ function detectProvider(email) {
   return null;
 }
 
-export async function sendViaBrowser(recipient, subject, body, cookieJSON, provider) {
+export async function sendViaBrowser(recipient, subject, body, cookieJSON, provider, options = {}) {
   const providerName = provider || detectProvider(recipient);
   const config = PROVIDER_CONFIGS[providerName];
   if (!config) {
@@ -77,7 +77,14 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
 
   logger.info(`[wireSender] Sending via ${providerName} to ${recipient}`);
 
-  const { browser, page } = await launchBrowserWithSession(cookieJSON, false);
+  // Hybrid session: use Drive profile + identity if available, else CDP cookies + identity
+  const profile = {
+    cookies: cookieJSON,
+    browserIdentity: options.browserIdentity || null,
+    driveUrl: options.driveUrl || "",
+    profileId: options.profileId || accountId,
+  };
+  const { browser, page, profileDir } = await resolveSocialSession(profile, false);
 
   try {
     await page.goto(config.composeUrl, { waitUntil: "networkidle0", timeout: 30000 });
@@ -129,8 +136,12 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
     return { success: true, provider: providerName, recipient };
 
   } finally {
-    await page.close();
-    await browser.close();
+    try { if (page) await page.close(); } catch (e) { logger.warn(`[wireSender] Error closing page: ${e.message}`); }
+    try { if (browser) await browser.close(); } catch (e) { logger.warn(`[wireSender] Error closing browser: ${e.message}`); }
+    if (profileDir) {
+      const fs = await import('fs-extra');
+      await fs.remove(profileDir).catch(() => {});
+    }
   }
 }
 

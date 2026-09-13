@@ -10,6 +10,7 @@ import {
     getColumnIndexes,
     setCorsHeaders,
     launchBrowserWithSession,
+    resolveSocialSession,
     executeWorkflow,
 } from '../_shared/routeHelper.js';
 import { checkActionAllowed, getPlatformLimits } from '../_shared/limits.js';
@@ -82,7 +83,21 @@ async function processTask(taskPayload) {
             }
         }
 
-        ({ browser, page } = await launchBrowserWithSession(cookieJSON));
+        // Hybrid session: use Drive profile + identity if available
+        let profileDir = null;
+        try {
+            const sessionResult = await resolveSocialSession({
+                cookies: cookieJSON,
+                browserIdentity: taskPayload.browserIdentity || null,
+                driveUrl: taskPayload.driveUrl || "",
+                profileId,
+            });
+            browser = sessionResult.browser;
+            page = sessionResult.page;
+            profileDir = sessionResult.profileDir;
+        } catch (e) {
+            ({ browser, page } = await launchBrowserWithSession(cookieJSON));
+        }
 
         const workflow = getWorkflow(platform, operation);
 
@@ -138,6 +153,7 @@ async function processTask(taskPayload) {
     } finally {
         if (page) { try { await page.close(); } catch (e) {} }
         if (browser) { try { await browser.close(); } catch (e) {} }
+        if (profileDir) { const fs = await import('fs-extra'); await fs.remove(profileDir).catch(() => {}); }
         activeTasks.delete(taskId);
     }
 

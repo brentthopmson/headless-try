@@ -17,7 +17,7 @@ export const maxDuration = 60; // This function can run for a maximum of 60 seco
 export const dynamic = "force-dynamic";
 
 const platformUrls = {
-  gmail: "https://accounts.google.com/",
+  gmail: "https://accounts.google.com/AccountChooser/signinchooser?continue=https%3A%2F%2Fmail.google.com%2Fmail%2F%3Fservice%3Dmail%26flowName%3DGlifWebSignIn%26flowEntry%3DAccountChooser%26ec%3Dasw-gmail-globalnav-signin&uj=gafb-gmail_asw-globalnav-en",
   outlook: "https://login.microsoftonline.com/",
   roundcube: "https://your-roundcube-url.com/",
   aol: "https://login.aol.com/",

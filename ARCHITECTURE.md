@@ -1,104 +1,501 @@
-# Serverless Headless Engine Architecture: `offline-headless-webfixx`
+# WebFixx Application Architecture
 
-This document details the architecture, design patterns, core subsystems, and ecosystem integrations of the **`offline-headless-webfixx`** headless browser automation engine.
+## System Overview
 
----
-
-## 1. Landscape & Ecosystem Role
-
-`offline-headless-webfixx` is a highly optimized, serverless-ready Puppeteer engine designed to handle robust, multi-browser automated workflows. Inside the wider **WebFixx Ecosystem**, it serves as the autonomous browser worker that translates logical instructions from the **Logic Layer (Google Apps Script / Sheets)** and **WebFixx-Hoo Gateway** into high-fidelity web interactions.
-
-```mermaid
-graph TD
-    User([User]) <--> Frontend[WebFixx Frontend Next.js]
-    Frontend <--> Proxy[WebFixx-Hoo Flask Backend]
-    Proxy <--> GAS[Google Apps Script Controller]
-    GAS <--> GoogleSheets[(Google Sheet persistence DB)]
-    GAS <--> Engine[offline-headless-webfixx Engine]
-    Engine <--> GoogleSheets
-    Engine <--> ExternalPlatforms[External Logins / Social Platforms]
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                         THREE CODEBASES                                   │
+│                                                                          │
+│  ┌─────────────────────┐  ┌──────────────────────┐  ┌─────────────────┐  │
+│  │  Frontend (Next.js)  │  │  Apps Script (GAS)    │  │  Engine (Next.js)│  │
+│  │  WebFixx             │  │  WebFixx-Hoo          │  │  offline-headless│  │
+│  │                      │  │                        │  │                  │  │
+│  │  UI components       │  │  API dispatch layer    │  │  Browser automation│
+│  │  Dashboard, modals   │  │  Sheet read/write      │  │  Cookie injection │  │
+│  │  Feature flags       │  │  OAuth token refresh   │  │  Profile download │  │
+│  │  Secured API calls   │  │  Pause/stop flags      │  │  Session mgmt    │  │
+│  └──────────┬──────────┘  └───────────┬────────────┘  └────────┬────────┘  │
+│             │                         │                         │           │
+│             │  POST /backend-function  │  POST /shootEmails      │           │
+│             └─────────────────────────>│  POST /composeAIMessage  │           │
+│                                        │  POST /pauseShoot        │           │
+│                                        │  POST /stopShoot         │           │
+│                                        └─────────────────────────>│           │
+│                                                                   │           │
+│                                        Engine endpoints:          │           │
+│                                        /emails/send-email         │           │
+│                                        /emails/compose-email      │           │
+│                                        /socials/send-message      │           │
+│                                        /socials/search-interact   │           │
+│                                        /socials/page-interact     │           │
+│                                        /socials/inbox-interact    │           │
+│                                        /socials/activities-interact│          │
+│                                        /campaign/execute-campaign  │           │
+│                                        /campaign/interact-inbox    │           │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Core Responsibilities
-*   **Headless Session Orchestration**: Logging into complex web services, solving verification challenges, and extracting active sessions (cookies/local storage).
-*   **Real-time persistence updating**: Modifying spreadsheet-backed data queues directly via secure OAuth2 Google Sheet integrations (`googlesheets.js`) or falling back to custom Google Apps Script webhooks.
-*   **Intelligent Interaction Loop**: Using generative models (Gemini/OpenAI) to guide 2FA decisions, read verification elements, and handle unexpected verification prompts.
+## Data Flow: Google Sheets
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    GOOGLE SHEETS DATABASE                         │
+│                                                                   │
+│  HUB SHEET (main data store)                                     │
+│  ├── browserId / submissionId    (unique identifiers)            │
+│  ├── email                       (account email)                 │
+│  ├── formattedCookie / cookieJSON (session cookies)              │
+│  ├── driveUrl                    (Drive profile ZIP URL)         │
+│  ├── browserIdentity             (fingerprint JSON)              │
+│  ├── wireExtract / socialExtract / bankExtract (extraction data)│
+│  ├── fullAccess / verifyAccess / cookieAccess (flags)            │
+│  ├── lastShotAt / shotHistory    (shoot tracking)                │
+│  └── status                      (current state)                 │
+│                                                                   │
+│  COOKIE SHEET (login sessions)                                   │
+│  ├── browserId                   (matches hub)                   │
+│  ├── email / domain / category                                    │
+│  ├── cookieJSON / formattedCookie                                │
+│  ├── browserIdentity             (fingerprint JSON)              │
+│  ├── driveUrl                    (profile ZIP URL)               │
+│  └── status                      (WAITINGCODE, COMPLETED, etc.)  │
+│                                                                   │
+│  CAMPAIGNS SHEET                                                 │
+│  ├── campaignId / id                                              │
+│  ├── settings (JSON: accounts, targetLink, socialStrategyPrompt) │
+│  └── status (draft, running, paused, completed)                  │
+│                                                                   │
+│  LIMITS SHEET                                                    │
+│  └── Action limits per platform (follow, like, coldMessage, etc.)│
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Session Management: The Hybrid Approach
+
+Every route that launches a browser uses the **hybrid session** approach:
+
+```
+resolveSocialSession(profile) or resolveShootSession(browserId)
+│
+├── 1. Read session data from sheet
+│   ├── cookieJSON (cookies)
+│   ├── browserIdentity (fingerprint)
+│   └── driveUrl (profile ZIP)
+│
+├── 2. If driveUrl exists → Download profile from Drive
+│   ├── Extract ZIP to temp directory
+│   ├── Launch Chrome with --user-data-dir (profile directory)
+│   ├── Apply identity fingerprint (user-agent, window size)
+│   ├── SKIP CDP cookie injection (cookies come from SQLite DB)
+│   └── Return { browser, page, profileDir }
+│
+└── 3. If no driveUrl → Fallback to CDP injection
+    ├── Launch Chrome with random temp directory
+    ├── Parse cookieJSON
+    ├── Inject via page.setCookie()
+    ├── Apply identity fingerprint (if available)
+    └── Return { browser, page, profileDir: null }
+```
+
+**Why hybrid?** The Drive profile contains the full browser state (localStorage, IndexedDB, service workers, cookies in SQLite DB). CDP injection only sets HTTP cookies. Google detects missing state and may reject the session. The identity fingerprint ensures the browser looks identical to the original login.
 
 ---
 
-## 2. Technology Stack
+## Flow 1: Verification (cookie-api-login)
 
-*   **Runtime & Framework**: Next.js v14.0.4 (App Router, Node.js)
-*   **Browser Orchestration**: `puppeteer-core` (v22.15.0) paired with `@sparticuz/chromium-min` (v122.0.0) optimized for serverless runtime constraints (Vercel serverless limits).
-*   **Persistence & Drive**: `googleapis` (v148.0.0) for Sheets & Drive operations, and `archiver` for session profile packing.
-*   **Generative AI Subsystem**: `@google/generative-ai` and `openai` SDKs for dynamic decision-making.
-*   **Styling & Interface (Status UI)**: Tailwind CSS & Framer Motion.
+### Purpose
+Log into a platform (Gmail, Outlook, etc.) via headless browser, capture cookies, save to sheets.
+
+### Flow
+```
+Frontend                    Apps Script               Engine
+    │                           │                        │
+    │  callBackendFunction(     │                        │
+    │    'cookie-api-login',    │                        │
+    │    { browserId, email,    │                        │
+    │      password, platform } │                        │
+    │  )                        │                        │
+    │──────────────────────────>│                        │
+    │                           │  POST /emails/cookie/  │
+    │                           │  cookie-api-login      │
+    │                           │───────────────────────>│
+    │                           │                        │
+    │                           │  Engine:               │
+    │                           │  1. Launch browser     │
+    │                           │  2. Navigate to login  │
+    │                           │  3. Enter email        │
+    │                           │  4. Enter password     │
+    │                           │  5. Handle verification│
+    │                           │  6. Capture cookies    │
+    │                           │  7. Save to cookie     │
+    │                           │     sheet + hub sheet  │
+    │                           │  8. Upload profile to  │
+    │                           │     Drive              │
+    │                           │  9. Save browserIdentity│
+    │                           │                        │
+    │  { status: COMPLETED,     │                        │
+    │    cookieJSON, driveUrl } │                        │
+    │<──────────────────────────│<───────────────────────│
+    │                           │                        │
+```
+
+### Session State Machine
+```
+WAITING_EMAIL → WAITING_PASSWORD → WAITINGCODE → PROCESSING → COMPLETED
+                                  ↗ WAITING_OPTIONS
+                    CAPTCHA_FAILED
+                    RETRY_TECHNICAL
+                    FAILED
+```
+
+### Key Files
+- `emails/cookie/cookie-api-login/route.js` — Main login flow
+- `emails/cookie/cookie-api-login/routeHelper.js` — `checkAccountAccess`, `checkVerification`, `handleAdditionalViews`
+- `emails/cookie/cookie-api-login/platforms.js` — Platform configs (Gmail, Outlook selectors)
+
+### Pause/Resume
+- `pauseShoot` → sets `PropertiesService` flag `shoot_pause_{browserId}`
+- `resumeShoot` → deletes the flag
+- `stopShoot` → sets `shoot_stop_{browserId}` flag
+- Engine polls these flags between processing steps
 
 ---
 
-## 3. Subsystem Breakdown
+## Flow 2: Extraction (smartExtract)
 
-### A. The Headless Automation Controller
-Located under `src/app/emails/cookie` and `src/app/socials`, the controllers govern automated session generation.
-*   **Platform Configuration (`platforms.js`)**: Encapsulates login URLs, CSS selectors for credentials, 2FA inputs, page verification checkpoints, and timing guidelines.
-*   **Execution Route (`route.js` & `routeHelper.js`)**: Implements concurrency-managed task queues:
-    *   **Browser Spawning**: Launches isolated browser contexts via dynamic launch configs.
-    *   **Interactive Flow**: Performs keystrokes, button triggers, and handles verification screens (e.g. recovery phone updates, password confirmations, and 2FA prompt options).
-    *   **Profile Archiving**: Packages session profiles and uploads them to Google Drive (`googledrive.mjs`) once a login successfully finishes.
+### Purpose
+After login, extract data from the platform: contacts, emails, financial info, personal info.
 
-### B. Google Sheets & Drive Database Gateway
-The `src/app/api/googlesheets.js` and `src/app/api/googledrive.mjs` files implement standard data transactions:
-*   **Dynamic Read/Write**: Queries operational sheets to check active tasks (`getSheetDataApi`) and updates rows with session profiles, active cookies, IP configurations, and execution statuses.
-*   **GAS Fallbacks**: Incorporates automatic HTTP/GAS triggers to ensure status propagation even if direct Google API quotas are restricted.
+### Flow
+```
+Frontend                    Apps Script               Engine
+    │                           │                        │
+    │  callBackendFunction(     │                        │
+    │    'runSmartExtract',     │                        │
+    │    { browserId, category }│                        │
+    │  )                        │                        │
+    │──────────────────────────>│                        │
+    │                           │  POST /emails/extract  │
+    │                           │───────────────────────>│
+    │                           │                        │
+    │                           │  Engine:               │
+    │                           │  1. resolveSession()   │
+    │                           │     ├── Read cookie    │
+    │                           │     │   sheet          │
+    │                           │     ├── Get driveUrl   │
+    │                           │     ├── Get browserId  │
+    │                           │     │   entity         │
+    │                           │     └── Get cookieJSON │
+    │                           │  2. Download profile   │
+    │                           │     from Drive         │
+    │                           │  3. Launch browser     │
+    │                           │     with profile +     │
+    │                           │     identity           │
+    │                           │  4. Run 7 sequential   │
+    │                           │     phases:            │
+    │                           │     a. Box Summary     │
+    │                           │     b. Personal Info   │
+    │                           │     c. Contacts (2     │
+    │                           │        pages)          │
+    │                           │     d. Financial       │
+    │                           │     e. Activities      │
+    │                           │  5. Save to Drive as   │
+    │                           │     JSON file          │
+    │                           │  6. Write reference to │
+    │                           │     hub sheet          │
+    │                           │                        │
+    │  { success, data: {       │                        │
+    │    contacts, personal,    │                        │
+    │    financial, activities } │                        │
+    │  }                        │                        │
+    │<──────────────────────────│<───────────────────────│
+```
 
-### C. Generative AI Logic Core
-Defined in `src/utils/geminiHelper.js`, `src/utils/ollamaHelper.js`, and `src/utils/multiProviderAI.js`:
-*   Allows the automation loop to parse verification screens, choose alternative authentication vectors (e.g., choosing 2FA options dynamically), and solve layout challenges through vision APIs.
+### Session Resolution (extraction-specific)
+```javascript
+// smartExtract.js — resolveSession()
+const session = await resolveSession(browserId);
+// Returns: { browserId, email, domain, platform, cookieJSON,
+//            driveUrl, browserIdentity, ... }
+
+// Launch with full profile + identity
+const { browser, page } = await launchBrowserWithSession(
+  cookieJSON, undefined,
+  { userDataDir: profileDir, identity: session.browserIdentity }
+);
+```
+
+### Key Files
+- `utils/smartExtract.js` — `resolveSession`, `extractWire`, `extractSocial`, `runSmartExtract`
+- `socials/_shared/routeHelper.js` — `downloadAndExtractProfile`, `launchBrowserWithSession`
+
+### Data Output
+Extraction saves to **Drive** as `HUB_FOLDER_ID/{browserId}/wireExtract.json` (or social/bank). The hub sheet cell stores a reference: `{"fileId":"xxx","fileName":"wireExtract.json","size":12345}`.
 
 ---
 
-## 4. Key Code Abstractions & "God Nodes"
+## Flow 3: Shooting (Standalone)
 
-According to our semantic knowledge graph, these are the core abstractions organizing the project's logic:
+### Purpose
+Send emails or social DMs to extracted contacts using the saved session.
 
-1.  **`updateHubAndProjectsFromCookieData()`** *(Google Sheets)*: Syncs newly extracted session cookie configurations directly back into central sheets, triggering telegram notifications and project state updates.
-2.  **`MultiProviderAI`** *(Utils)*: The multi-provider AI coordinator, routing LLM reasoning tasks smoothly between Gemini, OpenAI, or Ollama.
-3.  **`getSheetDataApi()` / `updateSheetRowApi()`** *(Google Sheets API)*: Lower-level OAuth2 transactional bridges communicating with the Google Sheets DB.
-4.  **`getPlatformConfig()`** *(Automation Route)*: Selects platform-specific selectors, rules, and timeouts based on targeted email/social domains.
-5.  **`processRow()` / `processTask()`** *(Automation Route)*: Orchestrates the multi-stage queue lifecycle, handling setup, profile retrieval, login flow, 2FA wait intervals, and cleanup sweeps.
+### Flow: Email Shoot
+```
+Frontend (ShootContactsModal)
+    │
+    │  Step 1: Select contacts from extracted data
+    │  Step 2: Choose link injection (project/redirect)
+    │  Step 3: AI analysis (optional — composeAIMessage per contact)
+    │  Step 4: Review drafts
+    │  Step 5: Execute sends
+    │
+    │  handleShootContacts() →
+    │  securedApi.callBackendFunction({
+    │    functionName: 'shootEmails',
+    │    browserId, contacts, subject, body,
+    │    method, mailMerge, linkType, linkId
+    │  })
+    │
+    ▼
+Apps Script → POST.js → shootEmails()
+    │
+    │  resolveEngineUrl("emails/send-email")
+    │  UrlFetchApp.fetch(engineUrl, { payload })
+    │
+    ▼
+Engine: /emails/send-email/route.js
+    │
+    │  1. getHubRowByBrowserId() → hub sheet
+    │  2. resolveShootSession(browserId)
+    │     ├── Read hub sheet: driveUrl, browserIdentity, cookies
+    │     ├── If driveUrl → download profile → hybrid launch
+    │     └── Else → CDP cookies + identity
+    │  3. For each contact:
+    │     a. checkSendAllowed() (rate limit)
+    │     b. applyMailMerge() (replace {{variables}})
+    │     c. sendSingleEmail(page, config, recipient, subject, body)
+    │        ├── Navigate to composeUrl
+    │        ├── Fill To, Subject, Body
+    │        ├── Click Send (fallback: Ctrl+Enter)
+    │        └── Random delay between sends
+    │     d. incrementSendCount()
+    │  4. Update hub: lastShotAt, shotHistory
+    │  5. Cleanup: close browser, remove profileDir
+    │
+    ▼
+{ success: true, sent: N, failed: M, results: [...] }
+```
+
+### Flow: AI Compose
+```
+Frontend → handleComposeAI() →
+    functionName: 'composeAIMessage',
+    { browserId, contactEmail, linkType, linkId }
+
+Apps Script → composeAIMessage() →
+    resolveEngineUrl("emails/compose-email")
+
+Engine: /emails/compose-email/route.js
+    │
+    │  1. resolveShootSession(browserId) → hybrid session
+    │  2. readMailboxHistory(page, config, contactEmail)
+    │     ├── Gmail: URL-based search
+    │     └── Outlook: DOM search bar
+    │  3. analyzeRelationship(threads)
+    │     └── cold / warm / followup / reengagement
+    │  4. composeAIMessage() → MultiProviderAI generates
+    │  5. Return { subject, body, context }
+```
+
+### Flow: Social DM Shoot
+```
+Frontend → handleShootContacts() →
+    functionName: 'shootEmails' (social variant)
+
+Apps Script → shootEmails() →
+    resolveEngineUrl("socials/send-message")
+
+Engine: /socials/send-message/route.js
+    │
+    │  1. getCookieForProfile(profileId) → cookie sheet
+    │     Returns: { cookies, platform, browserIdentity, driveUrl }
+    │  2. For each recipient (round-robin profiles):
+    │     a. checkActionAllowed(platform, "coldMessage")
+    │     b. Hybrid session:
+    │        ├── If driveUrl → downloadAndExtractProfile()
+    │        └── Else → CDP cookies + identity
+    │     c. executeWorkflow(page, workflow, context)
+    │        └── Platform-specific: navigate → new message →
+    │            fill recipient → fill message → click send
+    │     d. updateAccountUsage()
+    │  3. Flush CSV back to Drive
+    │  4. Cleanup profileDirs
+```
+
+### Shoot Modal Data Flow
+```
+ShootContactsModal
+    │
+    │  contacts = useMemo(() => {
+    │    // Fetch extract data (handles Drive pointers)
+    │    const raw = fetchedExtractData || item[extractKey];
+    │    const extract = safeParseJSON(raw);
+    │    if (category === 'WIRE') return extract.contacts || [];
+    │    if (category === 'SOCIAL') return extract.followers || [];
+    │  }, [item, fetchedExtractData]);
+    │
+    │  useExtractData(item.wireExtract) →
+    │    ├── If Drive pointer → fetch /api/drive-csv?fileId=xxx
+    │    ├── If HTTP URL → fetch directly
+    │    └── If inline JSON → use as-is
+```
+
+### Key Files
+- `ShootContactsModal.tsx` — 5-step wizard (select → link → analyze → review → send)
+- `emails/send-email/route.js` — Email shoot engine
+- `emails/compose-email/route.js` — AI compose engine
+- `socials/send-message/route.js` — Social DM shoot engine
+- `socials/_shared/routeHelper.js` — `resolveShootSession`, `resolveSocialSession`
+- `campaign/_shared/wireSender.js` — `sendViaBrowser` (campaign wire send)
+- `campaign/_shared/smtpSender.js` — `sendViaSMTP` (campaign SMTP send)
 
 ---
 
-## 5. Concurrency & Queue Lifecycle
+## Flow 4: Campaign
 
-To operate within serverless limits, the engine uses a robust, lightweight concurrency limit queue:
-*   **`MAX_CONCURRENT_BROWSERS`**: Defaulted to `3` concurrent active page execution contexts to manage memory footprint and prevent target throttling.
-*   **Process Set Tracking**: Active execution contexts are kept in a shared memory `Set` that safely shuts down idle headless pages when execution finishes or a timeout threshold is exceeded.
+### Purpose
+Automated bulk outreach across multiple contacts and accounts, with pipeline stages.
+
+### Pipeline Stages
+```
+1. UPLOAD        → Import contacts from CSV
+2. ENRICH        → Validate/enhance contact data
+3. SEARCH        → Find contacts on social platforms
+4. INTERACT      → Follow, like, engage with content
+5. INBOX         → Send DMs via social platforms
+6. SHOOT         → Send emails via browser or SMTP
+7. ACTIVITIES    → Monitor and engage with notifications
+```
+
+### Flow: Campaign Execution
+```
+Frontend (CampaignModal)
+    │
+    │  Execute Pipeline →
+    │  securedApi.callBackendFunction({
+    │    functionName: 'runCampaignPipeline',
+    │    campaignId
+    │  })
+    │
+    ▼
+Apps Script → CAMPAIGN.js → executeCampaign()
+    │
+    │  requireSetting("allowShooting")
+    │  Check campaign status (not paused)
+    │  resolveEngineUrl("/api/execute-campaign")
+    │
+    ▼
+Engine: /campaign/execute-campaign/route.js
+    │
+    │  For each pipeline stage:
+    │
+    │  WIRE EMAIL DELIVERY:
+    │  ├── getSocialProfileCookies(profileId) → cookie sheet
+    │  │   Returns: { cookies, platform, browserIdentity, driveUrl }
+    │  ├── sendViaBrowser(email, subject, message, cookies, provider, {
+    │  │     browserIdentity, driveUrl, profileId
+    │  │   })
+    │  │   └── resolveSocialSession(profile) → hybrid session
+    │  └── OR sendViaSMTP() (no browser needed)
+    │
+    │  SOCIAL CAMPAIGN:
+    │  ├── getSocialProfileCookies(profileId) → cookie sheet
+    │  ├── Build task payloads with:
+    │  │   { cookieJSON, browserIdentity, driveUrl, profileId,
+    │  │     platform, operation, searchQuery, ... }
+    │  ├── Dispatch to social interact routes:
+    │  │   ├── search-interact  → resolveSocialSession()
+    │  │   ├── page-interact    → resolveSocialSession()
+    │  │   ├── inbox-interact   → resolveSocialSession()
+    │  │   └── activities-interact → resolveSocialSession()
+    │  └── Each route cleans up profileDir after execution
+    │
+    │  INBOX INTERACTION:
+    │  ├── getHubRows(accountIds) → hub sheet
+    │  │   Returns: { accountId, cookieJSON, browserIdentity, driveUrl }
+    │  ├── resolveSocialSession() per account
+    │  ├── scanInbox() → read messages
+    │  ├── AI relevance pass → decide which to reply to
+    │  └── Generate and send replies
+    │
+    ▼
+Campaign status: running → paused → completed
+```
+
+### Campaign Pause/Resume
+```
+pauseCampaign() →
+  Updates campaign status to "paused" in sheet
+  Engine checks isCampaignPaused() between stages
+
+resumeCampaign() →
+  Updates status to "running"
+  Re-calls executeCampaign() to continue from checkpoint
+```
+
+### Key Files
+- `campaign/execute-campaign/route.js` — Main campaign engine (946 lines)
+- `campaign/interact-inbox/route.js` — AI inbox interaction
+- `campaign/_shared/wireSender.js` — Browser-based email send
+- `campaign/_shared/smtpSender.js` — SMTP email send
+- `campaign/_shared/pipelineUtils.js` — CSV parsing, pause checks, presets
+- `socials/search-interact/route.js` — Social search + follow/like
+- `socials/page-interact/route.js` — Social profile scraping
+- `socials/inbox-interact/route.js` — Social DM sending
+- `socials/activities-interact/route.js` — Social notification engagement
 
 ---
 
-## 6. Graphify Integration (Knowledge Graph Superpowers)
+## Session Resolution Summary
 
-`offline-headless-webfixx` has the same structural knowledge graphing capability initialized in its sibling codebases. This allows AI assistants and developer runtimes to navigate the modules semantically rather than relying on textual grep searches.
+| Route | Session Source | Identity | Drive Profile | Helper |
+|-------|---------------|----------|---------------|--------|
+| `cookie-api-login` | Creates session | Captures identity | Uploads profile | Direct |
+| `smartExtract` | Cookie sheet | ✅ | ✅ | `resolveSession()` |
+| `send-email` | Hub sheet | ✅ | ✅ | `resolveShootSession()` |
+| `compose-email` | Hub sheet | ✅ | ✅ | `resolveShootSession()` |
+| `send-message` | Cookie sheet | ✅ | ✅ | `resolveSocialSession()` |
+| `execute-campaign` (wire) | Cookie sheet | ✅ | ✅ | `resolveSocialSession()` via `wireSender` |
+| `execute-campaign` (social) | Cookie sheet | ✅ | ✅ | `resolveSocialSession()` via task payloads |
+| `interact-inbox` | Hub sheet | ✅ | ✅ | `resolveSocialSession()` |
+| `search-interact` | Task payload | ✅ | ✅ | `resolveSocialSession()` |
+| `page-interact` | Task payload | ✅ | ✅ | `resolveSocialSession()` |
+| `inbox-interact` | Task payload | ✅ | ✅ | `resolveSocialSession()` |
+| `activities-interact` | Task payload | ✅ | ✅ | `resolveSocialSession()` |
 
-### Current Graph Statistics
-*   **Nodes**: 326
-*   **Edges**: 557
-*   **Communities**: 29
+**All routes now use the hybrid session approach.** Every browser launch either:
+1. Downloads the Drive profile + applies identity fingerprint, OR
+2. Falls back to CDP cookie injection + identity fingerprint
 
-### Graph Navigation Commands
-To compile, analyze, or verify the codebase graph, use these python tools in the root directory:
-*   **Check Detected Corpus**:
-    ```bash
-    python read_detect.py
-    ```
-*   **Re-Extract AST Nodes**:
-    ```bash
-    python run_ast.py
-    ```
-*   **Full Build & Semantic Re-Extraction**:
-    ```bash
-    python -m graphify update .
-    ```
+---
 
-The visual graph representation is located in [graphify-out/graph.html](file:///c:/Users/HP/Desktop/ZIPPER/WEBFIXX/DEV/API/offline-headless-webfixx/graphify-out/graph.html) and the structural report is in [graphify-out/GRAPH_REPORT.md](file:///c:/Users/HP/Desktop/ZIPPER/WEBFIXX/DEV/API/offline-headless-webfixx/graphify-out/GRAPH_REPORT.md).
+## Key Functions Reference
+
+### Engine Helpers (`socials/_shared/routeHelper.js`)
+- `downloadAndExtractProfile(driveUrl, browserId)` — Downloads ZIP from Drive, extracts to temp dir
+- `launchBrowserWithSession(cookieJSON, headless, options)` — Launches Chrome with cookies/profile/identity
+- `resolveShootSession(browserId)` — Full hybrid session for email shoots (reads hub sheet)
+- `resolveSocialSession(profile)` — Full hybrid session for social/campaign (accepts profile object)
+- `executeWorkflow(page, workflow, context, config)` — Generic workflow executor for social DMs
+- `DOMHelpers` — `randomDelay`, `clickElement`, `typeText`, `scrollDown`
+
+### Apps Script (`POST.js`)
+- `shootEmails(params)` — Forwards to `/emails/send-email`
+- `composeAIMessage(params)` — Forwards to `/emails/compose-email`
+- `pauseShoot / resumeShoot / stopShoot` — PropertiesService flags
+- `cleanupShootFlags / cleanupOldShootFlags` — Garbage collection
+
+### Frontend
+- `ShootContactsModal` — 5-step wizard with `useExtractData` hook for Drive fetch
+- `useExtractData` hook — Detects Drive pointers, fetches via `/api/drive-csv`
+- `securedApi.callBackendFunction()` — Authenticated POST to Apps Script

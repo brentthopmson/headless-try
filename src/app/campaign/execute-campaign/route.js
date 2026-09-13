@@ -159,15 +159,24 @@ async function getSocialProfileCookies(profileId) {
   const browserIdIdx = headers.indexOf("browserId");
   const cookieIdx = headers.indexOf("formattedCookie") !== -1 ? headers.indexOf("formattedCookie") : headers.indexOf("cookieJSON");
   const platformIdx = headers.indexOf("category") !== -1 ? headers.indexOf("category") : headers.indexOf("platform");
+  const identityIdx = headers.indexOf("browserIdentity");
+  const driveUrlIdx = headers.indexOf("driveUrl");
 
   if (browserIdIdx === -1) return null;
   
   const row = cookieResult.data.find(r => String(r[browserIdIdx]).trim() === String(profileId).trim());
   if (!row) return null;
 
+  let browserIdentity = null;
+  if (identityIdx !== -1 && row[identityIdx]) {
+    try { browserIdentity = typeof row[identityIdx] === 'string' ? JSON.parse(row[identityIdx]) : row[identityIdx]; } catch (_) {}
+  }
+
   return {
     cookies: row[cookieIdx] || "",
-    platform: platformIdx !== -1 ? String(row[platformIdx]).toLowerCase().trim() : "twitter"
+    platform: platformIdx !== -1 ? String(row[platformIdx]).toLowerCase().trim() : "twitter",
+    browserIdentity,
+    driveUrl: driveUrlIdx !== -1 ? row[driveUrlIdx] || "" : "",
   };
 }
 
@@ -519,7 +528,11 @@ export async function POST(request) {
             const wireCookies = profileData?.cookies;
             if (wireCookies) {
               const provider = profileData?.platform || detectProvider(smtp?.user || email) || "gmail";
-              await sendViaBrowser(email, subject, message, wireCookies, provider);
+              await sendViaBrowser(email, subject, message, wireCookies, provider, {
+                browserIdentity: profileData.browserIdentity || null,
+                driveUrl: profileData.driveUrl || "",
+                profileId,
+              });
             } else {
               log.info(` No WIRE browser session available for profile ${profileId}, using SMTP fallback`);
               if (deliveryMethod === "wire") {
@@ -717,6 +730,9 @@ export async function POST(request) {
               priority: PRIORITY_MAP[operation] !== undefined ? PRIORITY_MAP[operation] : 99,
               searchQuery: keyword,
               cookieJSON: typeof profileData.cookies === "string" ? profileData.cookies : JSON.stringify(profileData.cookies),
+              browserIdentity: profileData.browserIdentity || null,
+              driveUrl: profileData.driveUrl || "",
+              profileId,
               // AI context: strategy + target link so messages are crafted with the destination in mind
               targetLink: settings.targetLink || "",
               socialStrategyPrompt: settings.socialStrategyPrompt || "",

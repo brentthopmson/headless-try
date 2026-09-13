@@ -697,6 +697,11 @@ export async function checkVerification(page, platformConfig) {
       logger.info(`[checkVerification][${instanceId}] Detected Google challenge/selection page — verification choice required.`);
       return { required: true, type: 'choice', viewName: 'Gmail Verification Choices', viewConfig: {} };
     }
+    // Phone prompt / device approval — passive verification (user taps Yes on phone)
+    if (currentUrl.includes('challenge/prompt') || currentUrl.includes('challenge/as') || currentUrl.includes('challenge/dp')) {
+      logger.info(`[checkVerification][${instanceId}] Detected Google challenge/prompt page (prompt/as/dp) — phone approval required.`);
+      return { required: true, type: 'phone_prompt', viewName: 'Gmail Phone Prompt', viewConfig: {} };
+    }
     if (currentUrl.includes('challenge/pwd') || currentUrl.includes('challenge/kpe')) {
       logger.info(`[checkVerification][${instanceId}] Detected Google challenge password/KPE page — password entry required.`);
       return { required: true, type: 'password', viewName: 'Google Password Challenge', viewConfig: {} };
@@ -773,10 +778,10 @@ export async function checkVerification(page, platformConfig) {
           logger.info(`[checkVerification][${instanceId}] Matched a CAPTCHA verification screen: ${view.name}`);
           return { required: true, type: 'captcha', viewName: view.name, viewConfig: view };
         }
-        // For Gmail 2-Step Verification, treat as code for waiting, even if no entry
+        // For Gmail 2-Step Verification, treat as phone_prompt for passive approval (not code entry)
         if (view.name === 'Gmail 2-Step Verification') {
-          logger.info(`[checkVerification][${instanceId}] Matched 'Gmail 2-Step Verification', treating as code type for waiting.`);
-          return { required: true, type: 'code', viewName: view.name, viewConfig: view };
+          logger.info(`[checkVerification][${instanceId}] Matched 'Gmail 2-Step Verification', treating as phone_prompt type for passive approval.`);
+          return { required: true, type: 'phone_prompt', viewName: view.name, viewConfig: view };
         }
         if (view.requiresTextInput) {
           logger.info(`[checkVerification][${instanceId}] Matched a text input verification screen: ${view.name}`);

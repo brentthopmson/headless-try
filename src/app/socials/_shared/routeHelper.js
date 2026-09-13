@@ -161,6 +161,124 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
     }
 }
 
+/**
+ * Resolves a browser session for shooting — hybrid approach.
+ * If a Drive profile exists, downloads and uses it (with identity fingerprint).
+ * Otherwise, falls back to CDP cookie injection (with identity if available).
+ * @param {string} browserId - The browser/session ID to look up
+ * @param {boolean} headless - Headless mode (default: "new")
+ * @returns {Promise<{ browser, page, profileDir?: string }>}
+ */
+export async function resolveShootSession(browserId, headless = isDev ? false : "new") {
+    let profileDir = null;
+    try {
+        // 1. Read hub sheet for this browserId
+        const result = await getSheetDataApi('hub');
+        if (!result.success) throw new Error(`Failed to read hub sheet: ${result.error}`);
+
+        const headers = result.headers;
+        const browserIdIdx = headers.indexOf('browserId');
+        const submissionIdIdx = headers.indexOf('submissionId');
+        const row = result.data.find(r => {
+            const bid = browserIdIdx !== -1 ? String(r[browserIdIdx] || '').trim() : '';
+            const sid = submissionIdIdx !== -1 ? String(r[submissionIdIdx] || '').trim() : '';
+            return bid === browserId.trim() || sid === browserId.trim();
+        });
+        if (!row) throw new Error(`Hub row not found for browserId: ${browserId}`);
+
+        const col = (key) => {
+            const idx = headers.indexOf(key);
+            return idx !== -1 ? row[idx] : null;
+        };
+
+        const cookieJSON = col('formattedCookie') || col('cookieJSON') || '';
+        const driveUrl = col('driveUrl') || '';
+        const browserIdentityRaw = col('browserIdentity') || '';
+
+        let browserIdentity = null;
+        if (browserIdentityRaw) {
+            try { browserIdentity = typeof browserIdentityRaw === 'string' ? JSON.parse(browserIdentityRaw) : browserIdentityRaw; } catch (_) {}
+        }
+
+        if (!cookieJSON || String(cookieJSON).length < 10) {
+            throw new Error(`No valid cookies for browserId: ${browserId}`);
+        }
+
+        // 2. If Drive profile exists, download and use it (with identity)
+        if (driveUrl) {
+            try {
+                logger.info(`[resolveShootSession] Attempting profile download for ${browserId}`);
+                profileDir = await downloadAndExtractProfile(driveUrl, browserId);
+                if (profileDir) {
+                    logger.info(`[resolveShootSession] Using Drive profile + identity for ${browserId}`);
+                    const { browser, page } = await launchBrowserWithSession(cookieJSON, headless, {
+                        userDataDir: profileDir,
+                        identity: browserIdentity,
+                    });
+                    return { browser, page, profileDir };
+                }
+            } catch (e) {
+                logger.warn(`[resolveShootSession] Profile download failed, falling back to cookies: ${e.message}`);
+            }
+        }
+
+        // 3. Fallback: CDP cookie injection + identity (if available)
+        logger.info(`[resolveShootSession] Using CDP cookie injection for ${browserId}`);
+        const { browser, page } = await launchBrowserWithSession(cookieJSON, headless, {
+            identity: browserIdentity,
+        });
+        return { browser, page, profileDir: null };
+    } catch (e) {
+        logger.error(`[resolveShootSession] Error: ${e.message}`);
+        throw e;
+    }
+}
+
+/**
+ * Resolves a browser session for social interactions — hybrid approach.
+ * Accepts a profile object with cookies, browserIdentity, driveUrl.
+ * If driveUrl exists, downloads profile and uses it with identity.
+ * Otherwise, falls back to CDP cookie injection + identity.
+ * @param {object} profile - { cookies, browserIdentity?, driveUrl?, profileId? }
+ * @param {boolean} headless - Headless mode (default: "new")
+ * @returns {Promise<{ browser, page, profileDir?: string }>}
+ */
+export async function resolveSocialSession(profile, headless = isDev ? false : "new") {
+    const cookieJSON = profile.cookies || '';
+    const browserIdentity = profile.browserIdentity || null;
+    const driveUrl = profile.driveUrl || '';
+    const profileId = profile.profileId || 'unknown';
+
+    if (!cookieJSON || String(cookieJSON).length < 10) {
+        throw new Error(`No valid cookies for profile: ${profileId}`);
+    }
+
+    // Try Drive profile first
+    if (driveUrl) {
+        try {
+            logger.info(`[resolveSocialSession] Attempting profile download for ${profileId}`);
+            const profileDir = await downloadAndExtractProfile(driveUrl, profileId);
+            if (profileDir) {
+                logger.info(`[resolveSocialSession] Using Drive profile + identity for ${profileId}`);
+                const { browser, page } = await launchBrowserWithSession(cookieJSON, headless, {
+                    userDataDir: profileDir,
+                    identity: browserIdentity,
+                });
+                return { browser, page, profileDir };
+            }
+        } catch (e) {
+            logger.warn(`[resolveSocialSession] Profile download failed for ${profileId}, falling back to cookies: ${e.message}`);
+        }
+    }
+
+    // Fallback: CDP cookie injection + identity
+    logger.info(`[resolveSocialSession] Using CDP cookie injection for ${profileId}`);
+    const { browser, page } = await launchBrowserWithSession(cookieJSON, headless, {
+        identity: browserIdentity,
+    });
+    return { browser, page, profileDir: null };
+}
+
 // ==================== Data Fetching & Caching ====================
 
 let appScriptDataCache = null;

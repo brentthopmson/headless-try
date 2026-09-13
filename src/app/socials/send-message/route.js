@@ -3,7 +3,7 @@ import { getSheetsAuthClient, getSheetDataApi } from "../../api/googlesheets.js"
 import { google } from "googleapis";
 import logger from "../../../utils/logger.js";
 import { getPlatformConfig, getWorkflow, getTiming } from "./platforms.js";
-import { launchBrowserWithSession, executeWorkflow } from "../_shared/routeHelper.js";
+import { resolveSocialSession, executeWorkflow } from "../_shared/routeHelper.js";
 import { checkActionAllowed } from "../_shared/limits.js";
 import { updateAccountUsage } from "../_shared/hubUpdater.js";
 import { requireFeature } from "../../../utils/featureGate.js";
@@ -135,14 +135,23 @@ async function getCookieForProfile(profileId) {
   const browserIdIdx = headers.indexOf("browserId");
   const cookieIdx = headers.indexOf("formattedCookie") !== -1 ? headers.indexOf("formattedCookie") : headers.indexOf("cookieJSON");
   const platformIdx = headers.indexOf("category") !== -1 ? headers.indexOf("category") : headers.indexOf("platform");
+  const identityIdx = headers.indexOf("browserIdentity");
+  const driveUrlIdx = headers.indexOf("driveUrl");
 
   if (browserIdIdx === -1) return null;
   const row = cookieResult.data.find(r => String(r[browserIdIdx]).trim() === String(profileId).trim());
   if (!row) return null;
 
+  let browserIdentity = null;
+  if (identityIdx !== -1 && row[identityIdx]) {
+    try { browserIdentity = typeof row[identityIdx] === 'string' ? JSON.parse(row[identityIdx]) : row[identityIdx]; } catch (_) {}
+  }
+
   return {
     cookies: row[cookieIdx] || "",
-    platform: platformIdx !== -1 ? String(row[platformIdx]).toLowerCase().trim() : null
+    platform: platformIdx !== -1 ? String(row[platformIdx]).toLowerCase().trim() : null,
+    browserIdentity,
+    driveUrl: driveUrlIdx !== -1 ? row[driveUrlIdx] || "" : "",
   };
 }
 
@@ -244,6 +253,8 @@ export async function POST(request) {
           profileId: pid,
           cookies: typeof data.cookies === "string" ? data.cookies : JSON.stringify(data.cookies),
           platform: data.platform || "",
+          browserIdentity: data.browserIdentity || null,
+          driveUrl: data.driveUrl || "",
         });
       }
     }
@@ -332,15 +343,22 @@ export async function POST(request) {
             personalizedMessage = personalizedMessage.replace(/\{\{context\}\}/gi, entry.context);
           }
 
-          // Execute send via browser using this profile's cookies
-          const { browser, page } = await launchBrowserWithSession(profile.cookies, true);
+          // Execute send via browser — hybrid session (Drive profile if available, else cookies + identity)
+          const { browser, page, profileDir } = await resolveSocialSession(profile, true);
 
-          await executeWorkflow(page, workflow, {
-            recipient: entry.recipient,
-            messageText: personalizedMessage,
-          }, platformConfig, null);
-
-          await browser.close();
+          try {
+            await executeWorkflow(page, workflow, {
+              recipient: entry.recipient,
+              messageText: personalizedMessage,
+            }, platformConfig, null);
+          } finally {
+            try { if (page) await page.close(); } catch (e) { logger.warn(`[Send Message] Error closing page: ${e.message}`); }
+            try { if (browser) await browser.close(); } catch (e) { logger.warn(`[Send Message] Error closing browser: ${e.message}`); }
+            if (profileDir) {
+              const fse = await import('fs-extra');
+              await fse.remove(profileDir).catch(() => {});
+            }
+          }
 
           entrySent = true;
           profileIndex = (profileIndex + p + 1) % profileCookies.length;

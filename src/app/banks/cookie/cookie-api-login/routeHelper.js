@@ -306,8 +306,8 @@ export async function checkVerification(page, platformConfig) {
           return { required: true, type: 'code', viewName: view.name, viewConfig: view };
         }
         if (view.name === 'Gmail 2-Step Verification') {
-          logger.info(`[checkVerification][${instanceId}] Matched 'Gmail 2-Step Verification', treating as code type for waiting.`);
-          return { required: true, type: 'code', viewName: view.name, viewConfig: view };
+          logger.info(`[checkVerification][${instanceId}] Matched 'Gmail 2-Step Verification', treating as phone_prompt type for passive approval.`);
+          return { required: true, type: 'phone_prompt', viewName: view.name, viewConfig: view };
         }
         return { required: true, type: 'unknown', viewName: view.name, viewConfig: view };
       }

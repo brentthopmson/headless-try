@@ -12,6 +12,7 @@ import {
     DOMHelpers,
     setCorsHeaders,
     launchBrowserWithSession,
+    resolveSocialSession,
     executeWorkflow
 } from '../_shared/routeHelper.js';
 import { checkActionAllowed, getPlatformLimits } from '../_shared/limits.js';
@@ -86,7 +87,30 @@ async function processTask(taskRow, columnIndexes) {
         }
 
         const platformConfig = getPlatformConfig(platform);
-        ({ browser, page } = await launchBrowserWithSession(cookieJSON));
+
+        // Hybrid session: use Drive profile + identity if available
+        let profileDir = null;
+        try {
+            let browserIdentity = null;
+            let driveUrl = '';
+            let resolvedProfileId = profileId;
+            try { browserIdentity = taskRow[columnIndexes['browserIdentity']] || null; } catch (_) {}
+            try { driveUrl = taskRow[columnIndexes['driveUrl']] || ''; } catch (_) {}
+            try { resolvedProfileId = taskRow[columnIndexes['profileId']] || taskRow[columnIndexes['accountId']] || profileId; } catch (_) {}
+
+            const sessionResult = await resolveSocialSession({
+                cookies: cookieJSON,
+                browserIdentity,
+                driveUrl,
+                profileId: resolvedProfileId,
+            });
+            browser = sessionResult.browser;
+            page = sessionResult.page;
+            profileDir = sessionResult.profileDir;
+        } catch (e) {
+            // Fallback to cookie-only if resolveSocialSession fails
+            ({ browser, page } = await launchBrowserWithSession(cookieJSON));
+        }
 
         const workflow = getWorkflow(platform, operation);
         
@@ -141,6 +165,10 @@ async function processTask(taskRow, columnIndexes) {
         }
         if (browser) {
             try { await browser.close(); } catch (e) { logger.warn(`[processTask] Error closing browser: ${e.message}`); }
+        }
+        if (profileDir) {
+            const fs = await import('fs-extra');
+            await fs.remove(profileDir).catch(() => {});
         }
 
         try {
