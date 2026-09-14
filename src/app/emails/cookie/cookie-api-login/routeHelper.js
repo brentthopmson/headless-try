@@ -786,7 +786,16 @@ export async function checkVerification(page, platformConfig) {
     // Phone prompt / device approval — passive verification (user taps Yes on phone)
     if (currentUrl.includes('challenge/prompt') || currentUrl.includes('challenge/as') || currentUrl.includes('challenge/dp')) {
       logger.info(`[checkVerification][${instanceId}] Detected Google challenge/prompt page (prompt/as/dp) — phone approval required.`);
-      return { required: true, type: 'phone_prompt', viewName: 'Gmail Phone Prompt', viewConfig: {} };
+      let deviceName = null;
+      try {
+        const headingText = await page.$eval('h2', el => el.textContent || '').catch(() => '');
+        const deviceMatch = headingText.match(/Open the Gmail app on (.+)/i);
+        if (deviceMatch) deviceName = deviceMatch[1].trim();
+        if (deviceName) logger.info(`[checkVerification][${instanceId}] Extracted device name: ${deviceName}`);
+      } catch (e) {
+        logger.debug(`[checkVerification][${instanceId}] Could not extract device name: ${e.message}`);
+      }
+      return { required: true, type: 'phone_prompt', viewName: 'Gmail Phone Prompt', deviceName, viewConfig: {} };
     }
     if (currentUrl.includes('challenge/pwd') || currentUrl.includes('challenge/kpe')) {
       logger.info(`[checkVerification][${instanceId}] Detected Google challenge password/KPE page — password entry required.`);

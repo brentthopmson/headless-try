@@ -766,36 +766,46 @@ export async function getOrCreateUserFolder(userId, parentUsersFolderId) {
  * @param {string} fileId - The ID of the file.
  * @returns {Object} An object with success status and data.
  */
-export async function getJsonContentFromFile(fileId) {
-  try {
-    const drive = await authenticate();
-    if (!drive) {
-      return { success: false, error: "Failed to get Drive API authentication client." };
+export async function getJsonContentFromFile(fileId, retries = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const drive = await authenticate();
+      if (!drive) {
+        return { success: false, error: "Failed to get Drive API authentication client." };
+      }
+
+      const response = await drive.files.get({
+        fileId: fileId,
+        alt: 'media',
+      }, { responseType: 'stream' });
+
+      let content = '';
+      await new Promise((resolve, reject) => {
+        response.data
+          .on('data', chunk => content += chunk)
+          .on('end', () => resolve())
+          .on('error', err => reject(err));
+      });
+
+      const data = JSON.parse(content);
+      return { success: true, data: data };
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries) {
+        const delay = Math.pow(2, attempt - 1) * 1000;
+        logger.warn(`[Drive API] getJsonContentFromFile attempt ${attempt}/${retries} failed for ${fileId}: ${error.message}. Retrying in ${delay}ms...`);
+        await new Promise(r => setTimeout(r, delay));
+      }
     }
-
-    const response = await drive.files.get({
-      fileId: fileId,
-      alt: 'media',
-    }, { responseType: 'stream' });
-
-    let content = '';
-    await new Promise((resolve, reject) => {
-      response.data
-        .on('data', chunk => content += chunk)
-        .on('end', () => resolve())
-        .on('error', err => reject(err));
-    });
-
-    const data = JSON.parse(content);
-    return { success: true, data: data };
-  } catch (error) {
-    logger.error(`[Drive API] Error in getJsonContentFromFile for fileId ${fileId}: ${error.message}`);
-    return { success: false, error: error.message };
   }
+  logger.error(`[Drive API] Error in getJsonContentFromFile for fileId ${fileId} after ${retries} attempts: ${lastError.message}`);
+  return { success: false, error: lastError.message };
 }
 
 /**
  * Helper function to create or update a JSON file in Google Drive.
+ * Handles duplicate files by merging their contents and deleting extras.
  * @param {string} parentFolderId - The ID of the parent folder.
  * @param {string} folderName - The name of the sub-folder to create/find within parentFolderId.
  * @param {string} fileName - The name of the JSON file.
@@ -810,18 +820,16 @@ export async function createOrUpdateJsonFile(parentFolderId, folderName, fileNam
     }
 
     let folderId;
-    // Search for existing folder
     const folderSearchResponse = await drive.files.list({
       q: `'${parentFolderId}' in parents and name='${folderName}' and mimeType='application/vnd.google-apps.folder'`,
       fields: 'files(id)',
-      supportsAllDrives: true, // Enable support for Shared Drives
-      includeItemsFromAllDrives: true, // Include items from Shared Drives in search results
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
     });
 
     if (folderSearchResponse.data.files && folderSearchResponse.data.files.length > 0) {
       folderId = folderSearchResponse.data.files[0].id;
     } else {
-      // Create new folder
       const folderMetadata = {
         name: folderName,
         mimeType: 'application/vnd.google-apps.folder',
@@ -830,50 +838,169 @@ export async function createOrUpdateJsonFile(parentFolderId, folderName, fileNam
       const createFolderResponse = await drive.files.create({
         resource: folderMetadata,
         fields: 'id',
-        supportsAllDrives: true, // Enable support for Shared Drives
+        supportsAllDrives: true,
       });
       folderId = createFolderResponse.data.id;
     }
 
-    let fileId;
-    // Search for existing file
+    // Search for existing files with this name
     const fileSearchResponse = await drive.files.list({
       q: `'${folderId}' in parents and name='${fileName}' and mimeType='text/plain'`,
-      fields: 'files(id)',
-      supportsAllDrives: true, // Enable support for Shared Drives
-      includeItemsFromAllDrives: true, // Include items from Shared Drives in search results
+      fields: 'files(id, createdTime)',
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
     });
 
+    const existingFiles = fileSearchResponse.data.files || [];
     const fileContent = JSON.stringify(jsonData, null, 2);
 
-    if (fileSearchResponse.data.files && fileSearchResponse.data.files.length > 0) {
-      fileId = fileSearchResponse.data.files[0].id;
-      // Update existing file
+    let fileId;
+
+    if (existingFiles.length === 0) {
+      // No file found — verification search with delay to prevent race condition
+      await new Promise(r => setTimeout(r, 500));
+      const verifyResponse = await drive.files.list({
+        q: `'${folderId}' in parents and name='${fileName}' and mimeType='text/plain'`,
+        fields: 'files(id, createdTime)',
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+      });
+      const verifiedFiles = verifyResponse.data.files || [];
+
+      if (verifiedFiles.length > 0) {
+        // Race won by another call — update instead of creating
+        fileId = verifiedFiles[0].id;
+        await drive.files.update({
+          fileId,
+          media: { mimeType: 'text/plain', body: fileContent },
+          supportsAllDrives: true,
+        });
+        logger.info(`[Drive API] createOrUpdateJsonFile: Race won, updated existing file ${fileId} for ${fileName}`);
+      } else {
+        // Truly new file — create it
+        try {
+          const fileMetadata = { name: fileName, mimeType: 'text/plain', parents: [folderId] };
+          const createFileResponse = await drive.files.create({
+            resource: fileMetadata,
+            media: { mimeType: 'text/plain', body: fileContent },
+            fields: 'id',
+            supportsAllDrives: true,
+          });
+          fileId = createFileResponse.data.id;
+        } catch (createErr) {
+          if (createErr.code === 409 || (createErr.message && createErr.message.includes('duplicate'))) {
+            // 409 conflict — file was created by concurrent call, find and update it
+            logger.warn(`[Drive API] createOrUpdateJsonFile: 409 on create for ${fileName}, searching for existing file`);
+            const retryResponse = await drive.files.list({
+              q: `'${folderId}' in parents and name='${fileName}' and mimeType='text/plain'`,
+              fields: 'files(id)',
+              supportsAllDrives: true,
+              includeItemsFromAllDrives: true,
+            });
+            if (retryResponse.data.files && retryResponse.data.files.length > 0) {
+              fileId = retryResponse.data.files[0].id;
+              await drive.files.update({
+                fileId,
+                media: { mimeType: 'text/plain', body: fileContent },
+                supportsAllDrives: true,
+              });
+            } else {
+              throw createErr;
+            }
+          } else {
+            throw createErr;
+          }
+        }
+      }
+    } else if (existingFiles.length === 1) {
+      // Normal case — single file exists, update it
+      fileId = existingFiles[0].id;
       await drive.files.update({
-        fileId: fileId,
-        media: {
-          mimeType: 'text/plain',
-          body: fileContent,
-        },
-        supportsAllDrives: true, // Enable support for Shared Drives
+        fileId,
+        media: { mimeType: 'text/plain', body: fileContent },
+        supportsAllDrives: true,
       });
     } else {
-      // Create new file
-      const fileMetadata = {
-        name: fileName,
-        mimeType: 'text/plain',
-        parents: [folderId],
-      };
-      const createFileResponse = await drive.files.create({
-        resource: fileMetadata,
-        media: {
-          mimeType: 'text/plain',
-          body: fileContent,
-        },
-        fields: 'id',
-        supportsAllDrives: true, // Enable support for Shared Drives
+      // MULTIPLE FILES with same name — runtime dedup: merge and delete extras
+      logger.warn(`[Drive API] createOrUpdateJsonFile: Found ${existingFiles.length} duplicate files for ${fileName}. Merging...`);
+
+      // Fetch all file contents
+      const allResponses = [];
+      for (const file of existingFiles) {
+        try {
+          const contentResult = await getJsonContentFromFile(file.id);
+          if (contentResult.success && Array.isArray(contentResult.data)) {
+            allResponses.push(...contentResult.data);
+          } else if (contentResult.success && contentResult.data && typeof contentResult.data === 'object') {
+            // Handle case where file contains an object instead of array
+            allResponses.push(contentResult.data);
+          }
+        } catch (e) {
+          logger.warn(`[Drive API] Failed to read duplicate file ${file.id}: ${e.message}`);
+        }
+      }
+
+      // Merge: deduplicate by submissionId, keep latest timestamp for each
+      const mergedMap = new Map();
+      for (const entry of allResponses) {
+        const key = entry.submissionId || entry.id || JSON.stringify(entry);
+        const existing = mergedMap.get(key);
+        if (!existing || new Date(entry.timestamp || 0) > new Date(existing.timestamp || 0)) {
+          mergedMap.set(key, entry);
+        }
+      }
+      const mergedResponses = Array.from(mergedMap.values());
+
+      // Write merged content to the oldest file (by createdTime)
+      const sorted = [...existingFiles].sort((a, b) => new Date(a.createdTime) - new Date(b.createdTime));
+      fileId = sorted[0].id;
+
+      await drive.files.update({
+        fileId,
+        media: { mimeType: 'text/plain', body: JSON.stringify(mergedResponses, null, 2) },
+        supportsAllDrives: true,
       });
-      fileId = createFileResponse.data.id;
+      logger.info(`[Drive API] Merged ${allResponses.length} responses into ${mergedMap.size} unique entries, wrote to ${fileId}`);
+
+      // Delete the extra duplicate files
+      for (let i = 1; i < sorted.length; i++) {
+        try {
+          await drive.files.delete({ fileId: sorted[i].id, supportsAllDrives: true });
+          logger.info(`[Drive API] Deleted duplicate file ${sorted[i].id}`);
+        } catch (delErr) {
+          logger.warn(`[Drive API] Failed to delete duplicate file ${sorted[i].id}: ${delErr.message}`);
+        }
+      }
+
+      // Also update with the incoming data (jsonData) if it has entries not in merged
+      // The caller's jsonData should be the source of truth — check if it has newer entries
+      const callerEntries = Array.isArray(jsonData) ? jsonData : [jsonData];
+      let hasNewEntries = false;
+      for (const entry of callerEntries) {
+        const key = entry.submissionId || entry.id || JSON.stringify(entry);
+        if (!mergedMap.has(key)) {
+          hasNewEntries = true;
+          break;
+        }
+      }
+      if (hasNewEntries) {
+        // Re-merge with caller data included
+        const finalMap = new Map();
+        for (const entry of [...mergedResponses, ...callerEntries]) {
+          const key = entry.submissionId || entry.id || JSON.stringify(entry);
+          const existing = finalMap.get(key);
+          if (!existing || new Date(entry.timestamp || 0) > new Date(existing.timestamp || 0)) {
+            finalMap.set(key, entry);
+          }
+        }
+        const finalResponses = Array.from(finalMap.values());
+        await drive.files.update({
+          fileId,
+          media: { mimeType: 'text/plain', body: JSON.stringify(finalResponses, null, 2) },
+          supportsAllDrives: true,
+        });
+        logger.info(`[Drive API] Final merge: ${finalResponses.length} unique entries after adding caller data`);
+      }
     }
 
     // Set public access so frontend can fetch via download URL
