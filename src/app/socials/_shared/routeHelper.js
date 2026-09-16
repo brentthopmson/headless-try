@@ -160,16 +160,16 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
             await applyIdentityToPage(page, browser.identity);
         }
 
-        // Always inject cookies via CDP when available — profile SQLite cookies may be
-        // encrypted with NSS keyring (Linux) or corrupted. CDP injection is the reliable fallback.
-        // Previously only Microsoft used CDP; Gmail now also gets it because Debian Chromium
-        // encrypts cookies with NSS which doesn't survive profile upload→download.
-        if (cookieJSON) {
+        // Inject cookies via CDP only if NO persistent userDataDir profile was provided.
+        // When userDataDir is present, Chromium already loads the authentic, fully-bound
+        // Cookies DB and Local/Session Storage from disk. Injecting raw cookieJSON via CDP over
+        // a restored userDataDir corrupts Google's internal session state and triggers a sign-in redirect.
+        if (cookieJSON && !options.userDataDir) {
             const cookies = await loadBrowserSession(cookieJSON);
             await page.setCookie(...cookies);
             logger.info(`[launchBrowserWithSession] Injected ${cookies.length} cookies via CDP (platform=${options.platform || 'unknown'})`);
         } else if (options.userDataDir) {
-            logger.info(`[launchBrowserWithSession] No cookieJSON provided — relying on profile cookies`);
+            logger.info(`[launchBrowserWithSession] Using persistent userDataDir profile cookies & session storage (skipping CDP cookie injection)`);
         }
 
         logger.info(`[launchBrowserWithSession] Browser launched with session`);
