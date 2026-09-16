@@ -1,3 +1,7 @@
+import os from 'node:os';
+import path from 'node:path';
+import fs from 'node:fs';
+
 export const localExecutablePath =
   process.platform === "win32"
     ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
@@ -264,7 +268,7 @@ export async function launchBrowser(customOptions = {}) {
     executablePath: isDev ? localExecutablePath : fullChromiumExecutablePath,
     headless: "new",
     timeout: 60000,
-    userDataDir: customOptions.userDataDir || `C:\\Users\\HP\\AppData\\Local\\Temp\\puppeteer_dev_profile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    userDataDir: customOptions.userDataDir || path.join(os.tmpdir(), `puppeteer_dev_profile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
   };
 
   // Merge default options with overrides

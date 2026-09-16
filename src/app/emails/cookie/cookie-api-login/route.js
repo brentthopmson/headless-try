@@ -1,6 +1,7 @@
-﻿import { NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import chromium from "@sparticuz/chromium-min";
 import { inspect } from 'util';
+import path from 'path';
 import fs from 'fs-extra';
 import { execSync } from 'child_process';
 import {
@@ -5848,6 +5849,11 @@ if (!foundSelector) {
                         // captures an incomplete profile (cookies missing from SQLite DB).
                         await new Promise(resolve => setTimeout(resolve, 10000));
                         await new Promise(resolve => setTimeout(resolve, 5000));
+                        const lsDir = userDataDir ? path.join(userDataDir, 'Default', 'Local Storage') : null;
+                        if (lsDir && !fs.existsSync(lsDir)) {
+                            logger.warn(`[PROFILE][${browserId}] Default/Local Storage missing in ${userDataDir} prior to staging — waiting additional 3s for LevelDB flush.`);
+                            await new Promise(resolve => setTimeout(resolve, 3000));
+                        }
                         // STAGED-PROFILE SEPARATION: immediately after close, MOVE (or copy) the
                         // now-flushed profile into the dedicated staging root, OUTSIDE /tmp/users_data.
                         // The upload reads only this staged copy, so a segment rotation (dev HMR),

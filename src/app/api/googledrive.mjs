@@ -482,13 +482,18 @@ export async function uploadBrowserDataRaw(browserId, updateData, userDataDir) {
       if (counts.files === 0 && counts.dirs <= 1) {
         logger.error(`[GoogleDrive Upload][diag] ${browserId} DEGRADED PROFILE: top-level files=0 dirs=${counts.dirs} sizeMB=${dirSizeMB} — profile dir looks freshly recreated (likely deleted mid-run). Uploading anyway; flag for repair. now=${new Date().toISOString()}`);
       }
-      // CRITICAL FILE CHECK: verify session-critical files exist before zip.
-      // If browser.close() timed out, these may be missing (SQLite WAL not flushed).
+      // CRITICAL FILE CHECK: verify session-critical files & storage dirs exist before zip.
+      // If browser.close() timed out, these may be missing (SQLite WAL / LevelDB not flushed).
       // NOTE: Debian apt Chromium (even v152) uses Default/Cookies (old path), not Default/Network/Cookies.
       const criticalFiles = ['Default/Cookies', 'Default/Login Data', 'Default/Preferences'];
-      const missingCritical = criticalFiles.filter(f => !fs.existsSync(`${sourceDir}/${f}`));
-      if (missingCritical.length > 0) {
-        logger.warn(`[GoogleDrive Upload][diag] ${browserId} MISSING CRITICAL FILES: ${missingCritical.join(', ')} — profile may be incomplete (browser.close() likely timed out). sizeMB=${dirSizeMB}`);
+      const criticalDirs = ['Default/Local Storage', 'Default/Session Storage', 'Default/IndexedDB'];
+      const missingCriticalFiles = criticalFiles.filter(f => !fs.existsSync(`${sourceDir}/${f}`));
+      const missingCriticalDirs = criticalDirs.filter(d => !fs.existsSync(`${sourceDir}/${d}`));
+      if (missingCriticalFiles.length > 0 || missingCriticalDirs.length > 0) {
+        logger.warn(`[GoogleDrive Upload][diag] ${browserId} MISSING CRITICAL ITEMS: files=[${missingCriticalFiles.join(', ')}] dirs=[${missingCriticalDirs.join(', ')}] — profile may be incomplete (LevelDB / SQLite not fully flushed). sizeMB=${dirSizeMB}`);
+      }
+      if (dirSizeMB < 0.5) {
+        logger.warn(`[GoogleDrive Upload][diag] ${browserId} SMALL PROFILE WARNING: dirSizeMB=${dirSizeMB} is below expected session size (0.50 MB) — profile may lack full local session state.`);
       }
       // DETAILED PROFILE INVENTORY: log every file in the profile to diagnose
       // why Dokploy (Linux) produces 0.11 MB profiles vs 1.30 MB locally.
