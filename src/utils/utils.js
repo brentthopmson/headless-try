@@ -222,7 +222,12 @@ export async function launchBrowser(customOptions = {}) {
     "--disable-blink-features=AutomationControlled",
     "--disable-features=site-per-process",
     "--disable-site-isolation-trials",
-    "--disable-dev-shm-usage", 
+    "--disable-dev-shm-usage",
+    // Use basic password/cookie store instead of system keyring (GNOME Keyring/KWallet).
+    // On Linux, Chromium encrypts cookies with NSS keyring which doesn't travel with the
+    // profile directory. --password-store=basic stores the encryption key IN the profile,
+    // making it portable across sessions (upload to Drive → download by smartExtract).
+    "--password-store=basic",
     // --no-sandbox only on Linux/Docker (triggers Google detection on Windows)
     ...(process.platform === 'linux' ? ["--no-sandbox"] : []),
     "--enable-features=NetworkService,NetworkServiceInProcess",

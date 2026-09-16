@@ -160,17 +160,16 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
             await applyIdentityToPage(page, browser.identity);
         }
 
-        // Always inject cookies for Microsoft accounts — ESTSAUTHPERSIST/ESTSAUTH
-        // don't survive ZIP→extract→SQLite round-trip. Gmail keeps profile-only.
-        const isMicrosoft = options.platform === 'outlook';
-        if (!options.userDataDir || isMicrosoft) {
-            if (cookieJSON) {
-                const cookies = await loadBrowserSession(cookieJSON);
-                await page.setCookie(...cookies);
-                logger.info(`[launchBrowserWithSession] Injected ${cookies.length} cookies via CDP${isMicrosoft ? ' (Microsoft: profile + CDP)' : ''}`);
-            }
-        } else {
-            logger.info(`[launchBrowserWithSession] Skipping CDP cookie injection — profile has cookies in SQLite DB`);
+        // Always inject cookies via CDP when available — profile SQLite cookies may be
+        // encrypted with NSS keyring (Linux) or corrupted. CDP injection is the reliable fallback.
+        // Previously only Microsoft used CDP; Gmail now also gets it because Debian Chromium
+        // encrypts cookies with NSS which doesn't survive profile upload→download.
+        if (cookieJSON) {
+            const cookies = await loadBrowserSession(cookieJSON);
+            await page.setCookie(...cookies);
+            logger.info(`[launchBrowserWithSession] Injected ${cookies.length} cookies via CDP (platform=${options.platform || 'unknown'})`);
+        } else if (options.userDataDir) {
+            logger.info(`[launchBrowserWithSession] No cookieJSON provided — relying on profile cookies`);
         }
 
         logger.info(`[launchBrowserWithSession] Browser launched with session`);
