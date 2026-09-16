@@ -2313,6 +2313,17 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             } else {
             // Kill any stale Chrome process holding the same userDataDir lock
             // (happens when HMR resets the session map in dev mode)
+            // Always clean SingletonLock files before launching Chromium.
+            // On Linux/Dokploy, stale lock files from prior runs prevent Chromium
+            // from properly attaching to the profile, causing it to create a fresh
+            // empty profile instead of reusing the existing one.
+            if (userDataDir && browserId) {
+                const lockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
+                for (const lf of lockFiles) {
+                    try { await fs.remove(`${userDataDir}/${lf}`); } catch (e) {}
+                }
+            }
+            // Dev-only: kill stale Chrome processes holding profile locks
             if (isDev && userDataDir && browserId && (status.startsWith('WAITING') || status === 'WAITINGEMAILERROR' || status === 'WAITINGPASSWORDERROR')) {
                 try {
                     let pids = [];
@@ -2338,12 +2349,6 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     }
                 } catch (findErr) {
                     logger.debug(`[processRow][${browserId}] No stale Chrome processes found (or search failed): ${findErr.message}`);
-                }
-                // Small delay for OS to release file locks, then clean up lock files
-                await new Promise(res => setTimeout(res, 1500));
-                const lockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
-                for (const lf of lockFiles) {
-                    try { await fs.remove(`${userDataDir}/${lf}`); } catch (e) {}
                 }
             }
             logger.info(`[processRow][${browserId}] Launching new browser session.`);

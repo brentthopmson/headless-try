@@ -1,4 +1,3 @@
-import chromium from "@sparticuz/chromium-min";
 import axios from 'axios';
 import fs from 'fs-extra';
 import path from 'path';
@@ -8,7 +7,7 @@ import http from 'http';
 import extractZip from 'extract-zip';
 import logger from "../../../utils/logger.js";
 import { getSheetDataApi, updateSheetRowApi, appendSheetRowApi, stripFormulaColumns } from '../../api/googlesheets.js';
-import { localExecutablePath, isDev, remoteExecutablePath, launchBrowser } from "../../../utils/utils.js";
+import { localExecutablePath, isDev, fullChromiumExecutablePath, launchBrowser } from "../../../utils/utils.js";
 import { applyIdentityToPage } from "../../../utils/identity.js";
 import { detectEmailPlatform } from "../../emails/_shared/platforms.js";
 
@@ -119,7 +118,7 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
     try {
         const launchOptions = {
             headless,
-            executablePath: isDev ? localExecutablePath : await chromium.executablePath(remoteExecutablePath),
+            executablePath: isDev ? localExecutablePath : fullChromiumExecutablePath,
         };
 
         // If a userDataDir is provided (from Drive profile), use it instead of random temp dir
