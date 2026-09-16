@@ -5837,6 +5837,12 @@ if (!foundSelector) {
                             browserFullyClosed = true;
                             activeBrowserSessions.delete(browserId);
                         }
+                        // Wait for Chromium to fully flush SQLite WAL + cookies to disk BEFORE staging.
+                        // browser.close() resolves when the DevTools connection closes, NOT when
+                        // Chromium has finished writing to disk. Without this delay, fs.move()
+                        // captures an incomplete profile (cookies missing from SQLite DB).
+                        await new Promise(resolve => setTimeout(resolve, 10000));
+                        await new Promise(resolve => setTimeout(resolve, 5000));
                         // STAGED-PROFILE SEPARATION: immediately after close, MOVE (or copy) the
                         // now-flushed profile into the dedicated staging root, OUTSIDE /tmp/users_data.
                         // The upload reads only this staged copy, so a segment rotation (dev HMR),
@@ -5863,8 +5869,6 @@ if (!foundSelector) {
                         } catch (stageErr) {
                             logger.error(`[PROFILE][${browserId}] STAGE failed: ${stageErr.message}`);
                         }
-                        await new Promise(resolve => setTimeout(resolve, 10000)); // Let Chromium fully flush SQLite WAL + cookies to disk
-                        await new Promise(resolve => setTimeout(resolve, 5000)); // Additional settle time for background I/O
                     })();
                     await browserClosedPromise;
                     const uploadSource = (stagingDir && fs.existsSync(stagingDir)) ? stagingDir : userDataDir;
