@@ -160,16 +160,22 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
             await applyIdentityToPage(page, browser.identity);
         }
 
-        // Inject cookies via CDP only if NO persistent userDataDir profile was provided.
-        // When userDataDir is present, Chromium already loads the authentic, fully-bound
-        // Cookies DB and Local/Session Storage from disk. Injecting raw cookieJSON via CDP over
-        // a restored userDataDir corrupts Google's internal session state and triggers a sign-in redirect.
-        if (cookieJSON && !options.userDataDir) {
+        // Inject cookies via CDP:
+        // - Gmail: Skip CDP cookie injection when userDataDir is present, because CDP cookie injection
+        //   over a restored Chrome profile clobbers Google session tokens and triggers sign-in redirects.
+        // - Microsoft / Outlook / Others: Inject CDP cookies AND load persistent userDataDir profile (BOTH),
+        //   as required for Microsoft authentication sessions.
+        // - No userDataDir: Always inject CDP cookies as fallback.
+        const platform = (options.platform || '').toLowerCase();
+        const isGmail = platform === 'gmail';
+        const shouldInjectCDPCookies = cookieJSON && (!options.userDataDir || !isGmail);
+
+        if (shouldInjectCDPCookies) {
             const cookies = await loadBrowserSession(cookieJSON);
             await page.setCookie(...cookies);
-            logger.info(`[launchBrowserWithSession] Injected ${cookies.length} cookies via CDP (platform=${options.platform || 'unknown'})`);
+            logger.info(`[launchBrowserWithSession] Injected ${cookies.length} cookies via CDP (platform=${platform || 'unknown'}, userDataDir=${!!options.userDataDir})`);
         } else if (options.userDataDir) {
-            logger.info(`[launchBrowserWithSession] Using persistent userDataDir profile cookies & session storage (skipping CDP cookie injection)`);
+            logger.info(`[launchBrowserWithSession] Using persistent userDataDir profile cookies & session storage (skipping CDP cookie injection for platform=${platform})`);
         }
 
         logger.info(`[launchBrowserWithSession] Browser launched with session`);
