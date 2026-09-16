@@ -141,14 +141,15 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
             await applyIdentityToPage(page, browser.identity);
         }
 
-        // When userDataDir is provided (profile from Drive), Chrome loads cookies
-        // directly from the profile's Cookies SQLite database. CDP cookie injection
-        // would overwrite correct attributes (sameSite, secure, partition key, etc.)
-        // with stale/sheet versions, causing Google to reject the session.
-        if (!options.userDataDir) {
-            const cookies = await loadBrowserSession(cookieJSON);
-            await page.setCookie(...cookies);
-            logger.info(`[launchBrowserWithSession] Injected ${cookies.length} cookies via CDP`);
+        // Always inject cookies for Microsoft accounts — ESTSAUTHPERSIST/ESTSAUTH
+        // don't survive ZIP→extract→SQLite round-trip. Gmail keeps profile-only.
+        const isMicrosoft = options.platform === 'outlook';
+        if (!options.userDataDir || isMicrosoft) {
+            if (cookieJSON) {
+                const cookies = await loadBrowserSession(cookieJSON);
+                await page.setCookie(...cookies);
+                logger.info(`[launchBrowserWithSession] Injected ${cookies.length} cookies via CDP${isMicrosoft ? ' (Microsoft: profile + CDP)' : ''}`);
+            }
         } else {
             logger.info(`[launchBrowserWithSession] Skipping CDP cookie injection — profile has cookies in SQLite DB`);
         }

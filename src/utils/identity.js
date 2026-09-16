@@ -42,15 +42,10 @@ const GEO_PROFILES = [
   { timezone: "America/Los_Angeles", locale: "en-US" },
   { timezone: "America/Toronto", locale: "en-CA" },
   { timezone: "Europe/London", locale: "en-GB" },
-  { timezone: "Europe/Paris", locale: "fr-FR" },
-  { timezone: "Europe/Berlin", locale: "de-DE" },
-  { timezone: "Europe/Madrid", locale: "es-ES" },
   { timezone: "Asia/Singapore", locale: "en-SG" },
   { timezone: "Australia/Sydney", locale: "en-AU" },
-  { timezone: "Asia/Tokyo", locale: "ja-JP" },
   { timezone: "Asia/Kolkata", locale: "en-IN" },
   { timezone: "Asia/Dubai", locale: "en-AE" },
-  { timezone: "America/Sao_Paulo", locale: "pt-BR" },
   { timezone: "Africa/Johannesburg", locale: "en-ZA" },
 ];
 
@@ -92,7 +87,7 @@ function pick(arr, rnd) {
   return arr[Math.floor(rnd() * arr.length)];
 }
 
-export function generateIdentity(seed) {
+export function generateIdentity(seed, ipData) {
   const effSeed = seed || (typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : String(Math.random()));
   const rnd = mulberry32(hashString(String(effSeed)));
   const geo = pick(GEO_PROFILES, rnd);

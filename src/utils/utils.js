@@ -192,7 +192,7 @@ export async function launchBrowser(customOptions = {}) {
     // 1. Per-run browser identity (fingerprint): random UA, screen/viewport+DPR,
     //    timezone, locale/lang, WebGL vendor/renderer, canvas/audio noise, and
     //    hardware signals. Consistent within a single run, unique across runs.
-    const identity = customOptions.identity || generateIdentity();
+    const identity = customOptions.identity || generateIdentity(undefined, customOptions.ipData);
     if (customOptions.userAgent) identity.userAgent = customOptions.userAgent;
 
     // 2. Per-run proxy (IP rotation). Optional — if none is configured we still
