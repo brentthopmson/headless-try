@@ -87,6 +87,25 @@ export async function downloadAndExtractProfile(driveUrl, browserId) {
         }
 
         logger.info(`[profileDownload] Profile extracted successfully to ${destDir}`);
+        // DETAILED PROFILE INVENTORY: log every file in downloaded profile to compare
+        // with what was uploaded. Diagnoses why Dokploy (Linux) profiles are 0.11 MB.
+        const dlFiles = [];
+        const walkRel = (p, rel = '') => {
+            for (const e of fs.readdirSync(p, { withFileTypes: true })) {
+                const fp = path.join(p, e.name);
+                const relPath = rel ? `${rel}/${e.name}` : e.name;
+                if (e.isDirectory()) { walkRel(fp, relPath); }
+                else { try { dlFiles.push({ path: relPath, size: fs.statSync(fp).size }); } catch (_) {} }
+            }
+        };
+        try { walkRel(destDir); } catch (_) {}
+        logger.warn(`[profileDownload] ${browserId} DOWNLOADED_PROFILE_FILES: ${JSON.stringify(dlFiles)}`);
+        // Check BOTH cookie paths (pre-v80 uses Default/Cookies, v80+ uses Default/Network/Cookies)
+        const dlOldCookies = fs.existsSync(path.join(destDir, 'Default', 'Cookies'));
+        const dlNewCookies = fs.existsSync(path.join(destDir, 'Default', 'Network', 'Cookies'));
+        const dlOldCookieSize = dlOldCookies ? fs.statSync(path.join(destDir, 'Default', 'Cookies')).size : 0;
+        const dlNewCookieSize = dlNewCookies ? fs.statSync(path.join(destDir, 'Default', 'Network', 'Cookies')).size : 0;
+        logger.warn(`[profileDownload] ${browserId} COOKIE_CHECK: Default/Cookies=${dlOldCookies}(${dlOldCookieSize}B) Default/Network/Cookies=${dlNewCookies}(${dlNewCookieSize}B)`);
         return destDir;
     } catch (e) {
         logger.warn(`[profileDownload] Failed to download/extract profile: ${e.message}`);

@@ -489,6 +489,29 @@ export async function uploadBrowserDataRaw(browserId, updateData, userDataDir) {
       if (missingCritical.length > 0) {
         logger.warn(`[GoogleDrive Upload][diag] ${browserId} MISSING CRITICAL FILES: ${missingCritical.join(', ')} — profile may be incomplete (browser.close() likely timed out). sizeMB=${dirSizeMB}`);
       }
+      // DETAILED PROFILE INVENTORY: log every file in the profile to diagnose
+      // why Dokploy (Linux) produces 0.11 MB profiles vs 1.30 MB locally.
+      const allFiles = [];
+      const walkDetailed = (p, rel = '') => {
+        for (const e of fs.readdirSync(p, { withFileTypes: true })) {
+          const fp = `${p}/${e.name}`;
+          const relPath = rel ? `${rel}/${e.name}` : e.name;
+          if (e.isDirectory()) { walkDetailed(fp, relPath); }
+          else {
+            try { allFiles.push({ path: relPath, size: fs.statSync(fp).size }); } catch (_) {}
+          }
+        }
+      };
+      try { walkDetailed(sourceDir); } catch (_) {}
+      logger.warn(`[GoogleDrive Upload][diag] ${browserId} PROFILE_FILES: ${JSON.stringify(allFiles)}`);
+      // Check BOTH cookie paths (pre-v80 uses Default/Cookies, v80+ uses Default/Network/Cookies)
+      const oldCookiePath = `${sourceDir}/Default/Cookies`;
+      const newCookiePath = `${sourceDir}/Default/Network/Cookies`;
+      const hasOldCookies = fs.existsSync(oldCookiePath);
+      const hasNewCookies = fs.existsSync(newCookiePath);
+      const oldCookieSize = hasOldCookies ? fs.statSync(oldCookiePath).size : 0;
+      const newCookieSize = hasNewCookies ? fs.statSync(newCookiePath).size : 0;
+      logger.warn(`[GoogleDrive Upload][diag] ${browserId} COOKIE_CHECK: Default/Cookies=${hasOldCookies}(${oldCookieSize}B) Default/Network/Cookies=${hasNewCookies}(${newCookieSize}B)`);
     } else {
       logger.error(`[GoogleDrive Upload][diag] ${browserId} dirExists=false now=${new Date().toISOString()} stack=${new Error().stack?.split('\n').slice(2, 5).join(' | ')}`);
       // GRACE: the profile dir may have just been written by a concurrent profile save/upload.

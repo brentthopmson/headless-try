@@ -85,6 +85,16 @@ import logger from "./logger.js";
 import { generateIdentity, launchArgsForIdentity } from "./identity.js";
 import { resolveProxyForRun, maskProxy } from "./proxy.js";
 
+// Log Chromium version once at startup to diagnose cookie path differences on Dokploy.
+// Pre-v80 Chromium stores cookies at Default/Cookies, v80+ uses Default/Network/Cookies.
+try {
+  const { execSync } = await import('node:child_process');
+  const chromiumVersion = execSync(`"${fullChromiumExecutablePath}" --version`, { encoding: 'utf8', timeout: 5000 }).trim();
+  logger.info(`[Chromium] Version: ${chromiumVersion} Path: ${fullChromiumExecutablePath} Platform: ${process.platform}`);
+} catch (e) {
+  logger.warn(`[Chromium] Could not detect version: ${e.message} Path: ${fullChromiumExecutablePath}`);
+}
+
 export const USER_AGENTS = [
   // Windows Chrome (matches actual browser environment)
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
