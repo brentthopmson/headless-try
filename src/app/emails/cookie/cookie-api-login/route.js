@@ -5830,9 +5830,9 @@ if (!foundSelector) {
                             await Promise.race([
                                 browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`)),
                                 new Promise(resolve => setTimeout(() => {
-                                    logger.warn(`[processRow][${browserId}] browser.close() timed out after 30s — proceeding with staging and upload.`);
+                                    logger.warn(`[processRow][${browserId}] browser.close() timed out after 90s — proceeding with staging and upload.`);
                                     resolve();
-                                }, 30000))
+                                }, 90000))
                             ]);
                             browserFullyClosed = true;
                             activeBrowserSessions.delete(browserId);
@@ -5863,8 +5863,8 @@ if (!foundSelector) {
                         } catch (stageErr) {
                             logger.error(`[PROFILE][${browserId}] STAGE failed: ${stageErr.message}`);
                         }
-                        await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
-                        await new Promise(resolve => setTimeout(resolve, 1500)); // Let Chromium flush profile DBs before the worker zips
+                        await new Promise(resolve => setTimeout(resolve, 10000)); // Let Chromium fully flush SQLite WAL + cookies to disk
+                        await new Promise(resolve => setTimeout(resolve, 5000)); // Additional settle time for background I/O
                     })();
                     await browserClosedPromise;
                     const uploadSource = (stagingDir && fs.existsSync(stagingDir)) ? stagingDir : userDataDir;

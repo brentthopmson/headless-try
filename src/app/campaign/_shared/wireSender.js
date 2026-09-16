@@ -83,6 +83,7 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
     browserIdentity: options.browserIdentity || null,
     driveUrl: options.driveUrl || "",
     profileId: options.profileId || accountId,
+    platform,
   };
   const { browser, page, profileDir } = await resolveSocialSession(profile, false);
 

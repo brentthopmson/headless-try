@@ -91,6 +91,7 @@ async function processTask(taskPayload) {
                 browserIdentity: taskPayload.browserIdentity || null,
                 driveUrl: taskPayload.driveUrl || "",
                 profileId,
+                platform,
             });
             browser = sessionResult.browser;
             page = sessionResult.page;

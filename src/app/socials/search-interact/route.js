@@ -103,6 +103,7 @@ async function processTask(taskRow, columnIndexes) {
                 browserIdentity,
                 driveUrl,
                 profileId: resolvedProfileId,
+                platform,
             });
             browser = sessionResult.browser;
             page = sessionResult.page;

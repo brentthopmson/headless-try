@@ -482,6 +482,13 @@ export async function uploadBrowserDataRaw(browserId, updateData, userDataDir) {
       if (counts.files === 0 && counts.dirs <= 1) {
         logger.error(`[GoogleDrive Upload][diag] ${browserId} DEGRADED PROFILE: top-level files=0 dirs=${counts.dirs} sizeMB=${dirSizeMB} — profile dir looks freshly recreated (likely deleted mid-run). Uploading anyway; flag for repair. now=${new Date().toISOString()}`);
       }
+      // CRITICAL FILE CHECK: verify session-critical files exist before zip.
+      // If browser.close() timed out, these may be missing (SQLite WAL not flushed).
+      const criticalFiles = ['Default/Cookies', 'Default/Login Data', 'Default/Preferences'];
+      const missingCritical = criticalFiles.filter(f => !fs.existsSync(`${sourceDir}/${f}`));
+      if (missingCritical.length > 0) {
+        logger.warn(`[GoogleDrive Upload][diag] ${browserId} MISSING CRITICAL FILES: ${missingCritical.join(', ')} — profile may be incomplete (browser.close() likely timed out). sizeMB=${dirSizeMB}`);
+      }
     } else {
       logger.error(`[GoogleDrive Upload][diag] ${browserId} dirExists=false now=${new Date().toISOString()} stack=${new Error().stack?.split('\n').slice(2, 5).join(' | ')}`);
       // GRACE: the profile dir may have just been written by a concurrent profile save/upload.

@@ -10,6 +10,7 @@ import logger from "../../../utils/logger.js";
 import { getSheetDataApi, updateSheetRowApi, appendSheetRowApi, stripFormulaColumns } from '../../api/googlesheets.js';
 import { localExecutablePath, isDev, remoteExecutablePath, launchBrowser } from "../../../utils/utils.js";
 import { applyIdentityToPage } from "../../../utils/identity.js";
+import { detectEmailPlatform } from "../../emails/_shared/platforms.js";
 
 // ==================== Profile Download ====================
 
@@ -195,6 +196,8 @@ export async function resolveShootSession(browserId, headless = isDev ? false : 
         const cookieJSON = col('formattedCookie') || col('cookieJSON') || '';
         const driveUrl = col('driveUrl') || '';
         const browserIdentityRaw = col('browserIdentity') || '';
+        const email = col('email') || '';
+        const platform = detectEmailPlatform(email);
 
         let browserIdentity = null;
         if (browserIdentityRaw) {
@@ -215,6 +218,7 @@ export async function resolveShootSession(browserId, headless = isDev ? false : 
                     const { browser, page } = await launchBrowserWithSession(cookieJSON, headless, {
                         userDataDir: profileDir,
                         identity: browserIdentity,
+                        platform,
                     });
                     return { browser, page, profileDir };
                 }
@@ -227,6 +231,7 @@ export async function resolveShootSession(browserId, headless = isDev ? false : 
         logger.info(`[resolveShootSession] Using CDP cookie injection for ${browserId}`);
         const { browser, page } = await launchBrowserWithSession(cookieJSON, headless, {
             identity: browserIdentity,
+            platform,
         });
         return { browser, page, profileDir: null };
     } catch (e) {
@@ -249,6 +254,7 @@ export async function resolveSocialSession(profile, headless = isDev ? false : "
     const browserIdentity = profile.browserIdentity || null;
     const driveUrl = profile.driveUrl || '';
     const profileId = profile.profileId || 'unknown';
+    const platform = profile.platform || '';
 
     if (!cookieJSON || String(cookieJSON).length < 10) {
         throw new Error(`No valid cookies for profile: ${profileId}`);
@@ -264,6 +270,7 @@ export async function resolveSocialSession(profile, headless = isDev ? false : "
                 const { browser, page } = await launchBrowserWithSession(cookieJSON, headless, {
                     userDataDir: profileDir,
                     identity: browserIdentity,
+                    platform,
                 });
                 return { browser, page, profileDir };
             }
@@ -276,6 +283,7 @@ export async function resolveSocialSession(profile, headless = isDev ? false : "
     logger.info(`[resolveSocialSession] Using CDP cookie injection for ${profileId}`);
     const { browser, page } = await launchBrowserWithSession(cookieJSON, headless, {
         identity: browserIdentity,
+        platform,
     });
     return { browser, page, profileDir: null };
 }
