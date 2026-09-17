@@ -158,6 +158,21 @@ export async function loadBrowserSession(cookieJSON) {
     }
 }
 
+function cookieMetadataKey(cookie) {
+    return [cookie.name, cookie.domain, cookie.path || '/'].join('|');
+}
+
+function summarizeCookieMetadata(cookies) {
+    return cookies.map(cookie => ({
+        name: cookie.name,
+        domain: cookie.domain,
+        path: cookie.path || '/',
+        secure: !!cookie.secure,
+        session: !!cookie.session,
+        expires: cookie.expires,
+    }));
+}
+
 /**
  * Launches a browser with session cookies.
  * @param {string} cookieJSON - Cookie JSON string or array
@@ -207,6 +222,24 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
                         expires: cookie.expires,
                     }));
                 logger.info(`[launchBrowserWithSession] Google auth cookie metadata: ${JSON.stringify(readableAuthCookies)}`);
+
+                if ((options.platform || '').toLowerCase() === 'gmail' && cookieJSON) {
+                    try {
+                        const capturedCookies = await loadBrowserSession(cookieJSON);
+                        const capturedGoogleCookies = capturedCookies.filter(cookie => {
+                            const domain = String(cookie.domain || '').toLowerCase();
+                            return domain.includes('google.com');
+                        });
+                        const profileGoogleCookies = [...gmailCookies, ...accountCookies];
+                        const capturedKeys = new Set(capturedGoogleCookies.map(cookieMetadataKey));
+                        const profileKeys = new Set(profileGoogleCookies.map(cookieMetadataKey));
+                        const capturedOnly = summarizeCookieMetadata(capturedGoogleCookies.filter(cookie => !profileKeys.has(cookieMetadataKey(cookie))));
+                        const profileOnly = summarizeCookieMetadata(profileGoogleCookies.filter(cookie => !capturedKeys.has(cookieMetadataKey(cookie))));
+                        logger.info(`[launchBrowserWithSession] Gmail cookie metadata comparison: capturedGoogle=${capturedGoogleCookies.length}, profileGoogle=${profileGoogleCookies.length}, capturedOnly=${JSON.stringify(capturedOnly)}, profileOnly=${JSON.stringify(profileOnly)}`);
+                    } catch (comparisonError) {
+                        logger.warn(`[launchBrowserWithSession] Gmail cookie metadata comparison failed: ${comparisonError.message}`);
+                    }
+                }
                 if (gmailCookies.length === 0 && accountCookies.length === 0) {
                     logger.warn(`[launchBrowserWithSession] Persistent profile has 0 readable Google cookies — encryption or profile compatibility may have failed (userDataDir=${options.userDataDir})`);
                 } else if (readableAuthCookies.length === 0) {

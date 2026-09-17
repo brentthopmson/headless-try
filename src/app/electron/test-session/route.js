@@ -108,6 +108,14 @@ export async function POST(request) {
     const driveUrl = col('driveUrl');
     const email = col('email') || '';
     const domain = col('domain') || (email ? email.split('@')[1].toLowerCase() : '');
+    const browserIdentityRaw = col('browserIdentity') || '';
+
+    let browserIdentity = null;
+    if (browserIdentityRaw) {
+      try {
+        browserIdentity = typeof browserIdentityRaw === 'string' ? JSON.parse(browserIdentityRaw) : browserIdentityRaw;
+      } catch (_) {}
+    }
 
     if (!driveUrl) {
       return NextResponse.json({ error: 'No saved browser profile' }, { status: 404 });
@@ -139,8 +147,9 @@ export async function POST(request) {
     browser = await launchBrowser({
       headless: false,
       executablePath: localExecutablePath,
+      userDataDir: destDir,
+      identity: browserIdentity || undefined,
       args: [
-        `--user-data-dir=${destDir}`,
         '--no-first-run',
         '--no-default-browser-check',
         '--disable-sync',
@@ -150,6 +159,8 @@ export async function POST(request) {
     const pages = await browser.pages();
     const page = pages[0] || (await browser.newPage());
     if (browser.identity) { await applyIdentityToPage(page, browser.identity); }
+
+    console.log(`[test-session] Launch mode: profile=${!!browser.userDataDir}, savedIdentity=${!!browserIdentity}, platform=${domain}`);
 
     if (cookieJSON && cookieJSON.length > 0) {
       console.log(`[test-session] Injecting ${cookieJSON.length} cookies via page.setCookie`);
