@@ -3,7 +3,7 @@ import chromium from "@sparticuz/chromium-min";
 import { inspect } from 'util';
 import path from 'path';
 import fs from 'fs-extra';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import {
     isDev,
     launchBrowser,
@@ -5853,6 +5853,50 @@ if (!foundSelector) {
                         if (lsDir && !fs.existsSync(lsDir)) {
                             logger.warn(`[PROFILE][${browserId}] Default/Local Storage missing in ${userDataDir} prior to staging — waiting additional 3s for LevelDB flush.`);
                             await new Promise(resolve => setTimeout(resolve, 3000));
+                        }
+
+                        if (process.platform === 'linux' && userDataDir) {
+                            const cookieDbCandidates = [
+                                path.join(userDataDir, 'Default', 'Cookies'),
+                                path.join(userDataDir, 'Default', 'Network', 'Cookies'),
+                            ];
+                            const cookieDb = cookieDbCandidates.find(candidate => fs.existsSync(candidate));
+                            const cookieSidecars = cookieDb
+                                ? [`${cookieDb}-wal`, `${cookieDb}-shm`, `${cookieDb}-journal`]
+                                    .filter(sidecar => fs.existsSync(sidecar))
+                                : [];
+
+                            if (!cookieDb) {
+                                logger.warn(`[PROFILE][${browserId}] COOKIE_DB_CHECK: no Cookies database found before staging.`);
+                            } else {
+                                const artifactSummary = [cookieDb, ...cookieSidecars].map(artifact => ({
+                                    path: path.relative(userDataDir, artifact).replaceAll(path.sep, '/'),
+                                    size: fs.statSync(artifact).size,
+                                }));
+                                logger.info(`[PROFILE][${browserId}] COOKIE_DB_CHECK: ${JSON.stringify(artifactSummary)}`);
+
+                                if (cookieSidecars.length > 0) {
+                                    try {
+                                        const checkpointResult = execFileSync(
+                                            'sqlite3',
+                                            [cookieDb, 'PRAGMA wal_checkpoint(TRUNCATE);'],
+                                            { encoding: 'utf8', timeout: 5000, windowsHide: true }
+                                        ).trim();
+                                        logger.info(`[PROFILE][${browserId}] SQLite WAL checkpoint completed: ${checkpointResult || '(no output)'}`);
+                                    } catch (checkpointError) {
+                                        logger.warn(`[PROFILE][${browserId}] SQLite WAL checkpoint failed: ${checkpointError.message}`);
+                                    }
+                                } else {
+                                    logger.info(`[PROFILE][${browserId}] SQLite WAL checkpoint skipped: no cookie sidecar present.`);
+                                }
+
+                                const localStatePath = path.join(userDataDir, 'Local State');
+                                const cookieDbSize = fs.statSync(cookieDb).size;
+                                logger.info(`[PROFILE][${browserId}] PRE_STAGE_CHECK: Local State=${fs.existsSync(localStatePath)} Cookies=${cookieDbSize}B`);
+                                if (!fs.existsSync(localStatePath) || cookieDbSize === 0) {
+                                    logger.warn(`[PROFILE][${browserId}] PRE_STAGE_CHECK: critical profile artifact missing or empty.`);
+                                }
+                            }
                         }
                         // STAGED-PROFILE SEPARATION: immediately after close, MOVE (or copy) the
                         // now-flushed profile into the dedicated staging root, OUTSIDE /tmp/users_data.

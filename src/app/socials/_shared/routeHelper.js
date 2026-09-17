@@ -106,6 +106,37 @@ export async function downloadAndExtractProfile(driveUrl, browserId) {
         const dlOldCookieSize = dlOldCookies ? fs.statSync(path.join(destDir, 'Default', 'Cookies')).size : 0;
         const dlNewCookieSize = dlNewCookies ? fs.statSync(path.join(destDir, 'Default', 'Network', 'Cookies')).size : 0;
         logger.warn(`[profileDownload] ${browserId} COOKIE_CHECK: Default/Cookies=${dlOldCookies}(${dlOldCookieSize}B) Default/Network/Cookies=${dlNewCookies}(${dlNewCookieSize}B)`);
+
+        const localStatePath = path.join(destDir, 'Local State');
+        if (!fs.existsSync(localStatePath)) {
+            logger.warn(`[profileDownload] ${browserId} LOCAL_STATE: file missing — cookie decryption may fail`);
+        } else {
+            try {
+                const localState = JSON.parse(fs.readFileSync(localStatePath, 'utf8'));
+                const encryptedKey = localState?.os_crypt?.encrypted_key;
+                logger.info(`[profileDownload] ${browserId} LOCAL_STATE: encrypted_key=${encryptedKey ? `present(${encryptedKey.length} chars)` : 'MISSING'}`);
+            } catch (localStateError) {
+                logger.warn(`[profileDownload] ${browserId} LOCAL_STATE: invalid JSON — ${localStateError.message}`);
+            }
+        }
+
+        const cookieArtifacts = [
+            path.join(destDir, 'Default', 'Cookies'),
+            path.join(destDir, 'Default', 'Cookies-wal'),
+            path.join(destDir, 'Default', 'Cookies-shm'),
+            path.join(destDir, 'Default', 'Cookies-journal'),
+            path.join(destDir, 'Default', 'Network', 'Cookies'),
+            path.join(destDir, 'Default', 'Network', 'Cookies-wal'),
+            path.join(destDir, 'Default', 'Network', 'Cookies-shm'),
+            path.join(destDir, 'Default', 'Network', 'Cookies-journal'),
+        ];
+        const cookieArtifactSummary = cookieArtifacts
+            .filter((artifactPath) => fs.existsSync(artifactPath))
+            .map((artifactPath) => ({
+                path: path.relative(destDir, artifactPath).replaceAll(path.sep, '/'),
+                size: fs.statSync(artifactPath).size,
+            }));
+        logger.info(`[profileDownload] ${browserId} COOKIE_ARTIFACTS: ${JSON.stringify(cookieArtifactSummary)}`);
         return destDir;
     } catch (e) {
         logger.warn(`[profileDownload] Failed to download/extract profile: ${e.message}`);
@@ -158,6 +189,19 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
         const page = await browser.newPage();
         if (browser.identity) {
             await applyIdentityToPage(page, browser.identity);
+        }
+
+        if (options.userDataDir) {
+            try {
+                const gmailCookies = await page.cookies('https://mail.google.com');
+                const accountCookies = await page.cookies('https://accounts.google.com');
+                logger.info(`[launchBrowserWithSession] Profile cookies readable: mail.google.com=${gmailCookies.length}, accounts.google.com=${accountCookies.length} (platform=${options.platform || 'unknown'})`);
+                if (gmailCookies.length === 0 && accountCookies.length === 0) {
+                    logger.warn(`[launchBrowserWithSession] Persistent profile has 0 readable Google cookies — encryption or profile compatibility may have failed (userDataDir=${options.userDataDir})`);
+                }
+            } catch (cookieReadError) {
+                logger.warn(`[launchBrowserWithSession] Could not read persistent profile cookies: ${cookieReadError.message}`);
+            }
         }
 
         // Inject cookies via CDP:
