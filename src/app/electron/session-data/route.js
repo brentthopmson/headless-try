@@ -5,7 +5,7 @@ import axios from 'axios';
 export const maxDuration = 30;
 export const dynamic = 'force-dynamic';
 
-const MAIN_API = process.env.MAIN_API_URL || 'https://web-fixx-hoo.vercel.app/api';
+const MAIN_API = process.env.MAIN_API_URL || 'https://webfixx-hoo-oamupo-e98ced-157-173-204-24.sslip.io/api';
 
 const PLATFORM_INBOX_URLS = {
   'outlook.com': 'https://outlook.live.com/mail/',
