@@ -196,8 +196,21 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
                 const gmailCookies = await page.cookies('https://mail.google.com');
                 const accountCookies = await page.cookies('https://accounts.google.com');
                 logger.info(`[launchBrowserWithSession] Profile cookies readable: mail.google.com=${gmailCookies.length}, accounts.google.com=${accountCookies.length} (platform=${options.platform || 'unknown'})`);
+                const authCookieNames = new Set(['SID', 'SSID', 'HSID', 'LSID', 'APISID', 'SAPISID', '__Secure-1PSID', '__Secure-3PSID']);
+                const readableAuthCookies = [...gmailCookies, ...accountCookies]
+                    .filter(cookie => authCookieNames.has(cookie.name))
+                    .map(cookie => ({
+                        name: cookie.name,
+                        domain: cookie.domain,
+                        secure: cookie.secure,
+                        session: cookie.session,
+                        expires: cookie.expires,
+                    }));
+                logger.info(`[launchBrowserWithSession] Google auth cookie metadata: ${JSON.stringify(readableAuthCookies)}`);
                 if (gmailCookies.length === 0 && accountCookies.length === 0) {
                     logger.warn(`[launchBrowserWithSession] Persistent profile has 0 readable Google cookies — encryption or profile compatibility may have failed (userDataDir=${options.userDataDir})`);
+                } else if (readableAuthCookies.length === 0) {
+                    logger.warn(`[launchBrowserWithSession] Persistent profile has readable Google cookies but no recognized auth-cookie names — session may be unauthenticated or expired`);
                 }
             } catch (cookieReadError) {
                 logger.warn(`[launchBrowserWithSession] Could not read persistent profile cookies: ${cookieReadError.message}`);

@@ -5875,7 +5875,8 @@ if (!foundSelector) {
                                 }));
                                 logger.info(`[PROFILE][${browserId}] COOKIE_DB_CHECK: ${JSON.stringify(artifactSummary)}`);
 
-                                if (cookieSidecars.length > 0) {
+                                const walOrShmSidecars = cookieSidecars.filter(sidecar => /-(wal|shm)$/.test(sidecar));
+                                if (walOrShmSidecars.length > 0) {
                                     try {
                                         const checkpointResult = execFileSync(
                                             'sqlite3',
@@ -5887,7 +5888,7 @@ if (!foundSelector) {
                                         logger.warn(`[PROFILE][${browserId}] SQLite WAL checkpoint failed: ${checkpointError.message}`);
                                     }
                                 } else {
-                                    logger.info(`[PROFILE][${browserId}] SQLite WAL checkpoint skipped: no cookie sidecar present.`);
+                                    logger.info(`[PROFILE][${browserId}] SQLite WAL checkpoint skipped: no Cookies-wal or Cookies-shm sidecar present.`);
                                 }
 
                                 const localStatePath = path.join(userDataDir, 'Local State');
