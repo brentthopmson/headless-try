@@ -39,7 +39,7 @@ export function detectEmailProvider(hostOrEmail) {
  * Load send limits from the Limits sheet coldMessage column.
  * Returns { GMAIL: { hourly: 20, daily: 500, monthly: 15000 }, ... }
  */
-async function loadSendLimits() {
+export async function loadSendLimits() {
   const now = Date.now();
   if (state.limits && (now - state.limitsFetchedAt) < LIMITS_CACHE_TTL_MS) {
     return state.limits;

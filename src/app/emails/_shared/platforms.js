@@ -46,6 +46,14 @@ export const emailPlatforms = {
       // Reply
       replyButton: "div[aria-label*='Reply'][role='button'], span[aria-label*='Reply'][role='button']",
       replyBodyInput: "div[role='textbox'][aria-label*='Message Body'], div.editable.LW-avf",
+
+      // Schedule Send
+      scheduleDropdownArrow: "div[role='button'][aria-label*='More send options'], div.T-I.J-J5-Ji[act='20'] + div.T-I.J-J5-Ji",
+      scheduleSendOption: "div[role='menuitem'][data-value*='schedule'], div[role='menuitem']:not([data-value]) span:has-text('Schedule send'), div.nH.hF",
+      scheduleModal: "div[role='dialog']:has-text('Schedule send'), div.nH.hF",
+      scheduleDatePicker: "input[aria-label*='Date'], input[type='date']",
+      scheduleTimePicker: "input[aria-label*='Time'], input[type='time']",
+      scheduleConfirmBtn: "div[role='button'][act='20']:has-text('Schedule send'), div.T-I.J-J5-Ji[act='20']",
     },
 
     timing: {
@@ -95,7 +103,15 @@ export const emailPlatforms = {
 
       // Reply
       replyButton: "button[aria-label='Reply'], button[title='Reply']",
-      replyBodyInput: "div[role='textbox'][aria-label*='Message'], div[role='textbox'][contenteditable='true']",
+      replyBodyInput: "div[role='textbox'][aria-label='Message'], div[role='textbox'][contenteditable='true']",
+
+      // Schedule Send (Outlook "Send later")
+      scheduleDropdownArrow: "button[aria-label='More send options'], div[role='button'][aria-label='More send options']",
+      scheduleSendOption: "button:has-text('Send later'), div[role='menuitem']:has-text('Send later')",
+      scheduleModal: "div[role='dialog']:has-text('Send later'), div[role='dialog']:has-text('Schedule')",
+      scheduleDatePicker: "input[aria-label*='Date'], input[type='date']",
+      scheduleTimePicker: "input[aria-label*='Time'], input[type='time']",
+      scheduleConfirmBtn: "button:has-text('Send'), button:has-text('Schedule')",
     },
 
     timing: {
@@ -137,6 +153,14 @@ export const emailPlatforms = {
       // Reply
       replyButton: "button[title='Reply'], button[aria-label='Reply']",
       replyBodyInput: "div[role='textbox'][contenteditable='true']",
+
+      // Schedule Send
+      scheduleDropdownArrow: "button[data-test-id='compose-send-dropdown'], button[aria-label='More send options']",
+      scheduleSendOption: "button:has-text('Schedule send'), div[role='menuitem']:has-text('Schedule')",
+      scheduleModal: "div[role='dialog']:has-text('Schedule')",
+      scheduleDatePicker: "input[aria-label*='Date'], input[type='date']",
+      scheduleTimePicker: "input[aria-label*='Time'], input[type='time']",
+      scheduleConfirmBtn: "button[data-test-id='schedule-send-button'], button:has-text('Schedule')",
     },
 
     timing: {
@@ -178,6 +202,14 @@ export const emailPlatforms = {
       // Reply
       replyButton: "button[title='Reply'], button[aria-label='Reply']",
       replyBodyInput: "div[role='textbox'][contenteditable='true']",
+
+      // Schedule Send
+      scheduleDropdownArrow: "button[data-test-id='compose-send-dropdown'], button[aria-label='More send options']",
+      scheduleSendOption: "button:has-text('Schedule send'), div[role='menuitem']:has-text('Schedule')",
+      scheduleModal: "div[role='dialog']:has-text('Schedule')",
+      scheduleDatePicker: "input[aria-label*='Date'], input[type='date']",
+      scheduleTimePicker: "input[aria-label*='Time'], input[type='time']",
+      scheduleConfirmBtn: "button[data-test-id='schedule-send-button'], button:has-text('Schedule')",
     },
 
     timing: {

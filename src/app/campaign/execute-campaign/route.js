@@ -3,7 +3,7 @@ import { getSheetsAuthClient, updateSheetRowApi, getSheetDataApi } from "../../a
 import { google } from "googleapis";
 import logger from "../../../utils/logger.js";
 import { sendViaSMTP, getNextSmtpConfig } from "../_shared/smtpSender.js";
-import { sendViaBrowser, detectProvider } from "../_shared/wireSender.js";
+import { sendViaBrowser, scheduleViaBrowser, detectProvider } from "../_shared/wireSender.js";
 import { processSearchInteractTask } from "../../socials/search-interact/route.js";
 import { processPageInteractTask } from "../../socials/page-interact/route.js";
 import { processInboxInteractTask } from "../../socials/inbox-interact/route.js";
@@ -16,6 +16,8 @@ import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../
 import { dispatchToServers } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getFirestickEmails, getPerformancePresets, updateCampaignSettings } from "../_shared/pipelineUtils.js";
 import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
+import { calculateScheduleTimes } from "../../../utils/scheduleCalculator.js";
+import { detectEmailProvider } from "../../../utils/sendRateLimiter.js";
 
 function embedCampaignIdentifier(subject, body, campaignId) {
   const identifier = `[${campaignId}]`;
@@ -498,6 +500,7 @@ export async function POST(request) {
         const { config: smtp } = getNextSmtpConfig(smtpSettings, sentCount);
         const now = new Date();
         let senderHost = "WIRE";
+        const isSchedule = settings.sendMode === "schedule";
 
         // Firestick warm-up: send to familiar inbox before the actual lead
         if (firestickEnabled && firestickList.length > 0) {
@@ -515,41 +518,83 @@ export async function POST(request) {
         }
 
         try {
-          if (deliveryMethod === "smtp" || deliveryMethod === "mixed") {
-            await sendViaSMTP(email, subject, message, smtp);
-            senderHost = smtp?.host || "SMTP";
-            deliveredCount++;
-          }
-
-          if (deliveryMethod === "wire" || deliveryMethod === "mixed") {
-            // Fetch stored browser session from cookie sheet by profile ID
+          if (isSchedule) {
+            // Schedule mode — use native "Schedule Send" via browser
             const profileId = settings.accounts?.[0] || settings.wireAccount;
             const profileData = profileId ? await getSocialProfileCookies(profileId) : null;
             const wireCookies = profileData?.cookies;
-            if (wireCookies) {
-              const provider = profileData?.platform || detectProvider(smtp?.user || email) || "gmail";
-              await sendViaBrowser(email, subject, message, wireCookies, provider, {
-                browserIdentity: profileData.browserIdentity || null,
-                driveUrl: profileData.driveUrl || "",
-                profileId,
-              });
-            } else {
-              log.info(` No WIRE browser session available for profile ${profileId}, using SMTP fallback`);
-              if (deliveryMethod === "wire") {
-                await sendViaSMTP(email, subject, message, smtp);
-                senderHost = smtp?.host || "SMTP_FALLBACK";
-              }
+            if (!wireCookies) {
+              throw new Error(`No browser session available for profile ${profileId}`);
             }
+            const provider = profileData?.platform || detectProvider(smtp?.user || email) || "gmail";
+
+            // Use per-row sendDate/sendTime if available, else use scheduleStartTime
+            const rowSendDate = sendDateIdx !== -1 ? row[sendDateIdx] : "";
+            const rowSendTime = sendTimeIdx !== -1 ? row[sendTimeIdx] : "";
+            let scheduleTime;
+            if (rowSendDate && rowSendTime) {
+              scheduleTime = new Date(`${rowSendDate} ${rowSendTime}`);
+            } else if (settings.scheduleStartTime) {
+              scheduleTime = new Date(settings.scheduleStartTime);
+              // Offset by sentCount * 1 minute to space out
+              scheduleTime = new Date(scheduleTime.getTime() + sentCount * 60000);
+            } else {
+              scheduleTime = new Date(now.getTime() + sentCount * 60000);
+            }
+
+            log.info(`[Row schedule] ${email}: scheduling at ${scheduleTime.toISOString()} via ${provider}`);
+            await scheduleViaBrowser(email, subject, message, wireCookies, provider, scheduleTime.toISOString(), {
+              browserIdentity: profileData?.browserIdentity || null,
+              driveUrl: profileData?.driveUrl || "",
+              profileId,
+            });
+            senderHost = `SCHEDULE(${provider})`;
             deliveredCount++;
+          } else {
+            // Send Now — immediate send
+            if (deliveryMethod === "smtp" || deliveryMethod === "mixed") {
+              await sendViaSMTP(email, subject, message, smtp);
+              senderHost = smtp?.host || "SMTP";
+              deliveredCount++;
+            }
+
+            if (deliveryMethod === "wire" || deliveryMethod === "mixed") {
+              const profileId = settings.accounts?.[0] || settings.wireAccount;
+              const profileData = profileId ? await getSocialProfileCookies(profileId) : null;
+              const wireCookies = profileData?.cookies;
+              if (wireCookies) {
+                const provider = profileData?.platform || detectProvider(smtp?.user || email) || "gmail";
+                await sendViaBrowser(email, subject, message, wireCookies, provider, {
+                  browserIdentity: profileData.browserIdentity || null,
+                  driveUrl: profileData.driveUrl || "",
+                  profileId,
+                });
+              } else {
+                log.info(` No WIRE browser session available for profile ${profileId}, using SMTP fallback`);
+                if (deliveryMethod === "wire") {
+                  await sendViaSMTP(email, subject, message, smtp);
+                  senderHost = smtp?.host || "SMTP_FALLBACK";
+                }
+              }
+              deliveredCount++;
+            }
           }
 
           sentCount++;
-          log.info(`[Row send] ${email}: sent via ${senderHost} (${sentCount}/${maxToProcess})`);
+          log.info(`[Row ${isSchedule ? "schedule" : "send"}] ${email}: ${isSchedule ? "scheduled" : "sent"} via ${senderHost} (${sentCount}/${maxToProcess})`);
 
-          if (sendDateIdx !== -1) row[sendDateIdx] = now.toLocaleDateString();
-          if (sendTimeIdx !== -1) row[sendTimeIdx] = now.toLocaleTimeString();
-          if (sendStampIdx !== -1) row[sendStampIdx] = now.toISOString();
-          if (executionStatusIdx !== -1) row[executionStatusIdx] = "sent";
+          if (isSchedule) {
+            // For schedule mode, write the scheduled time back to CSV
+            const scheduleTime = settings.scheduleStartTime || new Date().toISOString();
+            if (sendDateIdx !== -1) row[sendDateIdx] = new Date(scheduleTime).toLocaleDateString();
+            if (sendTimeIdx !== -1) row[sendTimeIdx] = new Date(scheduleTime).toLocaleTimeString();
+            if (sendStampIdx !== -1) row[sendStampIdx] = new Date(scheduleTime).toISOString();
+          } else {
+            if (sendDateIdx !== -1) row[sendDateIdx] = now.toLocaleDateString();
+            if (sendTimeIdx !== -1) row[sendTimeIdx] = now.toLocaleTimeString();
+            if (sendStampIdx !== -1) row[sendStampIdx] = now.toISOString();
+          }
+          if (executionStatusIdx !== -1) row[executionStatusIdx] = isSchedule ? "scheduled" : "sent";
           if (providerMXIdx !== -1) row[providerMXIdx] = senderHost;
         } catch (err) {
           log.error(` Failed to send to ${email} via ${senderHost}: ${err.message}`);
