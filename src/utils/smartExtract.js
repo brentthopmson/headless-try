@@ -224,17 +224,52 @@ async function extractPersonalInfo(page, platform) {
             };
         }
     } else {
-        // Outlook: navigate to profile page
-        const sites = PERSONAL_INFO_SITES.outlook;
-        for (const url of sites) {
-            try {
-                await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-                const currentUrl = page.url();
-                if (isSignInPage(currentUrl)) continue;
-                raw = await page.evaluate(() => document.body.textContent.trim().slice(0, 6000));
-                if (raw.length > 50) break;
-            } catch (e) {
-                logger.warn(`[smartExtract] personal info nav failed ${url}: ${e.message}`);
+        // Outlook: first try extracting name from the mail header (most reliable),
+        // then fall back to account.microsoft.com for additional profile data
+        try {
+            // Navigate to inbox to access the mail header
+            const inboxUrl = `${getOutlookBaseUrl(raw || '')}/0/inbox`;
+            await page.goto(inboxUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+            if (!isSignInPage(page.url())) {
+                await sleep(2000);
+                // Try clicking the account manager button to open profile flyout
+                const clicked = await page.evaluate(() => {
+                    // Look for account manager / avatar button in top-right
+                    const selectors = [
+                        '[aria-label*="Account manager"]',
+                        '[aria-label*="account manager"]',
+                        '[data-testid="me-control"]',
+                        'button[aria-label*="Profile"]',
+                        'button[aria-label*="profile"]',
+                    ];
+                    for (const sel of selectors) {
+                        const btn = document.querySelector(sel);
+                        if (btn) { btn.click(); return true; }
+                    }
+                    return false;
+                });
+                if (clicked) {
+                    await sleep(1500);
+                    raw = await page.evaluate(() => document.body.textContent.trim().slice(0, 6000));
+                }
+            }
+        } catch (e) {
+            logger.warn(`[smartExtract] Outlook mail header extraction failed: ${e.message}`);
+        }
+
+        // Fallback: try account.microsoft.com pages
+        if (!raw || raw.length < 50) {
+            const sites = PERSONAL_INFO_SITES.outlook;
+            for (const url of sites) {
+                try {
+                    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+                    const currentUrl = page.url();
+                    if (isSignInPage(currentUrl)) continue;
+                    raw = await page.evaluate(() => document.body.textContent.trim().slice(0, 6000));
+                    if (raw.length > 50) break;
+                } catch (e) {
+                    logger.warn(`[smartExtract] personal info nav failed ${url}: ${e.message}`);
+                }
             }
         }
     }
@@ -293,36 +328,45 @@ async function extractPersonalInfo(page, platform) {
                 '[aria-label*="Gender" i]',
             ]);
         } else {
-            // Microsoft profile: Fluent UI with data-bi-id and #profile selectors
+            // Microsoft profile: avoid generic h1 (matches marketing headers like "It's all here with Microsoft account")
+            // Try specific Fluent UI / account.microsoft.com selectors first
             name = pick([
-                '#profile.profile-page.personal-section.full-name',
+                '[data-testid="profile-name"]',
+                '[data-testid="user-display-name"]',
                 '[data-bi-id="full-name"]',
-                'h1',
-                '[class*="name"]',
+                '#profile.profile-page.personal-section.full-name',
+                '[class*="Persona"] span[class*="primaryText"]',
+                '[class*="persona"] span[class*="primaryText"]',
+                '[class*="profile"] [class*="displayName"]',
+                '[class*="profile-card"] [class*="name"]',
+                '[aria-label*="Display name"]',
+                // Outlook mail header account flyout selectors
+                '[data-testid="me-control"] [class*="primaryText"]',
+                '[class*="account-manager"] [class*="name"]',
             ]);
             email = pick([
                 '[data-bi-id="email-address"]',
-                '[data-rid="203"] .qqVS5',
-                '[data-rid="203"]',
-                '[href*="recovery"]',
+                '[data-testid="email-address"]',
                 'input[type="email"]',
+                '[aria-label*="email" i]',
+                'a[href^="mailto:"]',
             ]);
             phone = pick([
                 '[data-bi-id="phone-number"]',
-                '[data-rid="204"] .qqVS5',
-                '[data-rid="204"]',
-                '[href*="phone"]',
-                '[class*="phone"]',
+                '[data-testid="phone-number"]',
+                '[aria-label*="phone" i]',
+                'a[href^="tel:"]',
             ]);
             birthday = pick([
                 '[data-bi-id="birth-date"]',
-                '[data-rid="205"] .qqVS5',
-                '[data-rid="205"]',
+                '[data-testid="birth-date"]',
+                '[aria-label*="birthday" i]',
+                '[aria-label*="birth" i]',
             ]);
             gender = pick([
                 '[data-bi-id="gender"]',
-                '[data-rid="206"] .qqVS5',
-                '[data-rid="206"]',
+                '[data-testid="gender"]',
+                '[aria-label*="gender" i]',
             ]);
         }
 
@@ -425,14 +469,35 @@ async function extractBoxSummary(page, platform, email) {
             });
         } else {
             // Outlook: extract from DOM
+            // Count total visible messages via data-index rows
+            const allRows = document.querySelectorAll('div[data-index]');
+            totalEmails = allRows.length;
+
+            // Folders/labels from sidebar tree
             document.querySelectorAll('[class*="folder"], [class*="Folder"], [role="treeitem"]').forEach(el => {
                 const t = (el.textContent || '').trim();
                 if (t && t.length < 40) labels.push(t);
             });
 
-            const bodyText = document.body.textContent || '';
-            const unreadMatch = bodyText.match(/(\d+)\s*(new|unread)/i);
-            unreadEmails = unreadMatch ? parseInt(unreadMatch[1]) || 0 : 0;
+            // Unread count from folder pane or page text
+            // Try folder pane first — look for "Inbox NNN new" pattern in tree items
+            document.querySelectorAll('[role="treeitem"]').forEach(el => {
+                if (unreadEmails > 0) return; // already found
+                const text = (el.textContent || '').trim();
+                const label = el.getAttribute('aria-label') || '';
+                const combined = text + ' ' + label;
+                if (/inbox/i.test(combined)) {
+                    const m = combined.match(/(\d[\d,]*)\s*(new|unread)/i);
+                    if (m) unreadEmails = parseInt(m[1].replace(/,/g, '')) || 0;
+                }
+            });
+
+            // Fallback: body text regex
+            if (unreadEmails === 0) {
+                const bodyText = document.body.textContent || '';
+                const unreadMatch = bodyText.match(/(\d[\d,]*)\s*(new|unread)/i);
+                unreadEmails = unreadMatch ? parseInt(unreadMatch[1].replace(/,/g, '')) || 0 : 0;
+            }
         }
 
         return {
@@ -657,7 +722,7 @@ async function extractContactsFromOutlookInbox(page, email, maxContacts = 200) {
             try {
                 // Re-navigate to inbox each time (DOM may have changed)
                 if (i > 0) {
-                    await gotoRobust(page, 'https://outlook.live.com/mail/0/inbox');
+                    await gotoRobust(page, `${getOutlookBaseUrl(email)}/0/inbox`);
                     await sleep(2000);
                     // Scroll back to the message we need
                     await page.evaluate((idx) => {
@@ -688,9 +753,9 @@ async function extractContactsFromOutlookInbox(page, email, maxContacts = 200) {
                     return {
                         sender: getText('span[aria-label^="From:"]'),
                         recipient: getText('span[aria-label^="To:"]'),
-                        subject: getText('span.TtcXM'),
-                        snippet: getText('span.ASFJj'),
-                        date: getText('span.qq2gS'),
+                        subject: getText('[aria-label="Subject"]') || getText('span[title]') || '',
+                        snippet: getText('[aria-label="Message preview"]') || getText('span[aria-label*="preview"]') || '',
+                        date: getText('[aria-label="Received"]') || getText('span[aria-label*="Received"]') || '',
                         body: getText('div[aria-label="Message body"]'),
                     };
                 });
@@ -753,6 +818,7 @@ function financialSearchUrl(platform, term) {
     if (platform === 'gmail') {
         return `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(term)}`;
     }
+    // Note: Outlook search is handled via UI-based search in performOutlookSearch(), not URL-based
     return `https://outlook.live.com/mail/0/search?query=${encodeURIComponent(term)}`;
 }
 
@@ -830,10 +896,13 @@ async function performOutlookSearch(page, terms, email, maxEmails = 30) {
                     for (const el of items) {
                         const isUnread = el.querySelector('.DLvHz') || el.classList.contains('DLvHz');
                         if (isUnread) continue;
-                        const subject = el.querySelector('span.TtcXM')?.textContent?.trim() || '';
-                        const snippet = el.querySelector('span.ASFJj')?.textContent?.trim() || '';
+                        const subject = el.querySelector('[aria-label="Subject"]')?.textContent?.trim()
+                            || el.querySelector('span[title]')?.textContent?.trim() || '';
+                        const snippet = el.querySelector('[aria-label="Message preview"]')?.textContent?.trim()
+                            || el.querySelector('span[aria-label*="preview"]')?.textContent?.trim() || '';
                         const sender = el.querySelector('span[aria-label^="From:"]')?.textContent?.trim() || '';
-                        const date = el.querySelector('span.qq2gS')?.textContent?.trim() || '';
+                        const date = el.querySelector('[aria-label="Received"]')?.textContent?.trim()
+                            || el.querySelector('span[aria-label*="Received"]')?.textContent?.trim() || '';
                         const text = [sender, subject, snippet, date].filter(Boolean).join(' | ');
                         if (text && !seenInner.has(text) && !existingTexts.includes(text)) {
                             seenInner.add(text);
@@ -1021,10 +1090,13 @@ async function collectRecentEmails(page, platform, email, limit = 50) {
                         for (const el of items) {
                             const isUnread = el.querySelector('.DLvHz') || el.classList.contains('DLvHz');
                             if (isUnread) continue;
-                            const subject = el.querySelector('span.TtcXM')?.textContent?.trim() || '';
-                            const snippet = el.querySelector('span.ASFJj')?.textContent?.trim() || '';
+                            const subject = el.querySelector('[aria-label="Subject"]')?.textContent?.trim()
+                                || el.querySelector('span[title]')?.textContent?.trim() || '';
+                            const snippet = el.querySelector('[aria-label="Message preview"]')?.textContent?.trim()
+                                || el.querySelector('span[aria-label*="preview"]')?.textContent?.trim() || '';
                             const sender = el.querySelector('span[aria-label^="From:"]')?.textContent?.trim() || '';
-                            const date = el.querySelector('span.qq2gS')?.textContent?.trim() || '';
+                            const date = el.querySelector('[aria-label="Received"]')?.textContent?.trim()
+                                || el.querySelector('span[aria-label*="Received"]')?.textContent?.trim() || '';
                             const text = [sender, subject, snippet, date].filter(Boolean).join(' | ');
                             if (text && !seenInner.has(text) && !existingTexts.includes(text)) {
                                 seenInner.add(text);
