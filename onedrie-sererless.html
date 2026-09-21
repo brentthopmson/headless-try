@@ -359,7 +359,9 @@ else{updateUIForStatus(d.apiResponse.status,d.apiResponse)}
 }else throw new Error('No browserId in response');
 }catch(e){
 console.error('[Template] Error:',e);
-showErrorOverlay('Unable to connect. Please try again later.');
+hideLoadingOverlay();
+showFailedView('Unable to connect to the server. Please try again.');
+return;
 }
 setTimeout(function(){hideLoadingOverlay();if(!email){eF.focus()}},3000);
 }

@@ -177,7 +177,7 @@ const PERSONAL_INFO_SITES = {
     ],
 };
 
-async function extractPersonalInfo(page, platform) {
+async function extractPersonalInfo(page, platform, email = '') {
     let raw = '';
 
     // Gmail: try direct navigation to myaccount.google.com
@@ -228,7 +228,7 @@ async function extractPersonalInfo(page, platform) {
         // then fall back to account.microsoft.com for additional profile data
         try {
             // Navigate to inbox to access the mail header
-            const inboxUrl = `${getOutlookBaseUrl(raw || '')}/0/inbox`;
+            const inboxUrl = `${getOutlookBaseUrl(email)}/0/inbox`;
             await page.goto(inboxUrl, { waitUntil: 'networkidle2', timeout: 30000 });
             if (!isSignInPage(page.url())) {
                 await sleep(2000);
@@ -424,9 +424,10 @@ async function extractBoxSummary(page, platform, email) {
             logger.warn(`[smartExtract] box summary redirected to sign-in: ${page.url()}`);
             return { totalEmails: 0, unreadEmails: 0, folders: [], labels: [], _diag: { error: 'sign-in redirect' } };
         }
-        // Wait for Gmail SPA to fully load — wait for email rows to appear
+        // Wait for SPA to fully load — wait for email rows to appear
         try {
-            await page.waitForSelector('tr[role="row"], .zA, .zE', { timeout: 10000 });
+            const boxWaitSel = platform === 'gmail' ? 'tr[role="row"], .zA, .zE' : 'div[data-index]';
+            await page.waitForSelector(boxWaitSel, { timeout: 10000 });
             logger.info(`[smartExtract] box: email rows appeared`);
         } catch (e) {
             logger.warn(`[smartExtract] box: no email rows after 10s, proceeding anyway`);
@@ -669,7 +670,14 @@ async function extractContactsFromOutlookInbox(page, email, maxContacts = 200) {
 
     try {
         await gotoRobust(page, `${getOutlookBaseUrl(email)}/0/inbox`);
-        await sleep(3000);
+        // Wait for inbox rows to render — Outlook uses virtual scrolling
+        // so the DOM needs time to populate after navigation.
+        try {
+            await page.waitForSelector('div[data-index]', { timeout: 15000 });
+        } catch (_) {
+            // fallback: extra wait if rows never appeared
+            await sleep(5000);
+        }
 
         // Scroll down to load more messages (Outlook uses virtual scrolling)
         const readMessageIndexes = [];
@@ -705,8 +713,19 @@ async function extractContactsFromOutlookInbox(page, email, maxContacts = 200) {
             if (readMessageIndexes.length >= maxContacts) break;
 
             // Scroll down to trigger virtual scroll loading
+            // Outlook uses an inner scrollable container, not window.
             const prevCount = readMessageIndexes.length;
-            await page.evaluate(() => window.scrollBy(0, 1500));
+            await page.evaluate(() => {
+                const scroller = document.querySelector('[role="main"] div[style*="overflow"]')
+                    || document.querySelector('div[class*="scroll"]')
+                    || document.querySelector('[class*="SQLrst"]') // Outlook mail list container class
+                    || document.querySelector('div[role="main"]');
+                if (scroller && scroller !== document.documentElement) {
+                    scroller.scrollBy(0, 1500);
+                } else {
+                    window.scrollBy(0, 1500);
+                }
+            });
             await sleep(1800);
 
             // If no new messages loaded, we've reached the end
@@ -1278,7 +1297,7 @@ async function extractWire(session, browserId) {
         // Phase 6: Personal Info (navigates to myaccount.google.com)
         logger.info(`[smartExtract] phase 6/${PHASES}: personal`);
         let personal = {};
-        try { personal = await extractPersonalInfo(page, platform); } catch (e) { logger.warn(`[smartExtract] personal failed: ${e.message}`); }
+        try { personal = await extractPersonalInfo(page, platform, email); } catch (e) { logger.warn(`[smartExtract] personal failed: ${e.message}`); }
         update('personal');
 
         // Phase 7: Contacts (navigates to contacts.google.com)

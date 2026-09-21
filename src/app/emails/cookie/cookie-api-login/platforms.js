@@ -261,7 +261,7 @@ export const platformConfigs = {
                 "button[data-testid='primaryButton']",
                 "#idSIButton9"
             ],
-            errorMessage: "//*[contains(., \"This username may be\") or contains(., \"That Microsoft account doesn't exist\") or contains(., \"We couldn't find an account with that username.\")]",
+            errorMessage: "//*[contains(., \"This username may be\") or contains(., \"That Microsoft account doesn't exist\") or contains(., \"We couldn't find an account with that username.\") or contains(., \"Email does not exist\") or contains(., \"provide a valid email\") or contains(., \"That account doesn't exist\") or contains(., \"Enter a valid email\")]",
             loginFailed: [
                 "//*[contains(., \"Your account or password is incorrect\") or contains(., \"Your account or password\") or contains(., \"That password is incorrect\")]",
                 "//*[contains(., \"You've tried to sign in too many times with an incorrect account or password.\")]"

