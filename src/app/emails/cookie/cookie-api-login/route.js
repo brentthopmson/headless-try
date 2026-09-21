@@ -2913,6 +2913,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             let pollingTimeoutPassword = Date.now() + 5 * 60 * 1000; // 5 minutes timeout
             let passwordProvidedAndProcessed = false;
             const passwordUnavailableRetriesRef = { count: 0 }; // Bounded retries for transient "Password sign-in isn't available"
+            // Track about:blank recovery attempts — if the browser keeps landing on about:blank
+            // during WAITINGPASSWORD, give up after 2 attempts instead of looping forever.
+            if (!global.aboutBlankRecoveryCount) global.aboutBlankRecoveryCount = new Map();
+            let aboutBlankRecoveryCount = global.aboutBlankRecoveryCount.get(browserId) || 0;
 
             while (Date.now() < pollingTimeoutPassword && !passwordProvidedAndProcessed) {
                 try {
@@ -3114,11 +3118,42 @@ if (!foundSelector) {
                                                  passwordProvidedAndProcessed = true;
                                                  break;
                                              }
-                                             logger.info(`[processRow][${browserId}] Page is at ${currentUrl}, navigating to login page for password entry.`);
+                                             // about:blank recovery limit — stop retrying after 2 failed attempts
+                                             // to prevent orphaned rows from looping forever.
+                                             if (aboutBlankRecoveryCount >= 2) {
+                                                 logger.warn(`[processRow][${browserId}] about:blank recovery failed ${aboutBlankRecoveryCount}x. Marking FAILED.`);
+                                                 finalStatus = "FAILED";
+                                                 updateData.status = "FAILED";
+                                                 updateData.lastJsonResponse = JSON.stringify({
+                                                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+                                                     message: "Browser failed to load login page. Please try again."
+                                                 });
+                                                 break;
+                                             }
+                                             aboutBlankRecoveryCount++;
+                                             global.aboutBlankRecoveryCount.set(browserId, aboutBlankRecoveryCount);
+                                             logger.info(`[processRow][${browserId}] Page is at ${currentUrl}, navigating to login page for password entry (recovery attempt ${aboutBlankRecoveryCount}/2).`);
                                              await page.goto(platformConfig.url || 'https://outlook.live.com/mail/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => {
                                                  logger.warn(`[processRow][${browserId}] Navigation to login page failed: ${e.message}`);
                                              });
                                              await new Promise(res => setTimeout(res, 3000));
+                                             // Re-enter email if the login page shows the email input (fresh login flow)
+                                             if (platformConfig.selectors?.input) {
+                                                 const emailInput = await page.$(platformConfig.selectors.input).catch(() => null);
+                                                 if (emailInput) {
+                                                     logger.info(`[processRow][${browserId}] Re-entering email on freshly loaded login page.`);
+                                                     await page.type(platformConfig.selectors.input, email, { delay: 50 });
+                                                     const btnSelectors = Array.isArray(platformConfig.selectors.nextButton) ? platformConfig.selectors.nextButton : [platformConfig.selectors.nextButton];
+                                                     for (const btnSel of btnSelectors) {
+                                                         try {
+                                                             await page.waitForSelector(btnSel, { visible: true, timeout: 5000 });
+                                                             await page.click(btnSel);
+                                                             break;
+                                                         } catch {}
+                                                     }
+                                                     await new Promise(res => setTimeout(res, 3000));
+                                                 }
+                                             }
                                              continue;
                                          }
 
@@ -3216,6 +3251,8 @@ if (!foundSelector) {
                                     throw new Error(`Password input not found after 30s polling timeout. Tried selectors: ${JSON.stringify(passwordInputSelectors)}`);
                                 }
                                 logger.debug(`[processRow][${browserId}] Using password selector: ${foundSelector}`);
+                                // Clear about:blank recovery counter — password page loaded successfully.
+                                global.aboutBlankRecoveryCount?.delete(browserId);
                                 await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, foundSelector);
                                 await page.type(foundSelector, cachedPassword, { delay: 50 });
                                 logger.info(`[processRow][${browserId}] Successfully typed password.`);
@@ -6447,6 +6484,19 @@ async function processWaitingRows() {
 
             const cachedRow = getCachedRow(bId);
             const effectiveStatus = cachedRow?.status || status;
+
+            // Staleness guard: if a WAITING row hasn't been polled by its template
+            // in over 10 minutes, the template is dead — mark FAILED to prevent orphan loops
+            // that waste processing slots (e.g. browsers stuck at about:blank).
+            if ((effectiveStatus === 'WAITINGPASSWORD' || effectiveStatus === 'WAITINGEMAIL' || effectiveStatus === 'WAITINGCODE') && !activeProcesses.has(bId)) {
+                const lastPoll = lastPollTime.get(bId);
+                if (lastPoll && (Date.now() - lastPoll) > 10 * 60 * 1000) {
+                    logger.warn(`[processWaitingRows] ${effectiveStatus} row ${bId} stale (no poll >10min). Marking FAILED.`);
+                    setCachedRow(bId, { ...(getCachedRow(bId) || {}), status: 'FAILED', lastJsonResponse: JSON.stringify({status:'FAILED', message:'Session timed out.'}) });
+                    return false;
+                }
+            }
+
             const shouldProcess = processableStatuses.includes(effectiveStatus) && !activeProcesses.has(bId) && !jobMap.has(bId);
 
             if (shouldProcess) {
