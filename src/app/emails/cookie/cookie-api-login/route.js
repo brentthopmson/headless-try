@@ -5654,11 +5654,11 @@ if (!foundSelector) {
                 if (password) {
                     logger.warn(`[processRow][${browserId}] WAITING_PASSWORD but password already available. Restoring to WAITINGPASSWORD for retry.`);
                     updateData.status = "WAITINGPASSWORD";
-                    updateBrowserRowDataFast(browserId, { status: "WAITINGPASSWORD", email: email || '' });
+                    updateBrowserRowDataFast(browserId, { status: "WAITINGPASSWORD", email: email || '', lastJsonResponse: '' });
                     return;
                 }
                 finalStatus = "WAITINGPASSWORD";
-                updateBrowserRowDataFast(browserId, { status: "WAITINGPASSWORD", email: email || '', verified: false, fullAccess: false });
+                updateBrowserRowDataFast(browserId, { status: "WAITINGPASSWORD", email: email || '', verified: false, fullAccess: false, lastJsonResponse: '' });
             } else if (initialCheckResult.accountAccess) {
                 if (!initialCheckResult.requiresVerification) {
                     if (initialCheckResult.reachedInbox) {

