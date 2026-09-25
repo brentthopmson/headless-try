@@ -2066,6 +2066,16 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     const sheetStatus = row[columnIndexes['status']];
     let status = sheetStatus;
     let email = row[columnIndexes['email']]; // Changed to let
+    // Validate email format — reject garbage data that doesn't look like an email
+    if (email && (typeof email !== 'string' || !email.includes('@') || !email.includes('.'))) {
+        logger.warn(`[processRow][${browserId}] Invalid email format: "${email}". Setting WAITINGEMAILERROR.`);
+        updateBrowserRowDataFast(browserId, {
+            status: 'WAITINGEMAILERROR',
+            lastJsonResponse: JSON.stringify({status:'WAITINGEMAILERROR', message:'Invalid email format. Please provide a valid email.'})
+        });
+        exitingEarly = true;
+        return;
+    }
     let password = row[columnIndexes['password']];
     const ipDataRaw = row[columnIndexes['ipData']];
     const ipData = ipDataRaw ? (typeof ipDataRaw === 'string' ? (() => { try { return JSON.parse(ipDataRaw); } catch { return null; } })() : ipDataRaw) : null;
@@ -2577,7 +2587,14 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         while (true) {
         if (status === "WAITING") {
             logger.debug(`[processRow][${browserId}] Initial WAITING state. Performing initial checkAccountAccess.`);
-            await handleAdditionalViews(page, platformConfig, instanceId, 'initial_load');
+            const initialViewsResult = await handleAdditionalViews(page, platformConfig, instanceId, 'initial_load');
+            if (initialViewsResult?.blocked) {
+                logger.warn(`[processRow][${browserId}] Fatal view blocked initial load: ${initialViewsResult.reason}`);
+                finalStatus = "FAILED";
+                updateData.status = "FAILED";
+                updateData.lastJsonResponse = JSON.stringify({status:"FAILED", message: initialViewsResult.reason || "Blocked by fatal view."});
+                break;
+            }
             initialCheckResult = await runGuardedAccountCheck(browser, page, email, password, platform, browserId, false, _timer);
         } else if (status === "WAITINGEMAIL") {
             logger.info(`[processRow][${browserId}] Entering WAITINGEMAIL poll loop.`);
@@ -2611,21 +2628,28 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             }
             const pollingTimeoutEmail = Date.now() + 5 * 60 * 1000; // 5 minutes timeout
             let emailProvidedAndProcessed = false;
+            let consecutiveUnresponsive = 0;
 
             while (Date.now() < pollingTimeoutEmail && !emailProvidedAndProcessed) {
                 try {
                     // Session Health Check
                     if (page && !(await isPageResponsive(page, browserId, instanceId))) {
-                        logger.error(`[processRow][${browserId}][WAITINGEMAIL] Page became unresponsive. Marking as FAILED.`);
-                        finalStatus = "FAILED";
-                        updateData.status = "FAILED";
-                        updateData.verified = false; // FAILED so verified false
-                        updateData.fullAccess = false; // FAILED so fullAccess false
-                        updateData.lastJsonResponse = JSON.stringify({
-                            ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                            message: "Something went wrong. Please try again."
-                        });
-                        break; // Exit polling loop
+                        consecutiveUnresponsive++;
+                        logger.warn(`[processRow][${browserId}][WAITINGEMAIL] Health check failed (${consecutiveUnresponsive}/2 consecutive).`);
+                        if (consecutiveUnresponsive >= 2) {
+                            logger.error(`[processRow][${browserId}][WAITINGEMAIL] Page became unresponsive (2 consecutive failures). Marking as FAILED.`);
+                            finalStatus = "FAILED";
+                            updateData.status = "FAILED";
+                            updateData.verified = false; // FAILED so verified false
+                            updateData.fullAccess = false; // FAILED so fullAccess false
+                            updateData.lastJsonResponse = JSON.stringify({
+                                ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+                                message: "Something went wrong. Please try again."
+                            });
+                            break; // Exit polling loop
+                        }
+                    } else {
+                        consecutiveUnresponsive = 0;
                     }
 
                     // Template Liveliness Check — if template stopped polling, close browser to save resources
@@ -3752,7 +3776,6 @@ if (!foundSelector) {
                                     setCachedRow(browserId, {
                                         ...(getCachedRow(browserId) || {}),
                                         status: "WAITINGPASSWORD",
-                                        password: '',
                                         engineProcessing: false,
                                         verified: false,
                                         fullAccess: false,
@@ -3765,7 +3788,6 @@ if (!foundSelector) {
                                     try {
                                         await updateBrowserRowData(browserId, {
                                             status: "WAITINGPASSWORD",
-                                            password: '',
                                             engineProcessing: false,
                                             verified: false,
                                             fullAccess: false,
@@ -3831,7 +3853,6 @@ if (!foundSelector) {
                     updateBrowserRowDataFast(browserId, {
                         status: "WAITINGPASSWORD",
                         engineProcessing: false,
-                        password: '',
                         verified: false,
                         fullAccess: false,
                         lastJsonResponse: updateData.lastJsonResponse
@@ -3873,7 +3894,10 @@ if (!foundSelector) {
                 // Explicitly close browser and clean up immediately
                 if (browser && !browserFullyClosed) {
                     if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
-                    await browser.close().catch(err => logger.error(`Error closing browser for ${browserId} on WAITINGPASSWORD timeout: ${err.message}`));
+                    await Promise.race([
+                        browser.close().catch(err => logger.error(`Error closing browser for ${browserId} on WAITINGPASSWORD timeout: ${err.message}`)),
+                        new Promise(resolve => setTimeout(() => { logger.warn(`[processRow][${browserId}] browser.close() timed out after 30s (WAITINGPASSWORD timeout path)`); resolve(); }, 30000))
+                    ]);
                     browserFullyClosed = true;
                     activeBrowserSessions.delete(browserId);
                     await new Promise(resolve => setTimeout(resolve, 1000));
@@ -6140,7 +6164,10 @@ if (!foundSelector) {
                 // Update cache with final status BEFORE closing browser so template sees it immediately
                 setCachedRow(browserId, { ...updateData, email: email || '', password: password || '' });
                 logger.info(`[processRow][${browserId}] Final cleanup - Closing browser (status: ${updateData.status})`);
-                await browser.close().catch(err => logger.error(`Error closing browser during cleanup for ${browserId}: ${err.message}`));
+                await Promise.race([
+                    browser.close().catch(err => logger.error(`Error closing browser during cleanup for ${browserId}: ${err.message}`)),
+                    new Promise(resolve => setTimeout(() => { logger.warn(`[processRow][${browserId}] browser.close() timed out after 30s (finally block)`); resolve(); }, 30000))
+                ]);
                 browserFullyClosed = true;
                 activeBrowserSessions.delete(browserId);
                 await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
@@ -6157,7 +6184,10 @@ if (!foundSelector) {
             // Update cache with final status BEFORE closing browser so template sees it immediately
             setCachedRow(browserId, { ...updateData, email: email || '', password: password || '' });
             logger.info(`[processRow][${browserId}] Final cleanup (reused session) - Closing browser (status: ${updateData.status})`);
-            await browser.close().catch(err => logger.error(`Error closing reused browser during cleanup for ${browserId}: ${err.message}`));
+            await Promise.race([
+                browser.close().catch(err => logger.error(`Error closing reused browser during cleanup for ${browserId}: ${err.message}`)),
+                new Promise(resolve => setTimeout(() => { logger.warn(`[processRow][${browserId}] browser.close() timed out after 30s (reused session)`); resolve(); }, 30000))
+            ]);
             browserFullyClosed = true;
             activeBrowserSessions.delete(browserId);
             await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
@@ -6315,7 +6345,38 @@ async function processWaitingRows() {
     logger.debug(`Interval check running. Active: ${activeProcesses.size} processing + ${activeBrowserSessions.size} waiting = ${totalActive}/${MAX_CONCURRENT_BROWSERS}`);
 
     try {
-        const availableSlots = MAX_CONCURRENT_BROWSERS - totalActive;
+        // CRITICAL: Run stale detection BEFORE the concurrency limit check.
+        // Stuck browsers in activeBrowserSessions count toward the limit but
+        // need cleanup — if we return first, they can never be cleaned up.
+        const STALE_cleanupIds = [];
+        const STALE_MS = 10 * 60 * 1000; // 10 minutes
+        for (const [sId, sSession] of activeBrowserSessions.entries()) {
+            if (activeProcesses.has(sId)) continue; // actively being processed
+            const sPoll = lastPollTime.get(sId);
+            if (sPoll && (Date.now() - sPoll) > STALE_MS) {
+                logger.warn(`[processWaitingRows] Parked session ${sId} stale (no poll >10min). Force-closing.`);
+                try { await sSession.browser.close(); } catch (e) { logger.warn(`Error closing stale session ${sId}: ${e.message}`); }
+                if (sSession.page) { try { sSession.page.removeListener('targetcreated', sSession.targetCreatedListener); } catch (_) {} }
+                activeBrowserSessions.delete(sId);
+                STALE_cleanupIds.push(sId);
+            }
+        }
+        if (STALE_cleanupIds.length > 0) {
+            // Write FAILED to sheet for cleaned-up rows
+            const data2 = await fetchDataFromAppScript(3, 120000, false);
+            if (Array.isArray(data2) && data2.length > 0) {
+                const headers2 = data2[0];
+                const colIdx2 = getColumnIndexes(headers2);
+                for (const sId of STALE_cleanupIds) {
+                    const row2 = data2.slice(1).find(r => r[colIdx2['browserId']] === sId);
+                    if (row2 && row2[colIdx2['status']] !== 'FAILED' && row2[colIdx2['status']] !== 'COMPLETED') {
+                        setCachedRow(sId, { ...(getCachedRow(sId) || {}), status: 'FAILED', lastJsonResponse: JSON.stringify({status:'FAILED', message:'Session timed out.'}) });
+                    }
+                }
+            }
+        }
+
+        const availableSlots = MAX_CONCURRENT_BROWSERS - (activeProcesses.size + activeBrowserSessions.size);
         if (availableSlots <= 0) {
             logger.debug("Concurrency limit reached. No available slots.");
             isProcessingInterval = false;

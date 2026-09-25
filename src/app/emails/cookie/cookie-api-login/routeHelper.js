@@ -57,7 +57,7 @@ export const lastPollTime = new Map();
 // Returns true if no data yet (assume alive), false if last poll was > maxAgeMs ago.
 export function isTemplateAlive(browserId, maxAgeMs = 180000) {
     const lastTime = lastPollTime.get(browserId);
-    if (!lastTime) return true; // No data yet — assume alive
+    if (!lastTime) return true;
     return (Date.now() - lastTime) < maxAgeMs;
 }
 
@@ -1770,13 +1770,13 @@ export async function isPageResponsive(page, browserId, instanceId) {
     try {
         await Promise.race([
             page.evaluate(() => document.readyState),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Page navigation in progress - evaluate timed out')), 5000))
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Page health check timed out')), 30000))
         ]);
         return true;
     } catch (e) {
         // Navigation-related errors mean the page is alive but transitioning — not unresponsive
         const msg = e.message || '';
-        if (msg.includes('navigation') || msg.includes('detached') || msg.includes('destroyed') || msg.includes('navigat')) {
+        if ((msg.includes('navigation') || msg.includes('detached') || msg.includes('navigat')) && !msg.includes('health check')) {
             logger.debug(`[isPageResponsive][${browserId}][${instanceId}] Page is navigating (not unresponsive): ${msg}`);
             return true;
         }
