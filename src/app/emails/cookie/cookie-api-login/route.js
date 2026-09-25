@@ -3864,7 +3864,7 @@ if (!foundSelector) {
                         engineProcessing: true,
                         email: email || '',
                         password: password || '',
-                        verified: true,
+                        verified: false,
                         fullAccess: false,
                         lastJsonResponse: JSON.stringify({
                             ...JSON.parse(updateData.lastJsonResponse || '{}'),
@@ -5782,7 +5782,7 @@ if (!foundSelector) {
             // Force direct sheet write (bypass updateBrowserRowDataFast which only cascades terminal states)
             // so processWaitingRows reads the correct status + fresh lastUserActivity from the sheet.
             updateData.lastUserActivity = new Date().toISOString();
-            updateData.verified = true;
+            updateData.verified = finalStatus !== "WAITINGPASSWORD";
             await updateBrowserRowData(browserId, updateData).catch(err => {
                 logger.error(`[processRow][${browserId}] Direct sheet write failed for waiting state: ${err.message}`);
             });

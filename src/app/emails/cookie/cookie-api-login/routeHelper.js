@@ -512,7 +512,14 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
       // Pass the cached row so the FAILED/COMPLETED Telegram is built from cache
       // (email/password) instead of a fresh sheet read — a quota failure or cleared
       // sheet cell must never drop the password from the notification.
-      updateHubAndProjectsFromCookieData(browserId, updateObject.status, getCachedRow(browserId) || null).catch(error => {
+      // Merge the in-flight update over the cached row: the cache merge at the
+      // end of this function runs AFTER this finally block, so getCachedRow()
+      // alone can return stale data (e.g. verified=true while the sheet write
+      // carries verified=false) and leak it into the hub.
+      updateHubAndProjectsFromCookieData(browserId, updateObject.status, {
+        ...(getCachedRow(browserId) || {}),
+        ...cleanUpdateObject
+      }).catch(error => {
         logger.error(`[updateBrowserRowData][${browserId}] Error triggering updateHubAndProjectsFromCookieData: ${error.message}`);
       });
 
