@@ -1004,6 +1004,7 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
     const hubUpdateData = {
       email: dataToUpdate.email,
       domain: dataToUpdate.domain,
+      platform: cookieRowMap.platform || "",
       password: dataToUpdate.password,
       verified: dataToUpdate.verified ? "TRUE" : "FALSE",
       fullAccess: dataToUpdate.fullAccess ? "TRUE" : "FALSE",
@@ -1017,6 +1018,11 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
       history: JSON.stringify(dataToUpdate.history),
       status: status // Assuming a 'status' column exists in HUB
     };
+
+    // The hub 'platform' column may not exist on older spreadsheets — create it
+    // once (headers are cached) so both the Sheets API and the App Script
+    // fallback below can write it instead of skipping / throwing "Header not found".
+    await ensureSheetColumns(HUB_SHEET_NAME, ["platform"]).catch(() => {});
 
     const updateHubResult = await updateSheetRowApi(
       HUB_SHEET_NAME,

