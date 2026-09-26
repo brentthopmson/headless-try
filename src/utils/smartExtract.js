@@ -699,167 +699,320 @@ async function extractContacts(page, platform, email, maxContacts = 200) {
 }
 
 /**
- * Outlook contacts: extract from inbox messages. Only READ messages (no DLvHz class).
- * Clicks into each message to parse sender/recipient from the inner template.
+ * Outlook contacts (office.com DOM-confirmed):
+ *  Phase A — scan message rows: From name + email straight from the list
+ *           (read AND unread; no clicks → no state change). Scrolls the real
+ *           virtuoso scroller until aria-setsize is covered, 3 consecutive
+ *           no-growth passes, or the 500-item guard — no fixed scroll cap.
+ *  Phase B — open every READ message, expand "+N others" recipient groups,
+ *           aggregate From/To/Cc/Bcc + mined body emails (quoted thread
+ *           headers + mailto: links) for the conversation shown in the pane.
+ *  Session email is excluded; contacts tagged otherData.role/source/subject.
  */
 async function extractContactsFromOutlookInbox(page, email, maxContacts = 200) {
     const contacts = [];
-    const seen = new Set();
+    const byEmail = new Map();
+    const selfEmail = (email || '').trim().toLowerCase();
+    const MAX_ITEMS = 500;        // absolute guard for both phases
+    const BODY_CONTACT_CAP = 50;  // per-message cap so one huge thread can't eat the budget
+    let selfSkips = 0;
+    const SCROLLER = 'div[data-testid="virtuoso-scroller"]';
+
+    // role/source stack comma-separated on repeat encounters.
+    // returns 'new' | 'dup' | 'self' | 'skip'
+    const addContact = (name, mail, date, role, source, subject) => {
+        const key = (mail || '').trim().toLowerCase();
+        if (!key) return 'skip';
+        if (key === selfEmail) { selfSkips++; return 'self'; }
+        const existing = byEmail.get(key);
+        if (existing) {
+            existing.interactionCount = (existing.interactionCount || 1) + 1;
+            if (!existing.name && name) existing.name = name.trim();
+            const stack = (field, val) => {
+                if (!val) return;
+                const list = (existing.otherData[field] || '').split(',').filter(Boolean);
+                if (!list.includes(val)) existing.otherData[field] = [...list, val].join(',');
+            };
+            stack('role', role);
+            stack('source', source);
+            if (!existing.otherData.subject && subject) existing.otherData.subject = subject;
+            return 'dup';
+        }
+        const contact = {
+            name: (name || '').trim(),
+            email: key,
+            lastInteractionDate: (date || '').trim(),
+            relationshipSummary: '',
+            interactionCount: 1,
+            otherData: { phoneNumbers: [], company: '', notes: '', role: role || '', source: source || '', subject: subject || '' },
+        };
+        byEmail.set(key, contact);
+        contacts.push(contact);
+        return 'new';
+    };
 
     try {
+        // ================= Phase A: list scan (From, unlimited scroll) =================
         await gotoRobust(page, `${getOutlookBaseUrl(email)}/0/inbox`);
         // Wait for inbox rows to render — Outlook uses virtual scrolling
         // so the DOM needs time to populate after navigation.
         try {
             await page.waitForSelector('div[data-index]', { timeout: 15000 });
         } catch (_) {
-            // fallback: extra wait if rows never appeared
             await sleep(5000);
         }
 
-        // Scroll down to load more messages (Outlook uses virtual scrolling)
-        const readMessageIndexes = [];
-        const seenIndexes = new Set();
+        const items = new Map(); // stable item key -> row info
+        const listSeen = new Set(); // keys already counted in Phase A (no double interactionCount)
+        let setSize = 0;
+        let noGrowth = 0;
+        let listAdded = 0;
 
-        for (let scrollIteration = 0; scrollIteration < 8; scrollIteration++) {
-            // Find READ messages in current DOM viewport
-            const newIndexes = await page.evaluate((existingIndexes) => {
-                const rows = document.querySelectorAll('div[data-index]');
-                const readIndexes = [];
-                rows.forEach(row => {
-                    const isUnread = row.querySelector('.DLvHz') || row.classList.contains('DLvHz');
-                    if (!isUnread) {
-                        const idx = row.getAttribute('data-index');
-                        if (idx !== null && !existingIndexes.includes(idx)) {
-                            readIndexes.push(idx);
-                        }
-                    }
+        for (let pass = 0; pass < MAX_ITEMS; pass++) {
+            const batch = await page.evaluate(() => {
+                const rows = [];
+                document.querySelectorAll('div[data-index]').forEach((row) => {
+                    const di = row.getAttribute('data-index');
+                    if (di === null) return;
+                    const senderEl = row.querySelector('span[title*="@"]');
+                    const timeEl = row.querySelector('span.qq2gS');
+                    rows.push({
+                        di,
+                        key: row.getAttribute('data-item-index') || di,
+                        email: senderEl ? (senderEl.getAttribute('title') || '').trim() : '',
+                        name: senderEl ? (senderEl.textContent || '').trim() : '',
+                        subject: row.querySelector('.TtcXM')?.textContent?.trim() || '',
+                        date: (timeEl && (timeEl.getAttribute('title') || timeEl.textContent || '').trim()) || '',
+                        unread: !!row.querySelector('.DLvHz') || (row.getAttribute('aria-label') || '').toLowerCase().startsWith('unread'),
+                    });
                 });
-                return readIndexes;
-            }, readMessageIndexes);
-
-            for (const idx of newIndexes) {
-                if (!seenIndexes.has(idx)) {
-                    seenIndexes.add(idx);
-                    readMessageIndexes.push(idx);
-                }
-            }
-
-            logger.info(`[smartExtract] Outlook inbox scroll ${scrollIteration + 1}/8: found ${readMessageIndexes.length} READ messages total`);
-
-            // Stop scrolling if we have enough messages
-            if (readMessageIndexes.length >= maxContacts) break;
-
-            // Scroll down to trigger virtual scroll loading
-            // Outlook uses an inner scrollable container, not window.
-            const prevCount = readMessageIndexes.length;
-            await page.evaluate(() => {
-                const scroller = document.querySelector('[role="main"] div[style*="overflow"]')
-                    || document.querySelector('div[class*="scroll"]')
-                    || document.querySelector('[class*="SQLrst"]') // Outlook mail list container class
-                    || document.querySelector('div[role="main"]');
-                if (scroller && scroller !== document.documentElement) {
-                    scroller.scrollBy(0, 1500);
-                } else {
-                    window.scrollBy(0, 1500);
-                }
+                const sizeEl = document.querySelector('[aria-setsize]');
+                const setSize = parseInt(sizeEl?.getAttribute('aria-setsize') || '0', 10) || 0;
+                return { rows, setSize };
             });
-            await sleep(1800);
 
-            // If no new messages loaded, we've reached the end
-            if (readMessageIndexes.length === prevCount) break;
+            if (batch.setSize > setSize) setSize = batch.setSize;
+            const prevCount = items.size;
+            for (const r of batch.rows) {
+                items.set(r.key, r);
+                if (r.email && !listSeen.has(r.key) && addContact(r.name, r.email, r.date, 'from', 'list', r.subject) === 'new') listAdded++;
+                if (r.email) listSeen.add(r.key);
+            }
+
+            const grew = items.size !== prevCount;
+            if (!grew) noGrowth++; else noGrowth = 0;
+            if (pass === 0 || grew) {
+                logger.info(`[smartExtract] Outlook list scan ${pass + 1}: items=${items.size}/${setSize || '?'} contacts=${contacts.length}`);
+            }
+
+            if (setSize > 0 && items.size >= setSize) break; // whole folder covered
+            if (items.size >= MAX_ITEMS) break;              // absolute guard
+            if (noGrowth >= 3) break;                        // 3 scrolls with nothing new
+
+            await page.evaluate((sel) => {
+                const scroller = document.querySelector(sel)
+                    || document.querySelector('[role="main"] div[style*="overflow"]')
+                    || document.querySelector('div[class*="scroll"]')
+                    || document.querySelector('[class*="SQLrst"]')
+                    || document.querySelector('div[role="main"]');
+                if (scroller && scroller !== document.documentElement) scroller.scrollBy(0, 1500);
+                else window.scrollBy(0, 1500);
+            }, SCROLLER);
+            await sleep(1800);
         }
 
-        logger.info(`[smartExtract] Found ${readMessageIndexes.length} READ messages in Outlook inbox after scrolling`);
+        const readCount = [...items.values()].filter(r => !r.unread).length;
+        logger.info(`[smartExtract] Phase A: items=${items.size} setSize=${setSize} read=${readCount} listContacts=${listAdded} contacts=${contacts.length}`);
 
-        const maxToProcess = Math.min(readMessageIndexes.length, Math.ceil(maxContacts / 2));
-        for (let i = 0; i < maxToProcess; i++) {
-            if (contacts.length >= maxContacts) break;
+        // ================= Phase B: reading pane (To/Cc/Bcc + body) =================
+        // Every READ message (never unread → no state flip). No click budget:
+        // progress is bounded by the same termination rules as Phase A.
+        const processed = new Set();
+        let opened = 0, headerTo = 0, headerCc = 0, bodyAdds = 0, paneFails = 0;
+        let prevSig = null;
+        let passNoGrowth = 0;
 
-            try {
-                // Re-navigate to inbox each time (DOM may have changed)
-                if (i > 0) {
-                    await gotoRobust(page, `${getOutlookBaseUrl(email)}/0/inbox`);
-                    await sleep(2000);
-                    // Scroll back to the message we need
-                    await page.evaluate((idx) => {
-                        const row = document.querySelector(`div[data-index="${idx}"]`);
-                        if (row) row.scrollIntoView();
-                    }, readMessageIndexes[i]);
-                    await sleep(500);
-                }
+        if (readCount > 0) {
+            // back to top so every row passes through the viewport
+            await page.evaluate((sel) => {
+                const scroller = document.querySelector(sel) || document.querySelector('div[role="main"]');
+                if (scroller) scroller.scrollTop = 0; else window.scrollTo(0, 0);
+            }, SCROLLER);
+            await sleep(1500);
 
-                // Click the READ message
-                const clicked = await page.evaluate((idx) => {
-                    const rows = document.querySelectorAll('div[data-index]');
-                    for (const row of rows) {
-                        if (row.getAttribute('data-index') === idx) {
-                            row.click();
-                            return true;
-                        }
-                    }
-                    return false;
-                }, readMessageIndexes[i]);
-
-                if (!clicked) continue;
-                await sleep(2500);
-
-                // Extract from inner message template
-                const messageData = await page.evaluate(() => {
-                    const getText = (sel) => document.querySelector(sel)?.textContent?.trim() || '';
-                    return {
-                        sender: getText('span[aria-label^="From:"]'),
-                        recipient: getText('span[aria-label^="To:"]'),
-                        subject: getText('[aria-label="Subject"]') || getText('span[title]') || '',
-                        snippet: getText('[aria-label="Message preview"]') || getText('span[aria-label*="preview"]') || '',
-                        date: getText('[aria-label="Received"]') || getText('span[aria-label*="Received"]') || '',
-                        body: getText('div[aria-label="Message body"]'),
-                    };
+            for (let pass = 0; pass < MAX_ITEMS && contacts.length < maxContacts && passNoGrowth < 3; pass++) {
+                const visible = await page.evaluate(() => {
+                    const out = [];
+                    document.querySelectorAll('div[data-index]').forEach((row) => {
+                        const di = row.getAttribute('data-index');
+                        if (di === null) return;
+                        out.push({
+                            di,
+                            key: row.getAttribute('data-item-index') || di,
+                            unread: !!row.querySelector('.DLvHz') || (row.getAttribute('aria-label') || '').toLowerCase().startsWith('unread'),
+                        });
+                    });
+                    return out;
                 });
 
-                // Parse sender email from "Name <email>" format
-                const parseEmail = (text) => {
-                    const match = text.match(/<([^>]+)>/) || text.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
-                    return match ? match[1] : '';
-                };
-                const parseName = (text) => {
-                    const match = text.match(/^"?([^"<]+)"?\s*</);
-                    return match ? match[1].trim() : text.split('<')[0].trim();
-                };
+                const before = processed.size;
 
-                // Add sender as contact
-                const senderEmail = parseEmail(messageData.sender);
-                const senderName = parseName(messageData.sender);
-                if (senderEmail && !seen.has(senderEmail.toLowerCase())) {
-                    seen.add(senderEmail.toLowerCase());
-                    contacts.push({
-                        name: senderName,
-                        email: senderEmail,
-                        lastInteractionDate: messageData.date || '',
-                        relationshipSummary: '',
-                        interactionCount: 1,
-                        otherData: { phoneNumbers: [], company: '', notes: '' },
+                for (const v of visible) {
+                    if (contacts.length >= maxContacts) break;
+                    if (v.unread || processed.has(v.key)) continue;
+
+                    const clicked = await page.evaluate((idx) => {
+                        const row = document.querySelector(`div[data-index="${idx}"]`);
+                        if (!row) return false;
+                        row.scrollIntoView({ block: 'center' });
+                        (row.querySelector('[role="option"]') || row).click();
+                        return true;
+                    }, v.di);
+                    processed.add(v.key);
+                    if (!clicked) continue;
+
+                    // wait until the pane shows THIS conversation
+                    // (sig = From texts + subject texts + received time)
+                    try {
+                        await page.waitForFunction((prev) => {
+                            const root = document.querySelector('#ItemReadingPaneContainer') || document;
+                            const froms = [...root.querySelectorAll('span[id$="_FROM"]')].map(e => (e.textContent || '').trim()).join('~');
+                            if (!froms) return false;
+                            const subs = [...root.querySelectorAll('[id$="_SUBJECT"]')].map(e => (e.textContent || '').trim()).filter(Boolean).join('~');
+                            const when = [...root.querySelectorAll('[data-testid="SentReceivedSavedTime"]')].map(e => (e.textContent || '').trim()).filter(Boolean).join('~');
+                            return prev === null || (froms + '||' + subs + '||' + when) !== prev;
+                        }, { timeout: 8000 }, prevSig);
+                    } catch (_) {
+                        paneFails++;
+                        if (opened === 0 && paneFails >= 2) {
+                            logger.warn('[smartExtract] Outlook reading pane never appeared — Phase B aborted, list contacts kept');
+                            passNoGrowth = 3;
+                            break;
+                        }
+                        continue;
+                    }
+                    await sleep(400);
+
+                    // expand hidden recipients ("+N others")
+                    await page.evaluate(() => {
+                        document.querySelectorAll('[id^="plusOthers"]').forEach(btn => { try { btn.click(); } catch (_) { /* noop */ } });
                     });
+                    await sleep(400);
+
+                    const msg = await page.evaluate(() => {
+                        const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+                        const PAIR_RE = /([^<>;]+?)\s*<\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\s*>/g;
+                        const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
+                        const root = document.querySelector('#ItemReadingPaneContainer') || document;
+
+                        const parsePairs = (raw) => {
+                            const out = [];
+                            const seen = new Set();
+                            if (!raw) return out;
+                            let m;
+                            PAIR_RE.lastIndex = 0;
+                            while ((m = PAIR_RE.exec(raw)) !== null) {
+                                const mail = m[2].toLowerCase();
+                                if (seen.has(mail)) continue;
+                                seen.add(mail);
+                                const name = clean(m[1])
+                                    .replace(/^(from|to|cc|bcc)\s*:\s*/i, '')
+                                    .replace(/^[\s,;:'"]+/, '')
+                                    .replace(/[\s,;:'"]+$/, '');
+                                out.push({ name, email: m[2] });
+                            }
+                            let e;
+                            EMAIL_RE.lastIndex = 0;
+                            while ((e = EMAIL_RE.exec(raw)) !== null) {
+                                const mail = e[0].toLowerCase();
+                                if (seen.has(mail)) continue;
+                                seen.add(mail);
+                                out.push({ name: '', email: e[0] });
+                            }
+                            return out;
+                        };
+
+                        const holderText = (suffix) => {
+                            const parts = [];
+                            root.querySelectorAll(`[id$="${suffix}"]`).forEach((holder) => {
+                                holder.querySelectorAll('[aria-label]').forEach(el => {
+                                    const a = el.getAttribute('aria-label') || '';
+                                    if (a.includes('@') || /^(to|cc|bcc):/i.test(a)) parts.push(a);
+                                });
+                                const txt = clean(holder.textContent);
+                                if (txt) parts.push(txt);
+                            });
+                            return parts.join(' ');
+                        };
+
+                        const from = [];
+                        root.querySelectorAll('span[id$="_FROM"]').forEach(el => {
+                            const raw = clean(el.textContent) || clean(el.getAttribute('aria-label'));
+                            parsePairs(raw).forEach(p => from.push(p));
+                        });
+                        const to = parsePairs(holderText('_TO'));
+                        const cc = parsePairs(holderText('_CC'));
+                        const bcc = parsePairs(holderText('_BCC'));
+
+                        let subject = '';
+                        root.querySelectorAll('[id$="_SUBJECT"]').forEach(el => {
+                            const t = clean(el.textContent);
+                            if (t && !subject) subject = t;
+                        });
+                        if (!subject) subject = clean(root.querySelector('span[role="heading"][aria-level="3"]')?.textContent);
+                        const date = clean(root.querySelector('[data-testid="SentReceivedSavedTime"]')?.textContent);
+
+                        const body = [];
+                        root.querySelectorAll('div[aria-label="Message body"]').forEach((bodyEl) => {
+                            parsePairs(bodyEl.textContent || '').forEach(p => body.push(p));
+                            bodyEl.querySelectorAll('a[href^="mailto:"]').forEach(a => {
+                                const mail = (a.getAttribute('href') || '').replace(/^mailto:/i, '').split('?')[0].trim();
+                                if (mail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)) body.push({ name: clean(a.textContent), email: mail });
+                            });
+                        });
+
+                        const fromsTxt = [...root.querySelectorAll('span[id$="_FROM"]')].map(e => (e.textContent || '').trim()).join('~');
+                        const subsTxt = [...root.querySelectorAll('[id$="_SUBJECT"]')].map(e => (e.textContent || '').trim()).filter(Boolean).join('~');
+                        const whenTxt = [...root.querySelectorAll('[data-testid="SentReceivedSavedTime"]')].map(e => (e.textContent || '').trim()).filter(Boolean).join('~');
+
+                        return { from, to, cc, bcc, subject, date, body: body.slice(0, 60), sig: fromsTxt + '||' + subsTxt + '||' + whenTxt };
+                    });
+
+                    for (const p of msg.from) addContact(p.name, p.email, msg.date, 'from', 'header', msg.subject);
+                    for (const p of msg.to) { if (addContact(p.name, p.email, msg.date, 'to', 'header', msg.subject) === 'new') headerTo++; }
+                    for (const p of msg.cc) { if (addContact(p.name, p.email, msg.date, 'cc', 'header', msg.subject) === 'new') headerCc++; }
+                    for (const p of msg.bcc) addContact(p.name, p.email, msg.date, 'bcc', 'header', msg.subject);
+                    let perMsgBody = 0;
+                    for (const p of msg.body) {
+                        if (perMsgBody >= BODY_CONTACT_CAP || contacts.length >= maxContacts) break;
+                        if (addContact(p.name, p.email, msg.date, '', 'body', msg.subject) === 'new') { bodyAdds++; perMsgBody++; }
+                    }
+
+                    opened++;
+                    prevSig = msg.sig;
+                    if (opened % 10 === 0) {
+                        logger.info(`[smartExtract] Phase B progress: opened=${opened}/${readCount} contacts=${contacts.length} to=${headerTo} cc=${headerCc} body=${bodyAdds}`);
+                    }
                 }
 
-                // Add recipient as contact
-                const recipientEmail = parseEmail(messageData.recipient);
-                const recipientName = parseName(messageData.recipient);
-                if (recipientEmail && !seen.has(recipientEmail.toLowerCase())) {
-                    seen.add(recipientEmail.toLowerCase());
-                    contacts.push({
-                        name: recipientName,
-                        email: recipientEmail,
-                        lastInteractionDate: messageData.date || '',
-                        relationshipSummary: '',
-                        interactionCount: 1,
-                        otherData: { phoneNumbers: [], company: '', notes: '' },
-                    });
-                }
-            } catch (e) {
-                logger.warn(`[smartExtract] outlook message ${i} failed: ${e.message}`);
+                if (processed.size === before) passNoGrowth++; else passNoGrowth = 0;
+                if (processed.size >= readCount) break;
+                if (contacts.length >= maxContacts) break;
+
+                await page.evaluate((sel) => {
+                    const scroller = document.querySelector(sel)
+                        || document.querySelector('[role="main"] div[style*="overflow"]')
+                        || document.querySelector('div[class*="scroll"]')
+                        || document.querySelector('[class*="SQLrst"]')
+                        || document.querySelector('div[role="main"]');
+                    if (scroller && scroller !== document.documentElement) scroller.scrollBy(0, 1500);
+                    else window.scrollBy(0, 1500);
+                }, SCROLLER);
+                await sleep(1800);
             }
         }
+
+        logger.info(`[smartExtract] Phase B done: opened=${opened}/${readCount} to=${headerTo} cc=${headerCc} bodyAdds=${bodyAdds} paneFails=${paneFails} selfSkips=${selfSkips} contacts=${contacts.length}`);
     } catch (e) {
         logger.warn(`[smartExtract] outlook contacts extraction failed: ${e.message}`);
     }
