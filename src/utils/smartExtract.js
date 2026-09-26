@@ -861,10 +861,50 @@ async function extractContactsFromOutlookInbox(page, email, maxContacts = Infini
             logger.warn(`[smartExtract] contacts(${label}) no element with data-folder-name="${folderName}" — falling back to URL nav`);
         }
         await gotoRobust(page, `${getOutlookBaseUrl(email)}/${folderPath}`);
+        // URL-only nav leaves the list in a state where rows never render (the
+        // 19:00 run: sent folder URL nav → 0 rows, scroller never moved). Re-click
+        // the treeitem now that the URL is out of any search state.
+        try {
+            await sleep(1500);
+            const again = await page.evaluate((name) => {
+                const cands = [...document.querySelectorAll(`div[role="treeitem"][data-folder-name="${name}"]`)];
+                const el = cands.find(e => e.offsetParent !== null) || cands[0];
+                if (!el) return 'missing';
+                (el.querySelector('[role="link"]') || el).click();
+                return 'clicked';
+            }, folderName);
+            if (again === 'clicked') {
+                await page.waitForFunction(({ name, path }) => {
+                    const sel = `div[role="treeitem"][data-folder-name="${name}"]`;
+                    const picked = [...document.querySelectorAll(sel)]
+                        .some(e => e.getAttribute('aria-selected') === 'true');
+                    const href = location.href.toLowerCase();
+                    const inSearch = href.includes('search');
+                    const urlOk = location.pathname.toLowerCase().includes(path);
+                    const rowsOk = document.querySelectorAll('div[data-index]').length > 0;
+                    return rowsOk && !inSearch && (urlOk || picked);
+                }, { timeout: 12000 }, { name: folderName, path: folderPath.split('/').pop() });
+                await sleep(800);
+                logger.info(`[smartExtract] contacts(${label}) treeitem re-click after URL nav confirmed`);
+            }
+        } catch (_) {
+            logger.warn(`[smartExtract] contacts(${label}) treeitem re-click after URL nav not confirmed — continuing anyway`);
+        }
     };
 
     // Runs Phase A + Phase B against one folder (inbox, then sent-items).
     const scanFolder = async (folderPath, label) => {
+        // Escape leftover search views (financial/personal phases run searches
+        // first). The treeitem confirm rejects while location still has ?search=,
+        // which then falls onto the known-bad URL-nav path (0 rows rendered).
+        try {
+            const inSearch = await page.evaluate(() => location.href.toLowerCase().includes('search'));
+            if (inSearch) {
+                logger.info(`[smartExtract] contacts(${label}) leaving search view before folder nav`);
+                await gotoRobust(page, `${getOutlookBaseUrl(email)}/${folderPath}`);
+                await sleep(1200);
+            }
+        } catch (_) { /* best effort */ }
         try {
             await clickFolder(folderPath === '0/sent-items' ? 'sent items' : 'inbox', folderPath, label);
         } catch (e) {
@@ -878,6 +918,15 @@ async function extractContactsFromOutlookInbox(page, email, maxContacts = Infini
         } catch (_) {
             await sleep(5000);
         }
+        // One nav retry if the folder rendered nothing (blank/blank-state list).
+        try {
+            const empty = await page.evaluate(() => document.querySelectorAll('div[data-index]').length === 0);
+            if (empty) {
+                logger.warn(`[smartExtract] contacts(${label}) folder rendered no rows — retrying folder nav`);
+                await clickFolder(folderPath === '0/sent-items' ? 'sent items' : 'inbox', folderPath, label);
+                await page.waitForSelector('div[data-index]', { timeout: 15000 }).catch(() => {});
+            }
+        } catch (_) { /* best effort */ }
 
         // ================= Phase A: list scan (From, unbounded scroll) =================
         const items = new Map(); // stable item key -> row info
