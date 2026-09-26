@@ -464,9 +464,16 @@ class MultiProviderAI {
         }
 
         const sysMsg = messages.find(m => m.role === 'system');
+        const generationConfig = { maxOutputTokens: maxTokens, temperature };
+        // Gemini 2.5 counts reasoning tokens inside maxOutputTokens — without this,
+        // the thinking budget eats the entire allowance and the visible answer is
+        // truncated to a couple of JSON objects.
+        if (String(model).includes('2.5')) {
+            generationConfig.thinkingConfig = { thinkingBudget: 0 };
+        }
         const payload = {
             contents,
-            generationConfig: { maxOutputTokens: maxTokens, temperature }
+            generationConfig
         };
         if (sysMsg) {
             payload.systemInstruction = { parts: [{ text: sysMsg.content }] };
@@ -475,8 +482,12 @@ class MultiProviderAI {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
         const response = await axios.post(url, payload, { timeout: 60000 });
 
-        if (response.data?.candidates?.[0]?.content?.parts?.[0]?.text) {
-            return response.data.candidates[0].content.parts[0].text;
+        const candidate = response.data?.candidates?.[0];
+        if (candidate?.finishReason === 'MAX_TOKENS') {
+            logger.warn(`[MultiProviderAI] Gemini ${model} finished with MAX_TOKENS — response truncated`);
+        }
+        if (candidate?.content?.parts?.[0]?.text) {
+            return candidate.content.parts[0].text;
         }
         throw new Error(`Invalid Gemini response: ${JSON.stringify(response.data).substring(0, 200)}`);
     }

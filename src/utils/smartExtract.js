@@ -1692,7 +1692,24 @@ async function extractActivities(page, platform, email, financialTexts = [], lim
         logger.warn(`[smartExtract] activities AI failed: ${e.message}`);
     }
 
-    if (Array.isArray(aiActivities) && aiActivities.length > 0) {
+    // A heavily-truncated AI answer (e.g. Gemini thinking budget eating
+    // maxOutputTokens) yields only a couple of objects — retry once, then fall
+    // through to the deterministic builder so no source email is dropped.
+    const minAcceptable = Math.min(sourceTexts.length, 10);
+    if (Array.isArray(aiActivities) && aiActivities.length > 0 && aiActivities.length < minAcceptable) {
+        logger.warn(`[smartExtract] activities AI returned only ${aiActivities.length}/${sourceTexts.length} — retrying once`);
+        try {
+            const again = await aiService.extractActivitiesAI(sourceTexts, terms);
+            if (Array.isArray(again) && again.length > aiActivities.length) {
+                aiActivities = again;
+                logger.info(`[smartExtract] activities AI retry parsed: ${aiActivities.length}`);
+            }
+        } catch (e) {
+            logger.warn(`[smartExtract] activities AI retry failed: ${e.message}`);
+        }
+    }
+
+    if (Array.isArray(aiActivities) && aiActivities.length >= minAcceptable) {
         return aiActivities.map(a => ({
             type: String(a.type || 'READ').toUpperCase(),
             on: a.on || '',
