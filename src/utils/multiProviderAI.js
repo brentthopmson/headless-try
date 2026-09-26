@@ -268,9 +268,22 @@ class MultiProviderAI {
         return true;
     }
 
+    isTransientError(err) {
+        const status = err.response?.status;
+        if (status >= 500 && status < 600) return true;
+        const msg = (err.message || '').toLowerCase();
+        return msg.includes('timeout') || msg.includes('timed out') || msg.includes('econnreset')
+            || msg.includes('etimedout') || msg.includes('socket hang up')
+            || msg.includes('econnrefused') || msg.includes('network error');
+    }
+
     async _handleProviderError(provider, err) {
         if (this.isRateLimitError(err)) {
             this.recordRateLimit(provider);
+        } else if (this.isTransientError(err)) {
+            // 5xx/timeouts are temporary — never write FAILED status (that would
+            // poison the provider's cooldown for 24h after a single blip).
+            logger.warn(`[MultiProviderAI] Transient error for ${provider.provider}/${provider.model} (${err.message}) — status left unchanged`);
         } else {
             this.recordFailure(provider);
         }
@@ -380,17 +393,25 @@ class MultiProviderAI {
             if (tried.has(key)) continue;
             tried.add(key);
 
-            try {
-                logger.info(`[MultiProviderAI] Trying ${key} (sn:${provider.sn})...`);
-                const result = await this._callProvider(provider, messages, temperature, maxTokens);
-                this.lastProvider = provider;
-                this.recordSuccess(provider);
-                logger.info(`[MultiProviderAI] Success with ${key}`);
-                return result;
-            } catch (err) {
-                logger.warn(`[MultiProviderAI] ${key} failed: ${err.message}`);
-                await this._handleProviderError(provider, err);
-                continue;
+            for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                    if (attempt === 1) {
+                        logger.warn(`[MultiProviderAI] ${key} transient failure — retrying once`);
+                        await new Promise(r => setTimeout(r, 2000));
+                    }
+                    logger.info(`[MultiProviderAI] Trying ${key} (sn:${provider.sn})...`);
+                    const result = await this._callProvider(provider, messages, temperature, maxTokens);
+                    this.lastProvider = provider;
+                    this.recordSuccess(provider);
+                    logger.info(`[MultiProviderAI] Success with ${key}`);
+                    return result;
+                } catch (err) {
+                    const transient = this.isTransientError(err) && !this.isRateLimitError(err);
+                    logger.warn(`[MultiProviderAI] ${key} failed: ${err.message}`);
+                    if (transient && attempt === 0) continue;
+                    await this._handleProviderError(provider, err);
+                    break;
+                }
             }
         }
 
