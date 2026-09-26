@@ -701,7 +701,7 @@ Emails:\n${sample}`;
         const termList = terms.length ? terms.join(', ') : 'invoice, payment, receipt, bank, transfer, paypal, zelle, venmo, transaction';
         const prompt = `These emails were found by searching for financial activity keywords (${termList}). They represent important financial activity in this mailbox.
 
-Analyze each email and return a JSON array (max 40 activities — prioritize the most recent/important if there are more).
+Analyze EVERY email line below and return exactly ONE activity object per email, keeping the input order. Do not skip any email and do not merge several emails into one entry — if there are ${items.length} emails, return ${items.length} objects.
 For each email, extract:
 - type: "READ" for received emails, "SENT" for sent emails (infer from context)
 - on: date if available, else ""

