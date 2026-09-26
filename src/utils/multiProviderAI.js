@@ -691,6 +691,8 @@ Or: {"type":"none","cells":[],"grid_size":null}`;
 
 Rules:
 - averageTransactionAmount: average of ALL money amounts actually found (plain number, currency-agnostic). If NO amounts appear anywhere, use 0 — do not invent values.
+- highestTransactionAmount: the LARGEST single money amount actually found (plain number, same rules; 0 if none). Do not invent values.
+- mailboxProfile: 2–4 sentences describing who owns this mailbox (name + business/role), what they do, and their key payment/payroll relationships (who pays them, who they pay, notable clients/vendors/employer named in the emails). Use ONLY evidence from the emails; '' if not enough info.
 - Amounts look like: $1,234.56 / USD 99 / 250.00 / "total due $45.30". Parse them.
 - lastTransactionDate: most recent transaction/payment/invoice date found (ISO yyyy-mm-dd, or '' if none).
 - pendingTransactionsCount: invoices/payments described as pending, due, awaiting, unpaid, overdue or scheduled (0 if none).
@@ -701,6 +703,8 @@ Return JSON only:
 {
   "boxFinancialSummary": { "mentionsOfTransactions": boolean, "identifiedPaymentMethods": string[], "potentialInvoiceCount": number },
   "averageTransactionAmount": number,
+  "highestTransactionAmount": number,
+  "mailboxProfile": "2-4 sentence description or ''",
   "lastTransactionDate": "ISO or ''",
   "pendingTransactionsCount": number,
   "transactionBox": boolean
@@ -708,11 +712,11 @@ Return JSON only:
 Emails:\n${sample}`;
         const response = await this.generate(prompt, {
             systemPrompt: 'You are a forensic account analyst. Return only valid JSON, no prose.',
-            maxTokens: 4000
+            maxTokens: 5000
         });
         const parsed = this._parseJson(response);
         if (parsed) {
-            logger.info(`[MultiProviderAI] extractFinancialSummaryAI parsed: amount=${parsed.averageTransactionAmount ?? '?'} last=${parsed.lastTransactionDate || '?'} pending=${parsed.pendingTransactionsCount ?? '?'} invoices=${parsed.boxFinancialSummary?.potentialInvoiceCount ?? '?'} methods=${JSON.stringify(parsed.boxFinancialSummary?.identifiedPaymentMethods || [])}`);
+            logger.info(`[MultiProviderAI] extractFinancialSummaryAI parsed: amount=${parsed.averageTransactionAmount ?? '?'} high=${parsed.highestTransactionAmount ?? '?'} last=${parsed.lastTransactionDate || '?'} pending=${parsed.pendingTransactionsCount ?? '?'} invoices=${parsed.boxFinancialSummary?.potentialInvoiceCount ?? '?'} methods=${JSON.stringify(parsed.boxFinancialSummary?.identifiedPaymentMethods || [])} profile="${String(parsed.mailboxProfile || '').slice(0, 160)}"`);
         } else {
             logger.warn(`[MultiProviderAI] extractFinancialSummaryAI unparsable response: ${String(response || '').slice(0, 200)}`);
         }

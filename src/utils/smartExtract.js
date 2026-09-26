@@ -1596,6 +1596,8 @@ async function extractFinancialSummary(page, platform, email) {
             potentialInvoiceCount: aiResult?.boxFinancialSummary?.potentialInvoiceCount || 0,
         },
         averageTransactionAmount: aiResult?.averageTransactionAmount ?? 0,
+        highestTransactionAmount: aiResult?.highestTransactionAmount ?? 0,
+        mailboxProfile: aiResult?.mailboxProfile || '',
         lastTransactionDate: aiResult?.lastTransactionDate || '',
         pendingTransactionsCount: aiResult?.pendingTransactionsCount ?? 0,
         transactionBox: aiResult?.transactionBox ?? mentions,
@@ -1957,6 +1959,32 @@ async function extractWire(session, browserId) {
 
         const combined = allFinancialTexts.join('\n');
         const mentions = termsRe.test(combined);
+
+        // Normalize financial fields + deterministic cross-check: regex over the
+        // raw texts guards against an under-called AI highest amount.
+        financialSummary.averageTransactionAmount = Number(financialSummary.averageTransactionAmount) || 0;
+        financialSummary.lastTransactionDate = financialSummary.lastTransactionDate || '';
+        financialSummary.pendingTransactionsCount = Number(financialSummary.pendingTransactionsCount) || 0;
+        financialSummary.transactionBox = financialSummary.transactionBox ?? mentions;
+        financialSummary.mailboxProfile = String(financialSummary.mailboxProfile || '').trim();
+        if (!financialSummary.boxFinancialSummary) {
+            financialSummary.boxFinancialSummary = {
+                mentionsOfTransactions: mentions,
+                identifiedPaymentMethods: [],
+                potentialInvoiceCount: 0,
+            };
+        }
+        let textMaxAmount = 0;
+        try {
+            const amountRe = /(?:[$€£¥]\s?|(?:USD|NZD|AUD|CAD|EUR|GBP)\s?)([0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]{1,2})?|[0-9]+(?:\.[0-9]{1,2})?)/gi;
+            let am;
+            while ((am = amountRe.exec(combined)) !== null) {
+                const v = parseFloat(am[1].replace(/,/g, ''));
+                if (!isNaN(v) && v > textMaxAmount) textMaxAmount = v;
+            }
+        } catch (_) { /* regex guard */ }
+        financialSummary.highestTransactionAmount = Math.max(Number(financialSummary.highestTransactionAmount) || 0, textMaxAmount);
+        logger.info(`[smartExtract] financialProfile: high=${financialSummary.highestTransactionAmount} avg=${financialSummary.averageTransactionAmount} textMax=${textMaxAmount} profile="${financialSummary.mailboxProfile.slice(0, 160)}"`);
 
         // Log extraction counts
         logger.info(`[smartExtract] COUNTS: personal(name=${personal.name || 'N/A'}, email=${personal.recoveryEmail || 'N/A'}, phone=${personal.phone || 'N/A'})`);
