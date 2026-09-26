@@ -802,22 +802,71 @@ async function extractContactsFromOutlookInbox(page, email, maxContacts = 200) {
     };
 
     const scrollDown = async () => {
-        await page.evaluate((sel, step) => {
+        const r = await page.evaluate((sel, step) => {
             const scroller = document.querySelector(sel)
                 || document.querySelector('[role="main"] div[style*="overflow"]')
                 || document.querySelector('div[class*="scroll"]')
                 || document.querySelector('[class*="SQLrst"]')
                 || document.querySelector('div[role="main"]');
-            if (scroller && scroller !== document.documentElement) scroller.scrollBy(0, step);
-            else window.scrollBy(0, step);
+            if (!scroller || scroller === document.documentElement) {
+                window.scrollBy(0, step);
+                return { found: false, before: -1, after: -1 };
+            }
+            const before = scroller.scrollTop;
+            scroller.scrollBy(0, step);
+            return { found: true, before, after: scroller.scrollTop };
         }, SCROLLER, SCROLL_STEP);
         await sleep(700);
+        return r;
+    };
+
+    // Navigation clicks the real folder treeitem
+    // (div[role="treeitem"][data-folder-name="inbox"|"sent items"]) so the SPA
+    // switches folder state properly; URL nav is only a fallback. URL-only nav
+    // left the big virtualized sent list in a state where Phase B rows never
+    // rendered (last run: 22 click misses in 58ms).
+    const clickFolder = async (folderName, folderPath, label) => {
+        let outcome = 'missing';
+        try {
+            outcome = await page.evaluate((name) => {
+                const cands = [...document.querySelectorAll(`div[role="treeitem"][data-folder-name="${name}"]`)];
+                const el = cands.find(e => e.offsetParent !== null) || cands[0];
+                if (!el) return 'missing';
+                el.scrollIntoView({ block: 'center' });
+                (el.querySelector('[role="link"]') || el).click();
+                return 'clicked';
+            }, folderName);
+        } catch (e) {
+            logger.warn(`[smartExtract] contacts(${label}) folder click threw: ${e.message}`);
+        }
+        if (outcome === 'clicked') {
+            try {
+                await page.waitForFunction(({ name, path }) => {
+                    const sel = `div[role="treeitem"][data-folder-name="${name}"]`;
+                    const picked = [...document.querySelectorAll(sel)]
+                        .some(e => e.getAttribute('aria-selected') === 'true');
+                    const href = location.href.toLowerCase();
+                    const inSearch = href.includes('search'); // search views must not count as confirmed
+                    const urlOk = location.pathname.toLowerCase().includes(path);
+                    const rowsOk = document.querySelectorAll('div[data-index]').length > 0;
+                    return rowsOk && !inSearch && (urlOk || picked);
+                }, { timeout: 15000 }, { name: folderName, path: folderPath.split('/').pop() });
+                await sleep(800); // virtualized list settle
+                logger.info(`[smartExtract] contacts(${label}) folder clicked: data-folder-name="${folderName}" confirmed`);
+                return;
+            } catch (_) {
+                logger.warn(`[smartExtract] contacts(${label}) folder click not confirmed in 15s — falling back to URL nav`);
+            }
+        } else {
+            logger.warn(`[smartExtract] contacts(${label}) no element with data-folder-name="${folderName}" — falling back to URL nav`);
+        }
+        await gotoRobust(page, `${getOutlookBaseUrl(email)}/${folderPath}`);
     };
 
     // Runs Phase A + Phase B against one folder (inbox, then sent-items).
     const scanFolder = async (folderPath, label) => {
         try {
-            await gotoRobust(page, `${getOutlookBaseUrl(email)}/${folderPath}`);
+            await clickFolder(folderPath === '0/sent-items' ? 'sent items' : 'inbox', folderPath, label);
         } catch (e) {
             logger.warn(`[smartExtract] contacts(${label}) nav failed: ${e.message}`);
             return;
@@ -855,7 +904,11 @@ async function extractContactsFromOutlookInbox(page, email, maxContacts = 200) {
                         unread: !!row.querySelector('.DLvHz') || (row.getAttribute('aria-label') || '').toLowerCase().startsWith('unread'),
                     });
                 });
-                const sizeEl = document.querySelector('[aria-setsize]');
+                // Prefer the message row's setsize (sent folder first row carries the
+                // real 2362) — a bare [aria-setsize] query can hit the folders pane
+                // or a stale element from the previous folder (last run: 35).
+                const sizeEl = document.querySelector('div[data-index][aria-setsize]')
+                    || document.querySelector('[aria-setsize]');
                 const setSize = parseInt(sizeEl?.getAttribute('aria-setsize') || '0', 10) || 0;
                 return { rows, setSize };
             });
@@ -879,7 +932,10 @@ async function extractContactsFromOutlookInbox(page, email, maxContacts = 200) {
             if (noGrowth >= 3) break;                        // 3 scrolls with nothing new
             if (noGrowth >= 1) await sleep(3000);            // lazy batch load at folder bottom
 
-            await scrollDown();
+            const scr = await scrollDown();
+            if (pass === 0 && scr.found && scr.after === scr.before) {
+                logger.warn(`[smartExtract] list scan ${label}: scroller did not move on first scroll (scrollTop=${scr.before}) — suspect wrong/blank scroller`);
+            }
         }
 
         const readCount = [...items.values()].filter(r => !r.unread).length;
@@ -889,7 +945,7 @@ async function extractContactsFromOutlookInbox(page, email, maxContacts = 200) {
         // Every READ message (never unread → no state flip). No click budget:
         // progress is bounded by the same termination rules as Phase A.
         const processed = new Set();
-        let opened = 0, headerTo = 0, headerCc = 0, bodyAdds = 0, paneFails = 0;
+        let opened = 0, headerTo = 0, headerCc = 0, bodyAdds = 0, paneFails = 0, clickMisses = 0, emptyVisible = 0;
         let prevSig = null;
         let passNoGrowth = 0;
 
@@ -899,6 +955,22 @@ async function extractContactsFromOutlookInbox(page, email, maxContacts = 200) {
                 const scroller = document.querySelector(sel) || document.querySelector('div[role="main"]');
                 if (scroller) scroller.scrollTop = 0; else window.scrollTo(0, 0);
             }, SCROLLER);
+            // Rows must be back in the DOM before clicking — the virtualized list
+            // can blank out after a long jump to top (last run: all 22 Phase B
+            // clicks missed because div[data-index] was absent for the whole phase).
+            let rowsReady = false;
+            for (let w = 0; w < 4 && !rowsReady; w++) {
+                try {
+                    await page.waitForSelector('div[data-index]', { timeout: 5000 });
+                    rowsReady = true;
+                } catch (_) {
+                    await scrollDown(); // nudge the scroller to re-render
+                }
+            }
+            if (!rowsReady) {
+                logger.warn(`[smartExtract] Phase B(${label}): message rows never re-rendered after scroll-to-top — Phase B skipped (list contacts kept)`);
+                return;
+            }
             await sleep(1500);
 
             // Opens one read row in the reading pane, waits until the pane shows
@@ -911,8 +983,14 @@ async function extractContactsFromOutlookInbox(page, email, maxContacts = 200) {
                     (row.querySelector('[role="option"]') || row).click();
                     return true;
                 }, v.di);
+                if (!clicked) {
+                    // Row not in DOM — keep it pending so the catch-up round can
+                    // retry after a re-render (previously it was marked processed,
+                    // silently dropping the whole folder's Phase B).
+                    clickMisses++;
+                    return;
+                }
                 processed.add(v.key);
-                if (!clicked) return;
 
                 // wait until the pane shows THIS conversation
                 // (sig = From texts + subject texts + received time)
@@ -1048,6 +1126,19 @@ async function extractContactsFromOutlookInbox(page, email, maxContacts = 200) {
                     return out;
                 });
 
+                if (!visible.length) {
+                    emptyVisible++;
+                    logger.warn(`[smartExtract] Phase B(${label}) pass ${pass + 1}: no rows in DOM (emptyVisible=${emptyVisible})`);
+                    if (emptyVisible >= 3) {
+                        logger.warn(`[smartExtract] Phase B(${label}): rows vanished repeatedly — main loop aborted, catch-up will retry`);
+                        break;
+                    }
+                    await scrollDown();
+                    await sleep(2000);
+                    continue;
+                }
+                emptyVisible = 0;
+
                 const before = processed.size;
 
                 for (const v of visible) {
@@ -1069,19 +1160,37 @@ async function extractContactsFromOutlookInbox(page, email, maxContacts = 200) {
                 await scrollDown();
             }
 
-            // catch-up: read rows the viewport passes never showed
+            // catch-up: read rows the viewport passes never showed. Two rounds —
+            // the second re-renders the list (scroll-to-top) so rows whose click
+            // previously missed (clickMisses) become clickable.
             if (contacts.length < maxContacts) {
-                const missing = [...items.values()].filter(r => !r.unread && !processed.has(r.key));
-                if (missing.length) logger.info(`[smartExtract] Phase B(${label}) catch-up: trying ${missing.length} rows missed by the viewport`);
-                for (const t of missing) {
-                    if (contacts.length >= maxContacts) break;
-                    await openAndExtract(t);
+                const missing = () => [...items.values()].filter(r => !r.unread && !processed.has(r.key));
+                let round = missing();
+                if (round.length) logger.info(`[smartExtract] Phase B(${label}) catch-up: trying ${round.length} rows missed by the viewport`);
+                for (let attempt = 0; attempt < 2 && round.length && contacts.length < maxContacts; attempt++) {
+                    if (attempt > 0) {
+                        logger.info(`[smartExtract] Phase B(${label}) catch-up retry: re-rendering list for ${round.length} pending rows (clickMisses=${clickMisses})`);
+                        await page.evaluate((sel) => {
+                            const scroller = document.querySelector(sel) || document.querySelector('div[role="main"]');
+                            if (scroller) scroller.scrollTop = 0;
+                        }, SCROLLER);
+                        try { await page.waitForSelector('div[data-index]', { timeout: 8000 }); } catch (_) { /* proceed anyway */ }
+                        await sleep(1200);
+                        round = missing();
+                        if (!round.length) break;
+                    }
+                    for (const t of round) {
+                        if (contacts.length >= maxContacts) break;
+                        await openAndExtract(t);
+                        if (opened === 0 && paneFails >= 2) break;
+                    }
                     if (opened === 0 && paneFails >= 2) break;
+                    round = missing();
                 }
             }
         }
 
-        logger.info(`[smartExtract] Phase B(${label}): opened=${opened}/${readCount} to=${headerTo} cc=${headerCc} bodyAdds=${bodyAdds} paneFails=${paneFails} selfSkips=${selfSkips} contacts=${contacts.length}`);
+        logger.info(`[smartExtract] Phase B(${label}): opened=${opened}/${readCount} to=${headerTo} cc=${headerCc} bodyAdds=${bodyAdds} paneFails=${paneFails} clickMisses=${clickMisses} selfSkips=${selfSkips} contacts=${contacts.length}`);
     };
 
     try {

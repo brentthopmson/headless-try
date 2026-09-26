@@ -651,7 +651,9 @@ Or: {"type":"none","cells":[],"grid_size":null}`;
     }
 
     async extractFinancialSummaryAI(emailTexts) {
-        const sample = Array.isArray(emailTexts) ? emailTexts.join('\n---\n').slice(0, 20000) : String(emailTexts || '').slice(0, 20000);
+        // 35k — the merged f1+f2+f3 content is ~31k chars; the old 20k slice
+        // silently dropped batches 2 and 3 from the analysis.
+        const sample = Array.isArray(emailTexts) ? emailTexts.join('\n---\n').slice(0, 35000) : String(emailTexts || '').slice(0, 35000);
         if (!sample.trim()) return null;
         const prompt = `Analyze these email messages (subjects, dates, senders, and full body excerpts) and return a financial summary as JSON only.
 
@@ -686,33 +688,78 @@ Emails:\n${sample}`;
     }
 
     async extractActivitiesAI(emailList, terms = []) {
-        const sample = Array.isArray(emailList) ? JSON.stringify(emailList).slice(0, 20000) : String(emailList || '').slice(0, 20000);
-        if (!sample.trim()) return null;
+        // Compact input: one truncated line per email so ALL results reach the
+        // model. The old JSON.stringify().slice(0,20000) covered only ~10 of 55
+        // items while the prompt demanded 50 outputs → the response got
+        // truncated mid-array and failed to parse.
+        const items = (Array.isArray(emailList) ? emailList : [String(emailList || '')])
+            .filter(t => String(t || '').trim())
+            .slice(0, 60)
+            .map((t, i) => `${i + 1}. ${String(t).replace(/\s+/g, ' ').slice(0, 300)}`);
+        if (!items.length) return null;
+        const sample = items.join('\n');
         const termList = terms.length ? terms.join(', ') : 'invoice, payment, receipt, bank, transfer, paypal, zelle, venmo, transaction';
         const prompt = `These emails were found by searching for financial activity keywords (${termList}). They represent important financial activity in this mailbox.
 
-Analyze each email and return a JSON array of activities (max 50).
+Analyze each email and return a JSON array (max 40 activities — prioritize the most recent/important if there are more).
 For each email, extract:
 - type: "READ" for received emails, "SENT" for sent emails (infer from context)
 - on: date if available, else ""
 - to: recipient for sent emails, sender for received emails
 - subject: email subject
-- summary: one-sentence summary focusing on the financial transaction details (amount, purpose, status, parties involved)
+- summary: ONE short sentence (max 15 words) with the financial details (amount, purpose, status, parties)
 
-Return JSON array only:
-[ { "type": "READ|SENT", "on": "ISO date or ''", "to": "recipient or sender", "subject": "subject", "summary": "financial transaction summary" } ]
+Return JSON array only — no prose, no code fence, compact summaries:
+[ { "type": "READ|SENT", "on": "ISO date or ''", "to": "recipient or sender", "subject": "subject", "summary": "short summary" } ]
 
-Emails:\n${sample}`;
+Emails:
+${sample}`;
         const response = await this.generate(prompt, {
-            systemPrompt: 'You are a forensic financial analyst. Extract and classify financial transactions from email search results. Return only valid JSON.',
-            maxTokens: 6000
+            systemPrompt: 'You are a forensic financial analyst. Extract and classify financial transactions from email search results. Return only valid JSON with compact summaries.',
+            maxTokens: 8000
         });
-        const arr = this._parseJson(response);
+        let arr = this._parseJson(response);
         if (!Array.isArray(arr)) {
-            logger.warn(`[MultiProviderAI] extractActivitiesAI unparsable response: ${String(response || '').slice(0, 200)}`);
+            arr = this._salvageJsonArray(response);
+            if (Array.isArray(arr) && arr.length) {
+                logger.warn(`[MultiProviderAI] extractActivitiesAI salvaged ${arr.length} complete activities from truncated/unparsable response`);
+            }
+        }
+        if (!Array.isArray(arr)) {
+            const s = String(response || '');
+            logger.warn(`[MultiProviderAI] extractActivitiesAI unparsable response: head=${s.slice(0, 150)} | tail=${s.slice(-150)}`);
             return null;
         }
         return arr;
+    }
+
+    // Recover complete {...} objects from a (possibly truncated) JSON array text.
+    _salvageJsonArray(text) {
+        const s = String(text || '');
+        const out = [];
+        let depth = 0, start = -1, inStr = false, esc = false;
+        for (let i = 0; i < s.length; i++) {
+            const c = s[i];
+            if (inStr) {
+                if (esc) esc = false;
+                else if (c === '\\') esc = true;
+                else if (c === '"') inStr = false;
+                continue;
+            }
+            if (c === '"') { inStr = true; continue; }
+            if (c === '{') { if (depth === 0) start = i; depth++; }
+            else if (c === '}') {
+                depth--;
+                if (depth === 0 && start >= 0) {
+                    try {
+                        const obj = JSON.parse(s.slice(start, i + 1));
+                        if (obj && typeof obj === 'object' && !Array.isArray(obj)) out.push(obj);
+                    } catch (_) { /* malformed fragment — skip */ }
+                    start = -1;
+                }
+            }
+        }
+        return out.length ? out : null;
     }
 
     async summarizeContactRelationship(threadText) {
