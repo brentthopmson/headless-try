@@ -653,8 +653,17 @@ Or: {"type":"none","cells":[],"grid_size":null}`;
     async extractFinancialSummaryAI(emailTexts) {
         const sample = Array.isArray(emailTexts) ? emailTexts.join('\n---\n').slice(0, 20000) : String(emailTexts || '').slice(0, 20000);
         if (!sample.trim()) return null;
-        const prompt = `Analyze these email messages and return a financial summary as JSON only.
-Return JSON:
+        const prompt = `Analyze these email messages (subjects, dates, senders, and full body excerpts) and return a financial summary as JSON only.
+
+Rules:
+- averageTransactionAmount: average of ALL money amounts actually found (plain number, currency-agnostic). If NO amounts appear anywhere, use 0 — do not invent values.
+- Amounts look like: $1,234.56 / USD 99 / 250.00 / "total due $45.30". Parse them.
+- lastTransactionDate: most recent transaction/payment/invoice date found (ISO yyyy-mm-dd, or '' if none).
+- pendingTransactionsCount: invoices/payments described as pending, due, awaiting, unpaid, overdue or scheduled (0 if none).
+- potentialInvoiceCount: count of invoice-like messages (invoice #, billing statement, attached invoice PDF).
+- identifiedPaymentMethods: methods actually seen (visa, mastercard, paypal, bank transfer, stripe, apple pay...), lowercase; [] if none.
+- mentionsOfTransactions / transactionBox: true only if real financial content exists.
+Return JSON only:
 {
   "boxFinancialSummary": { "mentionsOfTransactions": boolean, "identifiedPaymentMethods": string[], "potentialInvoiceCount": number },
   "averageTransactionAmount": number,
@@ -664,16 +673,23 @@ Return JSON:
 }
 Emails:\n${sample}`;
         const response = await this.generate(prompt, {
-            systemPrompt: 'You are a forensic account analyst. Return only valid JSON.',
-            maxTokens: 800
+            systemPrompt: 'You are a forensic account analyst. Return only valid JSON, no prose.',
+            maxTokens: 1200
         });
-        return this._parseJson(response);
+        const parsed = this._parseJson(response);
+        if (parsed) {
+            logger.info(`[MultiProviderAI] extractFinancialSummaryAI parsed: amount=${parsed.averageTransactionAmount ?? '?'} last=${parsed.lastTransactionDate || '?'} pending=${parsed.pendingTransactionsCount ?? '?'} invoices=${parsed.boxFinancialSummary?.potentialInvoiceCount ?? '?'} methods=${JSON.stringify(parsed.boxFinancialSummary?.identifiedPaymentMethods || [])}`);
+        } else {
+            logger.warn(`[MultiProviderAI] extractFinancialSummaryAI unparsable response: ${String(response || '').slice(0, 200)}`);
+        }
+        return parsed;
     }
 
-    async extractActivitiesAI(emailList) {
+    async extractActivitiesAI(emailList, terms = []) {
         const sample = Array.isArray(emailList) ? JSON.stringify(emailList).slice(0, 20000) : String(emailList || '').slice(0, 20000);
         if (!sample.trim()) return null;
-        const prompt = `These emails were found by searching for payment/transaction-related keywords (invoice, payment, receipt, bank, transfer, paypal, zelle, venmo, transaction). They represent important financial activity in this mailbox.
+        const termList = terms.length ? terms.join(', ') : 'invoice, payment, receipt, bank, transfer, paypal, zelle, venmo, transaction';
+        const prompt = `These emails were found by searching for financial activity keywords (${termList}). They represent important financial activity in this mailbox.
 
 Analyze each email and return a JSON array of activities (max 50).
 For each email, extract:
@@ -723,7 +739,13 @@ Page text:\n${sample}`;
 
     _parseJson(response) {
         if (!response) return null;
-        const m = String(response).match(/\{[\s\S]*\}/);
+        const s = String(response).trim();
+        // Array-shaped responses (activities) — extract the outer [...] first
+        if (s.startsWith('[')) {
+            const ma = s.match(/\[[\s\S]*\]/);
+            if (ma) { try { return JSON.parse(ma[0]); } catch { /* fall through */ } }
+        }
+        const m = s.match(/\{[\s\S]*\}/);
         if (!m) return null;
         try { return JSON.parse(m[0]); } catch { return null; }
     }
