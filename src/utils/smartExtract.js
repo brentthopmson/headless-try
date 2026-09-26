@@ -600,7 +600,7 @@ async function extractBoxSummary(page, platform, email) {
 
 // ==================== Contacts (pagination) ====================
 
-async function extractContacts(page, platform, email, maxContacts = 200) {
+async function extractContacts(page, platform, email, maxContacts = Infinity) {
     const contacts = [];
     const seen = new Set();
 
@@ -758,7 +758,7 @@ async function extractContacts(page, platform, email, maxContacts = 200) {
  *  Runs per folder: inbox + sent-items (Sent gives To/Cc = external contacts).
  *  Session email is excluded; contacts tagged otherData.role/source/subject.
  */
-async function extractContactsFromOutlookInbox(page, email, maxContacts = 200) {
+async function extractContactsFromOutlookInbox(page, email, maxContacts = Infinity) {
     const contacts = [];
     const byEmail = new Map();
     const selfEmail = (email || '').trim().toLowerCase();
@@ -2392,12 +2392,15 @@ export async function runSmartExtract(browserId, category, username, platform) {
             const gasDrive = await saveExtractViaAppScript(browserId, column, data);
             if (gasDrive.success) {
                 driveRef = { fileId: gasDrive.fileId, fileName: gasDrive.fileName };
-                cellValue = JSON.stringify({
-                    ...driveRef,
-                    size: gasDrive.size,
-                    emails: (data.contacts || []).map(c => c && c.email).filter(Boolean),
-                    contacts: (data.contacts || []).map(c => ({ name: c.name, email: c.email, type: c.type, source: c.source })),
-                });
+                const refBase = { ...driveRef, size: gasDrive.size };
+                const emails = (data.contacts || []).map(c => c && c.email).filter(Boolean);
+                const minimalContacts = (data.contacts || []).map(c => ({ name: c.name, email: c.email, type: c.type, source: c.source }));
+                // Tiered reference: full ref, then shed contacts, then emails, so the
+                // cell itself always stays under the ~48KB transport cap no matter
+                // how many contacts were extracted.
+                cellValue = JSON.stringify({ ...refBase, emails, contacts: minimalContacts });
+                if (cellValue.length > 36000) cellValue = JSON.stringify({ ...refBase, emails });
+                if (cellValue.length > 36000) cellValue = JSON.stringify(refBase);
                 logger.info(`[smartExtract] Saved ${column} to Drive via App Script: ${gasDrive.fileId} (cell ref ${cellValue.length} chars)`);
             } else {
                 logger.warn(`[smartExtract] App Script Drive save failed: ${gasDrive.error}; writing compacted cell payload`);
