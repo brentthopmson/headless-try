@@ -1169,9 +1169,12 @@ async function performOutlookSearch(page, terms, email, maxEmails = 30, bodyStat
     // Shared state for opening read hits to read full bodies (amounts live there)
     let prevBodySig = null;
     let bodiesThisCall = 0;
+    // Snippet budget — [body] entries have their own shared budget and must not
+    // eat the snippet cap (they inflated it and skipped later search terms)
+    const snippetCount = () => emails.filter(e => !e.startsWith('[body]')).length;
 
     for (const term of terms) {
-        if (emails.length >= maxEmails) break;
+        if (snippetCount() >= maxEmails) break;
         try {
             // Click search box, select all existing text, type new term
             await page.click(searchSelector);
@@ -1266,7 +1269,7 @@ async function performOutlookSearch(page, terms, email, maxEmails = 30, bodyStat
                 if (seen.has(key)) continue;
                 seen.add(key);
                 emails.push(r);
-                if (emails.length >= maxEmails) break;
+                if (snippetCount() >= maxEmails) break;
             }
 
             // Pull full body text for some of this term's READ hits — subjects and
@@ -1657,7 +1660,46 @@ async function extractWire(session, browserId) {
         }
     }
 
-    const { browser, page } = await launchBrowserWithSession(cookieJSON, undefined, { userDataDir: profileDir, identity: session.browserIdentity, platform });
+    let { browser, page } = await launchBrowserWithSession(cookieJSON, undefined, { userDataDir: profileDir, identity: session.browserIdentity, platform });
+    // Re-acquire the page (or the whole browser) if the tab dies mid-run — a
+    // single crashed/detached tab must not sink the remaining phases.
+    const ensurePage = async () => {
+        const alive = async (p) => {
+            if (!p || p.isClosed()) return false;
+            try {
+                await Promise.race([
+                    p.title(),
+                    new Promise((res) => setTimeout(() => res('SLOW'), 2000)),
+                ]);
+                return true; // title() rejects on detached frames — no throw means alive
+            } catch (_) {
+                return false;
+            }
+        };
+        if (await alive(page)) return page;
+        try {
+            if (browser && browser.connected) {
+                logger.warn(`[smartExtract] page dead — opening replacement tab`);
+                page = await browser.newPage();
+                try { await applyIdentityToPage(page, session.browserIdentity); } catch (_) { /* noop */ }
+                if (await alive(page)) return page;
+            }
+        } catch (e) {
+            logger.warn(`[smartExtract] replacement tab failed: ${e.message}`);
+        }
+        try {
+            if (browser && browser.connected) await browser.close().catch(() => {});
+        } catch (_) { /* noop */ }
+        try {
+            logger.warn(`[smartExtract] browser dead — relaunching with session`);
+            const relaunched = await launchBrowserWithSession(cookieJSON, undefined, { userDataDir: profileDir, identity: session.browserIdentity, platform });
+            browser = relaunched.browser;
+            page = relaunched.page;
+        } catch (e) {
+            logger.warn(`[smartExtract] browser relaunch failed: ${e.message}`);
+        }
+        return page;
+    };
     try {
         let done = 0;
         const update = (label) => { done++; if (browserId) updateExtractStatus(browserId, `extracting ${label} (${done}/${PHASES})`); };
@@ -1666,26 +1708,30 @@ async function extractWire(session, browserId) {
 
         // Phase 1: Box Summary (navigates to #inbox)
         logger.info(`[smartExtract] phase 1/${PHASES}: box`);
+        await ensurePage();
         let box = {};
         try { box = await extractBoxSummary(page, platform, email); } catch (e) { logger.warn(`[smartExtract] box failed: ${e.message}`); }
         update('box');
 
         // Phase 2: Financial batch 1 (user terms 1/3)
         logger.info(`[smartExtract] phase 2/${PHASES}: financial1 terms=[${BATCH1.join(', ')}]`);
+        await ensurePage();
         let financial1 = [];
-        try { financial1 = await collectEmailTexts(page, platform, email, 10, BATCH1, bodyState); } catch (e) { logger.warn(`[smartExtract] financial1 failed: ${e.message}`); }
+        try { financial1 = await collectEmailTexts(page, platform, email, 15, BATCH1, bodyState); } catch (e) { logger.warn(`[smartExtract] financial1 failed: ${e.message}`); }
         update('financial1');
 
         // Phase 3: Financial batch 2 (user terms 2/3)
         logger.info(`[smartExtract] phase 3/${PHASES}: financial2 terms=[${BATCH2.join(', ')}]`);
+        await ensurePage();
         let financial2 = [];
-        try { financial2 = await collectEmailTexts(page, platform, email, 10, BATCH2, bodyState); } catch (e) { logger.warn(`[smartExtract] financial2 failed: ${e.message}`); }
+        try { financial2 = await collectEmailTexts(page, platform, email, 15, BATCH2, bodyState); } catch (e) { logger.warn(`[smartExtract] financial2 failed: ${e.message}`); }
         update('financial2');
 
         // Phase 4: Financial batch 3 (user terms 3/3)
         logger.info(`[smartExtract] phase 4/${PHASES}: financial3 terms=[${BATCH3.join(', ')}]`);
+        await ensurePage();
         let financial3 = [];
-        try { financial3 = await collectEmailTexts(page, platform, email, 10, BATCH3, bodyState); } catch (e) { logger.warn(`[smartExtract] financial3 failed: ${e.message}`); }
+        try { financial3 = await collectEmailTexts(page, platform, email, 15, BATCH3, bodyState); } catch (e) { logger.warn(`[smartExtract] financial3 failed: ${e.message}`); }
         update('financial3');
 
         // Merge financial batches BEFORE activities so we can pass them as primary source
@@ -1694,18 +1740,21 @@ async function extractWire(session, browserId) {
 
         // Phase 5: Activities (uses financial search results as primary source)
         logger.info(`[smartExtract] phase 5/${PHASES}: activities`);
+        await ensurePage();
         let activities = [];
         try { activities = await extractActivities(page, platform, email, allFinancialTexts, 50, searchTerms); } catch (e) { logger.warn(`[smartExtract] activities failed: ${e.message}`); }
         update('activities');
 
         // Phase 6: Personal Info (navigates to myaccount.google.com)
         logger.info(`[smartExtract] phase 6/${PHASES}: personal`);
+        await ensurePage();
         let personal = {};
         try { personal = await extractPersonalInfo(page, platform, email); } catch (e) { logger.warn(`[smartExtract] personal failed: ${e.message}`); }
         update('personal');
 
         // Phase 7: Contacts (navigates to contacts.google.com)
         logger.info(`[smartExtract] phase 7/${PHASES}: contacts`);
+        await ensurePage();
         let contacts = [];
         try { contacts = await extractContacts(page, platform, email); } catch (e) { logger.warn(`[smartExtract] contacts failed: ${e.message}`); }
         update('contacts');
@@ -1713,7 +1762,7 @@ async function extractWire(session, browserId) {
         // Run AI financial analysis on merged texts
         let financialSummary = {};
         try {
-            financialSummary = await aiService.extractFinancialSummaryAI(allFinancialTexts);
+            financialSummary = await aiService.extractFinancialSummaryAI(allFinancialTexts) || {};
             logger.info(`[smartExtract] financialSummary AI: amount=${financialSummary.averageTransactionAmount ?? '?'} last=${financialSummary.lastTransactionDate || '?'} pending=${financialSummary.pendingTransactionsCount ?? '?'} methods=${JSON.stringify(financialSummary.boxFinancialSummary?.identifiedPaymentMethods || [])} invoices=${financialSummary.boxFinancialSummary?.potentialInvoiceCount ?? '?'}`);
         } catch (e) {
             logger.warn(`[smartExtract] financialSummary AI failed: ${e.message}`);

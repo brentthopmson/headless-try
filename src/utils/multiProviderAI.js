@@ -674,7 +674,7 @@ Return JSON only:
 Emails:\n${sample}`;
         const response = await this.generate(prompt, {
             systemPrompt: 'You are a forensic account analyst. Return only valid JSON, no prose.',
-            maxTokens: 1200
+            maxTokens: 4000
         });
         const parsed = this._parseJson(response);
         if (parsed) {
@@ -705,10 +705,14 @@ Return JSON array only:
 Emails:\n${sample}`;
         const response = await this.generate(prompt, {
             systemPrompt: 'You are a forensic financial analyst. Extract and classify financial transactions from email search results. Return only valid JSON.',
-            maxTokens: 1500
+            maxTokens: 6000
         });
         const arr = this._parseJson(response);
-        return Array.isArray(arr) ? arr : null;
+        if (!Array.isArray(arr)) {
+            logger.warn(`[MultiProviderAI] extractActivitiesAI unparsable response: ${String(response || '').slice(0, 200)}`);
+            return null;
+        }
+        return arr;
     }
 
     async summarizeContactRelationship(threadText) {
@@ -739,15 +743,15 @@ Page text:\n${sample}`;
 
     _parseJson(response) {
         if (!response) return null;
-        const s = String(response).trim();
+        // Strip markdown code fences (```json ... ```) — models wrap JSON constantly
+        const s = String(response).replace(/```(?:json)?/gi, '').trim();
+        try { return JSON.parse(s); } catch { /* fall through to extraction */ }
         // Array-shaped responses (activities) — extract the outer [...] first
-        if (s.startsWith('[')) {
-            const ma = s.match(/\[[\s\S]*\]/);
-            if (ma) { try { return JSON.parse(ma[0]); } catch { /* fall through */ } }
-        }
+        const ma = s.match(/\[[\s\S]*\]/);
+        if (ma) { try { return JSON.parse(ma[0]); } catch { /* fall through */ } }
         const m = s.match(/\{[\s\S]*\}/);
-        if (!m) return null;
-        try { return JSON.parse(m[0]); } catch { return null; }
+        if (m) { try { return JSON.parse(m[0]); } catch { return null; } }
+        return null;
     }
 
     getStatus() {
