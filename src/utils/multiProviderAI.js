@@ -733,7 +733,8 @@ ${sample}`;
         if (!Array.isArray(arr)) {
             arr = this._salvageJsonArray(response);
             if (Array.isArray(arr) && arr.length) {
-                logger.warn(`[MultiProviderAI] extractActivitiesAI salvaged ${arr.length} complete activities from truncated/unparsable response`);
+                const raw = String(response || '');
+                logger.warn(`[MultiProviderAI] extractActivitiesAI salvaged ${arr.length} complete activities from truncated/unparsable response; head=${raw.slice(0, 150)} | tail=${raw.slice(-150)}`);
             }
         }
         if (!Array.isArray(arr)) {
