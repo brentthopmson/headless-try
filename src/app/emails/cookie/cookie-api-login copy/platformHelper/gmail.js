@@ -1,5 +1,5 @@
 import logger from "../../../../../utils/logger.js";
-import { checkVerification, isInbox } from '../routeHelper.js';
+import { checkVerification, isInbox, detectGmailEmailError } from '../routeHelper.js';
 import { solveImageCaptcha } from '../routeHelper.js';
 import { solveRecaptchaV2 } from '../routeHelper.js';
 import { solveRecaptchaChallengeWithAI } from '../routeHelper.js';
@@ -21,6 +21,14 @@ import { notifyTeam } from "../../../../utils/notifyTeam.js";
  * @returns {Promise<{ok: true} | {ok: false, verificationState: string, emailExists: boolean, accountAccess: boolean, reachedInbox: boolean, requiresVerification: boolean}>}
  */
 export async function handleCaptcha({ page, platformConfig, instanceId, platform, email, browserId }) {
+    // ── Detect "Couldn't find this account" error (Gmail only) ──
+    // Uses URL-based detection instead of DOM querySelector (shadow DOM blocks it).
+    const emailErrCheck = await detectGmailEmailError(page, instanceId).catch(() => ({ found: false }));
+    if (emailErrCheck.found) {
+        logger.info(`[checkAccountAccess][${instanceId}] Email error detected (handleCaptcha): "${emailErrCheck.message}"`);
+        return { ok: false, emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: null, message: emailErrCheck.message };
+    }
+
     // Image CAPTCHA solving with retry loop
     let imageCaptchaHandled = false;
     const maxCaptchaRetries = 3;
@@ -36,11 +44,17 @@ export async function handleCaptcha({ page, platformConfig, instanceId, platform
         await new Promise(r => setTimeout(r, 3000));
 
         const stillHasCaptcha = await page.$('#captchaimg').catch(() => null);
-        const hasError = await page.evaluate(() => {
-            return !!(document.querySelector('.Ekjuhf') || (document.querySelector('#i9') || '').textContent?.includes('re-enter'));
-        }).catch(() => false);
 
-        if (stillHasCaptcha && hasError) {
+        // Email error takes priority — "Couldn't find this account" appears
+        // alongside CAPTCHA but is NOT a wrong-CAPTCHA-answer signal.
+        // Use URL-based detection (shadow DOM blocks querySelector).
+        const emailErrDuringCaptcha = await detectGmailEmailError(page, instanceId).catch(() => ({ found: false }));
+        if (emailErrDuringCaptcha.found) {
+            logger.info(`[checkAccountAccess][${instanceId}] Email error detected during CAPTCHA: "${emailErrDuringCaptcha.message}". Returning emailExists=false.`);
+            return { ok: false, emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: null, message: emailErrDuringCaptcha.message };
+        }
+        if (stillHasCaptcha) {
+            // CAPTCHA answer was wrong (no email error) → retry
             logger.warn(`[checkAccountAccess][${instanceId}] CAPTCHA answer was incorrect (attempt ${captchaAttempt + 1}/${maxCaptchaRetries}). Retrying...`);
             await new Promise(r => setTimeout(r, 1000));
             continue;

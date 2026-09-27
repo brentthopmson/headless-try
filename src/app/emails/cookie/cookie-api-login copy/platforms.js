@@ -3,18 +3,19 @@ import logger from "../../../../utils/logger.js"; // Added import for logger
 export const platformConfigs = {
     gmail: {
         inboxUrlPatterns: [
-            /mail\.google\.com\//
+            /mail\.google\.com\//,
+            /myaccount\.google\.com/
         ],
         inboxDomSelectors: [
         ],
-        url: "https://gmail.com/",
+        url: "https://accounts.google.com/AccountChooser/signinchooser?continue=https%3A%2F%2Fmail.google.com%2Fmail%2F%3Fservice%3Dmail%26flowName%3DGlifWebSignIn%26flowEntry%3DAccountChooser%26ec%3Dasw-gmail-globalnav-signin&uj=gafb-gmail_asw-globalnav-en",
         mxKeywords: ['google', 'gmail'],
         selectors: {
             input: "#identifierId",
             nextButton: "#identifierNext",
             passwordInput: ["input[name='Passwd']", "input[type='password']"],
             passwordNextButton: "#passwordNext",
-            errorMessage: "//*[contains(text(), \"Couldn't find your Google Account\") or contains(text(), \"Enter an email\") or contains(text(), \"Enter a valid email\") or contains(text(), \"Couldn’t find your Google Account\")]", // Add more as needed
+            errorMessage: "//*[contains(text(), \"Couldn't find this account\") or contains(text(), \"Couldn't find your Google Account\") or contains(text(), \"Enter an email\") or contains(text(), \"Enter a valid email\")]", // Add more as needed
             loginFailed: "//*[contains(., 'Wrong password') or contains(., 'Your password was changed') or contains(., \"Couldn't sign you in\")]",
             verificationCodeInput: "input[type='tel'][name='ca']",
             verificationCodeSubmit: "#idvPreregisteredPhoneNext",
@@ -260,7 +261,7 @@ export const platformConfigs = {
                 "button[data-testid='primaryButton']",
                 "#idSIButton9"
             ],
-            errorMessage: "//*[contains(., \"This username may be\") or contains(., \"That Microsoft account doesn't exist\") or contains(., \"We couldn't find an account with that username.\")]",
+            errorMessage: "//*[contains(., \"This username may be\") or contains(., \"That Microsoft account doesn't exist\") or contains(., \"We couldn't find an account with that username.\") or contains(., \"Email does not exist\") or contains(., \"provide a valid email\") or contains(., \"That account doesn't exist\") or contains(., \"Enter a valid email\")]",
             loginFailed: [
                 "//*[contains(., \"Your account or password is incorrect\") or contains(., \"Your account or password\") or contains(., \"That password is incorrect\")]",
                 "//*[contains(., \"You've tried to sign in too many times with an incorrect account or password.\")]"

@@ -51,3 +51,4 @@ package-lock.json
 /test_sessions
 
 engine.log
+dev-restart.log

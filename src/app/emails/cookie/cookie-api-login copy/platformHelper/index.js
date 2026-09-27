@@ -4,6 +4,21 @@ import { resolveMx, resolveA } from '../routeHelper.js';
 
 // ── Shared Constants ─────────────────────────────────────────────────────────
 
+const FREE_MS_DOMAINS = new Set([
+    'outlook.com', 'hotmail.com', 'live.com', 'windowslive.com',
+    'outlook.co.uk', 'hotmail.co.uk', 'live.co.uk',
+    'outlook.ca', 'hotmail.ca', 'live.ca',
+    'outlook.co.za', 'hotmail.co.za', 'live.co.za',
+    'outlook.com.au', 'hotmail.com.au', 'live.com.au',
+    'outlook.fr', 'hotmail.fr', 'live.fr',
+    'outlook.de', 'hotmail.de', 'live.de',
+    'outlook.it', 'hotmail.it', 'live.it',
+    'outlook.es', 'hotmail.es', 'live.es',
+    'outlook.jp', 'hotmail.jp', 'live.jp',
+    'outlook.com.br', 'hotmail.com.br', 'live.com.br',
+    'msn.com', 'live.net'
+]);
+
 export const PLATFORM_INBOX_URLS = {
     'outlook.com': 'https://outlook.live.com/mail/',
     'hotmail.com': 'https://outlook.live.com/mail/',
@@ -124,4 +139,13 @@ export async function validateEmailAgainstStrictly(email, strictly) {
     const message = `Incorrect email. This form only accepts ${platformName} accounts.`;
     logger.warn(`[validateEmailAgainstStrictly] Email '${email}' rejected for strictly='${strictly}' (domain: ${domain})`);
     return { valid: false, message, detectedPlatform: '' };
+}
+
+// ── Microsoft Account Utilities ──────────────────────────────────────────────
+
+/**
+ * Detect if a domain is a free Microsoft consumer account.
+ */
+export function isFreeMicrosoftDomain(domain) {
+    return FREE_MS_DOMAINS.has(domain?.toLowerCase());
 }

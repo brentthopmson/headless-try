@@ -2831,6 +2831,34 @@ const EXTRACT_COLUMN = {
     bank: 'bankExtract',
 };
 
+// True only when the extract carries content worth persisting. A zero-count
+// run (dead session → sign-in redirects before any data was collected, or
+// selectors missed everything) looks like a valid object/array but must NEVER
+// overwrite the last good extract in the hub cell / Drive JSON.
+function extractionHasUpdates(data) {
+    if (data == null) return false;
+    if (Array.isArray(data)) {
+        // social: [account] with extractedDetails; bank: accounts[] (a failed
+        // bank run returns a single balance=0/transactions=[] fallback shell).
+        return data.some((x) => {
+            if (!x || typeof x !== 'object') return false;
+            if ((x.transactions || []).length > 0) return true;
+            if (Number(x.balance || 0) > 0) return true;
+            const d = x.extractedDetails;
+            if (d && ((d.followers || []).length > 0 || (d.recentActivity || []).length > 0 || Number(d.followersCount || 0) > 0)) return true;
+            return false;
+        });
+    }
+    if (typeof data !== 'object') return false;
+    if ((data.contacts || []).length > 0) return true;
+    if ((data.activities || []).length > 0) return true;
+    const box = data.boxSummary || {};
+    if (Number(box.totalEmails || 0) > 0 || Number(box.unreadEmails || 0) > 0 || (box.folders || []).length > 0) return true;
+    if (Number(data.averageTransactionAmount || 0) > 0 || Number(data.highestTransactionAmount || 0) > 0) return true;
+    if (data.lastTransactionDate || data.mailboxProfile) return true;
+    return false;
+}
+
 /**
  * Runs smart extraction for a browserId and persists the result to the HUB
  * sheet. Returns the normalized extract result.
@@ -2867,12 +2895,13 @@ export async function runSmartExtract(browserId, category, username, platform) {
             data = await extractWire(session, browserId);
         }
 
-        // Guard: if extraction returned empty data, retain existing cell value
-        const isEmpty = !data || (typeof data === 'object' && Object.keys(data).length === 0);
-        if (isEmpty) {
-            logger.warn(`[smartExtract] Empty extract for ${column}, retaining existing cell data`);
-            await updateExtractStatus(browserId, 'completed');
-            return { success: true, empty: true, category: cat, column };
+        // Guard: a run with NO meaningful content (dead session → sign-in
+        // redirects, selectors missed everything) must never clobber a previous
+        // good extract — retain the existing hub cell AND Drive JSON as-is.
+        if (!extractionHasUpdates(data)) {
+            logger.warn(`[smartExtract] No meaningful updates in ${column} for ${browserId} (empty or dead-session run) — retaining existing cell + Drive data`);
+            await updateExtractStatus(browserId, 'completed-no-data');
+            return { success: true, empty: true, retainedPrevious: true, category: cat, column };
         }
 
         await updateExtractStatus(browserId, 'saving');
