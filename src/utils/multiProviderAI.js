@@ -486,10 +486,10 @@ class MultiProviderAI {
 
         const sysMsg = messages.find(m => m.role === 'system');
         const generationConfig = { maxOutputTokens: maxTokens, temperature };
-        // Gemini 2.5 counts reasoning tokens inside maxOutputTokens — without this,
-        // the thinking budget eats the entire allowance and the visible answer is
-        // truncated to a couple of JSON objects.
-        if (String(model).includes('2.5')) {
+        // Gemini 2.5/3.x count reasoning tokens inside maxOutputTokens — without
+        // this, the thinking budget eats the entire allowance and the visible
+        // answer is truncated to a couple of JSON objects (or pure prose).
+        if (String(model).includes('2.5') || String(model).includes('3.')) {
             generationConfig.thinkingConfig = { thinkingBudget: 0 };
         }
         const payload = {
@@ -712,7 +712,7 @@ Return JSON only:
 Emails:\n${sample}`;
         const response = await this.generate(prompt, {
             systemPrompt: 'You are a forensic account analyst. Return only valid JSON, no prose.',
-            maxTokens: 5000
+            maxTokens: 8000
         });
         const parsed = this._parseJson(response);
         if (parsed) {

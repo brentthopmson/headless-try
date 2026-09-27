@@ -686,14 +686,25 @@ async function extractContacts(page, platform, email, maxContacts = Infinity) {
                     };
 
                     // Primary: walk every contact NAME node (div.AYDrSb) — find its owning
-                    // row via closest(), else climb up to 4 levels for an ancestor that
-                    // actually holds the email chip (skips ambiguous multi-name scopes).
+                    // row. XXcuqd[role=presentation] is a GROUP box holding ~9 names, so a
+                    // loose scope would collapse the whole group into one contact: accept
+                    // closest() rows only when they are tight (<=2 names), else climb for
+                    // the nearest ancestor holding this name + its email chip.
+                    const tightScope = (startEl) => {
+                        let n = startEl;
+                        for (let d = 0; d < 5 && n && n !== document.body; d++, n = n.parentElement) {
+                            if (n.querySelectorAll && n.querySelectorAll('div.AYDrSb').length <= 2 && n.querySelector('[data-email]')) return n;
+                        }
+                        return null;
+                    };
                     let unmatched = 0;
                     let chain = '';
                     const nameEls = Array.from(document.querySelectorAll('div.AYDrSb'));
                     for (const nameEl of nameEls) {
                         const name = nameEl.textContent?.trim() || '';
                         let scope = nameEl.closest(ROW_SEL);
+                        if (scope && scope.querySelectorAll('div.AYDrSb').length > 2) scope = null;
+                        if (!scope) scope = tightScope(nameEl);
                         if (!scope) {
                             unmatched++;
                             if (!chain) {
@@ -706,16 +717,8 @@ async function extractContacts(page, platform, email, maxContacts = Infinity) {
                                 }
                                 chain = parts.join(' < ');
                             }
-                            let n = nameEl;
-                            for (let d = 0; d < 4 && n && n !== document.body; d++) {
-                                n = n.parentElement;
-                                if (n && n.querySelector('[data-email]') && n.querySelectorAll('div.AYDrSb').length <= 2) {
-                                    scope = n;
-                                    break;
-                                }
-                            }
-                            if (!scope) scope = nameEl.parentElement;
                         }
+                        if (!scope) scope = nameEl.parentElement;
                         if (!scope) continue;
                         const email = scope.querySelector('[data-email]')?.getAttribute('data-email') || '';
                         const phone = scope.querySelector('[aria-describedby*="phone-column"]')?.textContent?.trim() || '';
@@ -727,7 +730,10 @@ async function extractContacts(page, platform, email, maxContacts = Infinity) {
                     for (const el of document.querySelectorAll('[data-email]')) {
                         const email = el.getAttribute('data-email') || '';
                         if (!email) continue;
-                        const scope = el.closest(ROW_SEL) || el.parentElement;
+                        let scope = el.closest(ROW_SEL);
+                        if (scope && scope.querySelectorAll('div.AYDrSb').length > 2) scope = null;
+                        if (!scope) scope = tightScope(el);
+                        if (!scope) scope = el.parentElement;
                         const name = scope?.querySelector('div.AYDrSb')?.textContent?.trim() || '';
                         const phone = scope?.querySelector('[aria-describedby*="phone-column"]')?.textContent?.trim() || '';
                         const company = scope?.querySelector('[aria-describedby*="generated-tagline-column"]')?.textContent?.trim() || '';
@@ -1617,11 +1623,24 @@ async function collectGmailEmailTexts(page, maxEmails = 30, terms = FINANCIAL_TE
                         const snippet = el.querySelector('span.bqe')?.textContent?.trim() || '';
                         const date = el.querySelector('td.xW span[title]')?.getAttribute('title')
                             || el.querySelector('span.xW')?.textContent?.trim() || '';
-                        const anchor = el.querySelector('a[href*="inbox/"], a[href*="all/"], a[href*="sent/"], a[href*="starred/"]');
+                        const anchor = el.querySelector('a[href*="thread-f:"], a[href*="thread-"], a[href*="inbox/"], a[href*="all/"], a[href*="sent/"], a[href*="starred/"]');
                         let href = anchor?.getAttribute('href') || '';
                         if (href) {
                             const hashIdx = href.indexOf('#');
                             href = hashIdx >= 0 ? href.slice(hashIdx) : '';
+                        }
+                        // Gmail search rows often carry NO anchor — the thread id lives
+                        // base64-encoded in the row's jslog click metadata:
+                        //   jslog="... 1:WyIjdGhyZWFkLWY6MTIzNDU2..." → ["#thread-f:123456", ...]
+                        if (!href) {
+                            const jm = (el.getAttribute('jslog') || '').match(/1:(Wy[A-Za-z0-9+/=]+)/);
+                            if (jm) {
+                                try {
+                                    const decoded = atob(jm[1].replace(/-/g, '+').replace(/_/g, '/'));
+                                    const arr = JSON.parse(decoded);
+                                    if (Array.isArray(arr) && typeof arr[0] === 'string' && arr[0][0] === '#') href = arr[0];
+                                } catch (e) { /* not a thread-id payload */ }
+                            }
                         }
                         const legacyId = el.getAttribute('data-legacy-id') || '';
                         if (!href && !legacyId && !sampleHtml) {
@@ -1856,11 +1875,21 @@ async function collectRecentEmails(page, platform, email, limit = 50, gmailBodyS
                                 const snippet = el.querySelector('span.bqe')?.textContent?.trim() || '';
                                 const date = el.querySelector('td.xW span[title]')?.getAttribute('title')
                                 || el.querySelector('span.xW')?.textContent?.trim() || '';
-                                const anchor = el.querySelector('a[href*="inbox/"], a[href*="all/"], a[href*="sent/"], a[href*="starred/"]');
+                                const anchor = el.querySelector('a[href*="thread-f:"], a[href*="thread-"], a[href*="inbox/"], a[href*="all/"], a[href*="sent/"], a[href*="starred/"]');
                                 let href = anchor?.getAttribute('href') || '';
                                 if (href) {
                                     const hashIdx = href.indexOf('#');
                                     href = hashIdx >= 0 ? href.slice(hashIdx) : '';
+                                }
+                                if (!href) {
+                                    const jm = (el.getAttribute('jslog') || '').match(/1:(Wy[A-Za-z0-9+/=]+)/);
+                                    if (jm) {
+                                        try {
+                                            const decoded = atob(jm[1].replace(/-/g, '+').replace(/_/g, '/'));
+                                            const arr = JSON.parse(decoded);
+                                            if (Array.isArray(arr) && typeof arr[0] === 'string' && arr[0][0] === '#') href = arr[0];
+                                        } catch (e) { /* not a thread-id payload */ }
+                                    }
                                 }
                                 const legacyId = el.getAttribute('data-legacy-id') || '';
                                 const text = [sender, subject, snippet, date].filter(Boolean).join(' | ');
