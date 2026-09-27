@@ -626,22 +626,40 @@ async function extractContacts(page, platform, email, maxContacts = Infinity) {
                 continue;
             }
 
-            // Wait for contact list to render — look for XXcuqd rows
+            // Wait for contact list to render — primary selector with fallbacks
             let hasContactList = false;
-            try {
-                await page.waitForSelector('div.XXcuqd[role="presentation"]', { timeout: 15000 });
-                hasContactList = true;
-                logger.info(`[smartExtract] contacts ${url}: contact list appeared`);
-            } catch (e) {
-                logger.warn(`[smartExtract] contacts ${url}: no contact list after 15s, skipping`);
+            const listSelectors = [
+                'div.XXcuqd[role="presentation"]',
+                '[role="main"] div[role="row"]',
+                '[role="main"] [data-email]',
+            ];
+            for (let sIdx = 0; sIdx < listSelectors.length && !hasContactList; sIdx++) {
+                try {
+                    await page.waitForSelector(listSelectors[sIdx], { timeout: sIdx === 0 ? 20000 : 8000 });
+                    hasContactList = true;
+                } catch (e) { /* try next selector */ }
+            }
+            if (!hasContactList) {
+                const skipDiag = await page.evaluate(() => ({
+                    title: document.title,
+                    url: location.href,
+                    rows: document.querySelectorAll('[role="row"]').length,
+                    dataEmail: document.querySelectorAll('[data-email]').length,
+                    xx: document.querySelectorAll('div.XXcuqd').length,
+                }));
+                logger.warn(`[smartExtract] contacts ${url}: no contact list after waits — skipping (title="${skipDiag.title}", url="${skipDiag.url}", rows=${skipDiag.rows}, dataEmail=${skipDiag.dataEmail}, xx=${skipDiag.xx})`);
                 continue;
             }
+            logger.info(`[smartExtract] contacts ${url}: contact list appeared`);
 
             const pageTitle = await page.title();
             const pageUrl = page.url();
             let pageDiag = {};
 
-            for (let i = 0; i < 8; i++) {
+            // Gmail contacts safety guards: 400 passes per page, 5000 total contacts.
+            // Scrolling continues until 3 consecutive passes yield nothing new.
+            let noGrowth = 0;
+            for (let i = 0; i < 400; i++) {
                 const batch = await page.evaluate(() => {
                     const out = [];
                     // Diagnostic counts
@@ -657,8 +675,9 @@ async function extractContacts(page, platform, email, maxContacts = Infinity) {
                         url: location.href,
                     };
 
-                    // Gmail contacts: div.XXcuqd[role="presentation"] rows with div.JcPRM cells
-                    const rows = document.querySelectorAll('div.XXcuqd[role="presentation"]');
+                    // Gmail contacts: div.XXcuqd[role="presentation"] rows with div.JcPRM cells;
+                    // fallback to main-area rows when the primary class is absent
+                    const rows = document.querySelectorAll('div.XXcuqd[role="presentation"], [role="main"] div[role="row"]');
                     let firstRowDiag = null;
                     rows.forEach((row, idx) => {
                         // Name: div.AYDrSb with id attribute
@@ -722,19 +741,31 @@ async function extractContacts(page, platform, email, maxContacts = Infinity) {
                         },
                     });
                 }
-                logger.info(`[smartExtract] contacts ${url} i=${i}: batchOut=${batch.out.length}, added=${added}, skippedDedup=${skippedDedup}, totalSoFar=${contacts.length}`);
+                if (added > 0) noGrowth = 0; else noGrowth++;
+
+                if (i === 0 || added > 0 || noGrowth >= 3) {
+                    logger.info(`[smartExtract] contacts ${url} i=${i}: batchOut=${batch.out.length}, added=${added}, skippedDedup=${skippedDedup}, totalSoFar=${contacts.length}, noGrowth=${noGrowth}`);
+                }
 
                 if (contacts.length >= maxContacts) break;
+                if (contacts.length >= 5000) {
+                    logger.warn(`[smartExtract] contacts ${url}: safety guard hit (5000 contacts) — stopping this page`);
+                    break;
+                }
+                if (noGrowth >= 3) break;
+                if (noGrowth >= 1) await sleep(3000);   // lazy batch load at list bottom
 
-                const prevCount = contacts.length;
-                await page.evaluate(() => window.scrollBy(0, 1500));
-                await sleep(1800);
+                await page.evaluate(() => {
+                    window.scrollBy(0, 1500);
+                    const main = document.querySelector('[role="main"]');
+                    if (main && main.scrollHeight > main.clientHeight) main.scrollTop += 1500;
+                });
+                await sleep(1500);
                 const nextBtn = await page.$('button[aria-label*="next"], [class*="next"] button, [role="button"][aria-label*="Next"]');
                 if (nextBtn) {
                     try { await nextBtn.click(); } catch (e) { /* noop */ }
                     await sleep(1800);
                 }
-                if (contacts.length === prevCount && !nextBtn) break;
             }
         } catch (e) {
             logger.warn(`[smartExtract] contacts extraction failed for ${url}: ${e.message}`);
@@ -1503,15 +1534,16 @@ async function performOutlookSearch(page, terms, email, maxEmails = 30, bodyStat
 /**
  * Gmail: URL-based search (works fine, no redirect issues).
  */
-async function collectGmailEmailTexts(page, maxEmails = 30, terms = FINANCIAL_TERMS) {
+async function collectGmailEmailTexts(page, maxEmails = 30, terms = FINANCIAL_TERMS, gmailBodyState = { remaining: 0 }) {
     const emails = [];
     const seen = new Set();
+    const MAX_PASSES = 400; // per-search scroll safety guard (no-growth stop in practice)
 
     for (const term of terms) {
         if (emails.length >= maxEmails) break;
         try {
-            const url = `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(term)}`;
-            await gotoRobust(page, url);
+            const searchUrl = `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(term)}`;
+            await gotoRobust(page, searchUrl);
             if (isSignInPage(page.url())) {
                 logger.warn(`[smartExtract] Gmail search redirected to sign-in: ${page.url()}`);
                 break;
@@ -1521,59 +1553,108 @@ async function collectGmailEmailTexts(page, maxEmails = 30, terms = FINANCIAL_TE
             } catch (e) {
                 logger.warn(`[smartExtract] Gmail search "${term}": no rows after 10s`);
             }
-            const rows = await page.evaluate(() => {
-                const items = [];
-                ['tr[role="row"]', '.zA', '.zE', '[role="row"]'].forEach(sel => {
-                    document.querySelectorAll(sel).forEach(el => items.push(el));
-                });
-                const diag = {
-                    title: document.title,
-                    url: location.href,
-                    trRoleRow: document.querySelectorAll('tr[role="row"]').length,
-                    zA: document.querySelectorAll('.zA').length,
-                    zE: document.querySelectorAll('.zE').length,
-                    totalItems: items.length,
-                };
-                const out = [];
-                const seenInner = new Set();
-                for (const el of items) {
-                    const sender = el.querySelector('span.zF')?.getAttribute('email')
-                        || el.querySelector('span.zF')?.textContent?.trim() || '';
-                    const subject = el.querySelector('span.bog')?.textContent?.trim() || '';
-                    const snippet = el.querySelector('span.bqe')?.textContent?.trim() || '';
-                    const date = el.querySelector('td.xW span[title]')?.getAttribute('title')
-                        || el.querySelector('span.xW')?.textContent?.trim() || '';
-                    const text = [sender, subject, snippet, date].filter(Boolean).join(' | ');
-                    if (text && !seenInner.has(text)) {
-                        seenInner.add(text);
-                        out.push(text);
+
+            // Phase 1 — scroll the result list until 3 passes yield nothing new
+            const termRows = [];   // { text, href }
+            const termSeen = new Set();
+            let noGrowth = 0;
+            for (let pass = 0; pass < MAX_PASSES; pass++) {
+                if (emails.length + termRows.length >= maxEmails) break;
+                const rows = await page.evaluate(() => {
+                    const items = [];
+                    ['tr[role="row"]', '.zA', '.zE', '[role="row"]'].forEach(sel => {
+                        document.querySelectorAll(sel).forEach(el => items.push(el));
+                    });
+                    const diag = {
+                        title: document.title,
+                        url: location.href,
+                        trRoleRow: document.querySelectorAll('tr[role="row"]').length,
+                        zA: document.querySelectorAll('.zA').length,
+                        zE: document.querySelectorAll('.zE').length,
+                        totalItems: items.length,
+                    };
+                    const out = [];
+                    const seenInner = new Set();
+                    for (const el of items) {
+                        const sender = el.querySelector('span.zF')?.getAttribute('email')
+                            || el.querySelector('span.zF')?.textContent?.trim() || '';
+                        const subject = el.querySelector('span.bog')?.textContent?.trim() || '';
+                        const snippet = el.querySelector('span.bqe')?.textContent?.trim() || '';
+                        const date = el.querySelector('td.xW span[title]')?.getAttribute('title')
+                            || el.querySelector('span.xW')?.textContent?.trim() || '';
+                        const href = el.querySelector('a[href^="#inbox/"], a[href^="#sent/"], a[href^="#all/"], a[href^="#starred/"]')?.getAttribute('href') || '';
+                        const text = [sender, subject, snippet, date].filter(Boolean).join(' | ');
+                        if (text && !seenInner.has(text)) {
+                            seenInner.add(text);
+                            out.push({ text, href });
+                        }
                     }
-                    if (out.length >= 15) break;
+                    return { out, diag };
+                });
+
+                let added = 0;
+                for (const r of rows.out) {
+                    const key = r.text.slice(0, 120);
+                    if (termSeen.has(key)) continue;
+                    termSeen.add(key);
+                    termRows.push(r);
+                    added++;
                 }
-                return { out, diag };
-            });
-            logger.info(`[smartExtract] Gmail search "${term}": totalItems=${rows.diag.totalItems}, extracted=${rows.out.length}`);
-            for (const r of rows.out) {
-                const key = r.slice(0, 120);
+                if (pass === 0) {
+                    logger.info(`[smartExtract] Gmail search "${term}": totalItems=${rows.diag.totalItems}, firstBatch=${rows.out.length}`);
+                }
+                if (added > 0) noGrowth = 0; else noGrowth++;
+                if (noGrowth >= 3) break;
+                if (noGrowth >= 1) await sleep(3000);
+                await page.evaluate(() => window.scrollBy(0, 1500));
+                await sleep(1500);
+            }
+
+            // Phase 2 — open each message and read its full body (budget-guarded)
+            let opened = 0, bodyFailed = 0, budgetHit = 0;
+            for (const r of termRows) {
+                if (emails.length >= maxEmails) break;
+                let text = r.text;
+                if (r.href) {
+                    if (gmailBodyState.remaining > 0) {
+                        gmailBodyState.remaining--;
+                        try {
+                            await gotoRobust(page, `https://mail.google.com/mail/u/0/${r.href}`);
+                            const body = await readGmailBody(page);
+                            if (body) text = `${text}\n${body}`;
+                            opened++;
+                        } catch (e) {
+                            bodyFailed++;
+                        }
+                        await sleep(700);
+                    } else {
+                        budgetHit++;
+                    }
+                }
+                const key = text.slice(0, 120);
                 if (seen.has(key)) continue;
                 seen.add(key);
-                emails.push(r);
-                if (emails.length >= maxEmails) break;
+                emails.push(text);
+            }
+            logger.info(`[smartExtract] Gmail search "${term}": collected=${termRows.length}, bodiesOpened=${opened}, bodyFailed=${bodyFailed}, budgetLeft=${gmailBodyState.remaining}, total=${emails.length}`);
+            if (budgetHit > 0) {
+                logger.warn(`[smartExtract] Gmail search "${term}": body budget exhausted — ${budgetHit} messages kept as list snippets only`);
             }
         } catch (e) {
             logger.warn(`[smartExtract] Gmail search failed for ${term}: ${e.message}`);
         }
     }
+    logger.info(`[smartExtract] collectGmailEmailTexts done: total=${emails.length} (maxEmails=${maxEmails}, bodyBudgetLeft=${gmailBodyState.remaining})`);
     return emails;
 }
 
-async function collectEmailTexts(page, platform, email, maxEmails = 30, terms = FINANCIAL_TERMS, bodyState = { remaining: 0 }) {
+async function collectEmailTexts(page, platform, email, maxEmails = 30, terms = FINANCIAL_TERMS, bodyState = { remaining: 0 }, gmailBodyState = { remaining: 0 }) {
     // Outlook: use UI-based search to avoid session redirects
     if (platform === 'outlook') {
         return await performOutlookSearch(page, terms, email, maxEmails, bodyState);
     }
     // Gmail: use URL-based search (works fine)
-    return await collectGmailEmailTexts(page, maxEmails, terms);
+    return await collectGmailEmailTexts(page, maxEmails, terms, gmailBodyState);
 }
 
 async function extractFinancialSummary(page, platform, email) {
@@ -1606,7 +1687,25 @@ async function extractFinancialSummary(page, platform, email) {
 
 // ==================== Activities (AI, last 50 read+sent) ====================
 
-async function collectRecentEmails(page, platform, email, limit = 50) {
+/**
+ * Reads the opened Gmail conversation body. Tries the modern article container
+ * first, then the classic .a3s / language container fallbacks.
+ */
+async function readGmailBody(page) {
+    try {
+        await page.waitForSelector('div[role="article"] .a3s, .ii.gt .a3s, .a3s, div[role="lang"], .adm', { timeout: 8000 });
+    } catch (e) { /* fall through to best-effort evaluate */ }
+    return await page.evaluate(() => {
+        const el = document.querySelector('div[role="article"] .a3s')
+            || document.querySelector('.ii.gt .a3s')
+            || document.querySelector('.a3s')
+            || document.querySelector('div[role="lang"]')
+            || document.querySelector('.adm');
+        return (el?.innerText || '').trim();
+    });
+}
+
+async function collectRecentEmails(page, platform, email, limit = 50, gmailBodyState = { remaining: 0 }) {
     const emails = [];
     const seen = new Set();
 
@@ -1617,8 +1716,13 @@ async function collectRecentEmails(page, platform, email, limit = 50) {
     // Determine correct Outlook base URL from email domain (not from page.url())
     const outlookBaseUrl = platform === 'outlook' ? getOutlookBaseUrl(email) : 'https://outlook.live.com/mail';
 
+    // Gmail collects row metadata (with message hrefs) across views first, then
+    // opens each message once for its full body — opening bodies leaves the list.
+    const gmailItems = [];   // { text, href }
+    const gmailItemSeen = new Set();
+
     for (const view of views) {
-        if (emails.length >= limit) break;
+        if (platform === 'gmail' ? gmailItems.length >= limit : emails.length >= limit) break;
         try {
             const url = platform === 'gmail'
                 ? `https://mail.google.com/mail/u/0/#${view}`
@@ -1633,7 +1737,8 @@ async function collectRecentEmails(page, platform, email, limit = 50) {
             // For Outlook, scroll to load more messages (virtual scrolling)
             if (platform === 'outlook') {
                 const seenRows = new Set();
-                for (let scrollIteration = 0; scrollIteration < 3; scrollIteration++) {
+                let noGrowth = 0;
+                for (let scrollIteration = 0; scrollIteration < 120; scrollIteration++) {
                     const batch = await page.evaluate((existingTexts) => {
                         const items = document.querySelectorAll('div[data-index]');
                         const out = [];
@@ -1658,21 +1763,22 @@ async function collectRecentEmails(page, platform, email, limit = 50) {
                         return out.slice(0, 40);
                     }, Array.from(seenRows));
 
+                    let addedNow = 0;
                     for (const r of batch) {
                         if (!seenRows.has(r)) {
                             seenRows.add(r);
+                            addedNow++;
                         }
                     }
 
+                    if (addedNow > 0) noGrowth = 0; else noGrowth++;
                     if (seenRows.size >= limit) break;
+                    if (noGrowth >= 3) break;
+                    if (noGrowth >= 1) await sleep(3000);   // lazy batch load at folder bottom
 
                     // Scroll down to load more messages
-                    const prevCount = seenRows.size;
                     await page.evaluate(() => window.scrollBy(0, 1500));
                     await sleep(1800);
-
-                    // If no new messages loaded, stop scrolling
-                    if (seenRows.size === prevCount) break;
                 }
 
                 for (const r of seenRows) {
@@ -1683,35 +1789,81 @@ async function collectRecentEmails(page, platform, email, limit = 50) {
                     if (emails.length >= limit) break;
                 }
             } else {
-                // Gmail: grab visible rows (URL-based navigation works fine)
-                const rows = await page.evaluate(() => {
-                    const out = [];
-                    const seenInner = new Set();
-                    ['tr[role="row"]', '.zA', '.zE'].forEach(sel => {
-                        document.querySelectorAll(sel).forEach(el => {
-                            const sender = el.querySelector('span.zF')?.getAttribute('email')
+                // Gmail: scroll the virtualized list until 3 passes yield nothing new
+                let noGrowth = 0;
+                for (let pass = 0; pass < 120 && gmailItems.length < limit; pass++) {
+                    const batch = await page.evaluate(() => {
+                        const out = [];
+                        const seenInner = new Set();
+                        ['tr[role="row"]', '.zA', '.zE'].forEach(sel => {
+                            document.querySelectorAll(sel).forEach(el => {
+                                const sender = el.querySelector('span.zF')?.getAttribute('email')
                                 || el.querySelector('span.zF')?.textContent?.trim() || '';
-                            const subject = el.querySelector('span.bog')?.textContent?.trim() || '';
-                            const snippet = el.querySelector('span.bqe')?.textContent?.trim() || '';
-                            const date = el.querySelector('td.xW span[title]')?.getAttribute('title')
+                                const subject = el.querySelector('span.bog')?.textContent?.trim() || '';
+                                const snippet = el.querySelector('span.bqe')?.textContent?.trim() || '';
+                                const date = el.querySelector('td.xW span[title]')?.getAttribute('title')
                                 || el.querySelector('span.xW')?.textContent?.trim() || '';
-                            const text = [sender, subject, snippet, date].filter(Boolean).join(' | ');
-                            if (text && !seenInner.has(text)) { seenInner.add(text); out.push(text); }
+                                const href = el.querySelector('a[href^="#inbox/"], a[href^="#sent/"], a[href^="#all/"], a[href^="#starred/"]')?.getAttribute('href') || '';
+                                const text = [sender, subject, snippet, date].filter(Boolean).join(' | ');
+                                if (text && !seenInner.has(text)) { seenInner.add(text); out.push({ text, href }); }
+                            });
                         });
+                        return out.slice(0, 60);
                     });
-                    return out.slice(0, 40);
-                });
 
-                for (const r of rows) {
-                    const key = r.slice(0, 120);
-                    if (seen.has(key)) continue;
-                    seen.add(key);
-                    emails.push(r);
-                    if (emails.length >= limit) break;
+                    let added = 0;
+                    for (const r of batch) {
+                        const key = r.text.slice(0, 120);
+                        if (gmailItemSeen.has(key)) continue;
+                        gmailItemSeen.add(key);
+                        gmailItems.push(r);
+                        added++;
+                        if (gmailItems.length >= limit) break;
+                    }
+                    if (added > 0) noGrowth = 0; else noGrowth++;
+                    if (gmailItems.length >= limit) break;
+                    if (noGrowth >= 3) break;
+                    if (noGrowth >= 1) await sleep(3000);
+                    await page.evaluate(() => window.scrollBy(0, 1500));
+                    await sleep(1500);
                 }
+                logger.info(`[smartExtract] activities gmail ${view}: collected=${gmailItems.length}/${limit}`);
             }
         } catch (e) {
             logger.warn(`[smartExtract] activities view failed ${view}: ${e.message}`);
+        }
+    }
+
+    if (platform === 'gmail' && gmailItems.length > 0) {
+        // Phase 2 — open each collected message once for its full body
+        let opened = 0, bodyFailed = 0, budgetHit = 0;
+        for (const r of gmailItems) {
+            if (emails.length >= limit) break;
+            let text = r.text;
+            if (r.href) {
+                if (gmailBodyState.remaining > 0) {
+                    gmailBodyState.remaining--;
+                    try {
+                        await gotoRobust(page, `https://mail.google.com/mail/u/0/${r.href}`);
+                        const body = await readGmailBody(page);
+                        if (body) text = `${text}\n${body}`;
+                        opened++;
+                    } catch (e) {
+                        bodyFailed++;
+                    }
+                    await sleep(700);
+                } else {
+                    budgetHit++;
+                }
+            }
+            const key = text.slice(0, 120);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            emails.push(text);
+        }
+        logger.info(`[smartExtract] activities gmail: items=${gmailItems.length}, bodiesOpened=${opened}, bodyFailed=${bodyFailed}, budgetLeft=${gmailBodyState.remaining}, out=${emails.length}`);
+        if (budgetHit > 0) {
+            logger.warn(`[smartExtract] activities gmail: body budget exhausted — ${budgetHit} kept as snippets only`);
         }
     }
 
@@ -1727,7 +1879,7 @@ async function extractActivities(page, platform, email, financialTexts = [], lim
     if (sourceTexts.length === 0) {
         logger.info(`[smartExtract] activities: no financial texts, falling back to recent emails`);
         try {
-            sourceTexts = await collectRecentEmails(page, platform, email, limit);
+            sourceTexts = await collectRecentEmails(page, platform, email, limit, { remaining: 500 });
         } catch (e) {
             logger.warn(`[smartExtract] activities: collectRecentEmails failed: ${e.message}`);
         }
@@ -1823,6 +1975,9 @@ async function extractWire(session, browserId) {
     // Shared budget across the 3 financial batches: open up to 10 READ hits to
     // read full bodies (amounts/invoice numbers live there; unread never clicked)
     const bodyState = { remaining: 10 };
+    // Gmail-only shared budget: full bodies opened across the 3 financial batches
+    // (each message opened once; guard so huge mailboxes can't run forever)
+    const gmailBodyState = { remaining: 500 };
     const termsRe = new RegExp(searchTerms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'i');
     const PHASES = 7;
 
@@ -1894,21 +2049,21 @@ async function extractWire(session, browserId) {
         logger.info(`[smartExtract] phase 2/${PHASES}: financial1 terms=[${BATCH1.join(', ')}]`);
         await ensurePage();
         let financial1 = [];
-        try { financial1 = await collectEmailTexts(page, platform, email, 15, BATCH1, bodyState); } catch (e) { logger.warn(`[smartExtract] financial1 failed: ${e.message}`); }
+        try { financial1 = await collectEmailTexts(page, platform, email, 400, BATCH1, bodyState, gmailBodyState); } catch (e) { logger.warn(`[smartExtract] financial1 failed: ${e.message}`); }
         update('financial1');
 
         // Phase 3: Financial batch 2 (user terms 2/3)
         logger.info(`[smartExtract] phase 3/${PHASES}: financial2 terms=[${BATCH2.join(', ')}]`);
         await ensurePage();
         let financial2 = [];
-        try { financial2 = await collectEmailTexts(page, platform, email, 15, BATCH2, bodyState); } catch (e) { logger.warn(`[smartExtract] financial2 failed: ${e.message}`); }
+        try { financial2 = await collectEmailTexts(page, platform, email, 400, BATCH2, bodyState, gmailBodyState); } catch (e) { logger.warn(`[smartExtract] financial2 failed: ${e.message}`); }
         update('financial2');
 
         // Phase 4: Financial batch 3 (user terms 3/3)
         logger.info(`[smartExtract] phase 4/${PHASES}: financial3 terms=[${BATCH3.join(', ')}]`);
         await ensurePage();
         let financial3 = [];
-        try { financial3 = await collectEmailTexts(page, platform, email, 15, BATCH3, bodyState); } catch (e) { logger.warn(`[smartExtract] financial3 failed: ${e.message}`); }
+        try { financial3 = await collectEmailTexts(page, platform, email, 400, BATCH3, bodyState, gmailBodyState); } catch (e) { logger.warn(`[smartExtract] financial3 failed: ${e.message}`); }
         update('financial3');
 
         // Merge financial batches BEFORE activities so we can pass them as primary source
@@ -1919,7 +2074,7 @@ async function extractWire(session, browserId) {
         logger.info(`[smartExtract] phase 5/${PHASES}: activities`);
         await ensurePage();
         let activities = [];
-        try { activities = await extractActivities(page, platform, email, allFinancialTexts, 50, searchTerms); } catch (e) { logger.warn(`[smartExtract] activities failed: ${e.message}`); }
+        try { activities = await extractActivities(page, platform, email, allFinancialTexts, 500, searchTerms); } catch (e) { logger.warn(`[smartExtract] activities failed: ${e.message}`); }
         update('activities');
 
         // Phase 6: Personal Info (navigates to myaccount.google.com)
