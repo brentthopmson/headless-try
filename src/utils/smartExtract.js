@@ -1693,7 +1693,14 @@ async function collectGmailEmailTexts(page, maxEmails = 30, terms = FINANCIAL_TE
                         gmailBodyState.remaining--;
                         try {
                             await gotoRobust(page, `https://mail.google.com/mail/u/0/${frag}`);
-                            const body = await readGmailBody(page);
+                            let body = await readGmailBody(page);
+                            if (!body && frag.startsWith('#thread-f:')) {
+                                // Router may not accept the internal thread-f form —
+                                // fall back to the classic inbox message-id URL.
+                                const alt = '#inbox/' + frag.slice(frag.indexOf(':') + 1);
+                                await gotoRobust(page, `https://mail.google.com/mail/u/0/${alt}`);
+                                body = await readGmailBody(page);
+                            }
                             if (body) text = `${text}\n${body}`;
                             opened++;
                         } catch (e) {
@@ -1766,18 +1773,41 @@ async function extractFinancialSummary(page, platform, email) {
  * Reads the opened Gmail conversation body. Tries the modern article container
  * first, then the classic .a3s / language container fallbacks.
  */
+let _gmailBodyDiagCount = 0;
 async function readGmailBody(page) {
     try {
-        await page.waitForSelector('div[role="article"] .a3s, .ii.gt .a3s, .a3s, div[role="lang"], .adm', { timeout: 8000 });
-    } catch (e) { /* fall through to best-effort evaluate */ }
-    return await page.evaluate(() => {
+        // Broad wait — the message BODY classes changed across Gmail builds, so wait
+        // for the container first and let evaluate sort out the actual text holder.
+        await page.waitForSelector('div[role="article"], .a3s, .adn, div[role="lang"]', { timeout: 10000 });
+    } catch (e) { /* best-effort below */ }
+    const res = await page.evaluate(() => {
+        const article = document.querySelector('div[role="article"]');
         const el = document.querySelector('div[role="article"] .a3s')
             || document.querySelector('.ii.gt .a3s')
             || document.querySelector('.a3s')
             || document.querySelector('div[role="lang"]')
             || document.querySelector('.adm');
-        return (el?.innerText || '').trim();
+        let text = (el?.innerText || '').trim();
+        if (!text && article) text = (article.innerText || '').trim();
+        return {
+            text,
+            url: location.href,
+            title: document.title,
+            hasArticle: !!article,
+            articleLen: (article?.innerText || '').length,
+            a3s: document.querySelectorAll('.a3s').length,
+            adn: document.querySelectorAll('.adn').length,
+        };
     });
+    if (_gmailBodyDiagCount < 3) {
+        _gmailBodyDiagCount++;
+        if (res.text) {
+            logger.info(`[smartExtract] readGmailBody #${_gmailBodyDiagCount} OK: len=${res.text.length}, a3s=${res.a3s}, adn=${res.adn}, url=${res.url}, head="${res.text.slice(0, 140)}"`);
+        } else {
+            logger.warn(`[smartExtract] readGmailBody #${_gmailBodyDiagCount} EMPTY: url=${res.url}, title="${res.title}", hasArticle=${res.hasArticle}, articleLen=${res.articleLen}, a3s=${res.a3s}, adn=${res.adn}`);
+        }
+    }
+    return res.text;
 }
 
 async function collectRecentEmails(page, platform, email, limit = 50, gmailBodyState = { remaining: 0 }) {
@@ -1939,7 +1969,12 @@ async function collectRecentEmails(page, platform, email, limit = 50, gmailBodyS
                     gmailBodyState.remaining--;
                     try {
                         await gotoRobust(page, `https://mail.google.com/mail/u/0/${frag}`);
-                        const body = await readGmailBody(page);
+                        let body = await readGmailBody(page);
+                        if (!body && frag.startsWith('#thread-f:')) {
+                            const alt = '#inbox/' + frag.slice(frag.indexOf(':') + 1);
+                            await gotoRobust(page, `https://mail.google.com/mail/u/0/${alt}`);
+                            body = await readGmailBody(page);
+                        }
                         if (body) text = `${text}\n${body}`;
                         opened++;
                     } catch (e) {
