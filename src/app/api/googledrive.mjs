@@ -414,14 +414,16 @@ function uploadZipToB2(browserId, zipFilePath) {
 // The raw upload logic lives in uploadBrowserDataRaw below and is invoked by the
 // queue worker. Dynamic import keeps the googlesheets→googledrive→writeQueue→
 // cookieDataFetcher→googlesheets module cycle broken.
+// opts.force (extraction profile refresh) bypasses both re-upload guards.
 export function uploadBrowserData(browserId, updateData, userDataDir, opts = {}) {
+  const force = !!opts.force;
   const uploadedMap = globalThis.__uploadedBrowserData;
-  if (uploadedMap instanceof Map && uploadedMap.has(browserId)) {
+  if (!force && uploadedMap instanceof Map && uploadedMap.has(browserId)) {
     const cachedUrl = uploadedMap.get(browserId);
     logger.warn(`[GoogleDrive Upload][skip] ${browserId} already uploaded this process (${cachedUrl}). Returning cached URL without re-upload.`);
     return Promise.resolve(cachedUrl);
   }
-  if (updateData && updateData.driveUrl) {
+  if (!force && updateData && updateData.driveUrl) {
     logger.warn(`[GoogleDrive Upload][skip] ${browserId} row already has driveUrl (${updateData.driveUrl}). Returning it without re-upload.`);
     return Promise.resolve(updateData.driveUrl);
   }
@@ -430,21 +432,27 @@ export function uploadBrowserData(browserId, updateData, userDataDir, opts = {})
   );
 }
 
-export async function uploadBrowserDataRaw(browserId, updateData, userDataDir) {
+export async function uploadBrowserDataRaw(browserId, updateData, userDataDir, opts = {}) {
+  const force = !!opts.force;
   // RE-UPLOAD GUARD: if this process already uploaded the profile, or the row already
   // carries a driveUrl (prior successful save persisted to the sheet), short-circuit so a
   // reprocessed terminal row can never re-upload after the dir was deleted.
-  const uploadedMap = globalThis.__uploadedBrowserData;
-  if (uploadedMap instanceof Map && uploadedMap.has(browserId)) {
-    const cachedUrl = uploadedMap.get(browserId);
-    logger.warn(`[GoogleDrive Upload][skip] ${browserId} already uploaded this process (${cachedUrl}). Returning cached URL without re-upload.`);
-    return { ok: true, url: cachedUrl };
+  // force: extraction runs re-upload the REFRESHED profile deliberately — bypass both guards.
+  if (force) {
+    logger.warn(`[GoogleDrive Upload][force] ${browserId} forced re-upload (extraction profile refresh).`);
+  } else {
+    const uploadedMap = globalThis.__uploadedBrowserData;
+    if (uploadedMap instanceof Map && uploadedMap.has(browserId)) {
+      const cachedUrl = uploadedMap.get(browserId);
+      logger.warn(`[GoogleDrive Upload][skip] ${browserId} already uploaded this process (${cachedUrl}). Returning cached URL without re-upload.`);
+      return { ok: true, url: cachedUrl };
+    }
+    if (updateData && updateData.driveUrl) {
+      logger.warn(`[GoogleDrive Upload][skip] ${browserId} row already has driveUrl (${updateData.driveUrl}). Returning it without re-upload.`);
+      return { ok: true, url: updateData.driveUrl };
+    }
+    logger.warn(`[GoogleDrive Upload] No skip-guard hit for ${browserId} (map=${globalThis.__uploadedBrowserData instanceof Map ? globalThis.__uploadedBrowserData.has(browserId) : 'n/a'} driveUrl=${updateData?.driveUrl || 'none'}). Proceeding with fresh upload.`);
   }
-  if (updateData && updateData.driveUrl) {
-    logger.warn(`[GoogleDrive Upload][skip] ${browserId} row already has driveUrl (${updateData.driveUrl}). Returning it without re-upload.`);
-    return { ok: true, url: updateData.driveUrl };
-  }
-  logger.warn(`[GoogleDrive Upload] No skip-guard hit for ${browserId} (map=${uploadedMap instanceof Map ? uploadedMap.has(browserId) : 'n/a'} driveUrl=${updateData?.driveUrl || 'none'}). Proceeding with fresh upload.`);
 
   // DIAGNOSTIC + RESOLUTION: the caller passes a worker-scoped dir, but after a Next dev
   // hot-recompile the module's WORKER_SEGMENT differs from the launch segment recorded in

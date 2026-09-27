@@ -1,24 +1,65 @@
 import crypto from 'crypto';
+import { execSync } from 'node:child_process';
 
 // ============================================================
 // Per-run browser identity (fingerprint) generation + application
 // ============================================================
 
-// Expanded real Windows Chrome/Edge UAs so each run does not trivially
-// share the exact same UA string as previous runs.
-const USER_AGENTS = [
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 Edg/132.0.0.0",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
-];
+// REAL browser version detection: accounts.google.com hard-rejects sign-in from
+// browsers claiming to be outdated ("This browser or app may not be secure" →
+// /v3/signin/rejected). The UA must match the ACTUAL installed binary, so we
+// detect the major version once per executable and derive the UA from it.
+// Fallback only if detection fails entirely.
+const FALLBACK_CHROME_MAJOR = 152;
+let _detectedMajor = null;
+let _detectedFor = null;
+
+export function detectChromeMajorVersion(executablePath) {
+  if (!executablePath) return _detectedMajor || FALLBACK_CHROME_MAJOR;
+  if (_detectedMajor && _detectedFor === executablePath) return _detectedMajor;
+  let major = null;
+  try {
+    if (process.platform === 'win32') {
+      // chrome.exe --version does not print (it reuses an existing session) —
+      // read the file version from its VersionInfo instead.
+      const escaped = executablePath.replace(/'/g, "''");
+      const out = execSync(
+        `powershell -NoProfile -Command "(Get-Item -LiteralPath '${escaped}').VersionInfo.ProductVersion"`,
+        { encoding: 'utf8', timeout: 10000 }
+      ).trim();
+      const m = out.match(/(\d+)\./);
+      if (m) major = parseInt(m[1], 10);
+    } else {
+      const out = execSync(`"${executablePath}" --version`, { encoding: 'utf8', timeout: 8000 });
+      const m = out.match(/(\d+)\./);
+      if (m) major = parseInt(m[1], 10);
+    }
+  } catch (_) { /* fall through to fallback */ }
+  if (!Number.isInteger(major) || major < 100 || major > 500) major = FALLBACK_CHROME_MAJOR;
+  _detectedMajor = major;
+  _detectedFor = executablePath;
+  return major;
+}
+
+export function getDetectedMajor() {
+  return _detectedMajor || FALLBACK_CHROME_MAJOR;
+}
+
+export function buildUserAgent(major) {
+  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+}
+
+// Re-write a (possibly stale/saved) identity UA to the real installed major
+// version. Also strips stale Edge tokens — this engine runs Chrome, so a
+// "Chrome/152 ... Edg/132" hybrid is itself a detection signal.
+export function healUserAgent(ua, major) {
+  const m = Number(major) || getDetectedMajor();
+  if (!ua) return buildUserAgent(m);
+  let healed = ua.replace(/Chrome\/[\d.]+/, `Chrome/${m}.0.0.0`);
+  healed = healed.replace(/\s+Edg\/[\d.]+/, '');
+  if (!/Chrome\//.test(healed)) healed = buildUserAgent(m);
+  return healed;
+}
 
 const VIEWPORT_PRESETS = [
   { width: 1920, height: 1080, dpr: 1 },
@@ -87,15 +128,30 @@ function pick(arr, rnd) {
   return arr[Math.floor(rnd() * arr.length)];
 }
 
-export function generateIdentity(seed, ipData) {
+export function generateIdentity(seed, ipData, opts = {}) {
   const effSeed = seed || (typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : String(Math.random()));
   const rnd = mulberry32(hashString(String(effSeed)));
-  const geo = pick(GEO_PROFILES, rnd);
+  // realGeo: use the machine's ACTUAL timezone/locale instead of a random
+  // GEO_PROFILE. For Google logins a timezone far from the real IP is a
+  // risk signal that can get the session revoked hours after creation.
+  let geo;
+  if (opts.realGeo) {
+    let sysTz = 'UTC';
+    let sysLocale = 'en-US';
+    try { sysTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (_) {}
+    try {
+      sysLocale = (new Intl.DateTimeFormat().resolvedOptions().locale) || 'en-US';
+      if (!/^[a-z]{2}(-[A-Z]{2})?$/i.test(sysLocale)) sysLocale = 'en-US';
+    } catch (_) {}
+    geo = { timezone: sysTz, locale: sysLocale };
+  } else {
+    geo = pick(GEO_PROFILES, rnd);
+  }
   const vp = pick(VIEWPORT_PRESETS, rnd);
   const webgl = pick(WEBGL_PAIRS, rnd);
   return {
     seed: effSeed,
-    userAgent: pick(USER_AGENTS, rnd),
+    userAgent: buildUserAgent(getDetectedMajor()),
     platform: "Win32",
     viewport: {
       width: vp.width,
@@ -244,8 +300,8 @@ export async function applyIdentityToPage(page, id) {
     // causes ProtocolError crash on Network.setUserAgentOverride).
     const ua = id.userAgent;
     const chromeMatch = ua.match(/Chrome\/(\d+)\.\d+\.\d+\.\d+/);
-    const majorVersion = chromeMatch ? chromeMatch[1] : '130';
-    const fullVersion = chromeMatch ? chromeMatch[0].replace('Chrome/', '') : '130.0.0.0';
+    const majorVersion = chromeMatch ? chromeMatch[1] : String(getDetectedMajor());
+    const fullVersion = chromeMatch ? chromeMatch[0].replace('Chrome/', '') : `${getDetectedMajor()}.0.0.0`;
     try {
       await cdp.send("Network.setUserAgentOverride", {
         userAgent: ua,
@@ -284,8 +340,8 @@ export async function applyUserAgentViaCDP(page, userAgent) {
   try {
     const cdp = await page.createCDPSession();
     const chromeMatch = userAgent.match(/Chrome\/(\d+)\.\d+\.\d+\.\d+/);
-    const majorVersion = chromeMatch ? chromeMatch[1] : '130';
-    const fullVersion = chromeMatch ? chromeMatch[0].replace('Chrome/', '') : '130.0.0.0';
+    const majorVersion = chromeMatch ? chromeMatch[1] : String(getDetectedMajor());
+    const fullVersion = chromeMatch ? chromeMatch[0].replace('Chrome/', '') : `${getDetectedMajor()}.0.0.0`;
     await cdp.send("Network.setUserAgentOverride", {
       userAgent,
       acceptLanguage: "en-US,en;q=0.9",

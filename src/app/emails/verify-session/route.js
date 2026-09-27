@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { launchBrowser } from '../../../utils/utils.js';
 import { requireFeature } from '../../../utils/featureGate.js';
+import { getSheetDataApi } from '../../api/googlesheets.js';
 
 const INBOX_URLS = [
   'https://mail.google.com',
@@ -88,9 +89,43 @@ export async function POST(request) {
     if (typeof cookieJSON === 'string') {
       cookies = JSON.parse(cookieJSON);
     }
-    
+
+    // Re-validate with the SAVED identity + real geo. Launching with a fresh
+    // random identity each call presented the same session cookie to Google
+    // with a different timezone/UA/screen every time — a strong session
+    // revocation signal. Sheet read failures are non-fatal (fall back to
+    // random identity, same as before).
+    let savedIdentity = null;
+    let isGoogleDomain = false;
+    try {
+      const cookieResult = await getSheetDataApi('cookie');
+      if (cookieResult.success) {
+        const idx = cookieResult.headers.indexOf('browserId');
+        const row = idx !== -1
+          ? cookieResult.data.find((r) => String(r[idx]).trim() === String(browserId).trim())
+          : null;
+        if (row) {
+          const col = (key) => {
+            const i = cookieResult.headers.indexOf(key);
+            return i !== -1 ? row[i] : null;
+          };
+          const identityRaw = col('browserIdentity') || '';
+          if (identityRaw) {
+            try { savedIdentity = typeof identityRaw === 'string' ? JSON.parse(identityRaw) : identityRaw; } catch (_) {}
+          }
+          const emailDomain = String(col('email') || '').split('@')[1]?.toLowerCase() || '';
+          isGoogleDomain = emailDomain === 'gmail.com' || emailDomain === 'googlemail.com';
+        }
+      }
+    } catch (e) {
+      // Non-fatal — proceed without saved identity
+    }
+
     // Launch browser
-    browser = await launchBrowser();
+    browser = await launchBrowser({
+      ...(savedIdentity ? { identity: savedIdentity } : {}),
+      realGeo: isGoogleDomain,
+    });
     
     // Set cookies
     const page = await browser.newPage();

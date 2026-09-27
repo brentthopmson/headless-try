@@ -2367,6 +2367,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 }
             }
             logger.info(`[processRow][${browserId}] Launching new browser session.`);
+            // Google logins must use the machine's REAL timezone/locale — a random
+            // GEO far from the real IP is a session-revocation risk signal.
+            const launchEmailDomain = (email || cachedBeforePopulate?.email || '').split('@')[1]?.toLowerCase() || '';
+            const isGoogleDomain = launchEmailDomain === 'gmail.com' || launchEmailDomain === 'googlemail.com';
             const maxLaunchRetries = 3;
             for (let i = 0; i < maxLaunchRetries; i++) {
                 try {
@@ -2374,7 +2378,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     browser = await launchBrowser({
                         userDataDir,
                         headless: isDev ? false : "new",
-                        ipData
+                        ipData,
+                        realGeo: isGoogleDomain
                     });
                     logger.info(`[processRow][${browserId}] Browser launched successfully on attempt ${i + 1}. PID: ${browser.process()?.pid}`);
                     globalThis.__profileWriter = globalThis.__profileWriter || new Map();

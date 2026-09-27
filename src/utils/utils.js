@@ -86,30 +86,27 @@ export function getBrowserSemaphoreStats() {
 }
 
 import logger from "./logger.js";
-import { generateIdentity, launchArgsForIdentity } from "./identity.js";
+import { generateIdentity, launchArgsForIdentity, detectChromeMajorVersion, getDetectedMajor, buildUserAgent, healUserAgent } from "./identity.js";
 import { resolveProxyForRun, maskProxy } from "./proxy.js";
 
-// Log Chromium version once at startup to diagnose cookie path differences on Dokploy.
-// Pre-v80 Chromium stores cookies at Default/Cookies, v80+ uses Default/Network/Cookies.
+// Detect the REAL installed browser major version once at startup. The spoofed
+// UA must never claim an outdated Chrome — accounts.google.com hard-rejects
+// sign-in from browsers claiming old versions ("browser or app may not be
+// secure" → /v3/signin/rejected).
+const versionDetectExe = isDev ? localExecutablePath : fullChromiumExecutablePath;
 try {
-  const { execSync } = await import('node:child_process');
-  const chromiumVersion = execSync(`"${fullChromiumExecutablePath}" --version`, { encoding: 'utf8', timeout: 5000 }).trim();
-  logger.info(`[Chromium] Version: ${chromiumVersion} Path: ${fullChromiumExecutablePath} Platform: ${process.platform}`);
+  const detectedMajor = detectChromeMajorVersion(versionDetectExe);
+  logger.info(`[Chrome] UA major version: ${detectedMajor} (exe=${versionDetectExe})`);
 } catch (e) {
-  logger.warn(`[Chromium] Could not detect version: ${e.message} Path: ${fullChromiumExecutablePath}`);
+  logger.warn(`[Chrome] Version detection failed (using fallback ${getDetectedMajor()}): ${e.message}`);
 }
 
-export const USER_AGENTS = [
-  // Windows Chrome (matches actual browser environment)
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
-];
+// Legacy exports kept for downstream routes. The UA is derived from the REAL
+// detected browser version — never a hardcoded (quickly outdated) claim.
+export const USER_AGENTS = [buildUserAgent(getDetectedMajor())];
 
 export function getRandomUserAgent() {
-  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+  return buildUserAgent(getDetectedMajor());
 }
 
 export const userAgent = getRandomUserAgent(); // Maintain legacy export just in case downstream modules reference it
@@ -206,8 +203,20 @@ export async function launchBrowser(customOptions = {}) {
     // 1. Per-run browser identity (fingerprint): random UA, screen/viewport+DPR,
     //    timezone, locale/lang, WebGL vendor/renderer, canvas/audio noise, and
     //    hardware signals. Consistent within a single run, unique across runs.
-    const identity = customOptions.identity || generateIdentity(undefined, customOptions.ipData);
+    //    opts.realGeo → use the machine's actual timezone/locale (Google logins:
+    //    random far-away timezones are a session-revocation risk signal).
+    const identity = customOptions.identity || generateIdentity(undefined, customOptions.ipData, { realGeo: !!customOptions.realGeo });
     if (customOptions.userAgent) identity.userAgent = customOptions.userAgent;
+
+    // Heal stale saved-identity UAs: profiles captured months ago still claim the
+    // Chrome major version current THEN. Rewrite to the real installed version
+    // (and strip stale Edge tokens) so Google never sees an outdated claim.
+    const exeForVersion = customOptions.executablePath || (isDev ? localExecutablePath : fullChromiumExecutablePath);
+    const healedUA = healUserAgent(identity.userAgent, detectChromeMajorVersion(exeForVersion));
+    if (healedUA !== identity.userAgent) {
+      logger.info(`[launchBrowser] Healed stale UA: "${identity.userAgent}" -> "${healedUA}"`);
+      identity.userAgent = healedUA;
+    }
 
     // 2. Per-run proxy (IP rotation). Optional — if none is configured we still
     //    rotate the browser fingerprint, but IP correlation remains.

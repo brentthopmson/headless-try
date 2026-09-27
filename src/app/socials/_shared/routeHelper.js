@@ -199,6 +199,13 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
             logger.info(`[launchBrowserWithSession] Reusing saved identity (fingerprint match)`);
         }
 
+        // Gmail: never randomize timezone/locale — a GEO far from the real IP is a
+        // Google session-revocation risk signal. (Only matters when no saved
+        // identity exists; login always saves one going forward.)
+        if (options.realGeo || (options.platform || '').toLowerCase() === 'gmail') {
+            launchOptions.realGeo = true;
+        }
+
         const browser = await launchBrowser(launchOptions);
 
         const page = await browser.newPage();

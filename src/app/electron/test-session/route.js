@@ -149,6 +149,8 @@ export async function POST(request) {
       executablePath: localExecutablePath,
       userDataDir: destDir,
       identity: browserIdentity || undefined,
+      // Google: fresh-identity fallback must use real timezone/locale (session-revocation risk).
+      realGeo: domain === 'gmail.com' || domain === 'googlemail.com',
       args: [
         '--no-first-run',
         '--no-default-browser-check',
