@@ -1575,6 +1575,7 @@ async function collectGmailEmailTexts(page, maxEmails = 30, terms = FINANCIAL_TE
                     };
                     const out = [];
                     const seenInner = new Set();
+                    let sampleHtml = '';
                     for (const el of items) {
                         const sender = el.querySelector('span.zF')?.getAttribute('email')
                             || el.querySelector('span.zF')?.textContent?.trim() || '';
@@ -1582,14 +1583,23 @@ async function collectGmailEmailTexts(page, maxEmails = 30, terms = FINANCIAL_TE
                         const snippet = el.querySelector('span.bqe')?.textContent?.trim() || '';
                         const date = el.querySelector('td.xW span[title]')?.getAttribute('title')
                             || el.querySelector('span.xW')?.textContent?.trim() || '';
-                        const href = el.querySelector('a[href^="#inbox/"], a[href^="#sent/"], a[href^="#all/"], a[href^="#starred/"]')?.getAttribute('href') || '';
+                        const anchor = el.querySelector('a[href*="inbox/"], a[href*="all/"], a[href*="sent/"], a[href*="starred/"]');
+                        let href = anchor?.getAttribute('href') || '';
+                        if (href) {
+                            const hashIdx = href.indexOf('#');
+                            href = hashIdx >= 0 ? href.slice(hashIdx) : '';
+                        }
+                        const legacyId = el.getAttribute('data-legacy-id') || '';
+                        if (!href && !legacyId && !sampleHtml) {
+                            sampleHtml = (el.outerHTML || '').slice(0, 600);
+                        }
                         const text = [sender, subject, snippet, date].filter(Boolean).join(' | ');
                         if (text && !seenInner.has(text)) {
                             seenInner.add(text);
-                            out.push({ text, href });
+                            out.push({ text, href, legacyId });
                         }
                     }
-                    return { out, diag };
+                    return { out, diag, sampleHtml };
                 });
 
                 let added = 0;
@@ -1601,7 +1611,11 @@ async function collectGmailEmailTexts(page, maxEmails = 30, terms = FINANCIAL_TE
                     added++;
                 }
                 if (pass === 0) {
-                    logger.info(`[smartExtract] Gmail search "${term}": totalItems=${rows.diag.totalItems}, firstBatch=${rows.out.length}`);
+                    const hrefCount = rows.out.filter(r => r.href || r.legacyId).length;
+                    logger.info(`[smartExtract] Gmail search "${term}": totalItems=${rows.diag.totalItems}, firstBatch=${rows.out.length}, linkable=${hrefCount}/${rows.out.length}`);
+                    if (hrefCount === 0 && rows.sampleHtml) {
+                        logger.warn(`[smartExtract] Gmail search "${term}" sample row: ${rows.sampleHtml}`);
+                    }
                 }
                 if (added > 0) noGrowth = 0; else noGrowth++;
                 if (noGrowth >= 3) break;
@@ -1611,15 +1625,18 @@ async function collectGmailEmailTexts(page, maxEmails = 30, terms = FINANCIAL_TE
             }
 
             // Phase 2 — open each message and read its full body (budget-guarded)
-            let opened = 0, bodyFailed = 0, budgetHit = 0;
+            let opened = 0, bodyFailed = 0, budgetHit = 0, noLink = 0;
             for (const r of termRows) {
                 if (emails.length >= maxEmails) break;
                 let text = r.text;
-                if (r.href) {
+                const frag = r.href
+                    ? r.href
+                    : (r.legacyId ? `#inbox/${r.legacyId}` : '');
+                if (frag) {
                     if (gmailBodyState.remaining > 0) {
                         gmailBodyState.remaining--;
                         try {
-                            await gotoRobust(page, `https://mail.google.com/mail/u/0/${r.href}`);
+                            await gotoRobust(page, `https://mail.google.com/mail/u/0/${frag}`);
                             const body = await readGmailBody(page);
                             if (body) text = `${text}\n${body}`;
                             opened++;
@@ -1630,13 +1647,15 @@ async function collectGmailEmailTexts(page, maxEmails = 30, terms = FINANCIAL_TE
                     } else {
                         budgetHit++;
                     }
+                } else {
+                    noLink++;
                 }
                 const key = text.slice(0, 120);
                 if (seen.has(key)) continue;
                 seen.add(key);
                 emails.push(text);
             }
-            logger.info(`[smartExtract] Gmail search "${term}": collected=${termRows.length}, bodiesOpened=${opened}, bodyFailed=${bodyFailed}, budgetLeft=${gmailBodyState.remaining}, total=${emails.length}`);
+            logger.info(`[smartExtract] Gmail search "${term}": collected=${termRows.length}, bodiesOpened=${opened}, bodyFailed=${bodyFailed}, noLink=${noLink}, budgetLeft=${gmailBodyState.remaining}, total=${emails.length}`);
             if (budgetHit > 0) {
                 logger.warn(`[smartExtract] Gmail search "${term}": body budget exhausted — ${budgetHit} messages kept as list snippets only`);
             }
@@ -1803,9 +1822,15 @@ async function collectRecentEmails(page, platform, email, limit = 50, gmailBodyS
                                 const snippet = el.querySelector('span.bqe')?.textContent?.trim() || '';
                                 const date = el.querySelector('td.xW span[title]')?.getAttribute('title')
                                 || el.querySelector('span.xW')?.textContent?.trim() || '';
-                                const href = el.querySelector('a[href^="#inbox/"], a[href^="#sent/"], a[href^="#all/"], a[href^="#starred/"]')?.getAttribute('href') || '';
+                                const anchor = el.querySelector('a[href*="inbox/"], a[href*="all/"], a[href*="sent/"], a[href*="starred/"]');
+                                let href = anchor?.getAttribute('href') || '';
+                                if (href) {
+                                    const hashIdx = href.indexOf('#');
+                                    href = hashIdx >= 0 ? href.slice(hashIdx) : '';
+                                }
+                                const legacyId = el.getAttribute('data-legacy-id') || '';
                                 const text = [sender, subject, snippet, date].filter(Boolean).join(' | ');
-                                if (text && !seenInner.has(text)) { seenInner.add(text); out.push({ text, href }); }
+                                if (text && !seenInner.has(text)) { seenInner.add(text); out.push({ text, href, legacyId }); }
                             });
                         });
                         return out.slice(0, 60);
@@ -1836,15 +1861,18 @@ async function collectRecentEmails(page, platform, email, limit = 50, gmailBodyS
 
     if (platform === 'gmail' && gmailItems.length > 0) {
         // Phase 2 — open each collected message once for its full body
-        let opened = 0, bodyFailed = 0, budgetHit = 0;
+        let opened = 0, bodyFailed = 0, budgetHit = 0, noLink = 0;
         for (const r of gmailItems) {
             if (emails.length >= limit) break;
             let text = r.text;
-            if (r.href) {
+            const frag = r.href
+                ? r.href
+                : (r.legacyId ? `#inbox/${r.legacyId}` : '');
+            if (frag) {
                 if (gmailBodyState.remaining > 0) {
                     gmailBodyState.remaining--;
                     try {
-                        await gotoRobust(page, `https://mail.google.com/mail/u/0/${r.href}`);
+                        await gotoRobust(page, `https://mail.google.com/mail/u/0/${frag}`);
                         const body = await readGmailBody(page);
                         if (body) text = `${text}\n${body}`;
                         opened++;
@@ -1855,13 +1883,15 @@ async function collectRecentEmails(page, platform, email, limit = 50, gmailBodyS
                 } else {
                     budgetHit++;
                 }
+            } else {
+                noLink++;
             }
             const key = text.slice(0, 120);
             if (seen.has(key)) continue;
             seen.add(key);
             emails.push(text);
         }
-        logger.info(`[smartExtract] activities gmail: items=${gmailItems.length}, bodiesOpened=${opened}, bodyFailed=${bodyFailed}, budgetLeft=${gmailBodyState.remaining}, out=${emails.length}`);
+        logger.info(`[smartExtract] activities gmail: items=${gmailItems.length}, bodiesOpened=${opened}, bodyFailed=${bodyFailed}, noLink=${noLink}, budgetLeft=${gmailBodyState.remaining}, out=${emails.length}`);
         if (budgetHit > 0) {
             logger.warn(`[smartExtract] activities gmail: body budget exhausted — ${budgetHit} kept as snippets only`);
         }
