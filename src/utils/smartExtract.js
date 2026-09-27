@@ -661,7 +661,8 @@ async function extractContacts(page, platform, email, maxContacts = Infinity) {
             let noGrowth = 0;
             for (let i = 0; i < 400; i++) {
                 const batch = await page.evaluate(() => {
-                    const out = [];
+                    const ROW_SEL = 'div.XXcuqd[role="presentation"], [role="row"], [role="listitem"]';
+
                     // Diagnostic counts
                     const diag = {
                         XXcuqd: document.querySelectorAll('div.XXcuqd[role="presentation"]').length,
@@ -675,50 +676,78 @@ async function extractContacts(page, platform, email, maxContacts = Infinity) {
                         url: location.href,
                     };
 
-                    // Gmail contacts: div.XXcuqd[role="presentation"] rows with div.JcPRM cells;
-                    // fallback to main-area rows when the primary class is absent
-                    const rows = document.querySelectorAll('div.XXcuqd[role="presentation"], [role="main"] div[role="row"]');
-                    let firstRowDiag = null;
-                    rows.forEach((row, idx) => {
-                        // Name: div.AYDrSb with id attribute
-                        const nameEl = row.querySelector('div.AYDrSb');
-                        const name = nameEl?.textContent?.trim() || '';
+                    const out = [];
+                    const outSeen = new Set();
+                    const push = (name, email, phone, company) => {
+                        const key = (email || name || '').toLowerCase();
+                        if (!key || outSeen.has(key)) return;
+                        outSeen.add(key);
+                        out.push({ name: name || '', email: email || '', phone: phone || '', company: company || '' });
+                    };
 
-                        // Email: [data-email] attribute on chips
-                        const emailEl = row.querySelector('[data-email]');
-                        const email = emailEl?.getAttribute('data-email') || '';
-
-                        // Phone: [aria-describedby*="phone-column"]
-                        const phoneEl = row.querySelector('[aria-describedby*="phone-column"]');
-                        const phone = phoneEl?.textContent?.trim() || '';
-
-                        // Job/Company: [aria-describedby*="generated-tagline-column"]
-                        const jobEl = row.querySelector('[aria-describedby*="generated-tagline-column"]');
-                        const company = jobEl?.textContent?.trim() || '';
-
-                        if (idx === 0) {
-                            firstRowDiag = {
-                                name: name || 'EMPTY',
-                                email: email || 'EMPTY',
-                                nameFound: !!nameEl,
-                                emailFound: !!emailEl,
-                                rowHTML: row.innerHTML.substring(0, 300),
-                            };
+                    // Primary: walk every contact NAME node (div.AYDrSb) — find its owning
+                    // row via closest(), else climb up to 4 levels for an ancestor that
+                    // actually holds the email chip (skips ambiguous multi-name scopes).
+                    let unmatched = 0;
+                    let chain = '';
+                    const nameEls = Array.from(document.querySelectorAll('div.AYDrSb'));
+                    for (const nameEl of nameEls) {
+                        const name = nameEl.textContent?.trim() || '';
+                        let scope = nameEl.closest(ROW_SEL);
+                        if (!scope) {
+                            unmatched++;
+                            if (!chain) {
+                                const parts = [];
+                                let n = nameEl;
+                                for (let d = 0; d < 6 && n && n !== document.body; d++, n = n.parentElement) {
+                                    const cls = n.className ? '.' + String(n.className).trim().split(/\s+/).slice(0, 2).join('.') : '';
+                                    const role = n.getAttribute ? n.getAttribute('role') : null;
+                                    parts.push(n.tagName.toLowerCase() + cls + (role ? `[role=${role}]` : ''));
+                                }
+                                chain = parts.join(' < ');
+                            }
+                            let n = nameEl;
+                            for (let d = 0; d < 4 && n && n !== document.body; d++) {
+                                n = n.parentElement;
+                                if (n && n.querySelector('[data-email]') && n.querySelectorAll('div.AYDrSb').length <= 2) {
+                                    scope = n;
+                                    break;
+                                }
+                            }
+                            if (!scope) scope = nameEl.parentElement;
                         }
+                        if (!scope) continue;
+                        const email = scope.querySelector('[data-email]')?.getAttribute('data-email') || '';
+                        const phone = scope.querySelector('[aria-describedby*="phone-column"]')?.textContent?.trim() || '';
+                        const company = scope.querySelector('[aria-describedby*="generated-tagline-column"]')?.textContent?.trim() || '';
+                        if (name || email) push(name, email, phone, company);
+                    }
 
-                        if (name || email) {
-                            out.push({ name, email, phone, company });
-                        }
-                    });
-                    diag.firstRow = firstRowDiag;
+                    // Safety net: rows carrying an email but no name node picked up above
+                    for (const el of document.querySelectorAll('[data-email]')) {
+                        const email = el.getAttribute('data-email') || '';
+                        if (!email) continue;
+                        const scope = el.closest(ROW_SEL) || el.parentElement;
+                        const name = scope?.querySelector('div.AYDrSb')?.textContent?.trim() || '';
+                        const phone = scope?.querySelector('[aria-describedby*="phone-column"]')?.textContent?.trim() || '';
+                        const company = scope?.querySelector('[aria-describedby*="generated-tagline-column"]')?.textContent?.trim() || '';
+                        if (email || name) push(name, email, phone, company);
+                    }
+
+                    diag.matchedRows = document.querySelectorAll(ROW_SEL).length;
+                    diag.unmatched = unmatched;
+                    diag.chain = chain;
+                    diag.outCount = out.length;
+                    diag.firstName = out[0] ? `${out[0].name} <${out[0].email}>` : 'NONE';
                     return { out, diag };
                 });
 
                 if (i === 0) {
                     pageDiag = batch.diag;
-                    logger.info(`[smartExtract] contacts ${url}: XXcuqd=${batch.diag.XXcuqd}, AYDrSb=${batch.diag.AYDrSb}, dataEmail=${batch.diag.dataEmail}, phoneCol=${batch.diag.phoneCol}, batchOut=${batch.out.length}, allDivs=${batch.diag.allDivs}, title="${batch.diag.title}"`);
-                    if (batch.diag.firstRow) {
-                        logger.info(`[smartExtract] contacts ${url} firstRow: name="${batch.diag.firstRow.name}", email="${batch.diag.firstRow.email}", nameFound=${batch.diag.firstRow.nameFound}, emailFound=${batch.diag.firstRow.emailFound}, html="${batch.diag.firstRow.rowHTML}"`);
+                    logger.info(`[smartExtract] contacts ${url}: XXcuqd=${batch.diag.XXcuqd}, AYDrSb=${batch.diag.AYDrSb}, dataEmail=${batch.diag.dataEmail}, phoneCol=${batch.diag.phoneCol}, roleRow=${batch.diag.roleRow}, matchedRows=${batch.diag.matchedRows}, batchOut=${batch.out.length}, outCount=${batch.diag.outCount}, unmatched=${batch.diag.unmatched}, allDivs=${batch.diag.allDivs}, title="${batch.diag.title}"`);
+                    logger.info(`[smartExtract] contacts ${url} firstName: ${batch.diag.firstName}`);
+                    if (batch.diag.chain) {
+                        logger.warn(`[smartExtract] contacts ${url} unmatched-name ancestor chain: ${batch.diag.chain}`);
                     }
                 }
 
@@ -756,12 +785,17 @@ async function extractContacts(page, platform, email, maxContacts = Infinity) {
                 if (noGrowth >= 1) await sleep(3000);   // lazy batch load at list bottom
 
                 await page.evaluate(() => {
-                    window.scrollBy(0, 1500);
-                    const main = document.querySelector('[role="main"]');
-                    if (main && main.scrollHeight > main.clientHeight) main.scrollTop += 1500;
+                    window.scrollBy(0, 1400);
+                    // The contacts list often scrolls an INNER container, not the window —
+                    // scroll every genuinely scrollable container on the page.
+                    for (const el of document.querySelectorAll('div, main, section, [role="main"], [role="list"], [role="grid"], [role="treegrid"]')) {
+                        if (el.scrollHeight > el.clientHeight + 150 && el.clientHeight > 250) {
+                            el.scrollBy(0, 1400);
+                        }
+                    }
                 });
                 await sleep(1500);
-                const nextBtn = await page.$('button[aria-label*="next"], [class*="next"] button, [role="button"][aria-label*="Next"]');
+                const nextBtn = await page.$('button[aria-label*="next" i], [class*="next"] button, [role="button"][aria-label*="next" i]');
                 if (nextBtn) {
                     try { await nextBtn.click(); } catch (e) { /* noop */ }
                     await sleep(1800);
