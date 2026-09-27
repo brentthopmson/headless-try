@@ -1681,6 +1681,9 @@ async function collectGmailEmailTexts(page, maxEmails = 30, terms = FINANCIAL_TE
             let opened = 0, bodyFailed = 0, budgetHit = 0, noLink = 0;
             for (const r of termRows) {
                 if (emails.length >= maxEmails) break;
+                // Row already collected by an earlier batch (searches overlap heavily) —
+                // skip before opening so bodies aren't fetched twice.
+                if (seen.has(r.text.slice(0, 120))) continue;
                 let text = r.text;
                 const frag = r.href
                     ? r.href
