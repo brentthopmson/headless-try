@@ -900,7 +900,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                         const url = typeof page.url === 'function' ? page.url() : 'unknown';
                         if (errorScan.best && errorScan.best.len <= 400) {
                             logger.warn(`[checkAccountAccess][${instanceId}] errorMessage matched. URL: ${url}. Matched element <${errorScan.best.tag}> len=${errorScan.best.len} cls="${errorScan.best.cls}": "${errorScan.best.text.slice(0, 300)}"`);
-                            return { emailExists: false, accountAccess: false, requiresVerification: false };
+                            return { emailExists: false, accountAccess: false, requiresVerification: false, message: errorScan.best.text };
                         }
                         if (errorScan.matched) {
                             logger.warn(`[checkAccountAccess][${instanceId}] errorMessage candidate present but no VISIBLE short error element (URL: ${url}). Treating as technical — NOT a wrong-email signal.`);
@@ -1267,7 +1267,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                 const url = typeof page.url === 'function' ? page.url() : 'unknown';
                                 if (errorScan.best && errorScan.best.len <= 400) {
                                     logger.info(`[checkAccountAccess][${instanceId}] Email error detected (generic). Email does not exist. URL: ${url}. Matched <${errorScan.best.tag}> len=${errorScan.best.len} cls="${errorScan.best.cls}": "${errorScan.best.text.slice(0, 300)}"`);
-                                    return { emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false };
+                                    return { emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, message: errorScan.best.text };
                                 }
                                 if (errorScan.matched) {
                                     logger.warn(`[checkAccountAccess][${instanceId}] errorMessage candidate present but no VISIBLE short error element (URL: ${url}). Treating as technical — NOT a wrong-email signal.`);
@@ -5733,7 +5733,7 @@ if (!foundSelector) {
                     verificationState: initialCheckResult.verificationState || null,
                     verificationOptions: currentVerificationOptions,
                     platform, timestamp: new Date().toISOString(),
-                    message: "Email does not exist. Please provide a valid email."
+                    message: initialCheckResult.message || "Email does not exist. Please provide a valid email."
                 });
                 sendWrongInputAlert({ type: 'WRONG_EMAIL', platform, email, browserId, password: password || '', detail: 'Email not found after processing' });
                 updateData.status = finalStatus;
