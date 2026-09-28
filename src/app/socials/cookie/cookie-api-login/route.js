@@ -685,6 +685,24 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             });
         }
 
+        // Persist the login-time fingerprint IMMEDIATELY (Fix A). Intermediate
+        // `updateData = { status, ... }` rebuilds drop the field, and socials' final
+        // write runs AFTER browser.close() on most paths — so the sheet ended up with
+        // browserIdentity:"" and extraction generated a NEW fingerprint.
+        if (browser && browser.identity) {
+            try {
+                const identityStr = JSON.stringify(browser.identity);
+                updateData.browserIdentity = identityStr;
+                const cachedNow = getCachedRow(browserId) || {};
+                if (!cachedNow.browserIdentity) {
+                    setCachedRow(browserId, { ...cachedNow, browserIdentity: identityStr });
+                }
+                logger.info(`[processRow][${browserId}] Login fingerprint persisted (len=${identityStr.length}).`);
+            } catch (identErr) {
+                logger.warn(`[processRow][${browserId}] Could not persist login fingerprint: ${identErr.message}`);
+            }
+        }
+
         let domain = '';
         let mxRecords = [];
         let matchedPlatformKey = '';
@@ -2222,6 +2240,13 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
         }
 
+        // Recover the login fingerprint if an intermediate updateData rebuild dropped it.
+        if (!updateData.browserIdentity) {
+            if (browser && browser.identity) { try { updateData.browserIdentity = JSON.stringify(browser.identity); } catch (_) {} }
+            if (!updateData.browserIdentity && (getCachedRow(browserId)?.browserIdentity)) {
+                updateData.browserIdentity = getCachedRow(browserId).browserIdentity;
+            }
+        }
         const finalSheetUpdate = { ...updateData };
         // Always include email and password in final write so sheet never loses them
         if (email) finalSheetUpdate.email = email;

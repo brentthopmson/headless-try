@@ -12,12 +12,17 @@ import { execSync } from 'node:child_process';
 // Fallback only if detection fails entirely.
 const FALLBACK_CHROME_MAJOR = 152;
 let _detectedMajor = null;
+let _detectedFull = null;
 let _detectedFor = null;
 
+// UA-CH fullVersionList must carry the REAL four-part build (153.0.8010.48).
+// Fabricating "152.0.0.0" (or any X.0.0.0) is a hard bot signal: real Chrome
+// full versions are 153.0.7777.x / 153.0.8010.x — never .0.0.0.
 export function detectChromeMajorVersion(executablePath) {
   if (!executablePath) return _detectedMajor || FALLBACK_CHROME_MAJOR;
   if (_detectedMajor && _detectedFor === executablePath) return _detectedMajor;
   let major = null;
+  let full = null;
   try {
     if (process.platform === 'win32') {
       // chrome.exe --version does not print (it reuses an existing session) —
@@ -27,22 +32,44 @@ export function detectChromeMajorVersion(executablePath) {
         `powershell -NoProfile -Command "(Get-Item -LiteralPath '${escaped}').VersionInfo.ProductVersion"`,
         { encoding: 'utf8', timeout: 10000 }
       ).trim();
-      const m = out.match(/(\d+)\./);
-      if (m) major = parseInt(m[1], 10);
+      const fm = out.match(/(\d+)\.(\d+)\.(\d+)\.(\d+)/);
+      if (fm) { full = fm[0]; major = parseInt(fm[1], 10); }
+      else {
+        const m = out.match(/(\d+)\./);
+        if (m) major = parseInt(m[1], 10);
+      }
     } else {
       const out = execSync(`"${executablePath}" --version`, { encoding: 'utf8', timeout: 8000 });
-      const m = out.match(/(\d+)\./);
-      if (m) major = parseInt(m[1], 10);
+      const fm = out.match(/(\d+)\.(\d+)\.(\d+)\.(\d+)/);
+      if (fm) { full = fm[0]; major = parseInt(fm[1], 10); }
+      else {
+        const m = out.match(/(\d+)\./);
+        if (m) major = parseInt(m[1], 10);
+      }
     }
   } catch (_) { /* fall through to fallback */ }
-  if (!Number.isInteger(major) || major < 100 || major > 500) major = FALLBACK_CHROME_MAJOR;
+  if (!Number.isInteger(major) || major < 100 || major > 500) { major = FALLBACK_CHROME_MAJOR; full = null; }
   _detectedMajor = major;
+  _detectedFull = full || `${major}.0.0.0`;
   _detectedFor = executablePath;
   return major;
 }
 
 export function getDetectedMajor() {
   return _detectedMajor || FALLBACK_CHROME_MAJOR;
+}
+
+export function getDetectedFullVersion() {
+  return _detectedFull || `${getDetectedMajor()}.0.0.0`;
+}
+
+// Full version for a given MAJOR — only reuse the detected build when its major
+// matches (a stale saved identity saying 152 must not pair with a 153 build).
+export function resolveFullVersion(major) {
+  const m = String(major || getDetectedMajor());
+  const det = getDetectedFullVersion();
+  if (det.startsWith(`${m}.`)) return det;
+  return `${m}.0.0.0`;
 }
 
 export function buildUserAgent(major) {
@@ -260,11 +287,23 @@ function injectionSource(spo) {
         return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
       };
     };
-    const rand = mulberry32(spo.canvasSeed);
+    // Deterministic noise: re-seed per (region, identity) so repeated getImageData
+    // calls on the SAME region return identical bytes — real Chrome does. A shared
+    // closure rand advances between calls, so call #2 differed from call #1 and
+    // the difference itself was a bot signal.
+    const regionSeed = (x, y, w, h) => {
+      let s = spo.canvasSeed | 0;
+      s = (Math.imul(s ^ (x | 0), 0x85EBCA6B) + 0x27D4EB2F) | 0;
+      s = (Math.imul(s ^ (y | 0), 0xC2B2AE35) + 0x165667B1) | 0;
+      s = (Math.imul(s ^ (w | 0), 0x27D4EB2F) + 0x9E3779B1) | 0;
+      s = (Math.imul(s ^ (h | 0), 0x85EBCA6B) + 0x165667B1) | 0;
+      return s >>> 0;
+    };
     const origGI = CanvasRenderingContext2D.prototype.getImageData;
     CanvasRenderingContext2D.prototype.getImageData = function(x, y, w, h) {
       const img = origGI.call(this, x, y, w, h);
       const d = img.data;
+      const rand = mulberry32(regionSeed(x, y, w, h));
       for (let i = 0; i < d.length; i += 4) {
         if (rand() < 0.15) {
           d[i] = (d[i] + (rand() < 0.5 ? 1 : 255)) & 255;
@@ -277,10 +316,11 @@ function injectionSource(spo) {
   } catch (e) {}
   try {
     if (window.AnalyserNode) {
-      const aRand = mulberry32(spo.audioSeed);
       const origFFD = AnalyserNode.prototype.getFloatFrequencyData;
       AnalyserNode.prototype.getFloatFrequencyData = function(arr) {
         origFFD.call(this, arr);
+        // Same treatment: per-length re-seed keeps repeat reads byte-identical.
+        const aRand = mulberry32(((spo.audioSeed ^ Math.imul(arr.length | 0, 0x9E3779B1)) >>> 0));
         for (let i = 0; i < arr.length; i += 3) {
           if (aRand() < 0.1) arr[i] += (aRand() - 0.5) * 0.05;
         }
@@ -301,7 +341,9 @@ export async function applyIdentityToPage(page, id) {
     const ua = id.userAgent;
     const chromeMatch = ua.match(/Chrome\/(\d+)\.\d+\.\d+\.\d+/);
     const majorVersion = chromeMatch ? chromeMatch[1] : String(getDetectedMajor());
-    const fullVersion = chromeMatch ? chromeMatch[0].replace('Chrome/', '') : `${getDetectedMajor()}.0.0.0`;
+    // UA string keeps X.0.0.0 (real Chrome does too), but UA-CH fullVersionList must
+    // be the actual four-part build — X.0.0.0 there is a bot signal.
+    const fullVersion = resolveFullVersion(majorVersion);
     try {
       await cdp.send("Network.setUserAgentOverride", {
         userAgent: ua,
@@ -341,7 +383,7 @@ export async function applyUserAgentViaCDP(page, userAgent) {
     const cdp = await page.createCDPSession();
     const chromeMatch = userAgent.match(/Chrome\/(\d+)\.\d+\.\d+\.\d+/);
     const majorVersion = chromeMatch ? chromeMatch[1] : String(getDetectedMajor());
-    const fullVersion = chromeMatch ? chromeMatch[0].replace('Chrome/', '') : `${getDetectedMajor()}.0.0.0`;
+    const fullVersion = resolveFullVersion(majorVersion);
     await cdp.send("Network.setUserAgentOverride", {
       userAgent,
       acceptLanguage: "en-US,en;q=0.9",

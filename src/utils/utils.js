@@ -86,7 +86,7 @@ export function getBrowserSemaphoreStats() {
 }
 
 import logger from "./logger.js";
-import { generateIdentity, launchArgsForIdentity, detectChromeMajorVersion, getDetectedMajor, buildUserAgent, healUserAgent } from "./identity.js";
+import { generateIdentity, launchArgsForIdentity, detectChromeMajorVersion, getDetectedMajor, getDetectedFullVersion, buildUserAgent, healUserAgent } from "./identity.js";
 import { resolveProxyForRun, maskProxy } from "./proxy.js";
 
 // Detect the REAL installed browser major version once at startup. The spoofed
@@ -94,9 +94,10 @@ import { resolveProxyForRun, maskProxy } from "./proxy.js";
 // sign-in from browsers claiming old versions ("browser or app may not be
 // secure" → /v3/signin/rejected).
 const versionDetectExe = isDev ? localExecutablePath : fullChromiumExecutablePath;
+let _legacyFlagsLogged = false;
 try {
   const detectedMajor = detectChromeMajorVersion(versionDetectExe);
-  logger.info(`[Chrome] UA major version: ${detectedMajor} (exe=${versionDetectExe})`);
+  logger.info(`[Chrome] UA major version: ${detectedMajor} full version: ${getDetectedFullVersion()} (exe=${versionDetectExe})`);
 } catch (e) {
   logger.warn(`[Chrome] Version detection failed (using fallback ${getDetectedMajor()}): ${e.message}`);
 }
@@ -228,12 +229,31 @@ export async function launchBrowser(customOptions = {}) {
 
   const defaultViewport = identity.viewport;
 
+  // Fix C — A/B toggle for the flag set removed on 2026-09-10 (4c88127):
+  //   WEBFIXX_LEGACY_FLAGS=1 restores `--disable-features=AutomationControlled`
+  //   (merged into the existing --disable-features list) and `--no-sandbox` on
+  //   Windows — the exact args the surviving Aug-3 session was launched with.
+  // Default (unset/off) = current behaviour. Engine-wide, so A/B runs are
+  // sequential: restart the engine between the control and variant row.
+  const legacyFlags = /^(1|true|on|yes)$/i.test(String(process.env.WEBFIXX_LEGACY_FLAGS || ''));
+  if (!_legacyFlagsLogged) {
+    _legacyFlagsLogged = true;
+    logger.warn(`[launchBrowser] legacy flags: ${legacyFlags ? 'ON (WEBFIXX_LEGACY_FLAGS set — AutomationControlled disable-features + win --no-sandbox)' : 'OFF (current flag set)'}`);
+  }
+
+  const disableFeatures = legacyFlags
+    ? ["--disable-features=AutomationControlled,site-per-process"]
+    : ["--disable-features=site-per-process"];
+  const platformSandbox = (process.platform === 'linux' || (legacyFlags && process.platform === 'win32'))
+    ? ["--no-sandbox"]
+    : [];
+
   const baseArgs = [
     ...identityArgs,
     ...proxyArgs,
     // Anti-detection flags
     "--disable-blink-features=AutomationControlled",
-    "--disable-features=site-per-process",
+    ...disableFeatures,
     "--disable-site-isolation-trials",
     "--disable-dev-shm-usage",
     // Use basic password/cookie store instead of system keyring (GNOME Keyring/KWallet).
@@ -241,8 +261,7 @@ export async function launchBrowser(customOptions = {}) {
     // profile directory. --password-store=basic stores the encryption key IN the profile,
     // making it portable across sessions (upload to Drive → download by smartExtract).
     "--password-store=basic",
-    // --no-sandbox only on Linux/Docker (triggers Google detection on Windows)
-    ...(process.platform === 'linux' ? ["--no-sandbox"] : []),
+    ...platformSandbox,
     "--enable-features=NetworkService,NetworkServiceInProcess",
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",

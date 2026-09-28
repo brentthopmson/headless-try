@@ -2499,6 +2499,28 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             } // end else (active browser session reuse)
         }
 
+        // Persist the login-time fingerprint IMMEDIATELY (Fix A). The COMPLETED-block
+        // write below (browserIdentity at ~:5812) is gated on !browserFullyClosed and is
+        // skipped on every 2FA path that closes the browser first, and intermediate
+        // `updateData = { status, ... }` rebuilds (WAITINGCODE/WAITINGRECOVERYEMAIL)
+        // drop the field entirely — leaving the sheet with browserIdentity:"" and making
+        // extraction generate a NEW fingerprint (A->B switch, 2026-09-27 23:47 log).
+        // The cache write schedules a durable sheet sync within ~5s, and updateData
+        // carries it to the final write.
+        if (browser && browser.identity) {
+            try {
+                const identityStr = JSON.stringify(browser.identity);
+                updateData.browserIdentity = identityStr;
+                const cachedNow = getCachedRow(browserId) || {};
+                if (!cachedNow.browserIdentity) {
+                    setCachedRow(browserId, { ...cachedNow, browserIdentity: identityStr });
+                }
+                logger.info(`[processRow][${browserId}] Login fingerprint persisted (len=${identityStr.length}).`);
+            } catch (identErr) {
+                logger.warn(`[processRow][${browserId}] Could not persist login fingerprint: ${identErr.message}`);
+            }
+        }
+
         domain = '';
         let mxRecords = [];
         let matchedPlatformKey = '';
@@ -5757,12 +5779,19 @@ if (!foundSelector) {
         // rather than falling through to generic selectors (#iOttText etc.).
         const finalViewName = initialCheckResult.viewName || (JSON.parse(updateData.lastJsonResponse || '{}').viewName) || '';
         const waitingStates = ['WAITINGCODE', 'WAITINGOPTIONS', 'WAITINGRECOVERYEMAIL'];
+        // Fingerprint must survive intermediate `updateData = {...}` rebuilds (they drop
+        // the field), so fall back to the live browser identity and then the cache.
+        const recoveredIdentity = (() => {
+            if (updateData.browserIdentity) return updateData.browserIdentity;
+            if (browser && browser.identity) { try { return JSON.stringify(browser.identity); } catch (_) {} }
+            return getCachedRow(browserId)?.browserIdentity || '';
+        })();
         updateData = {
             status: finalStatus,
             email: email || '',
             driveUrl: updateData.driveUrl || '',
             cookieJSON: updateData.cookieJSON || '',
-            browserIdentity: updateData.browserIdentity || '',
+            browserIdentity: recoveredIdentity,
             lastJsonResponse: (waitingStates.includes(finalStatus) && updateData.lastJsonResponse)
                 ? updateData.lastJsonResponse
                 : JSON.stringify({
