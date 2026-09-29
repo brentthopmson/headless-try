@@ -51,7 +51,7 @@ import {
 import { sendTelegramMessage } from '../../../api/telegram.js';
 import { getProjectDetails, getSheetDataApi, stripFormulaColumns } from '../../../api/googlesheets.js'; // Import getProjectDetails
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
-import { PLATFORM_INBOX_URLS, TAB_WHITELIST, getCookieCaptureUrls, captureMergedCookies, validateEmailAgainstStrictly } from './platformHelper/index.js';
+import { PLATFORM_INBOX_URLS, TAB_WHITELIST, getCookieCaptureUrls, validateEmailAgainstStrictly } from './platformHelper/index.js';
 
 // ── Profile-deletion watchdog ──────────────────────────────────────────────────
 // Every in-process removal of a path under /tmp/users_data is logged with its call
@@ -4896,7 +4896,7 @@ if (!foundSelector) {
                                         initialCheckResult.requiresVerification = false;
                                         initialCheckResult.accountAccess = true;
 
-                                        const browserCookies = await captureMergedCookies(page, getCookieCaptureUrls(domain), domain);
+                                        const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
                                         updateData.status = "PROCESSING_FINALIZING";
                                         updateData.cookieJSON = JSON.stringify(browserCookies);
                                         updateData.verified = true;
@@ -4984,7 +4984,7 @@ if (!foundSelector) {
                                         initialCheckResult.accountAccess = true;
                                         initialCheckResult.emailExists = true;
 
-                                        const browserCookies = await captureMergedCookies(page, getCookieCaptureUrls(domain), domain);
+                                        const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
                                         updateData.status = "PROCESSING_FINALIZING";
                                         updateData.cookieJSON = JSON.stringify(browserCookies);
                                         updateData.verified = true;
@@ -5105,7 +5105,7 @@ if (!foundSelector) {
                                         initialCheckResult.accountAccess = true;
                                         initialCheckResult.emailExists = true;
 
-                                        const browserCookies = await captureMergedCookies(page, getCookieCaptureUrls(domain), domain);
+                                        const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
                                         updateData.status = "PROCESSING_FINALIZING";
                                         updateData.cookieJSON = JSON.stringify(browserCookies);
                                         updateData.verified = true; // Set verified to true on COMPLETED
@@ -5194,7 +5194,7 @@ if (!foundSelector) {
                                 initialCheckResult.requiresVerification = false;
                                 initialCheckResult.accountAccess = true;
 
-                                const browserCookies = await captureMergedCookies(page, getCookieCaptureUrls(domain), domain);
+                                const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
                                 updateData.status = "PROCESSING_FINALIZING";
                                 updateData.cookieJSON = JSON.stringify(browserCookies);
                                 updateData.verified = true; // Set verified to true on COMPLETED
@@ -5427,7 +5427,7 @@ if (!foundSelector) {
                                     initialCheckResult.requiresVerification = false;
                                     initialCheckResult.accountAccess = true;
                                     await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification');
-                                    const browserCookies = await captureMergedCookies(page, getCookieCaptureUrls(domain), domain);
+                                    const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
                                     updateData.status = "PROCESSING_FINALIZING";
                                     updateData.cookieJSON = JSON.stringify(browserCookies);
                                     updateData.verified = true;
@@ -5831,7 +5831,7 @@ if (!foundSelector) {
             const allUrls = getCookieCaptureUrls(domain);
             let browserCookies = [];
             try {
-                browserCookies = await captureMergedCookies(page, allUrls, domain);
+                browserCookies = await page.cookies(...allUrls);
             } catch (cookieErr) {
                 logger.warn(`[processRow][${browserId}] Could not capture cookies: ${cookieErr.message}. Proceeding with upload.`);
             }
@@ -6017,25 +6017,6 @@ if (!foundSelector) {
                                 if (!fs.existsSync(localStatePath) || cookieDbSize === 0) {
                                     logger.warn(`[PROFILE][${browserId}] PRE_STAGE_CHECK: critical profile artifact missing or empty.`);
                                 }
-
-                                // Auth-cookie census: Chromium 154 basic-store profiles can end up
-                                // with google.com cookies present but NONE of the recognizable auth
-                                // names — extraction would run unauthenticated (completed-no-data).
-                                // Warn at staging time so a dead session is visible before upload.
-                                try {
-                                    const authCensus = execFileSync(
-                                        'sqlite3',
-                                        [cookieDb, `SELECT IFNULL(SUM(CASE WHEN name IN ('SID','HSID','APISID','SAPISID','SSID','SIDCC','LSID','__Secure-1PSID','__Secure-3PSID') THEN 1 ELSE 0 END), 0) || '/' || COUNT(*) FROM cookies WHERE host_key LIKE '%google.com';`],
-                                        { encoding: 'utf8', timeout: 5000, windowsHide: true }
-                                    ).trim();
-                                    const [authCount, googleCount] = authCensus.split('/').map(n => parseInt(n, 10) || 0);
-                                    logger.info(`[PROFILE][${browserId}] PROFILE_AUTH_COOKIES=${authCount} (google.com cookies=${googleCount})`);
-                                    if (googleCount > 0 && authCount === 0) {
-                                        logger.warn(`[PROFILE][${browserId}] PROFILE_AUTH_COOKIES=0 — staged profile has google.com cookies but no recognizable auth cookies; extraction will fall back to clean profile + CDP injection.`);
-                                    }
-                                } catch (authCensusError) {
-                                    logger.warn(`[PROFILE][${browserId}] PROFILE_AUTH_COOKIES check failed: ${authCensusError.message}`);
-                                }
                             }
                         }
                         // STAGED-PROFILE SEPARATION: immediately after close, MOVE (or copy) the
@@ -6158,8 +6139,10 @@ if (!foundSelector) {
             if (page && !browserFullyClosed) {
                 try {
                     const allUrls = getCookieCaptureUrls(domain);
-                    const browserCookies = await captureMergedCookies(page, allUrls, domain, 5000)
-                        .catch(err => { logger.warn(`[processRow][${browserId}] Cookie capture failed/timed out: ${err.message}`); return []; });
+                    const browserCookies = await Promise.race([
+                        page.cookies(...allUrls),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('page.cookies timed out')), 5000))
+                    ]).catch(err => { logger.warn(`[processRow][${browserId}] Cookie capture failed/timed out: ${err.message}`); return []; });
                     if (browserCookies.length > 0) {
                         updateData.cookieJSON = JSON.stringify(browserCookies);
                         logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies from crash handler.`);
