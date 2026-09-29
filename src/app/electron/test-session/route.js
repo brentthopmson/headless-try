@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getSheetDataApi } from '../../api/googlesheets.js';
 import { localExecutablePath, launchBrowser } from '../../../utils/utils.js';
 import { applyIdentityToPage } from '../../../utils/identity.js';
+import { sanitizeCookiesForInjection, injectCookiesViaCDP } from '../../socials/_shared/routeHelper.js';
 import fs from 'fs-extra';
 import path from 'path';
 import https from 'https';
@@ -165,17 +166,12 @@ export async function POST(request) {
     console.log(`[test-session] Launch mode: profile=${!!browser.userDataDir}, savedIdentity=${!!browserIdentity}, platform=${domain}`);
 
     if (cookieJSON && cookieJSON.length > 0) {
-      console.log(`[test-session] Injecting ${cookieJSON.length} cookies via page.setCookie`);
-      await page.setCookie(...cookieJSON.map(c => ({
-        name: c.name,
-        value: c.value,
-        domain: c.domain,
-        path: c.path || '/',
-        secure: c.secure || false,
-        httpOnly: c.httpOnly || false,
-        sameSite: c.sameSite || 'Lax',
-        ...(c.expires && c.expires > 0 ? { expires: c.expires } : {}),
-      })));
+      const { cookies: cleanCookies, expired, fixedSameSite } = sanitizeCookiesForInjection(cookieJSON);
+      console.log(`[test-session] Injecting cookies via raw CDP (input=${cookieJSON.length}, expiredDropped=${expired}, sameSiteNormalized=${fixedSameSite})`);
+      const { failures, missing } = await injectCookiesViaCDP(page, cleanCookies);
+      if (failures.length || missing.length) {
+        console.warn(`[test-session] Cookie injection issues: failures=${failures.length}, missing=${missing.length} (${missing.slice(0, 10).join(', ')})`);
+      }
     } else {
       console.log(`[test-session] No cookieJSON found — profile-only mode`);
     }

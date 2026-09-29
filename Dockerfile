@@ -21,6 +21,9 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV PORT=3000
+# Prod defaults to warn (logger.js:9), which hides the cookie/auth diagnostics
+# needed to debug session death. stdout logging still honors this in production.
+ENV LOG_LEVEL=info
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \

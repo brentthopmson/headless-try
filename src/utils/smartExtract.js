@@ -2,7 +2,7 @@ import logger from './logger.js';
 import axios from 'axios';
 import MultiProviderAI from './multiProviderAI.js';
 const aiService = new MultiProviderAI();
-import { launchBrowserWithSession, downloadAndExtractProfile, DOMHelpers } from '../app/socials/_shared/routeHelper.js';
+import { launchBrowserWithSession, downloadAndExtractProfile, DOMHelpers, sanitizeCookiesForInjection, injectCookiesViaCDP } from '../app/socials/_shared/routeHelper.js';
 import { applyIdentityToPage } from './identity.js';
 import { getSheetDataApi, updateSheetRowApi, ensureSheetColumns } from '../app/api/googlesheets.js';
 import { getPlatformConfig, getExtractor } from '../app/socials/social-extract/platforms.js';
@@ -224,7 +224,14 @@ async function createTab(browser, cookieJSON) {
     const tab = await browser.newPage();
     if (browser.identity) await applyIdentityToPage(tab, browser.identity);
     const cookies = typeof cookieJSON === 'string' ? JSON.parse(cookieJSON) : cookieJSON;
-    await tab.setCookie(...cookies);
+    const { cookies: cleanCookies, expired, fixedSameSite } = sanitizeCookiesForInjection(cookies);
+    if (expired || fixedSameSite) {
+        logger.info(`[smartExtract] Cookie sanitize: dropped ${expired} expired, normalized sameSite on ${fixedSameSite} (input=${cookies.length})`);
+    }
+    const { failures, missing } = await injectCookiesViaCDP(tab, cleanCookies);
+    if (failures.length || missing.length) {
+        logger.warn(`[smartExtract] Cookie injection issues: failures=${failures.length}, missing=${missing.length} (${missing.slice(0, 10).join(', ')})`);
+    }
     return tab;
 }
 

@@ -162,6 +162,71 @@ function cookieMetadataKey(cookie) {
     return [cookie.name, cookie.domain, cookie.path || '/'].join('|');
 }
 
+// Chrome silently DROPS a cookie when sameSite:"None" is paired with secure:false,
+// and puppeteer throws on any sameSite value outside {Strict, Lax, None}. Expired
+// cookies are refused by Network.setCookies without an error. Normalize all three
+// so an injected sheet lands exactly as captured.
+export function sanitizeCookiesForInjection(cookies) {
+    const nowSec = Date.now() / 1000;
+    const out = [];
+    let expired = 0;
+    let fixedSameSite = 0;
+    for (const raw of cookies) {
+        const c = { ...raw };
+        if (typeof c.expires === 'number' && c.expires > 0 && c.expires <= nowSec) {
+            expired += 1;
+            continue;
+        }
+        const ss = typeof c.sameSite === 'string' ? c.sameSite : '';
+        const norm = ss ? ss.charAt(0).toUpperCase() + ss.slice(1).toLowerCase() : '';
+        if (norm === 'Strict' || norm === 'Lax') {
+            c.sameSite = norm;
+        } else if (norm === 'None') {
+            if (c.secure) {
+                c.sameSite = 'None';
+            } else {
+                delete c.sameSite;
+                fixedSameSite += 1;
+            }
+        } else if (ss) {
+            delete c.sameSite;
+            fixedSameSite += 1;
+        } else {
+            delete c.sameSite;
+        }
+        if (typeof c.expires !== 'number' || c.expires <= 0) {
+            delete c.expires;
+        }
+        out.push(c);
+    }
+    return { cookies: out, expired, fixedSameSite };
+}
+
+// Inject cookie-by-cookie over raw CDP so one bad cookie cannot abort the batch,
+// then verify against Network.getAllCookies and report exactly what went missing
+// (expired / unsupported / silently refused).
+export async function injectCookiesViaCDP(page, cookies) {
+    const cdp = await page.createCDPSession();
+    const failures = [];
+    for (const cookie of cookies) {
+        try {
+            await cdp.send('Network.setCookies', { cookies: [cookie] });
+        } catch (e) {
+            failures.push(`${cookie.name}@${cookie.domain}: ${e.message}`);
+        }
+    }
+    let missing = [];
+    try {
+        const all = await cdp.send('Network.getAllCookies');
+        const key = (x) => `${x.name}|${x.domain}|${x.path || '/'}`;
+        const have = new Set((all.cookies || []).map(key));
+        missing = cookies.filter((c) => !have.has(key(c))).map((c) => `${c.name}@${c.domain}`);
+    } catch (_) {
+        // verification is best-effort; failures[] already captured per-cookie errors
+    }
+    return { failures, missing };
+}
+
 function summarizeCookieMetadata(cookies) {
     return cookies.map(cookie => ({
         name: cookie.name,
@@ -206,9 +271,13 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
             launchOptions.realGeo = true;
         }
 
-        const browser = await launchBrowser(launchOptions);
+        const platform = (options.platform || '').toLowerCase();
+        const isGmail = platform === 'gmail';
+        let forceCDPInjection = false;
 
-        const page = await browser.newPage();
+        let browser = await launchBrowser(launchOptions);
+
+        let page = await browser.newPage();
         if (browser.identity) {
             await applyIdentityToPage(page, browser.identity);
         }
@@ -252,6 +321,29 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
                 } else if (readableAuthCookies.length === 0) {
                     logger.warn(`[launchBrowserWithSession] Persistent profile has readable Google cookies but no recognized auth-cookie names — session may be unauthenticated or expired`);
                 }
+                // FALLBACK (prod Linux root cause): Chromium 154 with --password-store=basic
+                // restores host-only cookies on restart but drops every parent-domain
+                // .google.com auth cookie (SID/HSID/APISID/SAPISID/SSID/...), leaving the
+                // profile unauthenticated — extraction then hits ServiceLogin and ends
+                // completed-no-data. Relaunch WITH THE SAME profile (per-profile state:
+                // cached Accept-CH client-hints opt-ins, storage, TLS state — a clean
+                // relaunch with identical cookies was measured to stop at
+                // v3/signin/accountchooser while the profile-backed launch reaches
+                // Inbox) and force-inject the login cookie sheet, which overwrites the
+                // unreadable/unauthenticated cookie jar at runtime. Healthy gmail
+                // profiles, cookieJSON-less runs and non-gmail platforms keep their
+                // existing behavior.
+                if (cookieJSON && isGmail && readableAuthCookies.length === 0) {
+                    logger.warn(`[launchBrowserWithSession] Persistent profile has no readable auth cookies (mail=${gmailCookies.length}, accounts=${accountCookies.length}) — falling back to same profile + forced CDP cookie injection (userDataDir=${options.userDataDir})`);
+                    try { await browser.close(); } catch (_) {}
+                    browser = await launchBrowser(launchOptions);
+                    page = await browser.newPage();
+                    if (browser.identity) {
+                        await applyIdentityToPage(page, browser.identity);
+                    }
+                    forceCDPInjection = true;
+                    logger.info(`[launchBrowserWithSession] Fallback browser relaunched with persistent profile state (userDataDir kept, cookie injection forced)`);
+                }
             } catch (cookieReadError) {
                 logger.warn(`[launchBrowserWithSession] Could not read persistent profile cookies: ${cookieReadError.message}`);
             }
@@ -260,17 +352,28 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
         // Inject cookies via CDP:
         // - Gmail: Skip CDP cookie injection when userDataDir is present, because CDP cookie injection
         //   over a restored Chrome profile clobbers Google session tokens and triggers sign-in redirects.
+        //   Exception: when the profile was found UNAUTHENTICATED the fallback above relaunched the SAME
+        //   profile (forceCDPInjection), so injection proceeds there — the profile has no readable auth
+        //   cookies left to clobber, and injection is the only path back to an authenticated session.
         // - Microsoft / Outlook / Others: Inject CDP cookies AND load persistent userDataDir profile (BOTH),
         //   as required for Microsoft authentication sessions.
         // - No userDataDir: Always inject CDP cookies as fallback.
-        const platform = (options.platform || '').toLowerCase();
-        const isGmail = platform === 'gmail';
-        const shouldInjectCDPCookies = cookieJSON && (!options.userDataDir || !isGmail);
+        const shouldInjectCDPCookies = cookieJSON && (forceCDPInjection || !options.userDataDir || !isGmail);
 
         if (shouldInjectCDPCookies) {
             const cookies = await loadBrowserSession(cookieJSON);
-            await page.setCookie(...cookies);
-            logger.info(`[launchBrowserWithSession] Injected ${cookies.length} cookies via CDP (platform=${platform || 'unknown'}, userDataDir=${!!options.userDataDir})`);
+            const { cookies: cleanCookies, expired, fixedSameSite } = sanitizeCookiesForInjection(cookies);
+            if (expired || fixedSameSite) {
+                logger.info(`[launchBrowserWithSession] Cookie sanitize: dropped ${expired} expired, normalized sameSite on ${fixedSameSite} (input=${cookies.length}, injectable=${cleanCookies.length})`);
+            }
+            const { failures, missing } = await injectCookiesViaCDP(page, cleanCookies);
+            if (failures.length) {
+                logger.warn(`[launchBrowserWithSession] CDP cookie injection failures (${failures.length}/${cleanCookies.length}): ${failures.slice(0, 10).join('; ')}`);
+            }
+            if (missing.length) {
+                logger.warn(`[launchBrowserWithSession] Cookies not present after injection (${missing.length}/${cleanCookies.length}): ${missing.slice(0, 15).join(', ')}`);
+            }
+            logger.info(`[launchBrowserWithSession] Injected ${cleanCookies.length - missing.length}/${cookies.length} cookies via CDP (platform=${platform || 'unknown'}, userDataDir=${!!options.userDataDir}, forceFallback=${forceCDPInjection})`);
         } else if (options.userDataDir) {
             logger.info(`[launchBrowserWithSession] Using persistent userDataDir profile cookies & session storage (skipping CDP cookie injection for platform=${platform})`);
         }
