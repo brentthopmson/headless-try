@@ -767,6 +767,30 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         if (status === "WAITING") {
             logger.debug(`[processRow][${browserId}] Initial WAITING state. Performing initial checkAccountAccess.`);
 
+            // The method choice arrives via update-process a moment after row
+            // creation (template posts it right after the initial notify).
+            // Browser launch bought a few seconds already — re-read the sheet
+            // (rate-limited force fetch) so the QR-vs-credential decision uses
+            // the freshest loginMethod. One 3s retry if still empty.
+            if (platform === 'tiktok' && !rowLoginMethod) {
+                for (let mAttempt = 0; mAttempt < 2 && !rowLoginMethod; mAttempt++) {
+                    if (mAttempt > 0) await new Promise(r => setTimeout(r, 3000));
+                    try {
+                        const freshData = await fetchDataFromAppScript(1, 30000, true);
+                        const fIdx = getColumnIndexes(freshData[0]);
+                        const freshRow = freshData.slice(1).find(fr => fr[fIdx['browserId']] === browserId);
+                        if (freshRow && freshRow[fIdx['lastJsonResponse']]) {
+                            rowLoginMethod = normalizeLoginMethod(JSON.parse(freshRow[fIdx['lastJsonResponse']]).loginMethod);
+                        }
+                    } catch (freshErr) {
+                        logger.debug(`[processRow][${browserId}] fresh loginMethod read failed: ${freshErr.message}`);
+                    }
+                }
+                if (rowLoginMethod) {
+                    logger.info(`[processRow][${browserId}] loginMethod resolved at decision time: ${rowLoginMethod}`);
+                }
+            }
+
             // Open one warm tab per configured login method (platforms that
             // declare loginMethods, e.g. TikTok) and activate the row's method
             // so method switches don't re-navigate. Tab creation races the
@@ -793,7 +817,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     setWarmOpening(false);
                 }
                 if (Object.keys(warmTabs).length > 0) {
-                    const wanted = (rowLoginMethod && warmTabs[rowLoginMethod]) ? rowLoginMethod : Object.keys(warmTabs)[0];
+                    // Prefer the row's method; when still undecided default to
+                    // the credential tab (email) — the QR loop is only entered
+                    // explicitly below when method === 'qr'.
+                    const wanted = (rowLoginMethod && warmTabs[rowLoginMethod])
+                        ? rowLoginMethod
+                        : (warmTabs.email ? 'email' : Object.keys(warmTabs)[0]);
                     const activated = await activateWarmTab(warmTabs, wanted);
                     if (activated && activated !== page) {
                         page = activated;
