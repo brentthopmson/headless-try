@@ -14,6 +14,9 @@ import {
     executeWorkflow,
     DOMHelpers,
 } from '../_shared/routeHelper.js';
+import workflowOps from '../_shared/workflowOps.js';
+
+const { normalizeWorkflowOp } = workflowOps;
 import { requireFeature } from '../../../utils/featureGate.js';
 import { checkActionAllowed, getPlatformLimits } from '../_shared/limits.js';
 import { getAccountUsage, updateAccountUsage, updateAccountStatus, updateAccountInteractionData } from '../_shared/hubUpdater.js';
@@ -43,7 +46,8 @@ async function processTask(taskPayload) {
 
     try {
         const platform = (taskPayload.platform || "").toLowerCase();
-        const operation = (taskPayload.operation || "scrapeProfile").toLowerCase();
+        const operationRaw = String(taskPayload.operation || "scrapeProfile");
+        const operation = operationRaw.toLowerCase();
         const keyword = taskPayload.searchQuery || taskPayload.targetUsername || "";
         const cookieJSON = taskPayload.cookieJSON;
         const profileId = taskPayload.profileId || taskPayload.accountId || null;
@@ -84,7 +88,7 @@ async function processTask(taskPayload) {
             ({ browser, page } = await launchBrowserWithSession(cookieJSON));
         }
 
-        const workflow = getWorkflow(platform, operation);
+        const workflow = getWorkflow(platform, normalizeWorkflowOp(operationRaw, platformConfig.workflows));
 
         const context = {
             platform,
@@ -116,9 +120,9 @@ async function processTask(taskPayload) {
         // Update hub usage
         if (profileId) {
             const performedActions = [];
-            if (operation === "followUser" || operation === "followFromSuggested") performedActions.push("follow");
-            if (operation === "unfollowUser") performedActions.push("unfollow");
-            if (operation === "interactWithProfile") performedActions.push("like");
+        if (operation === "followuser" || operation === "followfromsuggested") performedActions.push("follow");
+        if (operation === "unfollowuser") performedActions.push("unfollow");
+        if (operation === "interactwithprofile") performedActions.push("like");
 
             for (const action of performedActions) {
                 await updateAccountUsage(profileId, ACTION_LIMIT_MAP[action] || action);

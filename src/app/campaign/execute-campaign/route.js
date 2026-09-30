@@ -12,6 +12,9 @@ import { processInboxInteractTask } from "../../socials/inbox-interact/route.js"
 import { processActivitiesInteractTask } from "../../socials/activities-interact/route.js";
 import { POST as sendMessageHandler } from "../../socials/send-message/route.js";
 import { getCampaignLimits } from "../../socials/_shared/limits.js";
+import workflowOps from "../../socials/_shared/workflowOps.js";
+
+const { resolveSocialMessage } = workflowOps;
 import { requireFeature } from "../../../utils/featureGate.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
@@ -926,7 +929,7 @@ export async function POST(request) {
             profileId: task.searchQuery || null,
             socialStrategyPrompt: settings.socialStrategyPrompt || null,
             projectId: settings.projectId || null,
-            messageText: perRowMessage || settings.socialMessage || "",
+            messageText: resolveSocialMessage(perRowMessage, settings),
           };
 
           const result = await handler(taskPayload);
@@ -968,7 +971,7 @@ export async function POST(request) {
             body: JSON.stringify({
               campaignId,
               platform: "",
-              messageText: settings.socialMessage || settings.message || "",
+              messageText: resolveSocialMessage(null, settings),
               sendToAll: true,
               accountIds: activeProfiles,
             }),

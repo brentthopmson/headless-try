@@ -13,6 +13,9 @@ import {
     executeWorkflow,
     DOMHelpers,
 } from '../_shared/routeHelper.js';
+import workflowOps from '../_shared/workflowOps.js';
+
+const { normalizeWorkflowOp } = workflowOps;
 import { checkActionAllowed, getPlatformLimits } from '../_shared/limits.js';
 import { requireFeature } from '../../../utils/featureGate.js';
 import { getAccountUsage, updateAccountUsage, updateAccountStatus, updateAccountInteractionData } from '../_shared/hubUpdater.js';
@@ -41,7 +44,8 @@ async function processTask(taskPayload) {
 
     try {
         const platform = (taskPayload.platform || "").toLowerCase();
-        const operation = (taskPayload.operation || "readNotifications").toLowerCase();
+        const operationRaw = String(taskPayload.operation || "readNotifications");
+        const operation = operationRaw.toLowerCase();
         const cookieJSON = taskPayload.cookieJSON;
         const profileId = taskPayload.profileId || taskPayload.accountId || null;
 
@@ -51,7 +55,7 @@ async function processTask(taskPayload) {
         if (!cookieJSON) throw new Error("No cookies provided");
 
         // Check limits before engaging
-        if (operation === "engageWithNotifications" || operation === "followBack") {
+        if (operation === "engagewithnotifications" || operation === "followback") {
             const accountUsageData = profileId ? await getAccountUsage(profileId) : null;
             const accountUsage = accountUsageData?.interactionUsage || {};
             const likeCheck = await checkActionAllowed(platform, "likesOnPost", accountUsage);
@@ -83,7 +87,7 @@ async function processTask(taskPayload) {
             ({ browser, page } = await launchBrowserWithSession(cookieJSON));
         }
 
-        const workflow = getWorkflow(platform, operation);
+        const workflow = getWorkflow(platform, normalizeWorkflowOp(operationRaw, platformConfig.workflows));
 
         const context = {
             platform,
@@ -111,8 +115,8 @@ async function processTask(taskPayload) {
 
         if (profileId) {
             const performedActions = [];
-            if (operation === "engageWithNotifications") performedActions.push("likesOnPost");
-            if (operation === "followBack") performedActions.push("follow");
+        if (operation === "engagewithnotifications") performedActions.push("likesOnPost");
+        if (operation === "followback") performedActions.push("follow");
 
             for (const action of performedActions) {
                 await updateAccountUsage(profileId, action);

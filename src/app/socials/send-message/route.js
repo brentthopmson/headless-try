@@ -187,7 +187,7 @@ export async function POST(request) {
           } catch (e) { settings = row[cSettingsIndex] || {}; }
           resolvedFileUrl = resolvedFileUrl || settings.fileUrl || settings.csvFileUrl;
           resolvedPlatform = resolvedPlatform || settings.platform || settings.socialPlatform || "";
-          resolvedMessageText = resolvedMessageText || settings.socialMessage || settings.message || "";
+          resolvedMessageText = resolvedMessageText || settings.socialMessage || settings.body || settings.message || "";
           resolvedSendToAll = sendToAll === true || settings.sendToAll === true || settings.sendToAll === "true";
           resolvedAccountIds = resolvedAccountIds.length > 0 ? resolvedAccountIds : (settings.accounts || []);
         }

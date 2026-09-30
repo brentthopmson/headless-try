@@ -15,6 +15,9 @@ import {
     resolveSocialSession,
     executeWorkflow
 } from '../_shared/routeHelper.js';
+import workflowOps from '../_shared/workflowOps.js';
+
+const { normalizeWorkflowOp } = workflowOps;
 import { checkActionAllowed, getPlatformLimits } from '../_shared/limits.js';
 import { getAccountUsage, updateAccountUsage, updateAccountStatus } from '../_shared/hubUpdater.js';
 import { fetchTaskData, updateTaskRow } from './routeHelper.js';
@@ -55,7 +58,13 @@ function mapOperationToActions(operation) {
 // ==================== Task Processing ====================
 
 async function processTask(taskRow, columnIndexes) {
-    const taskId = taskRow[columnIndexes['taskId']];
+    // The sheet scheduler calls processTask(row, columnIndexes); the campaign
+    // executor calls handler(taskPayload) with a plain object. Normalize both
+    // shapes to a field getter.
+    const get = (columnIndexes && typeof columnIndexes === 'object')
+        ? (key => taskRow[columnIndexes[key]])
+        : (key => (taskRow ? taskRow[key] : undefined));
+    const taskId = get('taskId');
     let browser = null;
     let page = null;
     let finalStatus = "FAILED";
@@ -64,12 +73,13 @@ async function processTask(taskRow, columnIndexes) {
     try {
         logger.info(`[processTask] Starting task: ${taskId}`);
 
-        const platform = taskRow[columnIndexes['platform']]?.toLowerCase();
-        const operation = taskRow[columnIndexes['operation']]?.toLowerCase();
-        const keyword = taskRow[columnIndexes['searchQuery']];
-        const cookieJSON = taskRow[columnIndexes['cookieJSON']];
-        const profileId = taskRow[columnIndexes['profileId']] || taskRow[columnIndexes['accountId']] || null;
-        const socialStrategyPrompt = taskRow[columnIndexes['socialStrategyPrompt']] || null;
+        const platform = get('platform')?.toLowerCase();
+        const operationRaw = get('operation') || "";
+        const operation = operationRaw.toLowerCase();
+        const keyword = get('searchQuery');
+        const cookieJSON = get('cookieJSON');
+        const profileId = get('profileId') || get('accountId') || null;
+        const socialStrategyPrompt = get('socialStrategyPrompt') || null;
 
         if (!platform) throw new Error("Platform not specified");
         if (!operation) throw new Error("Operation not specified");
@@ -94,9 +104,9 @@ async function processTask(taskRow, columnIndexes) {
             let browserIdentity = null;
             let driveUrl = '';
             let resolvedProfileId = profileId;
-            try { browserIdentity = taskRow[columnIndexes['browserIdentity']] || null; } catch (_) {}
-            try { driveUrl = taskRow[columnIndexes['driveUrl']] || ''; } catch (_) {}
-            try { resolvedProfileId = taskRow[columnIndexes['profileId']] || taskRow[columnIndexes['accountId']] || profileId; } catch (_) {}
+            try { browserIdentity = get('browserIdentity') || null; } catch (_) {}
+            try { driveUrl = get('driveUrl') || ''; } catch (_) {}
+            try { resolvedProfileId = get('profileId') || get('accountId') || profileId; } catch (_) {}
 
             const sessionResult = await resolveSocialSession({
                 cookies: cookieJSON,
@@ -113,7 +123,7 @@ async function processTask(taskRow, columnIndexes) {
             ({ browser, page } = await launchBrowserWithSession(cookieJSON));
         }
 
-        const workflow = getWorkflow(platform, operation);
+        const workflow = getWorkflow(platform, normalizeWorkflowOp(operationRaw, platformConfig.workflows));
         
         const context = {
             platform,
@@ -157,8 +167,8 @@ async function processTask(taskRow, columnIndexes) {
         results = [{ error: error.message, timestamp: new Date().toISOString() }];
 
         // Mark account as rate limited if limits were hit
-        if (error.message.includes("blocked by platform limits") && taskRow[columnIndexes['profileId']]) {
-            await updateAccountStatus(taskRow[columnIndexes['profileId']], "RATE_LIMITED");
+        if (error.message.includes("blocked by platform limits") && get('profileId')) {
+            await updateAccountStatus(get('profileId'), "RATE_LIMITED");
         }
     } finally {
         if (page) {

@@ -13,6 +13,9 @@ import {
     resolveSocialSession,
     executeWorkflow,
 } from '../_shared/routeHelper.js';
+import workflowOps from '../_shared/workflowOps.js';
+
+const { normalizeWorkflowOp } = workflowOps;
 import { checkActionAllowed, getPlatformLimits } from '../_shared/limits.js';
 import { requireFeature } from '../../../utils/featureGate.js';
 import { getAccountUsage, updateAccountUsage, updateAccountStatus, updateAccountInteractionData } from '../_shared/hubUpdater.js';
@@ -41,7 +44,8 @@ async function processTask(taskPayload) {
 
     try {
         const platform = (taskPayload.platform || "").toLowerCase();
-        const operation = (taskPayload.operation || "readInbox").toLowerCase();
+        const operationRaw = String(taskPayload.operation || "readInbox");
+        const operation = operationRaw.toLowerCase();
         const keyword = taskPayload.searchQuery || taskPayload.targetUsername || "";
         const cookieJSON = taskPayload.cookieJSON;
         const profileId = taskPayload.profileId || taskPayload.accountId || null;
@@ -54,7 +58,7 @@ async function processTask(taskPayload) {
         if (!cookieJSON) throw new Error("No cookies provided");
 
         // Check coldMessage limit before sending
-        if (operation === "sendMessage") {
+        if (operation === "sendmessage") {
             const accountUsageData = profileId ? await getAccountUsage(profileId) : null;
             const accountUsage = accountUsageData?.interactionUsage || {};
             const check = await checkActionAllowed(platform, "coldMessage", accountUsage);
@@ -67,7 +71,7 @@ async function processTask(taskPayload) {
 
         // Generate AI message if messageText not provided but socialStrategyPrompt exists
         let finalMessageText = messageText;
-        if (!finalMessageText && socialStrategyPrompt && operation === "sendMessage") {
+        if (!finalMessageText && socialStrategyPrompt && operation === "sendmessage") {
             try {
                 const promptTemplate = platformConfig.aiPrompts?.generateColdMessage || "";
                 const targetLink = taskPayload.targetLink || "";
@@ -100,7 +104,7 @@ async function processTask(taskPayload) {
             ({ browser, page } = await launchBrowserWithSession(cookieJSON));
         }
 
-        const workflow = getWorkflow(platform, operation);
+        const workflow = getWorkflow(platform, normalizeWorkflowOp(operationRaw, platformConfig.workflows));
 
         const context = {
             platform,
@@ -130,7 +134,7 @@ async function processTask(taskPayload) {
         finalStatus = "COMPLETED";
 
         if (profileId) {
-            if (operation === "sendMessage") {
+            if (operation === "sendmessage") {
                 await updateAccountUsage(profileId, "coldMessage");
             }
             await updateAccountInteractionData(profileId, {

@@ -114,6 +114,22 @@ export const platformConfigs = {
         ],
         url: "https://tiktok.com/login",
         platform: "tiktok",
+        // Per-method entry URLs — used to open 3 warm tabs at row start so
+        // method switches activate an already-loaded tab instead of navigating.
+        loginMethods: {
+            qr:    { url: "https://www.tiktok.com/login" },
+            email: { url: "https://www.tiktok.com/login/phone-or-email/email" },
+            phone: { url: "https://www.tiktok.com/login/phone-or-email/phone" }
+        },
+        // QR login capture config (platformHelper.runQrLogin).
+        qr: {
+            // Element candidates checked in order: canvas/QR img/background-image, then element screenshot.
+            selectors: ["canvas", "img[src*='qr' i]", "div[class*='qr' i] canvas", "div[class*='qr' i] img"],
+            // Success = URL left /login (TikTok redirects home after scan) AND session cookie/inbox.
+            successUrlPattern: /tiktok\.com\/(?!login)/,
+            timeoutMs: 8 * 60 * 1000,   // QR wait ceiling (template polls 10 min, then shows credential screen)
+            recaptureMs: 25000           // re-capture cadence within TikTok's ~2 min QR validity window
+        },
         selectors: {
             input: "input[placeholder='Email or username']",
             nextButton: "button:has-text('Log in')",

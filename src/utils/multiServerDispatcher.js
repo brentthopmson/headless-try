@@ -5,26 +5,37 @@ import { google } from 'googleapis';
 import { getSheetsAuthClient } from '../app/api/googlesheets.js';
 import { isCampaignPaused } from '../app/campaign/_shared/pipelineUtils.js';
 import logger from './logger.js';
+import serverFilters from './serverFilters.js';
+
+const { matchesServerFilters } = serverFilters;
 
 /**
  * Discover available servers from the links sheet.
  * Filters by severlessCategory (e.g. 'LINK', 'CAMPAIGN') and excludes FAILED/disabled rows.
+ * Optional serverType (severlessType column: EMAIL/SOCIAL/BANK) and platform
+ * (severlessPlatform column: GMAIL/TIKTOK/CHASE…) — both opt-in; omitted = legacy behavior.
  * Returns [{ id, url, rph, rphUsage, rpd, rpdUsage, status }] for all matching servers.
  */
-export async function getAvailableServers(category) {
+export async function getAvailableServers(category, serverType, platform) {
   try {
     const linksResult = await getSheetDataApi('links');
     if (!linksResult.success || !linksResult.data) return [];
     const idIdx = linksResult.headers.indexOf('severlessId');
     const urlIdx = linksResult.headers.indexOf('severlessURL');
     const statusIdx = linksResult.headers.indexOf('status');
-    const categoryIdx = linksResult.headers.indexOf('severlessCategory');
     const severlessStatusIdx = linksResult.headers.indexOf('severlessStatus');
     const rphIdx = linksResult.headers.indexOf('serverlessRph');
     const rphUsageIdx = linksResult.headers.indexOf('serverlessRphUsage');
     const rpdIdx = linksResult.headers.indexOf('serverlessRpd');
     const rpdUsageIdx = linksResult.headers.indexOf('serverlessRpdUsage');
     if (idIdx === -1 || urlIdx === -1) return [];
+
+    if (serverType && linksResult.headers.indexOf('severlessType') === -1) {
+      logger.warn(`[MultiServer] severlessType column missing — ignoring requested serverType=${serverType}`);
+    }
+    if (platform && linksResult.headers.indexOf('severlessPlatform') === -1) {
+      logger.warn(`[MultiServer] severlessPlatform column missing — requested platform=${platform} will match no server`);
+    }
 
     return linksResult.data
       .filter(r => {
@@ -38,11 +49,8 @@ export async function getAvailableServers(category) {
           if (ss === 'FAILED') return false;
         }
 
-        // Filter by severlessCategory if a category was requested
-        if (category && categoryIdx !== -1) {
-          const serverCategories = String(r[categoryIdx] || '').toUpperCase().split(',').map(s => s.trim());
-          if (!serverCategories.includes(category.toUpperCase())) return false;
-        }
+        // Optional category / serverType / platform filters (pure, GAS-matched semantics)
+        if (!matchesServerFilters(r, linksResult.headers, { category, serverType, platform })) return false;
 
         return true;
       })
@@ -87,9 +95,11 @@ export function splitRowRanges(totalRows, numServers) {
  * @param {string} fileUrl - the CSV file URL (for routes that need it)
  * @param {number} totalRows - total data row count (after dedup if applicable)
  * @param {string} category - server category filter (e.g. 'CAMPAIGN')
+ * @param {string} [serverType] - severlessType filter (EMAIL / SOCIAL / BANK)
+ * @param {string} [platform] - severlessPlatform filter (GMAIL / TIKTOK / CHASE …)
  * @returns {Promise<{ dispatched: boolean, servers: Array } | null>} null = single-server mode
  */
-export async function dispatchToServers(campaignId, stage, fileUrl, totalRows, category) {
+export async function dispatchToServers(campaignId, stage, fileUrl, totalRows, category, serverType, platform) {
   const multiServerSetting = await getSetting('multiServerEnabled');
   if (multiServerSetting?.value1 !== 'true') return null;
 
@@ -98,7 +108,7 @@ export async function dispatchToServers(campaignId, stage, fileUrl, totalRows, c
     return null;
   }
 
-  const servers = await getAvailableServers(category || 'CAMPAIGN');
+  const servers = await getAvailableServers(category || 'CAMPAIGN', serverType, platform);
   if (servers.length === 0) return null;
 
   const ranges = splitRowRanges(totalRows, servers.length);

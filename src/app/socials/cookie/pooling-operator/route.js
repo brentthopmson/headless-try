@@ -98,9 +98,19 @@ export async function POST(request) {
         );
     }
 
+    let qrData = null;
+    try {
+        const rawLr = row.lastJsonResponse;
+        const lr = rawLr ? (typeof rawLr === 'string' ? JSON.parse(rawLr) : rawLr) : null;
+        qrData = (lr && lr.qrData) || row.qrData || null;
+    } catch (e) {
+        qrData = row.qrData || null;
+    }
+
     return corsJson({
         success: true,
         currentStatus: row.status,
+        qrData,
         data: row
     });
 }
