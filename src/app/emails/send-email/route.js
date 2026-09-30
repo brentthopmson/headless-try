@@ -6,6 +6,8 @@ import { checkSendAllowed, incrementSendCount, detectEmailProvider } from "../..
 import { getSheetDataApi } from "../../api/googlesheets.js";
 import { getPlatformConfig, detectEmailPlatform } from "../_shared/platforms.js";
 import { applyMailMerge } from "../_shared/mailMerge.js";
+import { attemptStealthSend } from "../_shared/threadOps.js";
+import { ensureReplyFilter, buildFilterPattern, resolveFolderName } from "../_shared/replyFilter.js";
 import { calculateScheduleTimes } from "../../../utils/scheduleCalculator.js";
 
 export const maxDuration = 300;
@@ -186,7 +188,7 @@ async function scheduleSingleEmail(page, config, recipient, subject, body, sched
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { browserId, contacts, subject, body: emailBody, method, mailMerge, projectId, sendMode, scheduleStartTime } = body;
+    const { browserId, contacts, subject, body: emailBody, method, mailMerge, projectId, sendMode, scheduleStartTime, replyFolder } = body;
 
     if (!browserId || !contacts || !Array.isArray(contacts) || contacts.length === 0) {
       return NextResponse.json({ success: false, error: "Missing browserId or contacts" }, { status: 400 });
@@ -224,6 +226,12 @@ export async function POST(request) {
 
     log.info(`[shoot] Platform: ${platform}, account: ${accountEmail}`);
 
+    // Stealth sending is MANDATORY for the dashboard shoot — no feature flag,
+    // no SETTINGS row (STEALTH-SENDING-PLAN.MD D4/D10 revision). Score
+    // threshold = module default (60).
+    const filterFolder = resolveFolderName(replyFolder);
+    log.info(`[shoot] Stealth sending: always-on (threshold=default, replyFolder='${filterFolder}')`);
+
     // 4. If schedule mode — calculate auto-populated sendDateAndTime per contact
     let scheduleMap = {};
     if (isSchedule) {
@@ -241,6 +249,20 @@ export async function POST(request) {
 
     // 5. Launch browser with hybrid session (Drive profile or cookies + identity)
     const { browser, page, profileDir } = await resolveShootSession(browserId);
+
+    // Install the reply filter ONCE per shoot: any inbound reply whose subject
+    // matches the (token-stripped) shoot subject is moved out of the normal
+    // inbox into the configured folder/label (default 'Campaign-Replies').
+    // Best-effort / log-only — a failed install never blocks sends.
+    const filterPattern = buildFilterPattern(subject);
+    if (filterPattern) {
+      const replyFilter = await ensureReplyFilter(page, platform, filterPattern, filterFolder, log);
+      log.info(
+        `[shoot] Reply filter: ${replyFilter.status}${replyFilter.reason ? ` (${replyFilter.reason})` : ""} → '${filterFolder}'`
+      );
+    } else {
+      log.warn("[shoot] Reply filter skipped — subject empty after token strip");
+    }
 
     const results = [];
     let sent = 0;
@@ -300,12 +322,45 @@ export async function POST(request) {
             });
             log.info(`[shoot] Scheduled OK: ${contactEmail} (${i + 1}/${contacts.length})`);
           } else {
-            // Send Now — immediate send
-            await sendSingleEmail(page, config, contactEmail, mergedSubject, mergedBody);
-            incrementSendCount(rateLimitPlatform, browserId);
-            sent++;
-            results.push({ email: contactEmail, status: "sent", sentAt: new Date().toISOString() });
-            log.info(`[shoot] Sent OK: ${contactEmail} (${i + 1}/${contacts.length})`);
+            // Send Now — stealth reply-in-thread first (always on), falling
+            // back to the untouched fresh-compose path for 'new'/no-match.
+            const stealth = await attemptStealthSend(page, config, {
+              contactEmail,
+              body: mergedBody,
+              accountEmail,
+              projectSubject: subject,
+              log,
+            });
+
+            if (stealth?.mode === "reply") {
+              incrementSendCount(rateLimitPlatform, browserId);
+              sent++;
+              results.push({
+                email: contactEmail,
+                status: "sent",
+                mode: "reply",
+                score: stealth.score,
+                mute: stealth.mute,
+                sentCopy: stealth.sentCopy,
+                trashPurged: stealth.trashPurged,
+                sentAt: new Date().toISOString(),
+              });
+              log.info(
+                `[shoot] Sent OK (reply-in-thread score=${stealth.score} mute=${stealth.mute} sentCopy=${stealth.sentCopy} trashPurged=${stealth.trashPurged}): ${contactEmail} (${i + 1}/${contacts.length})`
+              );
+            } else {
+              log.info(`[shoot] Stealth fallback to fresh compose (${stealth?.reason || "unknown"}): ${contactEmail}`);
+              await sendSingleEmail(page, config, contactEmail, mergedSubject, mergedBody);
+              incrementSendCount(rateLimitPlatform, browserId);
+              sent++;
+              results.push({
+                email: contactEmail,
+                status: "sent",
+                ...(stealth ? { mode: "new", reason: stealth.reason } : {}),
+                sentAt: new Date().toISOString(),
+              });
+              log.info(`[shoot] Sent OK: ${contactEmail} (${i + 1}/${contacts.length})`);
+            }
           }
 
           // Delay between operations (1 min for schedule, betweenSends for now)

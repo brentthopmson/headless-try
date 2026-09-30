@@ -54,6 +54,13 @@ export const emailPlatforms = {
       scheduleDatePicker: "input[aria-label*='Date'], input[type='date']",
       scheduleTimePicker: "input[aria-label*='Time'], input[type='time']",
       scheduleConfirmBtn: "div[role='button'][act='20']:has-text('Schedule send'), div.T-I.J-J5-Ji[act='20']",
+
+      // Thread stealth (reply-in-thread / mute / delete sent copy)
+      threadMenuBtn: "div[role='button'][aria-label='More'], div[role='button'][aria-label^='More']",
+      muteMenuItem: "[role='menuitem']:has-text('Mute')",
+      msgOptionsBtn: "div[role='button'][aria-label*='Message options']",
+      deleteMsgMenuItem: "[role='menuitem']:has-text('Delete this message')",
+      sentNavLink: "a[aria-label='Sent'], div[gh='ms'] a, a:has-text('Sent')",
     },
 
     timing: {
@@ -112,6 +119,14 @@ export const emailPlatforms = {
       scheduleDatePicker: "input[aria-label*='Date'], input[type='date']",
       scheduleTimePicker: "input[aria-label*='Time'], input[type='time']",
       scheduleConfirmBtn: "button:has-text('Send'), button:has-text('Schedule')",
+
+      // Thread stealth (reply-in-thread / mute-or-ignore / delete sent copy)
+      threadMenuBtn: "button[aria-label='More actions'], div[role='button'][aria-label='More actions']",
+      muteMenuItem: "[role='menuitem']:has-text('Mute'), [role='menuitem']:has-text('Ignore')",
+      msgOptionsBtn: "button[aria-label='More actions'], div[role='button'][aria-label='Message actions']",
+      deleteMsgMenuItem: "[role='menuitem']:has-text('Delete')",
+      rowDeleteBtn: "button[aria-label='Delete'], div[role='button'][aria-label='Delete']",
+      sentNavLink: "a[title='Sent'], a:has-text('Sent')",
     },
 
     timing: {
@@ -143,6 +158,7 @@ export const emailPlatforms = {
       threadSubject: "[data-test-id='subject']",
       threadSnippet: "[data-test-id='message-subtitle']",
       threadSender: "[data-test-id='sender']",
+      threadDate: "[data-test-id='date'], [data-test-id*='date']",
 
       // Folders (Yahoo's equivalent of labels)
       foldersTab: "div[data-test-id='folders-tab']",
@@ -161,6 +177,15 @@ export const emailPlatforms = {
       scheduleDatePicker: "input[aria-label*='Date'], input[type='date']",
       scheduleTimePicker: "input[aria-label*='Time'], input[type='time']",
       scheduleConfirmBtn: "button[data-test-id='schedule-send-button'], button:has-text('Schedule')",
+
+      // Thread stealth (reply-in-thread / no native mute / delete sent copy)
+      threadMenuBtn: "div[role='button'][aria-label*='More'], button[aria-label*='More']",
+      muteMenuItem: "[role='menuitem']:has-text('Mute')",
+      msgOptionsBtn: "div[role='button'][aria-label*='More'], button[aria-label*='More']",
+      deleteMsgMenuItem: "[role='menuitem']:has-text('Delete')",
+      rowDeleteBtn: "button[aria-label='Delete'], [data-test-id='delete'], div[role='button'][aria-label*='Delete']",
+      sentNavLink: "a[data-test-id='sent'], div[title='Sent'] a, a:has-text('Sent')",
+      trashNavLink: "a[data-test-id='trash'], a[title='Trash'], div[title='Trash'] a, a:has-text('Trash')",
     },
 
     timing: {
@@ -192,6 +217,7 @@ export const emailPlatforms = {
       threadSubject: "[data-test-id='subject']",
       threadSnippet: "[data-test-id='message-subtitle']",
       threadSender: "[data-test-id='sender']",
+      threadDate: "[data-test-id='date'], [data-test-id*='date']",
 
       // Folders
       foldersTab: "div[data-test-id='folders-tab']",
@@ -210,6 +236,15 @@ export const emailPlatforms = {
       scheduleDatePicker: "input[aria-label*='Date'], input[type='date']",
       scheduleTimePicker: "input[aria-label*='Time'], input[type='time']",
       scheduleConfirmBtn: "button[data-test-id='schedule-send-button'], button:has-text('Schedule')",
+
+      // Thread stealth (reply-in-thread / no native mute / delete sent copy)
+      threadMenuBtn: "div[role='button'][aria-label*='More'], button[aria-label*='More']",
+      muteMenuItem: "[role='menuitem']:has-text('Mute')",
+      msgOptionsBtn: "div[role='button'][aria-label*='More'], button[aria-label*='More']",
+      deleteMsgMenuItem: "[role='menuitem']:has-text('Delete')",
+      rowDeleteBtn: "button[aria-label='Delete'], [data-test-id='delete'], div[role='button'][aria-label*='Delete']",
+      sentNavLink: "a[data-test-id='sent'], div[title='Sent'] a, a:has-text('Sent')",
+      trashNavLink: "a[data-test-id='trash'], a[title='Trash'], div[title='Trash'] a, a:has-text('Trash')",
     },
 
     timing: {

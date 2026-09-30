@@ -1255,7 +1255,7 @@ export async function solveRecaptchaV2(page, instanceId) {
     try {
         const pageUrl = page.url();
 
-        const siteKey = await page.evaluate(() => {
+        let siteKey = await page.evaluate(() => {
             const textarea = document.querySelector('#g-recaptcha-response');
             if (textarea) {
                 const sk = textarea.getAttribute('data-sitekey');
@@ -1272,15 +1272,32 @@ export async function solveRecaptchaV2(page, instanceId) {
             return null;
         }).catch(() => null);
 
+        // Fallback: main-frame DOM sometimes has no widget markup on Google's
+        // challenge pages, but the anchor/bframe frame URLs always carry k=
+        // (log 2026-09-29 frames list: ".../recaptcha/enterprise/anchor?...k=6LeyfJsrAAAA...").
+        if (!siteKey) {
+            for (const frame of page.frames()) {
+                const m = (frame.url() || '').match(/[?&]k=([A-Za-z0-9_-]{20,})/);
+                if (m) { siteKey = m[1]; break; }
+            }
+        }
+
         if (!siteKey) {
             logger.error(`[solveRecaptchaV2][${instanceId}] Could not extract reCAPTCHA site key from page.`);
             return false;
         }
 
-        const isEnterprise = await page.evaluate(() => {
+        let isEnterprise = await page.evaluate(() => {
             const iframe = document.querySelector('iframe[title*="reCAPTCHA"]');
             return iframe && (iframe.src || '').includes('enterprise');
         }).catch(() => false);
+
+        // Same gap as the site key: if the main frame has no widget iframe, detect
+        // Enterprise from the frame URLs (Google sign-in always serves
+        // /recaptcha/enterprise/anchor — log 2026-09-29).
+        if (!isEnterprise) {
+            isEnterprise = page.frames().some(f => (f.url() || '').includes('recaptcha/enterprise'));
+        }
 
         logger.info(`[solveRecaptchaV2][${instanceId}] Site key: ${siteKey}. Enterprise: ${isEnterprise}. Starting solver chain...`);
 
@@ -1539,15 +1556,29 @@ export async function solveRecaptchaV2(page, instanceId) {
 }
 
 export async function solveRecaptchaChallengeWithAI(page, instanceId, maxAttempts = 3) {
+    // Enterprise / Google sign-in detection: this setup's ladder is audio-first
+    // for Google sign-in challenges. Decline AI immediately so the audio solver
+    // runs (previously an emergent behavior of the api2-only frame selector).
+    const earlyUrl = page.url() || '';
+    const hasEnterpriseFrame = page.frames().some(f => (f.url() || '').includes('recaptcha/enterprise'));
+    if (earlyUrl.includes('accounts.google.com') || hasEnterpriseFrame) {
+        logger.info(`[solveRecaptchaAI][${instanceId}] Enterprise/Google sign-in challenge detected — skipping AI solver (audio path preferred). url=${earlyUrl}`);
+        return false;
+    }
+
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         logger.info(`[solveRecaptchaAI][${instanceId}] AI challenge solve attempt ${attempt}/${maxAttempts}...`);
 
-        // Wait for any reCAPTCHA frame to appear
-        let challengeFrame = page.frames().find(f => f.url().includes('recaptcha/api2/bframe'));
+        // Wait for any reCAPTCHA frame to appear. Google sign-in serves reCAPTCHA
+        // *Enterprise* — whose frames live at recaptcha/enterprise/bframe, NOT
+        // recaptcha/api2/bframe (log 2026-09-29: frame list showed
+        // "https://www.google.com/recaptcha/enterprise/bframe?..."). Match both.
+        const isBframeUrl = u => u.includes('recaptcha/api2/bframe') || u.includes('recaptcha/enterprise/bframe');
+        let challengeFrame = page.frames().find(f => isBframeUrl(f.url()));
         if (!challengeFrame) {
             // Try waiting and re-checking
             await new Promise(r => setTimeout(r, 3000));
-            challengeFrame = page.frames().find(f => f.url().includes('recaptcha/api2/bframe'));
+            challengeFrame = page.frames().find(f => isBframeUrl(f.url()));
         }
         if (!challengeFrame) {
             // Try any recaptcha frame as fallback
@@ -1628,7 +1659,7 @@ Or if nothing challenge-related is visible:
         try {
             await new Promise(r => setTimeout(r, 1500));
 
-            const challengeFrameElement = await page.$('iframe[src*="recaptcha/api2/bframe"]');
+            const challengeFrameElement = await page.$('iframe[src*="recaptcha/api2/bframe"], iframe[src*="recaptcha/enterprise/bframe"]');
             if (!challengeFrameElement) {
                 logger.warn(`[solveRecaptchaAI][${instanceId}] Cannot find bframe iframe element.`);
                 return false;
@@ -1754,7 +1785,10 @@ Rules:
                 return true;
             }
 
-            const stillHasChallenge = page.frames().find(f => f.url().includes('recaptcha/api2/bframe'));
+            // Must match BOTH variants: on Enterprise the api2 frame never exists, so an
+            // api2-only check would report "solved" on every attempt while the challenge
+            // is still open (false positive).
+            const stillHasChallenge = page.frames().find(f => isBframeUrl(f.url()));
             if (!stillHasChallenge) {
                 logger.info(`[solveRecaptchaAI][${instanceId}] Challenge frame gone — solved.`);
                 return true;
@@ -1908,14 +1942,39 @@ export async function solveRecaptchaAudioChallenge(page, instanceId) {
             return false;
         }
 
+        // Reads #audio-source, re-resolving the frame if Google replaced it mid-challenge.
+        // A stale-frame evaluate throws → .catch(null) → the old code reported
+        // "#audio-source not found" after a fixed 1.5s sleep (log 2026-09-29:
+        // button clicked at 51.649, read failed at 53.165 — audio never had time
+        // to load). Polls instead, returning as soon as the src appears.
+        const readAudioSource = async (waitMs = 0) => {
+            const deadline = Date.now() + waitMs;
+            while (true) {
+                let src = await challengeFrame.evaluate(() => {
+                    const el = document.querySelector('#audio-source');
+                    return el ? el.getAttribute('src') : null;
+                }).catch(() => null);
+                if (!src) {
+                    const fresh = page.frames().find(f => f.url().includes('recaptcha/api2/bframe') || f.url().includes('recaptcha/enterprise/bframe'));
+                    if (fresh && fresh !== challengeFrame) {
+                        challengeFrame = fresh;
+                        src = await challengeFrame.evaluate(() => {
+                            const el = document.querySelector('#audio-source');
+                            return el ? el.getAttribute('src') : null;
+                        }).catch(() => null);
+                    }
+                }
+                if (src) return src;
+                if (Date.now() >= deadline) return null;
+                await new Promise(r => setTimeout(r, 500));
+            }
+        };
+
         const MAX_ATTEMPTS = 3;
         for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             logger.info(`[solveRecaptchaAudio][${instanceId}] Audio challenge attempt ${attempt}/${MAX_ATTEMPTS}...`);
 
-            const audioUrl = await challengeFrame.evaluate(() => {
-                const el = document.querySelector('#audio-source');
-                return el ? el.getAttribute('src') : null;
-            }).catch(() => null);
+            const audioUrl = await readAudioSource(attempt === 1 ? 5000 : 2000);
             if (!audioUrl) {
                 logger.warn(`[solveRecaptchaAudio][${instanceId}] #audio-source not found or src empty.`);
                 return false;

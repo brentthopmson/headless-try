@@ -4,6 +4,8 @@ import { google } from "googleapis";
 import logger from "../../../utils/logger.js";
 import { sendViaSMTP, getNextSmtpConfig } from "../_shared/smtpSender.js";
 import { sendViaBrowser, scheduleViaBrowser, detectProvider } from "../_shared/wireSender.js";
+import { resolveSocialSession } from "../../socials/_shared/routeHelper.js";
+import { ensureReplyFilter } from "../../emails/_shared/replyFilter.js";
 import { processSearchInteractTask } from "../../socials/search-interact/route.js";
 import { processPageInteractTask } from "../../socials/page-interact/route.js";
 import { processInboxInteractTask } from "../../socials/inbox-interact/route.js";
@@ -455,6 +457,51 @@ export async function POST(request) {
       const startIndex = Math.max(0, lastProcessedRow);
       const maxToProcess = Math.min(deduplicatedRows.length, shootCampaignLimit, SHOOTING_BATCH_SIZE);
       log.info(` Sending emails: limit=${shootCampaignLimit === Infinity ? 'unlimited' : shootCampaignLimit}, batch=${maxToProcess} contacts (after dedup: ${deduplicatedRows.length}/${dataRows.length})`);
+
+      // ─── REPLY FILTER (campaign hygiene) ────────────────────────────
+      // Every campaign subject carries '[campaignId]' (embedCampaignIdentifier)
+      // — install ONE filter per run so inbound replies are moved out of the
+      // normal inbox into the reply folder (campaign setup, default
+      // 'Campaign-Replies'). Own short-lived session via the wire account;
+      // best-effort — a failure never blocks sends (STEALTH-SENDING-PLAN.MD).
+      const replyFolder = String(settings.replyFolder || "").trim() || "Campaign-Replies";
+      {
+        const profileId = settings.accounts?.[0] || settings.wireAccount;
+        const profileData = profileId ? await getSocialProfileCookies(profileId) : null;
+        if (profileData?.cookies) {
+          try {
+            const provider =
+              profileData.platform || detectProvider(smtpSettings[0]?.user || settings.wireAccount || "") || "gmail";
+            const { browser, page, profileDir } = await resolveSocialSession(
+              {
+                cookies: profileData.cookies,
+                browserIdentity: profileData.browserIdentity || null,
+                driveUrl: profileData.driveUrl || "",
+                profileId,
+                platform: detectEmailProvider(provider),
+              },
+              false
+            );
+            try {
+              const res = await ensureReplyFilter(page, provider, campaignId, replyFolder, log);
+              log.info(
+                ` Reply filter: ${res.status}${res.reason ? ` (${res.reason})` : ""} → '${replyFolder}' (identifier=${campaignId})`
+              );
+            } finally {
+              await page.close().catch(() => {});
+              await browser.close().catch(() => {});
+              if (profileDir) {
+                const fs = await import("fs-extra");
+                await fs.remove(profileDir).catch(() => {});
+              }
+            }
+          } catch (filterErr) {
+            log.warn(` Reply filter setup failed (continuing with sends): ${filterErr.message}`);
+          }
+        } else {
+          log.warn(` Reply filter skipped — no browser session for profile ${profileId || "none"}`);
+        }
+      }
 
       // Step 3e: Processing loop over deduplicated rows with checkpointing
       let pausedByAdmin = false;

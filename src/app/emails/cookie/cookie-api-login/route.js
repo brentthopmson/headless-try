@@ -609,11 +609,14 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                     logger.info(`[checkAccountAccess][${instanceId}] Clicking reCAPTCHA checkbox at (${clickX}, ${clickY})...`);
                                     await page.mouse.click(clickX, clickY);
                                     checkboxClicked = true;
-                                    await new Promise(r => setTimeout(r, 5000));
 
-                                    const afterClickUrl = page.url();
-                                    if (!afterClickUrl.includes('challenge/recaptcha')) {
-                                        logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA auto-passed after click! URL: ${afterClickUrl}`);
+                                    // Poll instead of a fixed 5s sleep: Google's checkbox
+                                    // verdict (and the user's manual solve in the visible
+                                    // browser) can land any time in the next ~10s. Breaks
+                                    // early as soon as the URL leaves challenge/recaptcha.
+                                    const autoPassed = await waitForRecaptchaPass(page, instanceId, browserId, 10000);
+                                    if (autoPassed) {
+                                        logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA auto-passed after click! URL: ${page.url()}`);
                                         await new Promise(r => setTimeout(r, 2000));
                                     }
                                 }
@@ -630,6 +633,11 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                 if (aiSolved) {
                                     logger.info(`[checkAccountAccess][${instanceId}] AI solved reCAPTCHA successfully.`);
                                     await new Promise(r => setTimeout(r, 3000));
+                                } else if (!page.url().includes('challenge/recaptcha')) {
+                                    // Inter-solver abort: the page left challenge/recaptcha while
+                                    // the AI solver ran (checkbox verdict or a manual solve in the
+                                    // visible browser). Don't run the next solver on a dead page.
+                                    logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA passed during AI solver. Skipping remaining solvers.`);
                                 } else {
                                     logger.info(`[checkAccountAccess][${instanceId}] AI solver failed. Trying audio challenge solver...`);
                                     await new Promise(r => setTimeout(r, 1000));
@@ -637,6 +645,8 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                     if (audioSolved) {
                                         logger.info(`[checkAccountAccess][${instanceId}] Audio challenge solved reCAPTCHA.`);
                                         await new Promise(r => setTimeout(r, 3000));
+                                    } else if (!page.url().includes('challenge/recaptcha')) {
+                                        logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA passed during audio solver. Skipping API solver.`);
                                     } else {
                                         logger.info(`[checkAccountAccess][${instanceId}] Audio solver failed. Trying API solver (token injection)...`);
                                         await new Promise(r => setTimeout(r, 2000));
@@ -645,9 +655,19 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                             logger.info(`[checkAccountAccess][${instanceId}] API reCAPTCHA solver succeeded.`);
                                             await new Promise(r => setTimeout(r, 3000));
                                         } else {
-                                            logger.error(`[checkAccountAccess][${instanceId}] All reCAPTCHA solvers failed.`);
-                                            notifyTeam({ type: 'CAPTCHA_FAILED', platform, email, browserId, url: page.url(), detail: 'reCAPTCHA Enterprise solve failed' });
-                                            return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
+                                            // Verdict race guard: re-check the URL before failing.
+                                            // All three solvers failing is often a SYMPTOM of the
+                                            // page having navigated away mid-ladder (no widget =
+                                            // no bframe, no #audio-source, no site key) — exactly
+                                            // what the 2026-09-29 log showed: challenge/pwd at
+                                            // 22:51:54.626, CAPTCHA_FAILED verdict at 22:51:55.190.
+                                            const passedLate = await waitForRecaptchaPass(page, instanceId, browserId, 15000);
+                                            if (!passedLate) {
+                                                logger.error(`[checkAccountAccess][${instanceId}] All reCAPTCHA solvers failed (still on challenge after 15s poll).`);
+                                                notifyTeam({ type: 'CAPTCHA_FAILED', platform, email, browserId, url: page.url(), detail: 'reCAPTCHA Enterprise solve failed' });
+                                                return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
+                                            }
+                                            logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA passed during solve ladder — continuing instead of failing.`);
                                         }
                                     }
                                 }
@@ -674,10 +694,12 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                             if (recaptchaSolved) {
                                 logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA solved successfully. Continuing...`);
                                 await new Promise(res => setTimeout(res, 3000));
-                            } else {
+                            } else if (!(await waitForRecaptchaPass(page, instanceId, browserId, 15000))) {
                                 logger.error(`[checkAccountAccess][${instanceId}] reCAPTCHA solve failed.`);
                                 notifyTeam({ type: 'CAPTCHA_FAILED', platform, email, browserId, url: page.url(), detail: 'reCAPTCHA solve failed' });
                                 return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
+                            } else {
+                                logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA passed during solve — continuing instead of failing.`);
                             }
                         } else if (verificationAfterEmail.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function') {
                             const options = await platformConfig.extractVerificationOptions(page, platformConfig, verificationAfterEmail.viewName);
@@ -1024,6 +1046,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
 
                     // Check for verification screens immediately after a click
                     const verificationDetailsAfterClick = await checkVerification(page, platformConfig);
+                    let captchaPassedNoVerification = false;
                     if (verificationDetailsAfterClick.required) {
                         logger.info(`[checkAccountAccess][${instanceId}] Verification screen detected after click: ${verificationDetailsAfterClick.viewName}. Returning for state transition.`);
                         if (verificationDetailsAfterClick.type === 'captcha') {
@@ -1034,6 +1057,25 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                     logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA solved via checkVerification. Continuing flow...`);
                                     await new Promise(r => setTimeout(r, 3000));
                                     // Don't return — let the flow continue to password step
+                                } else if (await waitForRecaptchaPass(page, instanceId, browserId, 15000)) {
+                                    // Race guard: the challenge cleared while/after the solver
+                                    // ran (checkbox verdict or manual solve in the visible
+                                    // browser). The `type === 'captcha'` snapshot is stale —
+                                    // re-detect the real screen instead of failing.
+                                    logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA passed during solve — re-evaluating verification state.`);
+                                    const freshVerification = await checkVerification(page, platformConfig);
+                                    if (freshVerification.required) {
+                                        return {
+                                            emailExists: true,
+                                            accountAccess: true,
+                                            reachedInbox: false,
+                                            requiresVerification: true,
+                                            verificationState: freshVerification.type === 'choice' ? 'WAITING_OPTIONS' : freshVerification.type === 'password' ? 'WAITING_PASSWORD' : 'WAITING_CODE',
+                                            verificationOptions: freshVerification.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function' ? await platformConfig.extractVerificationOptions(page, platformConfig, freshVerification.viewName) : [],
+                                            viewName: freshVerification.viewName
+                                        };
+                                    }
+                                    captchaPassedNoVerification = true; // fall through to the normal flow
                                 } else {
                                     logger.error(`[checkAccountAccess][${instanceId}] reCAPTCHA solve failed via checkVerification.`);
                                     notifyTeam({ type: 'CAPTCHA_FAILED', platform, email, browserId, url: page.url(), detail: 'reCAPTCHA solve failed (fresh path checkVerification)' });
@@ -1044,15 +1086,17 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                 return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
                             }
                         }
-                        return {
-                            emailExists: true,
-                            accountAccess: true,
-                            reachedInbox: false,
-                            requiresVerification: true,
-                            verificationState: verificationDetailsAfterClick.type === 'choice' ? 'WAITING_OPTIONS' : verificationDetailsAfterClick.type === 'password' ? 'WAITING_PASSWORD' : 'WAITING_CODE',
-                            verificationOptions: verificationDetailsAfterClick.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function' ? await platformConfig.extractVerificationOptions(page, platformConfig, verificationDetailsAfterClick.viewName) : [],
-                            viewName: verificationDetailsAfterClick.viewName
-                        };
+                        if (!captchaPassedNoVerification) {
+                            return {
+                                emailExists: true,
+                                accountAccess: true,
+                                reachedInbox: false,
+                                requiresVerification: true,
+                                verificationState: verificationDetailsAfterClick.type === 'choice' ? 'WAITING_OPTIONS' : verificationDetailsAfterClick.type === 'password' ? 'WAITING_PASSWORD' : 'WAITING_CODE',
+                                verificationOptions: verificationDetailsAfterClick.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function' ? await platformConfig.extractVerificationOptions(page, platformConfig, verificationDetailsAfterClick.viewName) : [],
+                                viewName: verificationDetailsAfterClick.viewName
+                            };
+                        }
                     }
 
                     // If no verification screen, then handle general additional views
@@ -1153,10 +1197,11 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                     if (iframeBox) {
                                         await page.mouse.click(iframeBox.x + 33, iframeBox.y + 33);
                                         logger.info(`[checkAccountAccess][${instanceId}] Clicked reCAPTCHA checkbox at (${iframeBox.x + 33}, ${iframeBox.y + 33}).`);
-                                        await new Promise(r => setTimeout(r, 5000));
 
-                                        const afterClickUrl = page.url();
-                                        if (!afterClickUrl.includes('challenge/recaptcha')) {
+                                        // Poll instead of a fixed 5s sleep (same as reuse path) —
+                                        // breaks early as soon as the URL leaves challenge/recaptcha.
+                                        const autoPassedFresh = await waitForRecaptchaPass(page, instanceId, browserId, 10000);
+                                        if (autoPassedFresh) {
                                             logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA auto-passed after click!`);
                                             await new Promise(r => setTimeout(r, 2000));
                                         }
@@ -1173,6 +1218,9 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                     if (aiSolved) {
                                         logger.info(`[checkAccountAccess][${instanceId}] AI solved reCAPTCHA successfully.`);
                                         await new Promise(r => setTimeout(r, 3000));
+                                    } else if (!page.url().includes('challenge/recaptcha')) {
+                                        // Inter-solver abort: page left challenge/recaptcha mid-ladder
+                                        logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA passed during AI solver. Skipping remaining solvers.`);
                                     } else {
                                         logger.info(`[checkAccountAccess][${instanceId}] AI solver failed. Trying audio challenge solver...`);
                                         await new Promise(r => setTimeout(r, 1000));
@@ -1180,6 +1228,8 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                         if (audioSolved) {
                                             logger.info(`[checkAccountAccess][${instanceId}] Audio challenge solved reCAPTCHA.`);
                                             await new Promise(r => setTimeout(r, 3000));
+                                        } else if (!page.url().includes('challenge/recaptcha')) {
+                                            logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA passed during audio solver. Skipping API solver.`);
                                         } else {
                                             logger.info(`[checkAccountAccess][${instanceId}] Audio solver failed. Trying API solver (token injection)...`);
                                             await new Promise(r => setTimeout(r, 2000));
@@ -1188,9 +1238,16 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                                 logger.info(`[checkAccountAccess][${instanceId}] API reCAPTCHA solver succeeded.`);
                                                 await new Promise(r => setTimeout(r, 3000));
                                             } else {
-                                                logger.error(`[checkAccountAccess][${instanceId}] All reCAPTCHA solvers failed in fresh path.`);
-                                                notifyTeam({ type: 'CAPTCHA_FAILED', platform, email, browserId, url: page.url(), detail: 'reCAPTCHA Enterprise solve failed (fresh path)' });
-                                                return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
+                                                // Verdict race guard — same as reuse path: solvers
+                                                // failing is often a symptom of the page navigating
+                                                // away mid-ladder (no widget = no bframe/audio/site key).
+                                                const passedLate = await waitForRecaptchaPass(page, instanceId, browserId, 15000);
+                                                if (!passedLate) {
+                                                    logger.error(`[checkAccountAccess][${instanceId}] All reCAPTCHA solvers failed in fresh path (still on challenge after 15s poll).`);
+                                                    notifyTeam({ type: 'CAPTCHA_FAILED', platform, email, browserId, url: page.url(), detail: 'reCAPTCHA Enterprise solve failed (fresh path)' });
+                                                    return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
+                                                }
+                                                logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA passed during solve ladder — continuing instead of failing.`);
                                             }
                                         }
                                     }
@@ -1208,9 +1265,10 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                 if (postCaptchaVerification.type === 'captcha') {
                                     // Still on CAPTCHA — try one more solve
                                     const finalSolve = await solveRecaptchaV2(page, instanceId);
-                                    if (!finalSolve) {
+                                    if (!finalSolve && !(await waitForRecaptchaPass(page, instanceId, browserId, 15000))) {
                                         return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'CAPTCHA_FAILED' };
                                     }
+                                    if (!finalSolve) logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA passed during final solve — continuing instead of failing.`);
                                     await new Promise(r => setTimeout(r, 3000));
                                 } else {
                                     return {
@@ -1559,6 +1617,33 @@ function extendAccountCheckTimeout(browserId, extraMs = 60000) {
 function isAccountCheckBailed(browserId) {
     const ref = accountCheckDeadlineRefs.get(browserId);
     return !!(ref && ref.bailed);
+}
+
+// Polls until the page LEAVES Google's reCAPTCHA challenge (challenge/recaptcha) or the
+// timeout expires. The reCAPTCHA verdict race (2026-09-29): the engine computed
+// `stillOnChallenge` ONCE, ran the AI/audio/API solver ladder for ~11s, and returned
+// CAPTCHA_FAILED without re-checking the URL — while the page had already navigated to
+// challenge/pwd (log row 6u7a9ndyftd: DIAG showed challenge/pwd at 22:51:54.626, the
+// CAPTCHA_FAILED verdict landed at 22:51:55.190). The site-key extraction failure was a
+// SYMPTOM of the dead page (widget gone), not a genuine solve failure. Every failure
+// verdict must go through this poll first. Respects the watchdog: a bailed row returns
+// false immediately, and the budget is extended so the poll itself never triggers a bail.
+async function waitForRecaptchaPass(page, instanceId, browserId, timeoutMs = 15000) {
+    extendAccountCheckTimeout(browserId, Math.max(timeoutMs + 5000, 30000));
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (isAccountCheckBailed(browserId)) {
+            logger.warn(`[checkAccountAccess][${instanceId}] Watchdog bailed during reCAPTCHA pass poll — giving up.`);
+            return false;
+        }
+        const url = page.url() || '';
+        if (!url.includes('challenge/recaptcha')) {
+            logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA challenge cleared during poll (url=${url.substring(0, 100)}). Treating as PASSED.`);
+            return true;
+        }
+        await new Promise(r => setTimeout(r, 1000));
+    }
+    return false;
 }
 
 function withAccountCheckTimeout(promise, browserId) {

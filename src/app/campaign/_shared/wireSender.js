@@ -1,6 +1,8 @@
 import logger from "../../../utils/logger.js";
 import { resolveSocialSession, DOMHelpers } from "../../socials/_shared/routeHelper.js";
 import { checkSendAllowed, incrementSendCount, detectEmailProvider } from "../../../utils/sendRateLimiter.js";
+import { getPlatformConfig } from "../../emails/_shared/platforms.js";
+import { deleteSentMessage } from "../../emails/_shared/threadOps.js";
 
 const PROVIDER_CONFIGS = {
   gmail: {
@@ -156,6 +158,18 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
 
     // Increment counter after successful send
     incrementSendCount(platform, accountId);
+
+    // Campaign hygiene: delete the Sent copy and purge it from Trash so zero
+    // copy remains in the account (STEALTH-SENDING-PLAN.MD Q3). SMTP sends are
+    // unaffected (no Sent copy created); scheduleViaBrowser is untouched.
+    try {
+      const purge = await deleteSentMessage(page, getPlatformConfig(providerName), subject, recipient, logger);
+      logger.info(
+        `[wireSender] post-send purge: ${purge.status}${purge.reason ? ` (${purge.reason})` : ""}${purge.trashPurged !== undefined ? ` trashPurged=${purge.trashPurged}` : ""}`
+      );
+    } catch (e) {
+      logger.warn(`[wireSender] post-send purge failed (send still counted): ${e.message}`);
+    }
 
     logger.info(`[wireSender] Email sent to ${recipient} via ${providerName}`);
     return { success: true, provider: providerName, recipient };

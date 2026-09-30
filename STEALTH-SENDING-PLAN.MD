@@ -1,7 +1,10 @@
 # Stealth Sending Plan (Approved)
 
-Status: **APPROVED** — implementation pending (Phase 3 of the fix-first sequence).
+Status: **Phase 3 IMPLEMENTED — stealth mandatory (no flag), reply filter + Sent/Trash
+purge wired across 3 repos, pending 4-platform canary** (revised 2026-09-30).
 Related: `ARCHITECTURE.md` · production session-death fix (see Appendix A).
+Scope now: **full parity — Gmail, Outlook, Yahoo, AOL** (see D5 revision);
+**campaign + shoot reply filter** (D11); **Sent+Trash purge** (D3 revision).
 
 ---
 
@@ -17,12 +20,15 @@ fingerprints that spam filters and Google's risk model associate with automation
 |---|----------|-------|
 | D1 | **Score threads + new-message fallback** | Reply in-thread only when the existing thread scores eligible; otherwise send a fresh new message (current behavior). |
 | D2 | **Mute thread** after interaction | Mute — NOT archive, NOT label. Muted threads leave the inbox without tripping "archived after reply" patterns. |
-| D3 | **Delete only the sent copy** | Remove our outgoing message from the Sent folder. The thread and the recipient's copy are untouched. |
-| D4 | **Standalone shoot only** | Lives in `src/app/emails/send-email/route.js` (+ `compose-email/route.js`). No campaign integration. |
-| D5 | **Gmail-first; Outlook always new message** | Thread scoring/reply/mute/sent-copy logic is Gmail-only. Outlook/Hotmail keep the existing compose-new flow unconditionally. |
-| D6 | **Campaigns / SMTP untouched** | `campaign/` pipeline and SMTP sender are out of scope. Behavior there must not change. |
+| D3 | **Delete sent copy AND purge from Trash** *(revised 2026-09-30)* | Remove our outgoing message from Sent **and then delete it from Trash/Deleted Items** so zero copy remains in the account (Q3: purge both). Gmail: `Delete forever`; Outlook: delete from Deleted Items (permanent); Yahoo/AOL: delete from Trash. Recipient's copy and thread structure untouched. |
+| D4 | **Standalone shoot: stealth ALWAYS ON** *(revised 2026-09-30)* | Lives in `src/app/emails/send-email/route.js` (+ `compose-email/route.js`). **No feature flag, no `SETTINGS.stealthSending` row** — the dashboard shoot always attempts reply-in-thread (threshold = module default 60), falling back to fresh compose. Campaign = direct fresh compose **only** (no thread logic) + post-send Sent/Trash purge on wire sends + reply-filter pre-pass (D6/D11). |
+| D5 | **Full parity: Gmail + Outlook + Yahoo + AOL** *(revised 2026-09-30)* | Thread scoring/reply/mute/sent-copy implemented for all four platforms. AOL shares Yahoo's implementation (same white-label UI). Gmail uses URL search; Outlook uses URL search with typed-search fallback; Yahoo/AOL use typed search. |
+| D6 | **Campaigns: hygiene only, no thread logic** *(revised 2026-09-30)* | Campaign sends stay direct fresh compose (`sendViaBrowser`) — no scoring/reply/mute. Added: post-send **Sent+Trash purge** after each wire send (try/caught, send stays counted); pre-loop **reply-filter install** (D11); SMTP send path and `scheduleViaBrowser` untouched (SMTP creates no Sent copy; scheduled wire copies can't be purged later — known limitation). |
 | D7 | **Fix D (realGeo bypass): DEFERRED** | Not part of this work. |
 | D8 | **Session launch = same-profile + CDP inject** | Supersedes the old "clean relaunch" idea — see Appendix A. Clean relaunch with identical cookies was measured to stop at `v3/signin/accountchooser`; the profile-backed launch reaches Inbox. |
+| D9 | **Yahoo/AOL mute = skip + honest log** *(2026-09-30)* | No native conversation mute on Yahoo/AOL. Reply and Sent-copy deletion still run; the mute step returns `skipped` and is logged. Never an error, never Trash-as-substitute. |
+| D10 | **All-4 canary gate** *(revised 2026-09-30)* | There is **no flag to hold OFF** (D4) — stealth is on by default for the shoot, so the canary is the trust gate before production use: Gmail, Outlook, Yahoo and AOL must each pass a local canary (1 account × 3 threads). Outlook mute/Ignore variant and Yahoo/AOL Sent-delete selectors are unverified until seen live. |
+| D11 | **Reply filter (campaign + shoot)** *(2026-09-30)* | Inbound replies must never land in the normal inbox. One filter installed per run, keyed on a subject identifier: shoot = subject with `{{tokens}}` stripped (`buildFilterPattern`); campaign = bare `campaignId` (every campaign subject carries `[campaignId]`). Destination = archive/label folder, **user-configurable** at setup (shoot modal + campaign setup), **empty → default `Campaign-Replies`**. Gmail: Skip Inbox + Apply label; Outlook/Yahoo/AOL: move to folder. Best-effort/log-only — a failed install never blocks sends. |
 
 ## 3. Current Baseline (what exists today)
 
@@ -39,7 +45,7 @@ fingerprints that spam filters and Google's risk model associate with automation
 
 ## 4. Design
 
-### 4.1 Thread scoring (Gmail only)
+### 4.1 Thread scoring (all platforms — shared pure module)
 
 Before composing, query the account's existing threads for this recipient:
 
@@ -76,55 +82,119 @@ out of scope until scoring is proven).
 - Only mute the thread we replied into. Never bulk-mute, never mute on fallback path
   (there is no thread), never touch threads we did not interact with.
 
-### 4.5 Delete only the sent copy
+### 4.5 Delete the sent copy, then purge it from Trash *(revised 2026-09-30)*
 
-- After a successful in-thread reply: open the message in **Sent**, delete **that message**
-  (Gmail allows deleting a single message from the conversation view / Sent list).
-- Guarantees: recipient's copy untouched, thread structure untouched, only our Sent entry
-  removed. Never delete the whole conversation; never delete inbox-side copies.
+- After a successful in-thread reply (and after each campaign wire send): open the
+  message in **Sent**, delete **that message**, then **phase 2** — find it in
+  Trash/Deleted Items and delete it permanently (D3/Q3: zero copy remains).
+  - Gmail: Sent search → Message options → `Delete this message`; Trash search →
+    Message options → `Delete forever`.
+  - Outlook: Sent search (URL + typed fallback) → row delete; Deleted Items search
+    → row delete (permanent in OWA).
+  - Yahoo/AOL: Sent nav → matching row → row delete; Trash nav → matching row →
+    row delete.
+- Locate phases poll/retry (rows lag right after a send) before declaring failure.
+- Guarantees: recipient's copy untouched, thread structure untouched. Never delete
+  the whole conversation; never delete inbox-side copies.
+- `deleteSentMessage` returns `{status, trashPurged, trashReason?}` — purge failure
+  never fails the send (already counted).
 
-### 4.6 Outlook / others
+### 4.6 Outlook / Yahoo / AOL *(revised 2026-09-30)*
 
-Unconditional new message (current flow). No search, no reply, no mute, no Sent cleanup.
+Same four-step flow as Gmail (score → reply → mute → delete Sent copy), platform differences:
 
-## 5. Implementation Steps
+- **Outlook**: URL search (`outlook.live.com/mail/0/search?q=...`) with typed
+  search-box fallback; mute step tries `Mute` then `Ignore` menu items (UI variant
+  is canary-dependent); Sent copy deleted via Sent-folder search → row delete,
+  then purged from Deleted Items.
+- **Yahoo/AOL**: typed search from inbox; **mute skipped, logged (D9)**; Sent copy
+  deleted via Sent nav → matching row → row delete, then purged from Trash.
+- Score module, threshold and fail-open fallback are shared and platform-agnostic.
+  **There is no feature flag** (D4) — the shoot always attempts stealth first.
 
-1. **Thread scoring module** — new `src/app/emails/_shared/threadScore.js`
-   (pure functions: parse search results → score → decision), unit-testable without a browser.
-2. **Gmail thread ops** — new `src/app/emails/_shared/gmailThreadOps.js`
-   (`findThread`, `replyInThread`, `muteThread`, `deleteSentMessage`) using the same
-   selector/timing config style as `send-email`'s platform config.
-3. **Wire into `send-email/route.js`** — after `resolveShootSession` and the rate-limit
-   check (i.e. after `route.js:243-263`):
-   - `platform === gmail` && mode `now` && !schedule → score → branch;
-   - reply path → reply → mute → delete sent copy;
-   - fallback → existing `sendSingleEmail`.
-   - Schedule mode and Outlook → existing path, zero changes.
-4. **Config** — thresholds and feature flag (`stealthSending: on/off`) in settings sheet;
-   ship default **off**, enable per project after canary.
-5. **Do not touch**: `campaign/`, SMTP sender, `scheduleSingleEmail` behavior,
-   rate limits, hub usage updates.
+## 5. Implementation Steps *(built + revised 2026-09-30)*
+
+1. **Thread scoring module** — `src/app/emails/_shared/threadScore.js` ✅
+   (CJS like `src/utils/cfCheck.js` so jest can `require` it; pure
+   `scoreThread`/`decideAction`, fail-open: no-threads / below-threshold /
+   ambiguous-within-10 / missing-direction → `new`). Unit tests:
+   `__test__/threadScore.test.js` (20 tests, green).
+2. **Thread ops** — `src/app/emails/_shared/threadOps.js` ✅
+   (`findThreads` per platform with candidate enrichment for direction+depth,
+   `replyInThread` — throws with `replySendAttempted` flag so a post-send
+   failure never double-sends —, `muteThread` — D9 skip on Yahoo/AOL —,
+   `deleteSentMessage` = Sent delete **+ `purgeFromTrash`** with locate retry,
+   orchestrator `attemptStealthSend` which never throws; returns
+   `mode/score/mute/sentCopy/trashPurged`).
+   Selectors added to `_shared/platforms.js` for all four platforms
+   (`trashNavLink` on Yahoo + AOL).
+3. **Wire into `send-email/route.js`** ✅ — always-on (no flag):
+   - `replyFolder` param destructured; `filterFolder = resolveFolderName(replyFolder)`;
+   - after `resolveShootSession`: `ensureReplyFilter(page, platform,
+     buildFilterPattern(subject), filterFolder, log)` once per shoot (log-only);
+   - mode `now` → `attemptStealthSend` first → reply path records
+     `mode/score/mute/sentCopy/trashPurged`; fallback → `sendSingleEmail`
+     unchanged. Schedule mode → existing path, zero changes.
+4. **Reply-filter module** — `src/app/emails/_shared/replyFilter.js` ✅ +
+   pure helpers in `replyFilterMatch.cjs` (CJS for jest). `ensureReplyFilter`
+   per platform (Gmail filters UI / Outlook rules UI / Yahoo+AOL settings
+   filters), never throws, returns `installed|exists|skipped|failed` + reason.
+   Tests: `__test__/replyFilter.test.js` (7, green).
+5. **Campaign hygiene** ✅ — `wireSender.sendViaBrowser`: after
+   `incrementSendCount` → try/catch `deleteSentMessage` (Sent + Trash purge,
+   log-only). `execute-campaign/route.js`: pre-loop own session via wire
+   account → `ensureReplyFilter(page, provider, campaignId, replyFolder, log)`;
+   no session → warn, continue.
+6. **Config / UI** ✅ — **no `SETTINGS.stealthSending` flag** (D4 revision;
+   `getSetting` import removed). Reply folder is user-set:
+   Hub `ShootContactsModal` (input beside subject → both submit payloads →
+   `dashboard/page.tsx` → `shootEmails` param), Hub `CampaignModal`
+   (`formData.replyFolder` → `buildStrategyContext` → Apps Script
+   `createNewCampaign settingsData` / `updateCampaign` wholesale store →
+   sheet settings column → engine `settings.replyFolder`). Empty → default
+   `Campaign-Replies` (`resolveFolderName`). Apps Script:
+   `POST.js shootEmails` destructure + engine payload, `CAMPAIGN.js settingsData`.
+7. **Do not touch**: SMTP sender, `scheduleSingleEmail`/`scheduleViaBrowser`
+   behavior, rate limits, hub usage updates. ✅ (unchanged)
 
 ## 6. Verification
 
-- Unit: `threadScore` decisions (recency decay, threshold edges, ambiguous thread → fallback).
-- Jest: `npm test` (existing suite must stay green — no campaign regressions).
-- Manual canary (1 account, 3 threads):
-  - eligible thread → reply lands in-thread, thread muted, Sent copy gone, inbox clean;
+- Unit: `threadScore` decisions ✅ (recency decay, threshold edges, ambiguous thread → fallback, missing direction → fallback; `npx jest threadScore` = 20/20);
+  `replyFilter` pure helpers ✅ (`npx jest replyFilter` = 7/7: token strip, default
+  folder, 60-char cap, non-string safety).
+- Syntax + route compile ✅ (`node --check` all touched files in all 3 repos,
+  GET `/emails/send-email` + `/campaign/execute-campaign` → 405).
+- Manual canary — **required per platform before trusting in prod (D10)**, 1 account × 3 threads each on Gmail, Outlook, Yahoo, AOL:
+  - eligible thread → reply lands in-thread, thread muted (Yahoo/AOL: mute logged `skipped`), Sent copy gone **and Trash/Deleted Items empty of it** (`trashPurged=true` in results), inbox clean;
   - ineligible thread → exact current new-message behavior;
-  - Outlook contact → unchanged behavior;
-  - schedule mode → unchanged behavior;
+  - shoot with custom reply folder ×3 → filter installed once, replies land in
+    the folder (not inbox), blank folder name → logged default `Campaign-Replies`;
+  - campaign wire send ×2 → sent copy purged from Sent **and** Trash;
   - failure mid-flow → error surfaced, no partial mute/delete (each post-step is
-    independently try/caught and logged).
-- Evidence review after canary: open the muted thread, confirm recipient view intact.
+    independently try/caught and logged); reply-send failure falls back to fresh
+    compose, post-send failure counts as sent (never double-sends);
+  - schedule mode → unchanged behavior on all four platforms.
+- Evidence review after canary: open the muted thread, confirm recipient view intact; check results payload for `mode/score/mute/sentCopy/trashPurged`.
 
 ## 7. Deferred / Out of Scope
 
 - Fix D — realGeo bypass (D7).
 - Reply-into-thread for scheduled sends.
-- Outlook thread logic (explicitly never, D5).
-- Campaign/SMTP stealth behavior (D6).
+- ~~Outlook thread logic (explicitly never, D5)~~ — superseded: D5 revised to full parity (2026-09-30).
+- ~~Campaigns/SMTP untouched (D6)~~ — superseded: hygiene added (purge + reply filter); SMTP send path itself still untouched.
 - Risk-model research beyond this plan (Appendix A captures what was learned).
+
+### Known limitations (documented, accepted)
+
+- `interact-inbox` / AI inbox watcher scans the **inbox only** — replies routed
+  into the reply folder are invisible to it (by design: normal inbox stays clean;
+  follow-up AI over filtered replies is a future feature).
+- **Scheduled wire sends** (`scheduleViaBrowser`) leave a Sent copy at schedule
+  time that cannot be purged by this run (native Schedule Send — no page session
+  at send moment).
+- **SMTP-only campaigns** create no Sent copy (nothing to purge); the reply
+  filter still applies if a wire account session exists, otherwise it's skipped
+  with a warning.
 
 ---
 
