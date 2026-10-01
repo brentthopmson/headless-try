@@ -117,28 +117,38 @@ export const platformConfigs = {
         // Per-method entry URLs — used to open 3 warm tabs at row start so
         // method switches activate an already-loaded tab instead of navigating.
         loginMethods: {
-            qr:    { url: "https://www.tiktok.com/login" },
+            qr:    { url: "https://www.tiktok.com/login/qrcode" },
             email: { url: "https://www.tiktok.com/login/phone-or-email/email" },
             phone: { url: "https://www.tiktok.com/login/phone-or-email/phone" }
         },
         // QR login capture config (platformHelper.runQrLogin).
         qr: {
-            // Element candidates checked in order: canvas/QR img/background-image, then element screenshot.
-            selectors: ["canvas", "img[src*='qr' i]", "div[class*='qr' i] canvas", "div[class*='qr' i] img"],
+            // Element candidates checked in order: TikTok's QR wrapper
+            // (data-e2e="qr-code") first, then generic canvas/QR img, then
+            // element screenshot fallback.
+            selectors: ["div[data-e2e='qr-code'] canvas", "div[data-e2e='qr-code'] img", "canvas", "img[src*='qr' i]", "div[class*='qr' i] canvas", "div[class*='qr' i] img"],
             // Success = URL left /login (TikTok redirects home after scan) AND session cookie/inbox.
             successUrlPattern: /tiktok\.com\/(?!login)/,
             timeoutMs: 8 * 60 * 1000,   // QR wait ceiling (template polls 10 min, then shows credential screen)
-            recaptureMs: 25000           // re-capture cadence within TikTok's ~2 min QR validity window
+            recaptureMs: 15000           // TikTok rotates the QR image every ~30-60s; re-capture faster so the template never shows a stale/expired code
         },
         selectors: {
+            // Grounded in live DOM (/login/phone-or-email/email, 2026-10-01):
+            // username + password inputs visible on load; submit is
+            // <button data-e2e="login-button" type="submit">Log in</button>.
             input: "input[placeholder='Email or username']",
-            nextButton: "button:has-text('Log in')",
+            nextButton: "[data-e2e='login-button']",
             passwordInput: "input[placeholder='Password']",
-            passwordNextButton: "button:has-text('Log in')",
+            passwordNextButton: "[data-e2e='login-button']",
             errorMessage: "//*[contains(text(), 'User does not exist') or contains(text(), 'Email or password is incorrect')]",
             loginFailed: "//*[contains(text(), 'incorrect') or contains(text(), 'does not exist')]",
-            verificationCodeInput: "input[type='text'][placeholder*='code' i]",
-            verificationCodeSubmit: "button[type='button']:has-text('Send')"
+            // Phone tab (/login/phone-or-email/phone): phone input
+            // (name=mobile), [data-e2e="send-code-button"] "Send code",
+            // 6-digit code input rendered on the same page.
+            phoneInput: "input[placeholder='Phone number']",
+            sendCodeButton: "[data-e2e='send-code-button']",
+            verificationCodeInput: "input[placeholder='Enter 6-digit code']",
+            verificationCodeSubmit: "[data-e2e='login-button']"
         },
         additionalViews: [
             {

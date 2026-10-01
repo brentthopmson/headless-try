@@ -1,4 +1,4 @@
-﻿console.log("--- SOCIAL COOKIE API LOGIN route.js loaded ---");
+console.log("--- SOCIAL COOKIE API LOGIN route.js loaded ---");
 import { NextResponse } from "next/server";
 import chromium from "@sparticuz/chromium-min";
 import { inspect } from 'util';
@@ -31,6 +31,25 @@ import tiktokHelper from './platformHelper/tiktok.js';
 
 const { resolvePlatform, openWarmTabs, activateWarmTab, closeOtherTabs, runQrLogin, setWarmOpening, isWarmOpening, isWarmUrl } = platformHelper;
 const { normalizeLoginMethod } = tiktokHelper;
+
+// platforms.js declares Playwright-style ":has-text('Log in')" selectors, which
+// puppeteer-core's selector engine rejects ("button:has-text(...) is not a valid
+// selector"). Translate to puppeteer's text pseudo ::-p-text("...") before any
+// page.waitForSelector / click / type / $ call. XPath selectors (//...) and
+// plain CSS pass through unchanged.
+function toPuppeteerSelector(sel) {
+    if (typeof sel !== 'string') return sel;
+    return sel.replace(
+        /:has-text\(\s*(['"])((?:\\.|(?!\1).)*)\1\s*\)/g,
+        (m, q, text) => `::-p-text("${text.replace(/"/g, '\\"')}")`
+    );
+}
+function toPuppeteerSelectors(sel) {
+    const arr = Array.isArray(sel) ? sel : [sel];
+    return arr
+        .filter(s => typeof s === 'string' && s.trim().length > 0)
+        .map(toPuppeteerSelector);
+}
 
 const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
 const DRIVE_FINALIZER_AWAIT_MS = parseInt(process.env.DRIVE_FINALIZER_AWAIT_MS || '120000', 10);
@@ -198,7 +217,7 @@ async function handleAdditionalViews(page, platformConfig, instanceId, context =
     logger.info(`[handleAdditionalViews][${instanceId}] Finished processing additional views.`);
 }
 
-async function checkAccountAccess(browser, page, email, password, platform, browserId, isReusingSession = false) {
+async function checkAccountAccess(browser, page, email, password, platform, browserId, isReusingSession = false, loginMethod = '') {
     const originalPage = page;
     let emailExists = false;
     let accountAccess = false;
@@ -243,6 +262,44 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
 
         logger.debug(`[checkAccountAccess][${instanceId}] Starting flow for ${platform}.`);
 
+        // Phone method: the sheet's email column carries the phone identifier
+        // (country code + number, e.g. +15551234567). Drive the phone tab:
+        // type the number → click Send code → detect the 6-digit code screen
+        // (TikTok renders phone + code inputs on one page).
+        if (loginMethod === 'phone' && email && platformConfig.selectors?.phoneInput) {
+            logger.info(`[checkAccountAccess][${instanceId}] Phone login method — typing phone number and requesting SMS code.`);
+            try {
+                const phoneUrl = platformConfig.loginMethods?.phone?.url;
+                if (phoneUrl && !String(page.url() || '').includes('/phone-or-email/phone')) {
+                    await page.goto(phoneUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                    logger.info(`[checkAccountAccess][${instanceId}] Navigated to phone login: ${phoneUrl}`);
+                }
+                await page.waitForSelector(platformConfig.selectors.phoneInput, { visible: true, timeout: 15000 });
+                await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, platformConfig.selectors.phoneInput);
+                await page.type(platformConfig.selectors.phoneInput, String(email), { delay: 40 });
+                logger.info(`[checkAccountAccess][${instanceId}] Typed phone number.`);
+
+                const sendSel = platformConfig.selectors.sendCodeButton;
+                if (sendSel) {
+                    await page.waitForSelector(sendSel, { visible: true, timeout: 8000 });
+                    await page.click(sendSel);
+                    await new Promise(res => setTimeout(res, 3000));
+                    logger.info(`[checkAccountAccess][${instanceId}] Clicked Send code.`);
+                }
+
+                const codeSel = platformConfig.selectors.verificationCodeInput;
+                const codeVisible = codeSel ? await page.$eval(codeSel, el => el.offsetParent !== null).catch(() => false) : false;
+                if (codeVisible) {
+                    return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: true, verificationState: 'WAITING_CODE', verificationType: 'code', verificationOptions: [], viewName: 'TikTok Phone Verification' };
+                }
+                logger.warn(`[checkAccountAccess][${instanceId}] Code screen not detected after Send code (possible security check).`);
+                return { emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: null, message: 'Could not start phone verification (a security check may have appeared). Please try again.' };
+            } catch (phoneErr) {
+                logger.error(`[checkAccountAccess][${instanceId}] Phone login failed: ${phoneErr.message}`);
+                return { emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: null, message: `Phone login failed: ${phoneErr.message}` };
+            }
+        }
+
         // Special handling for email retry in reusing session
         if (isReusingSession && platformConfig.selectors?.input) {
             logger.info(`[checkAccountAccess][${instanceId}] Reusing session for email retry, typing email directly.`);
@@ -263,7 +320,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
 
                     let clicked = false;
                     if (platformConfig.selectors.nextButton) {
-                        let selectors = Array.isArray(platformConfig.selectors.nextButton) ? platformConfig.selectors.nextButton : [platformConfig.selectors.nextButton];
+                        let selectors = toPuppeteerSelectors(platformConfig.selectors.nextButton);
                         for (const sel of selectors) {
                             try {
                                 await page.waitForSelector(sel, { visible: true, timeout: 5000 });
@@ -360,12 +417,12 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     const logValue = step.value === 'PASSWORD' ? '*****' : value;
                     logger.debug(`[checkAccountAccess][${instanceId}] Typing '${logValue}' into ${resolvedSelector}`);
                     try { await originalPage.bringToFront(); } catch (e) { logger.warn(`[bringToFront Pre-Type][${instanceId}] Error: ${e.message}`); }
-                    await page.waitForSelector(resolvedSelector, { visible: true, timeout: 15000 });
+                    await page.waitForSelector(toPuppeteerSelector(resolvedSelector), { visible: true, timeout: 15000 });
                     await page.evaluate((selector) => {
                         const element = document.querySelector(selector);
                         if (element) { element.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'center' }); element.value = ''; }
                     }, resolvedSelector);
-                    await page.type(resolvedSelector, value, { delay: 20 });
+                    await page.type(toPuppeteerSelector(resolvedSelector), value, { delay: 20 });
                     if (step.delay && typeof step.delay === 'number' && step.delay > 0) {
                         logger.info(`[checkAccountAccess][${instanceId}] Performing explicit step delay: ${step.delay}ms`);
                         await new Promise(res => setTimeout(res, step.delay));
@@ -384,7 +441,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                     return false;
                                 }
                                 return true;
-                            });
+                            }).map(toPuppeteerSelector);
 
                             if (validSelectorsToAttempt.length === 0) {
                                 logger.warn(`[checkAccountAccess][${instanceId}] No valid string selectors to attempt for click action.`);
@@ -733,7 +790,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 configs: platformConfigs,
                 resolveMxFn: resolveMx
             });
-            domain = resolved.domain || (email ? email.split('@')[1].toLowerCase() : '');
+            domain = resolved.domain || (email ? (email.split('@')[1] || '').toLowerCase() : '');
             mxRecords = resolved.mxRecords || [];
             matchedPlatformKey = resolved.platform !== 'unknown' ? resolved.platform : '';
             platform = resolved.platform;
@@ -899,10 +956,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     await closeOtherTabs(browser, page, logger);
                 } catch (qrErr) {
                     logger.error(`[processRow][${browserId}] QR login failed: ${qrErr.message}. Falling back to credential check.`);
-                    initialCheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId);
+                    initialCheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId, false, rowLoginMethod);
                 }
             } else {
-                initialCheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId);
+                initialCheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId, false, rowLoginMethod);
             }
         } else if (status === "WAITINGEMAIL") {
             logger.info(`[processRow][${browserId}] Entering WAITINGEMAIL poll loop.`);
@@ -954,13 +1011,13 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             configs: platformConfigs,
                             resolveMxFn: resolveMx
                         });
-                        domain = resolvedRetry.domain || email.split('@')[1].toLowerCase();
+                        domain = resolvedRetry.domain || (email.split('@')[1] || '').toLowerCase();
                         mxRecords = resolvedRetry.mxRecords || [];
                         matchedPlatformKey = resolvedRetry.platform !== 'unknown' ? resolvedRetry.platform : '';
                         platform = resolvedRetry.platform;
                         platformConfig = platformConfigs[platform] || {};
 
-                        initialCheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId, true); // For email retry, reuse session, no navigation
+                        initialCheckResult = await checkAccountAccess(browser, page, email, password, platform, browserId, true, rowLoginMethod); // For email retry, reuse session, no navigation
 
                         // Immediately check the result for generic email errors and set status within the polling loop
                         if (!initialCheckResult.emailExists && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined)) {
@@ -1092,7 +1149,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 logger.info(`[processRow][${browserId}] Successfully typed password.`);
 
                                 logger.debug(`[processRow][${browserId}] Attempting to click password next button and await navigation. Selectors: ${JSON.stringify(passwordNextButtonSelector)}`);
-                                let selectorsToAttempt = Array.isArray(passwordNextButtonSelector) ? passwordNextButtonSelector : [passwordNextButtonSelector];
+                                let selectorsToAttempt = toPuppeteerSelectors(passwordNextButtonSelector);
                                 let clickedSelector = null;
 
                                 for (const selector of selectorsToAttempt) {
@@ -1535,9 +1592,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             if (!sendCodeBtnSelector) throw new Error(`Send code button selector not defined for current view/platform configuration. View: ${currentActualViewName}`);
 
                             logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Attempting to click send code button: ${sendCodeBtnSelector} for view ${currentActualViewName}`);
-                            await page.waitForSelector(sendCodeBtnSelector, { visible: true, timeout: 10000 });
+                            await page.waitForSelector(toPuppeteerSelector(sendCodeBtnSelector), { visible: true, timeout: 10000 });
                             const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 }).catch(() => null);
-                            await page.click(sendCodeBtnSelector);
+                            await page.click(toPuppeteerSelector(sendCodeBtnSelector));
                             await navigationPromise;
                             logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Clicked "Send code" button: ${sendCodeBtnSelector}`);
                             await new Promise(res => setTimeout(res, 2000));
@@ -1782,9 +1839,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         let codeEntryAttempted = false;
                         if (codeInputSelector) {
                             try {
-                                await page.waitForSelector(codeInputSelector, { visible: true, timeout: 10000 });
+                                await page.waitForSelector(toPuppeteerSelector(codeInputSelector), { visible: true, timeout: 10000 });
                                 await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, codeInputSelector);
-                                await page.type(codeInputSelector, String(verificationCode), { delay: 50 });
+                                await page.type(toPuppeteerSelector(codeInputSelector), String(verificationCode), { delay: 50 });
                                 logger.info(`[processRow][${browserId}][WAITINGCODE] Typed code into ${codeInputSelector}`);
 
                                 const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 })
@@ -1794,8 +1851,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     await page.keyboard.press('Enter');
                                     logger.info(`[processRow][${browserId}][WAITINGCODE] Pressed Enter to submit fluent code.`);
                                 } else if (codeSubmitSelector) {
-                                    await page.waitForSelector(codeSubmitSelector, { visible: true, timeout: 5000 });
-                                    await page.click(codeSubmitSelector);
+                                    await page.waitForSelector(toPuppeteerSelector(codeSubmitSelector), { visible: true, timeout: 5000 });
+                                    await page.click(toPuppeteerSelector(codeSubmitSelector));
                                     logger.info(`[processRow][${browserId}][WAITINGCODE] Clicked code submit button: ${codeSubmitSelector}`);
                                 } else {
                                     logger.warn(`[processRow][${browserId}][WAITINGCODE] No submit selector and not flagged to use Enter. Code typed, hoping for auto-submit.`);
@@ -2855,7 +2912,7 @@ export async function POST(request) {
 
         const initialStatus = (email || earlyResolved.platform !== 'unknown') ? "WAITING" : "WAITINGEMAIL";
         const initialEmail = email || '';
-        const initialDomain = initialEmail ? initialEmail.split('@')[1].toLowerCase() : '';
+        const initialDomain = initialEmail ? (initialEmail.split('@')[1] || '').toLowerCase() : '';
 
         // Create initial row with WAITING or WAITINGEMAIL status
         const initialRowData = {

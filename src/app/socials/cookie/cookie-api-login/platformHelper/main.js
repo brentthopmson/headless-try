@@ -87,9 +87,12 @@ async function resolvePlatform(options) {
 
 // Module-level state shared with route.js's targetcreated listener:
 // while openWarmTabs is creating tabs they are about:blank (URL not yet warm),
-// so the listener must not close them during that window.
+// so the listener must not close them during that window. Depth counter, not a
+// boolean: concurrent processRow runs each toggle it, and restoring a single
+// flag from one run would close a sibling run's still-opening tabs (observed:
+// phone warm tab killed mid-open → "Page.navigate: Target closed").
 const warmUrls = new Set();
-let warmOpening = false;
+let warmOpeningDepth = 0;
 
 function markWarmUrl(url) {
     if (url) warmUrls.add(String(url));
@@ -105,17 +108,18 @@ function isWarmUrl(url) {
 }
 
 function setWarmOpening(v) {
-    warmOpening = !!v;
+    if (v) warmOpeningDepth += 1;
+    else warmOpeningDepth = Math.max(0, warmOpeningDepth - 1);
 }
 
 function isWarmOpening() {
-    return warmOpening;
+    return warmOpeningDepth > 0;
 }
 
 // For tests: reset module state between cases.
 function __resetWarmState() {
     warmUrls.clear();
-    warmOpening = false;
+    warmOpeningDepth = 0;
 }
 
 // [{ method, url }] from config.loginMethods, in declared order.
@@ -138,7 +142,6 @@ async function openWarmTabs({ browser, primaryPage, config, logger, setupPage } 
     if (!browser || entries.length === 0) return tabs;
 
     entries.forEach(e => markWarmUrl(e.url));
-    const prevWarmOpening = warmOpening;
     setWarmOpening(true);
     try {
         let usePrimary = !!(primaryPage && !primaryPage.isClosed());
@@ -169,7 +172,7 @@ async function openWarmTabs({ browser, primaryPage, config, logger, setupPage } 
             }
         }
     } finally {
-        setWarmOpening(prevWarmOpening);
+        setWarmOpening(false);
     }
     return tabs;
 }
@@ -247,6 +250,14 @@ async function runQrLogin({ page, config, logger, onQrData, getMethod, isLoggedI
     const deadline = Date.now() + (timeoutMs || qr.timeoutMs || 8 * 60 * 1000);
     const interval = recaptureMs || qr.recaptureMs || 25000;
     let iterations = 0;
+
+    // Wait for the QR element before the first capture so a page-load race
+    // doesn't burn the whole first recapture cycle (first attempt used to miss
+    // → 25s blind sleep while the template showed an empty QR).
+    const firstSel = (Array.isArray(qr.selectors) && qr.selectors[0]) || 'canvas';
+    if (page && typeof page.waitForSelector === 'function') {
+        await page.waitForSelector(firstSel, { visible: true, timeout: 15000 }).catch(() => {});
+    }
 
     while (Date.now() < deadline) {
         iterations++;
