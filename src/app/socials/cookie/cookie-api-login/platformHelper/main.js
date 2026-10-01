@@ -131,10 +131,49 @@ function warmTabUrls(config) {
         .filter(e => !!e.url);
 }
 
+// https://www.tiktok.com/login/qrcode?x#y -> https://tiktok.com/login/qrcode
+function normalizeWarmUrl(u) {
+    if (typeof u !== 'string' || !u) return '';
+    try {
+        const x = new URL(u);
+        if (!x.host) return ''; // about:blank, data:, etc.
+        let host = x.host.toLowerCase();
+        if (host.startsWith('www.')) host = host.slice(4);
+        return 'https://' + host + x.pathname.replace(/\/+$/, '');
+    } catch (e) {
+        return u.split(/[?#]/)[0].replace(/\/+$/, '');
+    }
+}
+
+/**
+ * Which warm-method entry does a live page URL belong to?
+ * Exact normalized match wins; otherwise the longest entry that is a prefix
+ * of the page URL (handles query strings / path continuations).
+ * Returns { method, url } or null.
+ */
+function matchWarmEntry(pageUrl, entries) {
+    const n = normalizeWarmUrl(pageUrl);
+    if (!n) return null;
+    let best = null;
+    let bestLen = -1;
+    for (const e of entries) {
+        const ne = normalizeWarmUrl(e.url);
+        if (!ne) continue;
+        if (n === ne) return e;
+        if (n.startsWith(ne + '/') && ne.length > bestLen) { best = e; bestLen = ne.length; }
+    }
+    return best;
+}
+
 /**
  * Open one tab per configured login method. The primary page becomes the tab
  * for the FIRST method (no extra tab). Returns { method: page }.
  * setupPage(page) lets route.js apply UA/viewport to newly created tabs.
+ *
+ * On session reuse the browser may already hold tabs from a previous run:
+ * those pages are ADOPTED (matched by URL) instead of duplicated, and any
+ * leftover duplicate warm tabs are closed, so the session keeps exactly one
+ * tab per method.
  */
 async function openWarmTabs({ browser, primaryPage, config, logger, setupPage } = {}) {
     const tabs = {};
@@ -144,16 +183,65 @@ async function openWarmTabs({ browser, primaryPage, config, logger, setupPage } 
     entries.forEach(e => markWarmUrl(e.url));
     setWarmOpening(true);
     try {
-        let usePrimary = !!(primaryPage && !primaryPage.isClosed());
+        const primary = (primaryPage && !primaryPage.isClosed()) ? primaryPage : null;
+        const claimed = new Set();
+        const adopted = {};   // method -> { page, nav }
+
+        const urlOf = p => { try { return p.url(); } catch (e) { return ''; } };
+        const existing = (await browser.pages().catch(() => []))
+            .filter(p => { try { return !p.isClosed(); } catch (e) { return false; } });
+
+        // 1) Primary already sitting on a warm method URL keeps that method.
+        if (primary) {
+            const hit = matchWarmEntry(urlOf(primary), entries);
+            if (hit && !adopted[hit.method]) {
+                adopted[hit.method] = { page: primary, nav: false };
+                claimed.add(primary);
+            }
+        }
+        // 2) Adopt one existing page per remaining method (URL match).
+        for (const e of entries) {
+            if (adopted[e.method]) continue;
+            const p = existing.find(pg => pg !== primary && !claimed.has(pg) && matchWarmEntry(urlOf(pg), entries) === e);
+            if (p) {
+                adopted[e.method] = { page: p, nav: false };
+                claimed.add(p);
+            }
+        }
+        // 3) Primary (still unclaimed) anchors the first method without a tab.
+        if (primary && !claimed.has(primary)) {
+            const target = entries.find(e => !adopted[e.method]);
+            if (target) {
+                adopted[target.method] = { page: primary, nav: urlOf(primary) !== target.url };
+                claimed.add(primary);
+            } else {
+                // Every method already has a tab: swap primary into the first
+                // slot so it is never left behind as an extra tab.
+                const first = entries[0];
+                const displaced = adopted[first.method];
+                adopted[first.method] = { page: primary, nav: urlOf(primary) !== first.url };
+                claimed.add(primary);
+                if (displaced && displaced.page !== primary) claimed.delete(displaced.page);
+            }
+        }
+        // 4) Close leftover duplicates: open pages on a warm method URL that
+        //    no method adopted (pollution from earlier duplicate runs).
+        for (const p of existing) {
+            if (claimed.has(p)) continue;
+            if (matchWarmEntry(urlOf(p), entries)) {
+                await p.close().catch(() => {});
+            }
+        }
+        // 5) Assign/adopted pages (navigating if stale) + create missing tabs.
         for (const { method, url } of entries) {
             let p = null;
             try {
-                if (usePrimary) {
-                    p = primaryPage;
-                    usePrimary = false;
-                    if (typeof p.goto === 'function' && p.url() !== url) {
+                const a = adopted[method];
+                if (a) {
+                    p = a.page;
+                    if (a.nav && typeof p.goto === 'function') {
                         await p.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => {
-                            logger && logger.warn(`[WarmTabs] primary.goto(${url}) failed: ${e.message}`);
+                            logger && logger.warn(`[WarmTabs] ${method}.goto(${url}) failed: ${e.message}`);
                         });
                     }
                 } else {
@@ -335,6 +423,8 @@ module.exports = {
     isWarmOpening,
     __resetWarmState,
     warmTabUrls,
+    normalizeWarmUrl,
+    matchWarmEntry,
     openWarmTabs,
     activateWarmTab,
     closeOtherTabs,

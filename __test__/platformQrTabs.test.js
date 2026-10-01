@@ -1,6 +1,8 @@
 // Phase 2Q: warm tabs + QR login runtime (platformHelper/main.js).
 const {
     warmTabUrls,
+    normalizeWarmUrl,
+    matchWarmEntry,
     markWarmUrl,
     isWarmUrl,
     setWarmOpening,
@@ -140,6 +142,97 @@ describe('openWarmTabs', () => {
         expect(tabs.qr).toBeDefined();
         expect(tabs.email).toBeUndefined();
         expect(browser._pages[0].closed).toBe(true);
+    });
+});
+
+describe('normalizeWarmUrl / matchWarmEntry', () => {
+    test('normalizes www, query, hash, trailing slash, port case', () => {
+        expect(normalizeWarmUrl('https://WWW.TikTok.com/login/qrcode/?x=1#y')).toBe('https://tiktok.com/login/qrcode');
+        expect(normalizeWarmUrl('about:blank')).toBe('');
+        expect(normalizeWarmUrl('')).toBe('');
+        expect(normalizeWarmUrl(null)).toBe('');
+    });
+
+    test('exact match beats prefix; longest prefix wins; null for non-warm', () => {
+        const entries = warmTabUrls(config);
+        expect(matchWarmEntry('https://www.tiktok.com/login/qrcode?lang=en', entries).method).toBe('qr');
+        expect(matchWarmEntry('https://tiktok.com/login/phone-or-email/email', entries).method).toBe('email');
+        expect(matchWarmEntry('https://tiktok.com/login/phone-or-email/phone', entries).method).toBe('phone');
+        expect(matchWarmEntry('https://tiktok.com/feed', entries)).toBeNull();
+        expect(matchWarmEntry('about:blank', entries)).toBeNull();
+    });
+});
+
+describe('openWarmTabs adoption (session reuse)', () => {
+    test('adopts existing warm tabs: 0 new pages, duplicates closed, no re-navigation', async () => {
+        const primary = fakePage('https://www.tiktok.com/login/phone-or-email/email');
+        const qrTab = fakePage('https://www.tiktok.com/login/qrcode');
+        const phoneTab = fakePage('https://www.tiktok.com/login/phone-or-email/phone');
+        const dupQr = fakePage('https://www.tiktok.com/login/qrcode');
+        const browser = fakeBrowser();
+        browser._pages.push(primary, qrTab, phoneTab, dupQr);
+
+        const tabs = await openWarmTabs({ browser, primaryPage: primary, config, logger: noopLogger });
+
+        expect(browser.newPageCount).toBe(0);
+        expect(tabs.qr).toBe(qrTab);
+        expect(tabs.email).toBe(primary);
+        expect(tabs.phone).toBe(phoneTab);
+        expect(dupQr.closed).toBe(true);   // duplicate warm tab cleaned up
+        expect(qrTab.closed).toBe(false);
+        expect(primary.gotos).toEqual([]); // adopted by URL match — not reloaded
+        expect(Object.keys(tabs)).toHaveLength(3);
+    });
+
+    test('primary on about:blank with all warm tabs open → primary anchors first slot, still 3 tabs', async () => {
+        const primary = fakePage('about:blank');
+        const qrTab = fakePage('https://www.tiktok.com/login');
+        const emailTab = fakePage('https://www.tiktok.com/login/phone-or-email/email');
+        const phoneTab = fakePage('https://www.tiktok.com/login/phone-or-email/phone');
+        const browser = fakeBrowser();
+        browser._pages.push(primary, qrTab, emailTab, phoneTab);
+
+        const tabs = await openWarmTabs({ browser, primaryPage: primary, config, logger: noopLogger });
+
+        expect(browser.newPageCount).toBe(0);
+        expect(tabs.qr).toBe(primary);
+        expect(primary.gotos).toEqual(['https://www.tiktok.com/login']);
+        expect(tabs.email).toBe(emailTab);
+        expect(tabs.phone).toBe(phoneTab);
+        expect(qrTab.closed).toBe(true); // displaced duplicate closed
+        expect(Object.keys(tabs)).toHaveLength(3);
+    });
+
+    test('partial reuse: only email tab exists → primary anchors qr, phone created', async () => {
+        const primary = fakePage('about:blank');
+        const emailTab = fakePage('https://www.tiktok.com/login/phone-or-email/email');
+        const browser = fakeBrowser();
+        browser._pages.push(primary, emailTab);
+
+        const tabs = await openWarmTabs({ browser, primaryPage: primary, config, logger: noopLogger });
+
+        expect(browser.newPageCount).toBe(1);
+        expect(tabs.qr).toBe(primary);
+        expect(primary.gotos).toEqual(['https://www.tiktok.com/login']);
+        expect(tabs.email).toBe(emailTab);
+        expect(tabs.phone).toBeDefined();
+        expect(tabs.phone.closed).toBe(false);
+        expect(Object.keys(tabs)).toHaveLength(3);
+    });
+
+    test('closed pages are ignored during adoption', async () => {
+        const primary = fakePage('https://www.tiktok.com/login');
+        const deadEmail = fakePage('https://www.tiktok.com/login/phone-or-email/email');
+        deadEmail.closed = true;
+        const browser = fakeBrowser();
+        browser._pages.push(deadEmail);
+
+        const tabs = await openWarmTabs({ browser, primaryPage: primary, config, logger: noopLogger });
+
+        expect(tabs.qr).toBe(primary);
+        expect(tabs.email).toBeDefined();
+        expect(tabs.email).not.toBe(deadEmail);
+        expect(browser.newPageCount).toBe(2); // dead page not adopted
     });
 });
 

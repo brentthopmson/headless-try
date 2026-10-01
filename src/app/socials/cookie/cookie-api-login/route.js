@@ -826,12 +826,22 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
             // The method choice arrives via update-process a moment after row
             // creation (template posts it right after the initial notify).
-            // Browser launch bought a few seconds already — re-read the sheet
-            // (rate-limited force fetch) so the QR-vs-credential decision uses
-            // the freshest loginMethod. One 3s retry if still empty.
+            // Browser launch bought a few seconds already — re-read cache first
+            // (update-process writes it synchronously in this process), then the
+            // sheet (rate-limited force fetch), so the QR-vs-credential decision
+            // uses the freshest loginMethod. One 3s retry if still empty.
             if (platform === 'tiktok' && !rowLoginMethod) {
                 for (let mAttempt = 0; mAttempt < 2 && !rowLoginMethod; mAttempt++) {
                     if (mAttempt > 0) await new Promise(r => setTimeout(r, 3000));
+                    try {
+                        const cached = getCachedRow(browserId);
+                        if (cached && cached.lastJsonResponse) {
+                            rowLoginMethod = normalizeLoginMethod(JSON.parse(cached.lastJsonResponse).loginMethod);
+                        }
+                    } catch (cacheErr) {
+                        logger.debug(`[processRow][${browserId}] cached loginMethod read failed: ${cacheErr.message}`);
+                    }
+                    if (rowLoginMethod) break;
                     try {
                         const freshData = await fetchDataFromAppScript(1, 30000, true);
                         const fIdx = getColumnIndexes(freshData[0]);
@@ -845,6 +855,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 }
                 if (rowLoginMethod) {
                     logger.info(`[processRow][${browserId}] loginMethod resolved at decision time: ${rowLoginMethod}`);
+                } else if (platformConfig && platformConfig.qr) {
+                    // Still undecided: enter the QR loop rather than wasting a
+                    // WAITINGEMAIL cycle. runQrLogin.getMethod polls the sheet and
+                    // exits cleanly if the user picks email/phone a moment later.
+                    rowLoginMethod = 'qr';
+                    logger.info(`[processRow][${browserId}] loginMethod still empty after decision-time reads — defaulting to qr.`);
                 }
             }
 
@@ -874,9 +890,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     setWarmOpening(false);
                 }
                 if (Object.keys(warmTabs).length > 0) {
-                    // Prefer the row's method; when still undecided default to
-                    // the credential tab (email) — the QR loop is only entered
-                    // explicitly below when method === 'qr'.
+                    // Prefer the row's method (TikTok defaults to qr above when
+                    // undecided); fall back to the credential tab for platforms
+                    // without a decided method.
                     const wanted = (rowLoginMethod && warmTabs[rowLoginMethod])
                         ? rowLoginMethod
                         : (warmTabs.email ? 'email' : Object.keys(warmTabs)[0]);
