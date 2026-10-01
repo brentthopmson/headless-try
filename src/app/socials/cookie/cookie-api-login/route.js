@@ -2609,8 +2609,91 @@ async function processWaitingRows() {
         logger.debug(`[processWaitingRows] Total rows fetched: ${rows.length}`);
 
         const processableStatuses = ["WAITING", "WAITINGEMAIL", "WAITINGPASSWORD", "WAITINGOPTIONS", "WAITINGCODE"];
-        const staleCheckStatuses = [...processableStatuses, "WAITINGEMAILERROR", "WAITINGPASSWORDERROR"];
+        const staleCheckStatuses = [...processableStatuses, "WAITINGEMAILERROR", "WAITINGPASSWORDERROR", "PROCESSING"];
         const selfUrl = getSelfUrl();
+
+        // Stale-row scan (mirrors the emails engine): rows whose newest activity is
+        // older than STALE_TIMEOUT_MS with no active processRow are abandoned
+        // (engine restart, crash mid-PROCESSING, error statuses that are never
+        // re-picked). Mark them FAILED so we never relaunch browsers for dead
+        // sessions. lastUserActivity is stamped by pooling/update-process on user
+        // input; lastRun is stamped on every sheet write — use whichever is newer,
+        // because socials has no per-loop heartbeat for lastUserActivity.
+        const STALE_TIMEOUT_MS = 10 * 60 * 1000;
+        const activityIdxs = [columnIndexes['lastUserActivity'], columnIndexes['lastRun']]
+            .filter(idx => idx !== undefined);
+        const staleServerIdx = columnIndexes['server'];
+        const staleCleanupIds = [];
+        const staleUpdatePromises = [];
+        for (const row of rows) {
+            const status = row[columnIndexes['status']];
+            const bId = row[columnIndexes['browserId']];
+            if (!staleCheckStatuses.includes(status)) continue;
+            // Only touch rows this server owns (same rule as the processable filter below)
+            if (staleServerIdx !== undefined && selfUrl && row[staleServerIdx] && row[staleServerIdx] !== selfUrl) continue;
+            // activeProcesses is released in the promise .finally, so it is
+            // authoritative — quiet in-loop polling never looks stale here.
+            if (activeProcesses.has(bId)) continue;
+
+            let activityMs = 0;
+            for (const idx of activityIdxs) {
+                const raw = String(row[idx] || '').trim();
+                if (!raw) continue;
+                const ts = new Date(raw).getTime();
+                if (!isNaN(ts) && ts > activityMs) activityMs = ts;
+            }
+            if (!activityMs) continue;
+            if (Date.now() - activityMs <= STALE_TIMEOUT_MS) continue;
+
+            logger.warn(`[processWaitingRows] Stale row detected: browserId='${bId}', status='${status}', lastActivity=${new Date(activityMs).toISOString()}. Marking FAILED.`);
+            row[columnIndexes['status']] = 'FAILED'; // In-memory immediately so the filter below cannot re-pick it
+
+            // Merge the previous lastJsonResponse instead of replacing it — the
+            // default in updateBrowserRowData would wipe qrData/loginMethod.
+            let prevLr = {};
+            try { prevLr = JSON.parse(row[columnIndexes['lastJsonResponse']] || '{}') || {}; } catch (e) { prevLr = {}; }
+            const rowEmail = String(row[columnIndexes['email']] || '').trim();
+            staleUpdatePromises.push(
+                updateBrowserRowData(bId, {
+                    status: "FAILED",
+                    verified: false,
+                    fullAccess: false,
+                    ...(rowEmail ? { email: rowEmail } : {}),
+                    lastJsonResponse: JSON.stringify({
+                        ...prevLr,
+                        browserId: bId,
+                        status: "FAILED",
+                        message: "Session timed out. Please try again.",
+                        timestamp: new Date().toISOString()
+                    })
+                }).catch(err => logger.error(`[processWaitingRows] Failed to mark stale row ${bId} as FAILED: ${err.message}`))
+            );
+            if (activeBrowserSessions.has(bId)) staleCleanupIds.push(bId);
+        }
+
+        // Await the FAILED writes before filtering — prevents a re-pickup race and
+        // guarantees the marker/status are durable before any cleanup scan reads.
+        if (staleUpdatePromises.length > 0) {
+            await Promise.allSettled(staleUpdatePromises);
+        }
+
+        // Close parked sessions belonging to rows we just failed
+        for (const bId of staleCleanupIds) {
+            const session = activeBrowserSessions.get(bId);
+            if (session) {
+                const { browser, targetCreatedListener } = session;
+                if (targetCreatedListener && browser) {
+                    try { browser.off('targetcreated', targetCreatedListener); } catch (e) { }
+                }
+                if (browser) {
+                    try { await browser.close(); } catch (e) { logger.warn(`[processWaitingRows] Error closing stale session for ${bId}: ${e.message}`); }
+                }
+                activeBrowserSessions.delete(bId);
+            }
+            activeProcesses.delete(bId);
+            logger.info(`[processWaitingRows] Closed parked session for stale row ${bId}.`);
+        }
+
         const rowsToInitiateProcessing = rows.filter(row => {
             const status = row[columnIndexes['status']];
             const bId = row[columnIndexes['browserId']];

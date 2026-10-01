@@ -8,6 +8,10 @@ import { fetchDataFromAppScript as _sharedFetchData, startAppScriptDataBackgroun
 import { runSmartExtract, isExtractInFlight } from '../../../../utils/smartExtract.js';
 import { getSetting } from '../../../../utils/settingsCache.js';
 import { enqueueSheetUpdate } from '../../../../utils/writeQueue.js';
+import { getCachedRow } from '../../../../utils/cookieCache.js';
+import survivalMarker from './survivalMarker.js';
+
+const { resolveSurvivalMarker } = survivalMarker;
 
 export const fetchDataFromAppScript = _sharedFetchData;
 export const startAppScriptDataBackgroundUpdater = _sharedStartUpdater;
@@ -26,6 +30,16 @@ export function getColumnIndexes(headers) {
 export async function updateBrowserRowData(browserId, updateObject, isNewRow = false) {
   if (!browserId) {
     throw new Error("Missing browserId for updateBrowserRowData");
+  }
+
+  // Every FAILED write funnels through here — stamp the survival marker before
+  // anything else so cleanupFailedRowsWithoutEmail can never delete credential-less
+  // QR/phone rows (single interception point covers processRow, the stale scan,
+  // the crash handler and pooling-operator).
+  const survivalMarker = resolveSurvivalMarker(updateObject, browserId, getCachedRow(browserId));
+  if (survivalMarker) {
+    updateObject = { ...updateObject, ...survivalMarker };
+    logger.info(`[updateBrowserRowData][${browserId}] FAILED with empty email — stamped survival marker '${survivalMarker.email}'.`);
   }
 
   const sheetName = "cookie"; // Assuming "cookie" is the sheet name for browser data
