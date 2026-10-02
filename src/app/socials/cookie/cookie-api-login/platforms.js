@@ -1,4 +1,5 @@
 import logger from "../../../../utils/logger.js";
+import tiktokHelper from "./platformHelper/tiktok.js";
 
 export const platformConfigs = {
     // ==================== TWITTER ====================
@@ -109,8 +110,11 @@ export const platformConfigs = {
 
     // ==================== TIKTOK ====================
     tiktok: {
+        // (?!login) — /login/qrcode must NOT count as inbox, otherwise the
+        // WAITINGCODE loop falsely completes (and checkVerification's isInbox
+        // fallback masks a missing verificationScreens match).
         inboxUrlPatterns: [
-            /tiktok\.com\//
+            /tiktok\.com\/(?!login)/
         ],
         url: "https://tiktok.com/login",
         platform: "tiktok",
@@ -138,8 +142,13 @@ export const platformConfigs = {
             // <button data-e2e="login-button" type="submit">Log in</button>.
             input: "input[placeholder='Email or username']",
             nextButton: "[data-e2e='login-button']",
-            passwordInput: "input[placeholder='Password']",
-            passwordNextButton: "[data-e2e='login-button']",
+            // Post-QR "Enter password" challenge modal (pc-password-container-*)
+            // has NO placeholder — attribute-match placeholder fails there.
+            // type=password covers both the modal and the email/phone login form.
+            passwordInput: "input[type='password']",
+            // Array (route.js waitForSelector loop): credential login form first,
+            // then the challenge modal's "Next" button (pc-password-next-btn-*).
+            passwordNextButton: ["[data-e2e='login-button']", "[class*='pc-password-next-btn'] button"],
             errorMessage: "//*[contains(text(), 'User does not exist') or contains(text(), 'Email or password is incorrect')]",
             loginFailed: "//*[contains(text(), 'incorrect') or contains(text(), 'does not exist')]",
             // Phone tab (/login/phone-or-email/phone): phone input
@@ -148,7 +157,10 @@ export const platformConfigs = {
             phoneInput: "input[placeholder='Phone number']",
             sendCodeButton: "[data-e2e='send-code-button']",
             verificationCodeInput: "input[placeholder='Enter 6-digit code']",
-            verificationCodeSubmit: "[data-e2e='login-button']"
+            verificationCodeSubmit: "[data-e2e='login-button']",
+            // Post-QR "Verify identity" OTP modal (pc-email-otp-next-btn-*):
+            // submit is the disabled-until-filled "Next" button, NOT login-button.
+            otpCodeSubmit: "[class*='pc-email-otp-next-btn'] button"
         },
         additionalViews: [
             {
@@ -177,6 +189,29 @@ export const platformConfigs = {
             }
         ],
         verificationScreens: [
+            // OTP-first: the OTP h1 text "Verify identity" never contains the
+            // choice heading, so ordering is safe and keeps type='code' priority.
+            {
+                name: 'TikTok Identity OTP',
+                isCodeEntryScreen: true,
+                requiresVerification: true,
+                match: {
+                    selector: ['h1[class*="pc-email-otp-title"]', 'h1[data-testid="tux-web-text"]', 'h1'],
+                    text: 'Verify identity'
+                }
+            },
+            {
+                name: 'TikTok Identity Challenge',
+                isVerificationChoiceScreen: true,
+                requiresVerification: true,
+                match: {
+                    // The modal heading is not guaranteed to be an h1 (and the
+                    // QR page's own h1 precedes it in DOM order) — enumerate
+                    // heading shapes; matchVerificationView checks ALL matches.
+                    selector: ['h1[data-testid="tux-web-text"]', 'h1', 'h2', 'div[role="heading"]', '[data-testid="tux-web-text"]'],
+                    text: "Verify it's really you"
+                }
+            },
             {
                 name: 'TikTok Email Verification',
                 isCodeEntryScreen: true,
@@ -207,34 +242,21 @@ export const platformConfigs = {
         ],
         extractVerificationOptions: async (page, platformConfig, viewName) => {
             const instanceId = `tiktok-${page.browser().process()?.pid || 'unknown'}`;
-            if (viewName && viewName.includes('verification')) {
-                try {
-                    const options = await page.evaluate(() => {
-                        const buttons = document.querySelectorAll('button');
-                        const extracted = [];
-                        buttons.forEach((button, index) => {
-                            const text = button.textContent.trim();
-                            if (text.toLowerCase().includes('email') || text.toLowerCase().includes('phone') || text.toLowerCase().includes('code')) {
-                                extracted.push({
-                                    label: text,
-                                    choiceIndex: (index + 1).toString(),
-                                    type: text.toLowerCase().includes('phone') ? 'sms' : 'email',
-                                    requiresInput: true,
-                                    inputSelector: 'input[placeholder*="code" i]',
-                                    inputLabel: 'Verification Code'
-                                });
-                            }
-                        });
-                        return extracted;
-                    });
-                    logger.debug(`[TikTok][${instanceId}] Extracted ${options.length} options for '${viewName}'`);
-                    return options;
-                } catch (error) {
-                    logger.error(`[TikTok][${instanceId}] Error extracting options: ${error.message}`);
-                    return [];
-                }
+            // Post-QR challenge choice modal: rows are div[class*="pc-home-item"].
+            // The substring selector also matches wrapper/title divs, so the
+            // browser side only gathers raw texts — filtering, dedupe and label
+            // building run in buildTikTokChallengeOptions (tiktok.js, jest-tested).
+            // No viewName gate — the extractor is only invoked for choice screens.
+            try {
+                const rawTexts = await page.evaluate(() => Array.from(document.querySelectorAll('div[class*="pc-home-item"]'))
+                    .map((el) => (el.textContent || '').replace(/\s+/g, ' ').trim()));
+                const options = tiktokHelper.buildTikTokChallengeOptions(rawTexts);
+                logger.debug(`[TikTok][${instanceId}] Extracted ${options.length} options for '${viewName}'`);
+                return options;
+            } catch (error) {
+                logger.error(`[TikTok][${instanceId}] Error extracting options: ${error.message}`);
+                return [];
             }
-            return [];
         }
     },
 

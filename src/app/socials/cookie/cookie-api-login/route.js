@@ -11,7 +11,7 @@ import logger from "../../../../utils/logger.js";
 import { applyIdentityToPage, applyUserAgentViaCDP } from "../../../../utils/identity.js";
 import { platformConfigs } from "./platforms.js";
 import { uploadBrowserData } from '../../../api/googledrive.mjs';
-import { stripFormulaColumns } from '../../../api/googlesheets.js';
+import { stripFormulaColumns, ensureSheetColumns } from '../../../api/googlesheets.js';
 import {
     getColumnIndexes,
     fetchDataFromAppScript,
@@ -606,8 +606,26 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
     }
 }
 
-
-
+// Best-effort capture of the logged-in handle from the LIVE session (TikTok
+// never exposes it in sheet data). Only own-profile nav links are consulted —
+// never a generic a[href*="/@"] (those belong to other users' pages). Empty
+// string means "not found" and must never be guessed.
+async function captureSessionHandle(page) {
+    try {
+        return await page.evaluate(() => {
+            const selectors = ['a[data-e2e="profile-avatar"]', 'a[data-e2e="nav-profile"]', 'a[data-e2e="nav-friends"]'];
+            for (const sel of selectors) {
+                const el = document.querySelector(sel);
+                const href = el && el.getAttribute('href');
+                const m = href && href.match(/\/@([\w.\-]+)/);
+                if (m) return m[1];
+            }
+            return '';
+        });
+    } catch (e) {
+        return '';
+    }
+}
 
 async function processRow(row, columnIndexes, existingBrowser = null, existingPage = null) {
     const browserId = row[columnIndexes['browserId']];
@@ -623,6 +641,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     let page = null;
     let targetCreatedListener = null; // Defined here to be accessible in finally
     let finalStatus = "FAILED";
+    const MAX_VERIFICATION_RETRIES = 3; // Bounded retries for transient failures inside verification loops
     let updateData = { status: finalStatus };
     let browserFullyClosed = false;
     let platform = 'unknown';
@@ -638,6 +657,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     let instanceId = `PROC-SETUP-${browserId}`;
     let isReusingBrowser = false;
     let rowLoginMethod = ''; // loginMethod from lastJsonResponse ('qr'|'email'|'phone'|'')
+    let currentVerificationOptions = []; // Declared early: assigned inside WAITINGOPTIONS branch loops (TDZ guard)
 
     // Populate cache with full row data so intermediate writes (status etc.) preserve email/password.
     // Formula-protected columns (id/end) are stripped — the sheet auto-populates them.
@@ -868,6 +888,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             // declare loginMethods, e.g. TikTok) and activate the row's method
             // so method switches don't re-navigate. Tab creation races the
             // targetcreated listener — setWarmOpening(true) whitelists it.
+            // Only the row's own method is awaited (foregroundMethods); the
+            // other tabs keep loading in the background so this row's flow —
+            // QR capture first of all — starts immediately.
             if (platformConfig.loginMethods && Object.keys(platformConfig.loginMethods).length > 0) {
                 setWarmOpening(true);
                 let warmTabs = {};
@@ -877,6 +900,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         primaryPage: page,
                         config: platformConfig,
                         logger,
+                        foregroundMethods: rowLoginMethod ? [rowLoginMethod] : undefined,
                         setupPage: async (p) => {
                             try {
                                 await applyUserAgentViaCDP(p, browser.selectedUserAgent);
@@ -939,6 +963,20 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         // Method switch is written by update-process; sheet is the
                         // cross-lambda source of truth (rate-limited force fetch).
                         getMethod: async () => {
+                            // Same-instance update-process writes the cache
+                            // synchronously — a non-'qr' value there is a fresh
+                            // switch and skips the rate-limited sheet fetch.
+                            // Never trust a cached 'qr' alone: another instance
+                            // may have written a later switch to the sheet.
+                            try {
+                                const cachedM = getCachedRow(browserId);
+                                if (cachedM && cachedM.lastJsonResponse) {
+                                    const cm = normalizeLoginMethod(JSON.parse(cachedM.lastJsonResponse).loginMethod);
+                                    if (cm && cm !== 'qr') return cm;
+                                }
+                            } catch (e) {
+                                logger.debug(`[processRow][${browserId}] QR getMethod cache read failed: ${e.message}`);
+                            }
                             try {
                                 const checkData = await fetchDataFromAppScript(1, 30000, true);
                                 const cIdx = getColumnIndexes(checkData[0]);
@@ -952,6 +990,66 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 logger.debug(`[processRow][${browserId}] QR getMethod fetch failed: ${e.message}`);
                             }
                             return rowLoginMethod;
+                        },
+                        // Post-scan "Verify it's really you" challenge probe — runs each
+                        // QR interval before isLoggedIn. Returns a checkAccountAccess-
+                        // shaped result to exit the loop, or null to keep capturing.
+                        detectChallenge: async () => {
+                            try {
+                                const st = await checkVerification(page, platformConfig);
+                                let probeFrames = -1;
+                                try { probeFrames = page.frames().length; } catch (e) { /* frames unavailable */ }
+                                const probeTag = `url=${page.url()} frames=${probeFrames}`;
+                                if (st && st.required && (st.type === 'choice' || st.type === 'code')) {
+                                    const isChoice = st.type === 'choice';
+                                    logger.info(`[processRow][${browserId}][QR-probe] ${probeTag} required=true type=${st.type} view=${st.viewName}`);
+                                    return {
+                                        emailExists: true,
+                                        accountAccess: true,
+                                        reachedInbox: false,
+                                        requiresVerification: true,
+                                        verificationState: isChoice ? 'WAITING_OPTIONS' : 'WAITING_CODE',
+                                        verificationOptions: isChoice
+                                            ? (await platformConfig.extractVerificationOptions(page, platformConfig, st.viewName) || [])
+                                            : [],
+                                        viewName: st.viewName,
+                                        message: isChoice
+                                            ? 'Post-scan verification choice required.'
+                                            : 'Post-scan verification code required.'
+                                    };
+                                }
+                                // Password challenge modal has no verificationScreens entry
+                                // (its heading is a plain "Enter password") — detect by its
+                                // visible placeholder-less password input instead.
+                                const pwVisible = await page.evaluate(() => {
+                                    const el = document.querySelector('input[type="password"]');
+                                    return !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+                                }).catch(() => false);
+                                if (!(st && st.required)) {
+                                    const heads = await page.evaluate(() => Array.from(document.querySelectorAll('h1,h2,[role="heading"]'))
+                                        .map((h) => (h.textContent || '').replace(/\s+/g, ' ').trim())
+                                        .filter(Boolean).slice(0, 6)).catch(() => []);
+                                    logger.info(`[processRow][${browserId}][QR-probe] ${probeTag} required=false pwVisible=${pwVisible} headings=${JSON.stringify(heads)}`);
+                                }
+                                if (pwVisible) {
+                                    return {
+                                        emailExists: true,
+                                        // accountAccess MUST be false: tail line ~2310 treats
+                                        // accountAccess=true as COMPLETED (cookies+close+upload).
+                                        accountAccess: false,
+                                        reachedInbox: false,
+                                        requiresVerification: false,
+                                        verificationState: 'WAITING_PASSWORD',
+                                        verificationOptions: [],
+                                        viewName: 'TikTok Password',
+                                        message: 'Post-scan password verification required.'
+                                    };
+                                }
+                                return null;
+                            } catch (e) {
+                                logger.warn(`[processRow][${browserId}] detectChallenge probe failed: ${e.message}`);
+                                return null;
+                            }
                         },
                         isLoggedIn: async () => {
                             try {
@@ -1063,6 +1161,49 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                         break; // Exit polling loop (original break)
                     } else {
+                        // No email yet — check for a QR method switch so
+                        // "Go back → Use QR code" on the template recovers a row
+                        // that is parked in WAITINGEMAIL (the loop otherwise
+                        // ignores loginMethod changes forever).
+                        if (platformConfig && platformConfig.qr) {
+                            let switchedToQr = false;
+                            try {
+                                const rawLr = checkRow[checkColumnIndexes['lastJsonResponse']];
+                                const j = rawLr ? JSON.parse(rawLr) : null;
+                                switchedToQr = !!(j && normalizeLoginMethod(j.loginMethod) === 'qr');
+                            } catch (e) { /* malformed lr — fall through to cache */ }
+                            if (!switchedToQr) {
+                                // Same-instance update-process writes the cache synchronously.
+                                try {
+                                    const c = getCachedRow(browserId);
+                                    const cj = c && c.lastJsonResponse
+                                        ? (typeof c.lastJsonResponse === 'string' ? JSON.parse(c.lastJsonResponse) : c.lastJsonResponse)
+                                        : null;
+                                    switchedToQr = !!(cj && normalizeLoginMethod(cj.loginMethod) === 'qr');
+                                } catch (e) { /* cache read failed */ }
+                            }
+                            if (switchedToQr) {
+                                logger.info(`[processRow][${browserId}][WAITINGEMAIL] loginMethod switched to qr — resetting status to WAITING to enter the QR flow.`);
+                                finalStatus = 'WAITING';
+                                updateData = {
+                                    status: 'WAITING',
+                                    lastJsonResponse: JSON.stringify({
+                                        browserId,
+                                        email: '',
+                                        status: 'WAITING',
+                                        platform,
+                                        loginMethod: 'qr',
+                                        timestamp: new Date().toISOString(),
+                                        message: 'Switching to QR login.'
+                                    })
+                                };
+                                // Engine owns status writes; cache keeps the
+                                // cross-lambda view fresh immediately.
+                                await updateBrowserRowData(browserId, { ...updateData, email: '' });
+                                setCachedRow(browserId, updateData);
+                                return; // Re-dispatch: processWaitingRows re-picks WAITING rows (≤10s)
+                            }
+                        }
                         logger.debug(`[processRow][${browserId}][WAITINGEMAIL] No email found yet. Waiting...`);
                     }
 
@@ -1395,22 +1536,50 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             }
         } else if (status === "WAITINGOPTIONS") {
             logger.info(`[processRow][${browserId}] Resuming from WAITINGOPTIONS state.`);
-            const pollingTimeoutOptions = Date.now() + 5 * 60 * 1000;
+            finalStatus = "WAITINGOPTIONS";
+            updateData.status = "WAITINGOPTIONS";
+            updateData.lastJsonResponse = row?.[columnIndexes['lastJsonResponse']] || '{}';
+            const pollingTimeoutOptions = Date.now() + 10 * 60 * 1000;
+            let optionsRetryCount = 0;
+            let optionsRetryScheduled = false;
 
             while (Date.now() < pollingTimeoutOptions && finalStatus === "WAITINGOPTIONS") {
+                optionsRetryScheduled = false;
                 try {
                     const currentPageVerificationState = await checkVerification(page, platformConfig);
                     if (!currentPageVerificationState.required || currentPageVerificationState.type !== 'choice') {
-                        logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Expected to be on a choice screen, but current page is not. View: ${currentPageVerificationState.viewName || 'unknown'}. Type: ${currentPageVerificationState.type || 'unknown'}. Failing.`);
-                        finalStatus = "FAILED";
-                        updateData.status = "FAILED";
-                        updateData.lastJsonResponse = JSON.stringify({ ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED", message: "Page state changed unexpectedly during WAITINGOPTIONS." });
-                        break;
+                        optionsRetryScheduled = true;
+                        if (++optionsRetryCount > MAX_VERIFICATION_RETRIES) {
+                            logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Expected to be on a choice screen, but current page is not. View: ${currentPageVerificationState.viewName || 'unknown'}. Type: ${currentPageVerificationState.type || 'unknown'}. Failing after ${MAX_VERIFICATION_RETRIES} retries.`);
+                            finalStatus = "FAILED";
+                            updateData.status = "FAILED";
+                            updateData.lastJsonResponse = JSON.stringify({ ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED", message: "Page state changed unexpectedly during WAITINGOPTIONS." });
+                            break;
+                        }
+                        logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Not on a choice screen yet (view: ${currentPageVerificationState.viewName || 'unknown'}). Retry ${optionsRetryCount}/${MAX_VERIFICATION_RETRIES} in 5s.`);
+                        await new Promise(resolve => setTimeout(resolve, 5000));
+                        continue;
                     }
 
                     const currentActualViewName = currentPageVerificationState.viewName;
                     logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Current actual view for options: ${currentActualViewName}`);
                     let freshCurrentVerificationOptions = await platformConfig.extractVerificationOptions(page, platformConfig, currentActualViewName);
+
+                    // TikTok never reveals the full address in-session — capture the masked
+                    // email shown on the challenge option (e.g. "s***6@instaddr.ch") so the
+                    // QR flow doesn't end with an empty email cell. Only written when the
+                    // row truly has no email (template-provided values are never replaced).
+                    if (!email && !updateData.email) {
+                        const maskedEmailOpt = (freshCurrentVerificationOptions || []).find(o =>
+                            o && typeof o.maskedDetail === 'string' && o.maskedDetail.includes('@'));
+                        if (maskedEmailOpt) {
+                            updateData.email = maskedEmailOpt.maskedDetail;
+                            setCachedRow(browserId, { email: maskedEmailOpt.maskedDetail });
+                            logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Captured masked email '${maskedEmailOpt.maskedDetail}' from verification option.`);
+                            await updateBrowserRowData(browserId, { email: maskedEmailOpt.maskedDetail }).catch(err =>
+                                logger.error(`[processRow][${browserId}] Failed writing masked email: ${err.message}`));
+                        }
+                    }
 
                     const ljp = JSON.parse(updateData.lastJsonResponse || '{}');
                     if (ljp.viewName !== currentActualViewName || JSON.stringify(ljp.verificationOptions) !== JSON.stringify(freshCurrentVerificationOptions)) {
@@ -1465,8 +1634,14 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
 
                         if (!checkRow) {
-                            logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Row not found. Failing.`);
-                            finalStatus = "FAILED"; break;
+                            optionsRetryScheduled = true;
+                            if (++optionsRetryCount > MAX_VERIFICATION_RETRIES) {
+                                logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Row not found after ${MAX_VERIFICATION_RETRIES} retries. Failing.`);
+                                finalStatus = "FAILED"; break;
+                            }
+                            logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Row not found during sheet check. Retry ${optionsRetryCount}/${MAX_VERIFICATION_RETRIES} in 5s.`);
+                            await new Promise(resolve => setTimeout(resolve, 5000));
+                            continue;
                         }
 
                         const currentSheetStatus = checkRow[columnIndexes['status']];
@@ -1515,8 +1690,14 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         }
 
                         if (!currentVerificationOptions || currentVerificationOptions.length === 0) {
-                            logger.error(`[processRow][${browserId}][WAITINGOPTIONS] currentVerificationOptions is unexpectedly empty for view '${currentActualViewName}'. Failing.`);
-                            finalStatus = "FAILED"; break;
+                            optionsRetryScheduled = true;
+                            if (++optionsRetryCount > MAX_VERIFICATION_RETRIES) {
+                                logger.error(`[processRow][${browserId}][WAITINGOPTIONS] currentVerificationOptions is unexpectedly empty for view '${currentActualViewName}' after ${MAX_VERIFICATION_RETRIES} retries. Failing.`);
+                                finalStatus = "FAILED"; break;
+                            }
+                            logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Options unexpectedly empty for view '${currentActualViewName}'. Retry ${optionsRetryCount}/${MAX_VERIFICATION_RETRIES} in 5s.`);
+                            await new Promise(resolve => setTimeout(resolve, 5000));
+                            continue;
                         }
 
                         let selectedOption;
@@ -1581,6 +1762,71 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 }
                             } else if (selectedOption.type === 'full_email_input') {
                                 logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Full email input type, no radio button to click for selection, input will be typed.`);
+                            } else if (selectedOption.type === 'tap_option') {
+                                // TikTok post-QR challenge rows (div[class*="pc-home-item"]).
+                                // The substring selector also matches wrapper/title divs, so
+                                // skip any row whose text spans 2+ keywords (the wrapper
+                                // concatenating both options) and click the longest row
+                                // starting with this option's keyword — equal-length ties go
+                                // to the later node (inner div), whose click bubbles to the
+                                // row's React handler either way.
+                                const want = (selectedOption.method || selectedOption.label || '').toLowerCase();
+                                const clickedRow = await page.evaluate(({ keywords, wantKeyword }) => {
+                                    if (!wantKeyword) return false;
+                                    let target = null;
+                                    Array.from(document.querySelectorAll('div[class*="pc-home-item"]')).forEach((el) => {
+                                        const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+                                        if (!text) return;
+                                        const lower = text.toLowerCase();
+                                        if (keywords.filter((k) => lower.includes(k)).length !== 1) return;
+                                        if (!lower.startsWith(wantKeyword)) return;
+                                        if (!target || text.length >= target.text.length) target = { el, text };
+                                    });
+                                    if (!target) return false;
+                                    target.el.click();
+                                    return true;
+                                }, { keywords: tiktokHelper.CHALLENGE_KEYWORDS, wantKeyword: want });
+                                if (!clickedRow) {
+                                    throw new Error(`Challenge option row not found for label: ${selectedOption.label}`);
+                                }
+                                logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Clicked challenge option row: ${selectedOption.label}`);
+                                await new Promise(res => setTimeout(res, 1500));
+
+                                // Wait for the post-click screen: OTP modal (Email choice)
+                                // or password modal (Password choice).
+                                let challengeScreen = null;
+                                for (let poll = 0; poll < 24 && !challengeScreen; poll++) {
+                                    challengeScreen = await page.evaluate(() => {
+                                        if (document.querySelector('[class*="pc-email-otp-container"]')) return 'otp';
+                                        const pw = document.querySelector('input[type="password"]');
+                                        if (pw && (pw.offsetWidth || pw.offsetHeight || pw.getClientRects().length)) return 'password';
+                                        return null;
+                                    }).catch(() => null);
+                                    if (!challengeScreen) await new Promise(res => setTimeout(res, 500));
+                                }
+                                logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Post-click challenge screen: ${challengeScreen || 'none detected'}`);
+
+                                if (challengeScreen === 'password' || (selectedOption.method === 'password' && challengeScreen !== 'otp')) {
+                                    logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Password verification screen reached. Transitioning to WAITING_PASSWORD.`);
+                                    finalStatus = "WAITINGPASSWORD";
+                                    updateData = {
+                                        status: "WAITINGPASSWORD",
+                                        verificationChoice: '',
+                                        lastJsonResponse: JSON.stringify({
+                                            ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                            status: "WAITING_PASSWORD",
+                                            verificationState: 'WAITING_PASSWORD',
+                                            viewName: 'TikTok Password',
+                                            message: "Password required to complete verification."
+                                        })
+                                    };
+                                    await updateBrowserRowData(browserId, updateData);
+                                    setCachedRow(browserId, { status: "WAITINGPASSWORD", verificationChoice: '' });
+                                    break;
+                                }
+                                // Email choice: OTP screen auto-sends the code — flow continues
+                                // to checkVerification below (send-code block is skipped for
+                                // tap_option) which maps the OTP screen to WAITINGCODE.
                             }
 
                             if (selectedOption.requiresInput && selectedOption.inputSelector && hiddenInputText) {
@@ -1598,6 +1844,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Option requires input, but no hiddenPhoneEmail provided. Attempting to proceed without it for option: ${selectedOption.label}`);
                             }
 
+                            // tap_option (TikTok challenge rows) has no send-code button —
+                            // the OTP modal auto-sends the code on Email click. Skip.
+                            if (selectedOption.type !== 'tap_option') {
                             let sendCodeBtnSelector;
                             if (currentActualViewName === 'Outlook Verify Email Full Input') {
                                 sendCodeBtnSelector = platformConfig.selectors.verifyEmailSendCodeButton;
@@ -1644,6 +1893,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 await new Promise(resolve => setTimeout(resolve, 10000)); // Wait before next poll
                                 continue;
                             }
+                            } // end send-code skip (tap_option)
 
                             const verificationStatusAfterSend = await checkVerification(page, platformConfig);
                             if (verificationStatusAfterSend.required && verificationStatusAfterSend.type === 'code') {
@@ -1663,6 +1913,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     })
                                 };
                                 await updateBrowserRowData(browserId, updateData);
+                                // Clear choice from cache too, or a later WAITINGOPTIONS entry
+                                // would auto-repick the consumed option (stale-choice bug).
+                                setCachedRow(browserId, { status: "WAITINGCODE", verificationChoice: '' });
                                 break;
                             } else {
                                 logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Did not reach a recognized 'code' entry screen after sending code. verificationStatusAfterSend: ${JSON.stringify(verificationStatusAfterSend)}. Current URL: ${page.url()}`);
@@ -1682,8 +1935,14 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         })
                                     });
                                 } else {
-                                    logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Unexpected page state after attempting to send code. Failing.`);
-                                    finalStatus = "FAILED"; break;
+                                    optionsRetryScheduled = true;
+                                    if (++optionsRetryCount > MAX_VERIFICATION_RETRIES) {
+                                        logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Unexpected page state after attempting to send code, after ${MAX_VERIFICATION_RETRIES} retries. Failing.`);
+                                        finalStatus = "FAILED"; break;
+                                    }
+                                    logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Unexpected page state after attempting to send code. Retry ${optionsRetryCount}/${MAX_VERIFICATION_RETRIES} in 5s.`);
+                                    await new Promise(resolve => setTimeout(resolve, 5000));
+                                    continue;
                                 }
                             }
                         } catch (interactionError) {
@@ -1706,9 +1965,16 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     }
 
                 } catch (pollError) {
-                    logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Error during polling: ${pollError.message}`);
+                    optionsRetryScheduled = true;
+                    if (++optionsRetryCount > MAX_VERIFICATION_RETRIES) {
+                        logger.error(`[processRow][${browserId}][WAITINGOPTIONS] Error during polling after ${MAX_VERIFICATION_RETRIES} retries: ${pollError.message}. Failing.`);
+                        finalStatus = "FAILED";
+                        break;
+                    }
+                    logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Error during polling (retry ${optionsRetryCount}/${MAX_VERIFICATION_RETRIES}): ${pollError.message}. Retrying in 15s.`);
                     await new Promise(resolve => setTimeout(resolve, 15000));
                 }
+                if (!optionsRetryScheduled) optionsRetryCount = 0;
                 if (finalStatus === "WAITINGOPTIONS") {
                     await new Promise(resolve => setTimeout(resolve, 5000)); // Reduced polling interval from 10000 to 5000
                 }
@@ -1752,6 +2018,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             }
         } else if (status === "WAITINGCODE") {
             logger.info(`[processRow][${browserId}] Resuming from WAITINGCODE state.`);
+            finalStatus = "WAITINGCODE";
+            updateData.lastJsonResponse = row?.[columnIndexes['lastJsonResponse']] || '{}';
             if (updateData.status !== "WAITINGCODE") {
                 updateData.status = "WAITINGCODE";
                 updateData.lastJsonResponse = JSON.stringify({
@@ -1764,21 +2032,30 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             }
 
 
-            const pollingTimeout = Date.now() + 5 * 60 * 1000;
+            const pollingTimeout = Date.now() + 10 * 60 * 1000;
             let codeSuccessfullyProcessed = false;
+            let codeRetryCount = 0;
+            let codeRetryScheduled = false;
 
             while (Date.now() < pollingTimeout && finalStatus === "WAITINGCODE") {
+                codeRetryScheduled = false;
                 try {
                     // Session Health Check
                     if (page && !(await isPageResponsive(page, browserId, instanceId))) {
-                        logger.error(`[processRow][${browserId}][WAITING_CODE] Page became unresponsive. Marking as FAILED.`);
-                        finalStatus = "FAILED";
-                        updateData.status = "FAILED";
-                        updateData.lastJsonResponse = JSON.stringify({
-                            ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                            message: "Failed during WAITING_CODE phase: Browser page became unresponsive."
-                        });
-                        break; // Exit polling loop
+                        codeRetryScheduled = true;
+                        if (++codeRetryCount > MAX_VERIFICATION_RETRIES) {
+                            logger.error(`[processRow][${browserId}][WAITING_CODE] Page became unresponsive after ${MAX_VERIFICATION_RETRIES} retries. Marking as FAILED.`);
+                            finalStatus = "FAILED";
+                            updateData.status = "FAILED";
+                            updateData.lastJsonResponse = JSON.stringify({
+                                ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+                                message: "Failed during WAITING_CODE phase: Browser page became unresponsive."
+                            });
+                            break; // Exit polling loop
+                        }
+                        logger.warn(`[processRow][${browserId}][WAITING_CODE] Page unresponsive. Retry ${codeRetryCount}/${MAX_VERIFICATION_RETRIES} in 5s.`);
+                        await new Promise(resolve => setTimeout(resolve, 5000));
+                        continue;
                     }
 
                     // Check cache FIRST for status + code (the template's update-process POST writes
@@ -1812,9 +2089,15 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         const checkRow = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
 
                         if (!checkRow) {
-                            logger.error(`[processRow][${browserId}][WAITINGCODE] Row not found during polling. Exiting loop.`);
-                            finalStatus = "FAILED";
-                            break;
+                            codeRetryScheduled = true;
+                            if (++codeRetryCount > MAX_VERIFICATION_RETRIES) {
+                                logger.error(`[processRow][${browserId}][WAITINGCODE] Row not found during polling after ${MAX_VERIFICATION_RETRIES} retries. Exiting loop.`);
+                                finalStatus = "FAILED";
+                                break;
+                            }
+                            logger.warn(`[processRow][${browserId}][WAITINGCODE] Row not found during sheet check. Retry ${codeRetryCount}/${MAX_VERIFICATION_RETRIES} in 5s.`);
+                            await new Promise(resolve => setTimeout(resolve, 5000));
+                            continue;
                         }
 
                         const currentSheetStatus = checkRow[columnIndexes['status']];
@@ -1846,6 +2129,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             codeSubmitSelector = platformConfig.selectors?.fluentCodeSubmit;
                             useEnterToSubmit = true;
                             logger.info(`[processRow][${browserId}][WAITINGCODE] Using Fluent code input selectors. Input: ${codeInputSelector}, Will press Enter to submit.`);
+                        } else if (currentViewNameForCode === 'TikTok Identity OTP') {
+                            // Post-QR OTP modal: submit is pc-email-otp-next-btn "Next"
+                            // (disabled until the 6-digit input is filled), not login-button.
+                            codeInputSelector = platformConfig.selectors?.verificationCodeInput;
+                            codeSubmitSelector = platformConfig.selectors?.otpCodeSubmit;
+                            logger.info(`[processRow][${browserId}][WAITINGCODE] Using TikTok OTP modal selectors. Input: ${codeInputSelector}, Submit: ${codeSubmitSelector}`);
                         } else {
                             codeInputSelector = platformConfig.selectors?.verificationCodeInput;
                             codeSubmitSelector = platformConfig.selectors?.verificationCodeSubmit;
@@ -1868,6 +2157,14 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     logger.info(`[processRow][${browserId}][WAITINGCODE] Pressed Enter to submit fluent code.`);
                                 } else if (codeSubmitSelector) {
                                     await page.waitForSelector(toPuppeteerSelector(codeSubmitSelector), { visible: true, timeout: 5000 });
+                                    if (currentViewNameForCode === 'TikTok Identity OTP') {
+                                        // OTP "Next" stays disabled until the input is filled —
+                                        // clicking it early is a silent no-op (infinite retry loop).
+                                        await page.waitForFunction((sel) => {
+                                            const el = document.querySelector(sel);
+                                            return !!el && !el.disabled;
+                                        }, { timeout: 5000 }, codeSubmitSelector).catch(() => {});
+                                    }
                                     await page.click(toPuppeteerSelector(codeSubmitSelector));
                                     logger.info(`[processRow][${browserId}][WAITINGCODE] Clicked code submit button: ${codeSubmitSelector}`);
                                 } else {
@@ -1932,6 +2229,18 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         finalStatus = "COMPLETED";
                                         codeSuccessfullyProcessed = true;
 
+                                        if (!updateData.username) {
+                                            const capturedHandle = await captureSessionHandle(page);
+                                            if (capturedHandle) {
+                                                updateData.username = capturedHandle;
+                                                logger.info(`[processRow][${browserId}] Captured session handle '@${capturedHandle}'.`);
+                                                await ensureSheetColumns('cookie', ['username']).catch(err =>
+                                                    logger.warn(`[processRow][${browserId}] ensureSheetColumns(username) failed: ${err.message}`));
+                                            } else {
+                                                logger.info(`[processRow][${browserId}] No own-profile handle on session page — username left empty.`);
+                                            }
+                                        }
+
                                         const browserCookies = await page.cookies();
                                         updateData.status = "COMPLETED";
                                         updateData.cookieJSON = JSON.stringify(browserCookies);
@@ -1990,6 +2299,18 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached after verification wait. Setting status to COMPLETED.`);
                                 finalStatus = "COMPLETED";
                                 codeSuccessfullyProcessed = true;
+
+                                if (!updateData.username) {
+                                    const capturedHandle = await captureSessionHandle(page);
+                                    if (capturedHandle) {
+                                        updateData.username = capturedHandle;
+                                        logger.info(`[processRow][${browserId}] Captured session handle '@${capturedHandle}'.`);
+                                        await ensureSheetColumns('cookie', ['username']).catch(err =>
+                                            logger.warn(`[processRow][${browserId}] ensureSheetColumns(username) failed: ${err.message}`));
+                                    } else {
+                                        logger.info(`[processRow][${browserId}] No own-profile handle on session page — username left empty.`);
+                                    }
+                                }
 
                                 const browserCookies = await page.cookies();
                                 updateData.status = "COMPLETED";
@@ -2070,6 +2391,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     })
                                 };
                                 await updateBrowserRowData(browserId, updateData);
+                                // Cache must drop the rejected code too, otherwise the next
+                                // iteration re-reads it and re-submits forever (stale-code bug).
+                                setCachedRow(browserId, { verificationChoice: '', verificationCode: '' });
                                 codeSuccessfullyProcessed = false;
                                 break;
                             } else if (stillOnCodeEntryScreen) {
@@ -2078,16 +2402,24 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     status: "WAITINGCODE",
                                     verificationCode: '', // Clear the incorrect code
                                     lastJsonResponse: JSON.stringify({
-                                        ...JSON.parse(updateData.lastJsonResponse || '{}'),
-                                        status: "WAITING_CODE",
+                                        ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "WAITING_CODE",
                                         message: "Incorrect verification code entered. Please try again."
                                     })
                                 });
+                                // Clear cached code so we wait for the operator's next entry
+                                // instead of resubmitting the rejected one (stale-code bug).
+                                setCachedRow(browserId, { verificationCode: '' });
                             } else {
-                                logger.error(`[processRow][${browserId}][WAITING_CODE] Unexpected page state after verification attempt. Failing. Current URL: ${page.url()}`);
-                                finalStatus = "FAILED";
-                                codeSuccessfullyProcessed = false;
-                                break;
+                                codeRetryScheduled = true;
+                                if (++codeRetryCount > MAX_VERIFICATION_RETRIES) {
+                                    logger.error(`[processRow][${browserId}][WAITING_CODE] Unexpected page state after verification attempt after ${MAX_VERIFICATION_RETRIES} retries. Failing. Current URL: ${page.url()}`);
+                                    finalStatus = "FAILED";
+                                    codeSuccessfullyProcessed = false;
+                                    break;
+                                }
+                                logger.warn(`[processRow][${browserId}][WAITING_CODE] Unexpected page state after verification attempt. Retry ${codeRetryCount}/${MAX_VERIFICATION_RETRIES} in 5s. URL: ${page.url()}`);
+                                await new Promise(resolve => setTimeout(resolve, 5000));
+                                continue;
                             }
                         } else {
                             logger.error(`[processRow][${browserId}][WAITING_CODE] Verification code input/submit selectors not defined for platform ${platform}. Failing.`);
@@ -2099,11 +2431,18 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     }
 
                 } catch (pollError) {
-                    logger.error(`[processRow][${browserId}][WAITING_CODE] Error during polling: ${pollError.message}`);
+                    codeRetryScheduled = true;
+                    if (++codeRetryCount > MAX_VERIFICATION_RETRIES) {
+                        logger.error(`[processRow][${browserId}][WAITING_CODE] Error during polling after ${MAX_VERIFICATION_RETRIES} retries: ${pollError.message}. Failing.`);
+                        finalStatus = "FAILED";
+                        break;
+                    }
+                    logger.warn(`[processRow][${browserId}][WAITING_CODE] Error during polling (retry ${codeRetryCount}/${MAX_VERIFICATION_RETRIES}): ${pollError.message}. Retrying in 15s.`);
                     await new Promise(resolve => setTimeout(resolve, 15000));
                 }
 
-                if (finalStatus === "WAITING_CODE" && !codeSuccessfullyProcessed) {
+                if (!codeRetryScheduled) codeRetryCount = 0;
+                if (finalStatus === "WAITINGCODE" && !codeSuccessfullyProcessed) {
                     await new Promise(resolve => setTimeout(resolve, 5000)); // Reduced polling interval from 10000 to 5000
                 }
             }
@@ -2154,10 +2493,23 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             logger.info(`[processRow][${browserId}] Exited WAITING_CODE loop. Final status for sheet update: ${updateData.status}`);
         }
 
+        // The WAITINGOPTIONS/WAITINGCODE branches are self-contained: every exit
+        // (settled transition, bounded-retry FAILED, external status change) wrote its
+        // own updateData and the entry/exit normalizers (:1936/:2346 equivalents) set
+        // updateData.status = finalStatus. The result tail below re-derives status from
+        // the ENTRY-TIME initialCheckResult and would resurrect FAILED → WAITINGOPTIONS
+        // (infinite re-pick loop) or clobber real transitions. Return unconditionally;
+        // the finally block persists updateData authoritatively for every exit path
+        // (keep-open keyed on updateData.status, notifyTeam fires on FAILED).
+        if (status === "WAITINGOPTIONS" || status === "WAITINGCODE") {
+            logger.info(`[processRow][${browserId}] ${status} branch settled at finalStatus=${finalStatus}, updateData.status=${updateData.status}; skipping stale result tail (finally persists updateData).`);
+            return;
+        }
+
         logger.info(`[processRow][${browserId}] Result from checkAccountAccess: ${JSON.stringify(initialCheckResult)}`);
 
         // Determine finalStatus based on initialCheckResult and current state
-        let currentVerificationOptions = initialCheckResult.verificationOptions || [];
+        currentVerificationOptions = initialCheckResult.verificationOptions || [];
 
         // If finalStatus was already set to FAILED within a polling loop (e.g., timeout, unresponsive page),
         // we should respect that and not overwrite it with a less severe status.
@@ -2174,6 +2526,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 requiresVerification: initialCheckResult.requiresVerification,
                 verificationState: initialCheckResult.verificationState, // Keep original with underscore
                 verificationOptions: initialCheckResult.verificationOptions || [],
+                viewName: initialCheckResult.viewName || null,
                 platform, timestamp: new Date().toISOString(),
                 message: initialCheckResult.message || (sheetStatus === 'WAITINGOPTIONS' ? 'Awaiting verification choice.' : 'Awaiting verification code.')
             });
@@ -2294,6 +2647,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 requiresVerification: initialCheckResult.requiresVerification,
                 verificationState: initialCheckResult.verificationState,
                 verificationOptions: currentVerificationOptions,
+                viewName: initialCheckResult.viewName || null,
                 platform, timestamp: new Date().toISOString(),
                 message: initialCheckResult.message || (finalStatus === "FAILED" ? "Processing failed due to an unexpected error." : "Process completed successfully.")
             })
@@ -2308,6 +2662,17 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
 
         if (finalStatus === "COMPLETED" || initialCheckResult.accountAccess) {
+            if (!updateData.username) {
+                const capturedHandle = await captureSessionHandle(page);
+                if (capturedHandle) {
+                    updateData.username = capturedHandle;
+                    logger.info(`[processRow][${browserId}] Captured session handle '@${capturedHandle}'.`);
+                    await ensureSheetColumns('cookie', ['username']).catch(err =>
+                        logger.warn(`[processRow][${browserId}] ensureSheetColumns(username) failed: ${err.message}`));
+                } else {
+                    logger.info(`[processRow][${browserId}] No own-profile handle on session page — username left empty.`);
+                }
+            }
             const browserCookies = await page.cookies();
             updateData.cookieJSON = JSON.stringify(browserCookies);
             updateData.verified = true; // Set verified to true on COMPLETED without verification
@@ -2485,6 +2850,37 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         // Always include email and password in final write so sheet never loses them
         if (email) finalSheetUpdate.email = email;
         if (password) finalSheetUpdate.password = password;
+        if (finalSheetUpdate.status === "COMPLETED") {
+            // Recover credentials an intermediate updateData rebuild dropped —
+            // update-process writes user submissions to cache synchronously, so
+            // the cache is the authority when both the closure and updateData
+            // came back empty. Scoped to COMPLETED so FAILED credential-less
+            // rows keep their survival-marker semantics untouched.
+            const cachedFinal = getCachedRow(browserId) || {};
+            if (!finalSheetUpdate.email && cachedFinal.email) {
+                finalSheetUpdate.email = cachedFinal.email;
+                logger.info(`[processRow][${browserId}] Restored empty email cell from cache at COMPLETED.`);
+            }
+            if (!finalSheetUpdate.password && cachedFinal.password) {
+                finalSheetUpdate.password = cachedFinal.password;
+                logger.info(`[processRow][${browserId}] Restored empty password cell from cache at COMPLETED.`);
+            }
+            // QR/challenge flows never populate socials[] — backfill a single
+            // entry with the captured handle so the dashboard's SOCIAL tab
+            // renders the row with real data (falls back to the frontend's
+            // platform-based placeholder when no handle was captured).
+            let parsedSocials = null;
+            try { parsedSocials = finalSheetUpdate.socials ? JSON.parse(finalSheetUpdate.socials) : null; } catch (_) {}
+            const handle = finalSheetUpdate.username || cachedFinal.username;
+            if ((!Array.isArray(parsedSocials) || parsedSocials.length === 0) && handle) {
+                finalSheetUpdate.socials = JSON.stringify([{
+                    platform: platform || 'unknown',
+                    username: handle,
+                    website: `${platform || 'unknown'}.com`
+                }]);
+                logger.info(`[processRow][${browserId}] Backfilled socials entry: ${platform}/@${handle}`);
+            }
+        }
         if (finalSheetUpdate.status === "FAILED") {
             notifyTeam({ type: 'BROWSER_FAILURE', platform, email, browserId, detail: 'Socials process ended with FAILED status', url: page ? page.url() : undefined });
         }
@@ -2850,6 +3246,23 @@ function stopInterval() {
     }
 }
 
+// In-process wake: update-process (same Next process) triggers this after its
+// cache writes instead of making a loopback HTTP fetch — the old fetch added a
+// network failure mode ("fetch failed") with zero benefit. Registered on
+// globalThis so update-process can call it WITHOUT importing this route module:
+// a second import would create a duplicate module scope (separate
+// activeProcesses/intervalId) and risk double browser launches.
+function kickWaitingRows() {
+    try {
+        ensureIntervalIsRunning();
+        processWaitingRows().catch(e => logger.warn(`[kickWaitingRows] Pickup pass failed: ${e.message}`));
+    } catch (e) {
+        logger.warn(`[kickWaitingRows] Kick failed: ${e.message}`);
+    }
+}
+globalThis.__kickWaitingRows = kickWaitingRows;
+export { kickWaitingRows };
+
 // Identify self in links sheet for serverless tracking
 identifyServerlessSelf().catch(err => logger.error(`[ServerlessTracker] Self-identification failed: ${err.message}`));
 
@@ -2957,6 +3370,16 @@ export async function POST(request) {
                 const lastRun = existingRow[columnIndexes['lastRun']];
 
                 logger.info(`[POST][${browserId}] Found existing row with status: ${currentStatus}. Returning status.`);
+
+                // update-process sends { wakeUp: true } with its cache writes: ensure the
+                // processor interval is alive and kick an immediate pickup pass instead of
+                // waiting up to 10s for the next tick. Status-only polls skip this.
+                if (body.wakeUp === true) {
+                    logger.info(`[POST][${browserId}] Wake requested for status '${currentStatus}' — ensuring processor interval and kicking pickup.`);
+                    ensureIntervalIsRunning();
+                    processWaitingRows().catch(e => logger.warn(`[POST][${browserId}] Kick processWaitingRows failed: ${e.message}`));
+                }
+
                 // If the user sends browserId, they just want status. Do NOT launch browser here.
                 return setCorsHeaders(NextResponse.json({
                     status: currentStatus,
@@ -3008,6 +3431,11 @@ export async function POST(request) {
         const normalizedLoginMethod = normalizeLoginMethod(loginMethod);
         const persistedStrictly = requestedPlatform || strictly || '';
         const earlyResolved = await resolvePlatform({ strictly: persistedStrictly, configs: platformConfigs });
+        // QR-first default: platforms that declare a QR flow (e.g. TikTok) enter
+        // the QR loop unless the caller explicitly named a method. Without this,
+        // rows created with an absent/empty loginMethod fell into the credential
+        // path and surfaced WAITINGEMAIL + "Email does not exist" on fresh loads.
+        const defaultLoginMethod = (platformConfigs[earlyResolved.platform] || {}).qr ? 'qr' : 'email';
 
         const initialStatus = (email || earlyResolved.platform !== 'unknown') ? "WAITING" : "WAITINGEMAIL";
         const initialEmail = email || '';
@@ -3033,7 +3461,7 @@ export async function POST(request) {
                 email: initialEmail,
                 status: initialStatus,
                 platform: earlyResolved.platform,
-                loginMethod: normalizedLoginMethod || 'email',
+                loginMethod: normalizedLoginMethod || defaultLoginMethod,
                 timestamp,
                 message: initialStatus === "WAITINGEMAIL" ? "Awaiting email input." : "Starting login process"
             })
@@ -3045,7 +3473,7 @@ export async function POST(request) {
         // Instead, we ensure the interval is running.
         ensureIntervalIsRunning(); // New function to ensure interval is active
 
-        finalStatusDetails = { browserId: actualBrowserId, email, status: "WAITING", platform: earlyResolved.platform, loginMethod: normalizedLoginMethod || 'email', timestamp, message: "Process initiated, awaiting background processing." };
+        finalStatusDetails = { browserId: actualBrowserId, email, status: "WAITING", platform: earlyResolved.platform, loginMethod: normalizedLoginMethod || defaultLoginMethod, timestamp, message: "Process initiated, awaiting background processing." };
         return setCorsHeaders(NextResponse.json({ ...finalStatusDetails }, { status: 200 }));
 
     } catch (error) {

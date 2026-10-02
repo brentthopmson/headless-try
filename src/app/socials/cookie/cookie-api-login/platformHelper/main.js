@@ -170,15 +170,26 @@ function matchWarmEntry(pageUrl, entries) {
  * for the FIRST method (no extra tab). Returns { method: page }.
  * setupPage(page) lets route.js apply UA/viewport to newly created tabs.
  *
+ * foregroundMethods (optional): methods whose navigation must complete before
+ * this resolves. All other methods' gotos float (fire-and-forget with error
+ * handling) so the caller's flow — e.g. QR capture — starts as soon as its own
+ * tab is ready instead of waiting for every warm tab. newPage() is always
+ * awaited: the targetcreated listener needs the warmOpening flag at creation
+ * time; navigation itself creates no new targets, so floating gotos are safe.
+ *
  * On session reuse the browser may already hold tabs from a previous run:
  * those pages are ADOPTED (matched by URL) instead of duplicated, and any
  * leftover duplicate warm tabs are closed, so the session keeps exactly one
  * tab per method.
  */
-async function openWarmTabs({ browser, primaryPage, config, logger, setupPage } = {}) {
+async function openWarmTabs({ browser, primaryPage, config, logger, setupPage, foregroundMethods } = {}) {
     const tabs = {};
     const entries = warmTabUrls(config);
     if (!browser || entries.length === 0) return tabs;
+
+    const fgSet = (Array.isArray(foregroundMethods) && foregroundMethods.length > 0)
+        ? new Set(foregroundMethods) : null;
+    const floating = [];
 
     entries.forEach(e => markWarmUrl(e.url));
     setWarmOpening(true);
@@ -233,6 +244,9 @@ async function openWarmTabs({ browser, primaryPage, config, logger, setupPage } 
             }
         }
         // 5) Assign/adopted pages (navigating if stale) + create missing tabs.
+        // Foreground methods are awaited; the rest float — their rejections are
+        // handled below, so openWarmTabs resolves after only the caller's own
+        // tab navigated (QR capture no longer waits for email/phone loads).
         for (const { method, url } of entries) {
             let p = null;
             try {
@@ -240,14 +254,28 @@ async function openWarmTabs({ browser, primaryPage, config, logger, setupPage } 
                 if (a) {
                     p = a.page;
                     if (a.nav && typeof p.goto === 'function') {
-                        await p.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => {
+                        const nav = p.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(e => {
                             logger && logger.warn(`[WarmTabs] ${method}.goto(${url}) failed: ${e.message}`);
                         });
+                        if (fgSet && !fgSet.has(method)) floating.push(nav);
+                        else await nav;
                     }
                 } else {
                     p = await browser.newPage();
                     if (typeof setupPage === 'function') await setupPage(p);
-                    await p.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                    const nav = p.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                    if (fgSet && !fgSet.has(method)) {
+                        floating.push(nav.catch(e => {
+                            logger && logger.warn(`[WarmTabs] Failed to open '${method}' (${url}): ${e.message}`);
+                            // Don't leave a zombie about:blank tab behind (the listener kept
+                            // it open while warmOpening was set).
+                            if (p && p !== primaryPage && typeof p.isClosed === 'function' && !p.isClosed()) {
+                                return p.close().catch(() => {});
+                            }
+                        }));
+                    } else {
+                        await nav;
+                    }
                 }
                 tabs[method] = p;
             } catch (e) {
@@ -259,6 +287,9 @@ async function openWarmTabs({ browser, primaryPage, config, logger, setupPage } 
                 }
             }
         }
+        // floating gotos stay in flight after this resolves — safe: navigation
+        // creates no targetcreated events, so releasing warmOpening below only
+        // affects new tabs, and every floating promise has its own handler.
     } finally {
         setWarmOpening(false);
     }
@@ -333,7 +364,7 @@ async function captureQrDataUrl(page, selectors, logger) {
  * Result shape matches checkAccountAccess so processRow's tail maps it to
  * COMPLETED / WAITINGEMAIL uniformly.
  */
-async function runQrLogin({ page, config, logger, onQrData, getMethod, isLoggedIn, timeoutMs, recaptureMs } = {}) {
+async function runQrLogin({ page, config, logger, onQrData, getMethod, isLoggedIn, detectChallenge, timeoutMs, recaptureMs } = {}) {
     const qr = (config && config.qr) || {};
     const deadline = Date.now() + (timeoutMs || qr.timeoutMs || 8 * 60 * 1000);
     const interval = recaptureMs || qr.recaptureMs || 25000;
@@ -367,6 +398,21 @@ async function runQrLogin({ page, config, logger, onQrData, getMethod, isLoggedI
                 }
             } catch (e) {
                 logger && logger.debug(`[QrLogin] getMethod failed: ${e.message}`);
+            }
+        }
+
+        // Post-scan challenge probe (e.g. TikTok "Verify it's really you").
+        // Returns a full checkAccountAccess-shaped result to exit the QR loop,
+        // or null/undefined to keep capturing (no challenge / probe failed).
+        if (typeof detectChallenge === 'function') {
+            try {
+                const challenge = await detectChallenge();
+                // INFO (not debug): this is the only proof the probe is wired —
+                // silence here means detectChallenge never runs.
+                logger && logger.info(`[QrLogin] iter=${iterations} challenge=${challenge ? (challenge.verificationState || 'hit') : 'null'}`);
+                if (challenge) return challenge;
+            } catch (e) {
+                logger && logger.warn(`[QrLogin] detectChallenge failed: ${e.message}`);
             }
         }
 

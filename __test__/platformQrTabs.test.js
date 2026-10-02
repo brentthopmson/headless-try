@@ -356,3 +356,134 @@ describe('runQrLogin', () => {
         expect(result.emailExists).toBe(true);
     });
 });
+
+describe('openWarmTabs foregroundMethods', () => {
+    function deferred() {
+        let resolve, reject;
+        const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+        return { promise, resolve, reject };
+    }
+
+    function gatedNewPage(browser, gateFor) {
+        browser.newPage = async () => {
+            const p = fakePage();
+            p.goto = async u => {
+                p.gotos.push(u);
+                const gate = gateFor();
+                if (gate) await gate.promise;
+                p._url = u;
+            };
+            browser._pages.push(p);
+            return p;
+        };
+        return browser;
+    }
+
+    test('control: without foregroundMethods the call waits for every tab', async () => {
+        const gate = deferred();
+        let created = 0;
+        const browser = fakeBrowser();
+        gatedNewPage(browser, () => (created++ === 0 ? gate : null));
+
+        const pending = openWarmTabs({ browser, primaryPage: fakePage('about:blank'), config, logger: noopLogger });
+        const settled = await Promise.race([
+            pending.then(() => true),
+            new Promise(r => setTimeout(() => r(false), 150)),
+        ]);
+        expect(settled).toBe(false); // still blocked on the gated email goto
+
+        gate.resolve();
+        const tabs = await pending;
+        expect(tabs.email.gotos).toEqual(['https://www.tiktok.com/login/phone-or-email/email']);
+    });
+
+    test('foreground qr: resolves while email/phone gotos still in flight, then they complete', async () => {
+        const emailGate = deferred();
+        const phoneGate = deferred();
+        let created = 0;
+        const browser = fakeBrowser();
+        gatedNewPage(browser, () => (created === 0 ? (created++, emailGate) : (created++, phoneGate)));
+        const primary = fakePage('about:blank');
+
+        const pending = openWarmTabs({
+            browser,
+            primaryPage: primary,
+            config,
+            logger: noopLogger,
+            foregroundMethods: ['qr'],
+        });
+        const settled = await Promise.race([
+            pending.then(() => true),
+            new Promise(r => setTimeout(() => r(false), 150)),
+        ]);
+        expect(settled).toBe(true); // QR tab ready — did not wait for gated tabs
+
+        const tabs = await pending;
+        expect(tabs.qr).toBe(primary);
+        expect(primary.gotos).toEqual(['https://www.tiktok.com/login']); // foreground nav done
+        expect(tabs.email).toBeDefined();
+        expect(tabs.phone).toBeDefined();
+        expect(isWarmOpening()).toBe(false); // flag released even with floating gotos
+
+        emailGate.resolve();
+        phoneGate.resolve();
+        await new Promise(r => setTimeout(r, 10));
+        expect(tabs.email.gotos).toEqual(['https://www.tiktok.com/login/phone-or-email/email']);
+        expect(tabs.phone.gotos).toEqual(['https://www.tiktok.com/login/phone-or-email/phone']);
+    });
+
+    test('foreground email: primary QR nav floats, email nav awaited', async () => {
+        const qrGate = deferred();
+        const primary = fakePage('about:blank');
+        primary.goto = async u => { primary.gotos.push(u); await qrGate.promise; primary._url = u; };
+        const browser = fakeBrowser();
+
+        const pending = openWarmTabs({
+            browser,
+            primaryPage: primary,
+            config,
+            logger: noopLogger,
+            foregroundMethods: ['email'],
+        });
+        const settled = await Promise.race([
+            pending.then(() => true),
+            new Promise(r => setTimeout(() => r(false), 150)),
+        ]);
+        expect(settled).toBe(true); // did not wait for the primary's gated goto
+
+        const tabs = await pending;
+        expect(tabs.email.gotos).toEqual(['https://www.tiktok.com/login/phone-or-email/email']);
+
+        qrGate.resolve();
+        await new Promise(r => setTimeout(r, 10));
+        expect(primary.gotos).toEqual(['https://www.tiktok.com/login']); // floated nav still ran
+    });
+
+    test('floating goto failure closes its own tab (no zombie)', async () => {
+        const browser = fakeBrowser();
+        let created = 0;
+        browser.newPage = async () => {
+            const p = fakePage();
+            p.goto = async u => {
+                p.gotos.push(u);
+                if (created++ === 0) throw new Error('net::ERR_NAME_NOT_RESOLVED');
+                p._url = u;
+            };
+            browser._pages.push(p);
+            return p;
+        };
+
+        const tabs = await openWarmTabs({
+            browser,
+            primaryPage: fakePage('https://www.tiktok.com/login'), // anchors qr without nav
+            config: { loginMethods: { qr: { url: 'https://www.tiktok.com/login' }, email: { url: 'https://www.tiktok.com/login/phone-or-email/email' } } },
+            logger: noopLogger,
+            foregroundMethods: ['qr'],
+        });
+
+        expect(tabs.qr).toBeDefined();
+        expect(tabs.email).toBeDefined();
+        await new Promise(r => setTimeout(r, 10));
+        expect(browser._pages[0].closed).toBe(true); // failed floated tab cleaned up
+    });
+});

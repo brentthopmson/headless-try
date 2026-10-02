@@ -10,6 +10,9 @@ import { getSetting } from '../../../../utils/settingsCache.js';
 import { enqueueSheetUpdate } from '../../../../utils/writeQueue.js';
 import { getCachedRow } from '../../../../utils/cookieCache.js';
 import survivalMarker from './survivalMarker.js';
+import verificationMatch from './platformHelper/verificationMatch.js';
+
+const { matchVerificationView } = verificationMatch;
 
 const { resolveSurvivalMarker } = survivalMarker;
 
@@ -307,7 +310,12 @@ export async function isInbox(page, platformConfig) {
 }
 
 export async function checkVerification(page, platformConfig) {
-  if (!platformConfig?.verificationScreens) return { required: false };
+  if (!platformConfig?.verificationScreens) {
+    // Silent here used to hide a misconfigured platform forever — warn so the
+    // absence of verification views is visible in engine logs.
+    logger.warn(`[checkVerification] No verificationScreens configured — cannot detect verification views (url: ${page.url()})`);
+    return { required: false };
+  }
   const instanceId = `pid-${page.browser().process()?.pid || 'unknown'}`;
   logger.debug(`[checkVerification][${instanceId}] Starting verification check. Current URL: ${page.url()}`);
 
@@ -319,39 +327,38 @@ export async function checkVerification(page, platformConfig) {
     }
 
     try {
-      const matchFound = await page.evaluate((viewData, currentInstanceId) => {
-        const selectors = Array.isArray(viewData.match.selector) ?
-          viewData.match.selector : [viewData.match.selector];
-        let elementFoundBySelector = false;
-        let textCriteriaMet = !viewData.match.text;
-
-        for (const sel of selectors) {
-          console.log(`[checkVerification][${currentInstanceId}] Evaluating selector for '${viewData.name}': Type: ${typeof sel}, Value: ${sel}`);
-          if (typeof sel !== 'string') {
-            console.error(`[checkVerification][${currentInstanceId}] Selector is not a string. Type: ${typeof sel}, Value: ${sel}`);
-            continue;
-          }
-
-          const element = document.querySelector(sel);
-          if (element) {
-            elementFoundBySelector = true;
-            if (viewData.match.text) {
-              if ((element.textContent || "").includes(viewData.match.text)) {
-                textCriteriaMet = true;
-                break;
-              } else {
-                textCriteriaMet = false;
-              }
-            } else {
-              break;
-            }
-          }
-        }
-        return elementFoundBySelector && textCriteriaMet;
-      }, view, instanceId).catch((e) => {
+      // matchVerificationView (platformHelper/verificationMatch.js) iterates
+      // querySelectorALL per selector and normalizes text (curly apostrophes,
+      // case, whitespace) — the old first-element-only check missed the TikTok
+      // challenge modal because the QR page's own h1 came first in DOM order.
+      let matchFound = await page.evaluate(matchVerificationView, view).catch((e) => {
         logger.error(`[checkVerification][${instanceId}] Error during page evaluation for view match ${view.name}: ${e.message}`);
         return false;
       });
+
+      // Some challenge modals render inside an embedded frame — probe sibling
+      // frames only when the main document missed, so the normal path stays a
+      // single evaluate.
+      if (!matchFound && typeof page.frames === 'function') {
+        const frames = page.frames();
+        if (frames.length > 1) {
+          logger.info(`[checkVerification][${instanceId}] Main frame missed '${view.name}' — probing ${frames.length - 1} child frame(s).`);
+        }
+        for (const frame of frames) {
+          try {
+            if (frame === page.mainFrame()) continue;
+            if (await frame.evaluate(matchVerificationView, view)) {
+              let frameUrl = '';
+              try { frameUrl = frame.url(); } catch (e) { /* detached */ }
+              logger.info(`[checkVerification][${instanceId}] Matched '${view.name}' inside frame: ${frameUrl}`);
+              matchFound = true;
+              break;
+            }
+          } catch (e) {
+            logger.warn(`[checkVerification][${instanceId}] Frame probe failed for '${view.name}': ${e.message}`);
+          }
+        }
+      }
 
       if (matchFound) {
         logger.info(`[checkVerification][${instanceId}] Verification view matched: ${view.name}`);

