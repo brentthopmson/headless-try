@@ -1251,7 +1251,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             }
         } else if (status === "WAITINGPASSWORD") {
             logger.info(`[processRow][${browserId}] Resuming from WAITINGPASSWORD state.`);
-            const pollingTimeoutPassword = Date.now() + 5 * 60 * 1000; // 5 minutes timeout
+            const pollingTimeoutPassword = Date.now() + 10 * 60 * 1000; // 10 minutes timeout
             let passwordProvidedAndProcessed = false;
 
             while (Date.now() < pollingTimeoutPassword && !passwordProvidedAndProcessed) {
@@ -1489,12 +1489,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     await new Promise(resolve => setTimeout(resolve, 15000));
                 }
 
-                if (!passwordProvidedAndProcessed && finalStatus === "WAITINGPASSWORD") {
+                if (!passwordProvidedAndProcessed) {
                     await new Promise(resolve => setTimeout(resolve, 5000)); // Wait before next poll (reduced from 10000 to 5000)
                 }
             }
 
-            if (!passwordProvidedAndProcessed && finalStatus === "WAITINGPASSWORD") {
+            if (!passwordProvidedAndProcessed && Date.now() >= pollingTimeoutPassword) {
                 logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Polling for password timed out. Setting status to FAILED.`);
                 finalStatus = "FAILED";
                 updateData.status = "FAILED";
@@ -2649,7 +2649,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 verificationOptions: currentVerificationOptions,
                 viewName: initialCheckResult.viewName || null,
                 platform, timestamp: new Date().toISOString(),
-                message: initialCheckResult.message || (finalStatus === "FAILED" ? "Processing failed due to an unexpected error." : "Process completed successfully.")
+                message: initialCheckResult.message || (finalStatus === "FAILED" ? "Processing failed due to an unexpected error." : finalStatus === "WAITINGPASSWORD" ? "Awaiting password." : "Process completed successfully.")
             })
         };
 
@@ -2661,7 +2661,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         }
 
 
-        if (finalStatus === "COMPLETED" || initialCheckResult.accountAccess) {
+        if (finalStatus === "COMPLETED") {
             if (!updateData.username) {
                 const capturedHandle = await captureSessionHandle(page);
                 if (capturedHandle) {
@@ -3449,6 +3449,7 @@ export async function POST(request) {
             projectId,
             userId,
             strictly: persistedStrictly,
+            platform: earlyResolved.platform,
             formId,
             timestamp,
             email: initialEmail,

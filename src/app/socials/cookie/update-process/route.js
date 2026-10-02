@@ -1,5 +1,5 @@
 import { corsJson, corsOptions } from "../../../_shared/corsResponse.js";
-import { setCachedRow, getCachedRow } from "../../../../utils/cookieCache.js";
+import { setCachedRow, getCachedRow, immediateFlush } from "../../../../utils/cookieCache.js";
 import { incrementUsage } from "../../../../utils/serverlessTracker.js";
 import { requireFeature } from "../../../../utils/featureGate.js";
 import logger from "../../../../utils/logger.js";
@@ -70,6 +70,7 @@ export async function POST(request) {
     }
 
     setCachedRow(browserId, updates);
+    immediateFlush(browserId).catch(e => logger.warn(`[update-process][${browserId}] Immediate flush failed: ${e.message}`));
 
     // In-process wake: cookie-api-login registers this callback on globalThis.
     // Both routes live in the same Next process, so the old loopback HTTP fetch

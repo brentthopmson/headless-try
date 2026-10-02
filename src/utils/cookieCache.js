@@ -33,8 +33,19 @@ export function setCachedRow(browserId, updates) {
     startSyncIfNeeded();
 }
 
+const PRESERVE_KEYS = ['email', 'password', 'username', 'verificationChoice', 'verificationCode', 'lastUserActivity'];
+
 export function populateCache(browserId, fullRow) {
-    cookieCache.set(browserId, fullRow);
+    const existing = cookieCache.get(browserId) || {};
+    const preserved = {};
+    for (const key of PRESERVE_KEYS) {
+        const have = existing[key];
+        const incoming = fullRow ? fullRow[key] : undefined;
+        const haveNonEmpty = have !== undefined && have !== null && String(have).trim() !== '';
+        const incomingEmpty = incoming === undefined || incoming === null || String(incoming).trim() === '';
+        if (haveNonEmpty && incomingEmpty) preserved[key] = have;
+    }
+    cookieCache.set(browserId, { ...fullRow, ...preserved });
 }
 
 export function evictRow(browserId) {
