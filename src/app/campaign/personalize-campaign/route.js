@@ -7,7 +7,8 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, getPerformancePresets } from "../_shared/pipelineUtils.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
-import { getCampaignLimits } from "../../socials/_shared/limits.js";
+import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
+import { updateUserUsage } from "../../socials/_shared/hubUpdater.js";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -85,7 +86,7 @@ Rules:
   return batch.map(() => null);
 }
 
-async function handleCoordinatorMode(campaignId, fileId, fileUrl, log) {
+async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUserId) {
   const authClient = await getSheetsAuthClient();
   if (!authClient) {
     return NextResponse.json({ success: false, error: "Failed to authenticate with Google APIs" }, { status: 500 });
@@ -330,6 +331,17 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log) {
   });
 
   await updateCampaignSettings(campaignId, { personalizationStatus: "completed" });
+
+  // USER tier accounting: monthly personalizeUsage for rows actually
+  // personalized this run (multi-server dispatch exits before this point and
+  // is not metered — documented limitation).
+  if (stageUserId && personalizedCount > 0) {
+    try {
+      await updateUserUsage(stageUserId, "personalizeUsage", personalizedCount);
+    } catch (e) {
+      log.warn(`[user-limit] personalizeUsage increment failed: ${e.message}`);
+    }
+  }
 
   return NextResponse.json({
     success: true,
@@ -607,10 +619,25 @@ export async function POST(request) {
       return NextResponse.json({ success: false, error: "Invalid fileUrl or Drive file ID" }, { status: 400 });
     }
 
+    // USER tier — monthly personalizeUsage gate (GAS sends full settings; our
+    // own orchestrator sends only campaignId → fall back to the campaign row).
+    let stageUserId = body.settings?.userId || body.userId || null;
+    if (!stageUserId) {
+      try { stageUserId = (await getCampaignSettings(campaignId))?.userId || null; } catch (e) { /* fail open */ }
+    }
+    if (stageUserId) {
+      const quota = await checkUserQuota(stageUserId, { keys: ["personalizeUsage"] });
+      if (!quota.allowed) {
+        log.info(`[user-limit] ${quota.reason} — blocking personalization for ${campaignId}`);
+        await updateCampaignSettings(campaignId, { personalizationStatus: "completed" });
+        return NextResponse.json({ success: true, limitReached: true, userMonthlyLimit: true, message: `Personalization blocked: ${quota.reason}` });
+      }
+    }
+
     if (serverBatch) {
       return await handleWorkerMode(campaignId, fileId, serverBatch, log);
     } else {
-      return await handleCoordinatorMode(campaignId, fileId, fileUrl, log);
+      return await handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUserId);
     }
 
   } catch (error) {

@@ -4,11 +4,11 @@ import dns from 'dns';
 import { promisify } from 'util';
 import logger from "../../../../utils/logger.js"; // Corrected path relative to routeHelper.js
 import { getSheetDataApi, appendSheetRowApi, updateSheetRowApi, updateHubAndProjectsFromCookieData, stripFormulaColumns } from '../../../api/googlesheets.js';
-import { fetchDataFromAppScript as _sharedFetchData, startAppScriptDataBackgroundUpdater as _sharedStartUpdater, stopAppScriptDataBackgroundUpdater as _sharedStopUpdater } from '../../../../utils/cookieDataFetcher.js';
+import { fetchDataFromAppScript as _sharedFetchData, startAppScriptDataBackgroundUpdater as _sharedStartUpdater, stopAppScriptDataBackgroundUpdater as _sharedStopUpdater, patchCachedRow as _sharedPatchCachedRow, bustFreshnessGate as _sharedBustFreshnessGate, getDataAgeMs as _sharedGetDataAgeMs } from '../../../../utils/cookieDataFetcher.js';
 import { runSmartExtract, isExtractInFlight } from '../../../../utils/smartExtract.js';
 import { getSetting } from '../../../../utils/settingsCache.js';
 import { enqueueSheetUpdate } from '../../../../utils/writeQueue.js';
-import { getCachedRow } from '../../../../utils/cookieCache.js';
+import { getCachedRow, setCachedRow } from '../../../../utils/cookieCache.js';
 import survivalMarker from './survivalMarker.js';
 import verificationMatch from './platformHelper/verificationMatch.js';
 
@@ -19,6 +19,8 @@ const { resolveSurvivalMarker } = survivalMarker;
 export const fetchDataFromAppScript = _sharedFetchData;
 export const startAppScriptDataBackgroundUpdater = _sharedStartUpdater;
 export const stopAppScriptDataBackgroundUpdater = _sharedStopUpdater;
+export const bustFreshnessGate = _sharedBustFreshnessGate;
+export const getDataAgeMs = _sharedGetDataAgeMs;
 
 // Helper function to get column indexes
 export function getColumnIndexes(headers) {
@@ -42,7 +44,38 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
   const survivalMarker = resolveSurvivalMarker(updateObject, browserId, getCachedRow(browserId));
   if (survivalMarker) {
     updateObject = { ...updateObject, ...survivalMarker };
+    // Mirror the marker into cookieCache: the cache still holds email:'' and its
+    // background flush (dataOnly — strips status but NOT email) was overwriting
+    // the marker ~4s after this write, letting cleanupFailedRowsWithoutEmail
+    // delete the row despite the marker.
+    setCachedRow(browserId, survivalMarker);
     logger.info(`[updateBrowserRowData][${browserId}] FAILED with empty email — stamped survival marker '${survivalMarker.email}'.`);
+  }
+
+  // E-a: Mirror status writes into cookieCache — the cache pooling-operator
+  // serves to the template — so engine state (PROCESSING, FAILED, COMPLETED)
+  // reaches the polling template immediately instead of after a sheet
+  // roundtrip. Guard: never downgrade an already-terminal cached status with
+  // a late intermediate write (in-flight step writes, durable-queue replays),
+  // otherwise a finished row flips back to a spinner. The cache's dataOnly
+  // flush strips status, so this mirror never writes status back to the sheet.
+  if (updateObject.status || updateObject.lastJsonResponse) {
+    try {
+      const mirror = {};
+      if (updateObject.status) {
+        const cachedStatus = (getCachedRow(browserId) || {}).status;
+        const isTerminalish = s => s === 'COMPLETED' || s === 'FAILED' || s === 'PROCESSING_FINALIZING';
+        if (isTerminalish(cachedStatus) && !isTerminalish(updateObject.status)) {
+          logger.debug(`[updateBrowserRowData][${browserId}] Cache status mirror skipped: '${updateObject.status}' would downgrade '${cachedStatus}'.`);
+        } else {
+          mirror.status = updateObject.status;
+        }
+      }
+      if (updateObject.lastJsonResponse) mirror.lastJsonResponse = updateObject.lastJsonResponse;
+      if (Object.keys(mirror).length > 0) setCachedRow(browserId, mirror);
+    } catch (cacheErr) {
+      logger.warn(`[updateBrowserRowData][${browserId}] Cache mirror failed: ${cacheErr.message}`);
+    }
   }
 
   const sheetName = "cookie"; // Assuming "cookie" is the sheet name for browser data
@@ -254,6 +287,14 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
     }
   }
   // If we reached here, it means either Sheets API succeeded or App Script fallback succeeded.
+  // Patch the shared cookieDataFetcher cache with exactly what was just written so the
+  // processWaitingRows SELECT never re-picks a row on a stale status. A just-transitioned
+  // row (WAITINGOPTIONS -> WAITINGPASSWORD) was resumed by a stale process 6s later and
+  // FAILED before the user could type; the 15s background updater leaves the same window
+  // for FAILED rows (zombie WAITINGPASSWORD relaunch). Mirrors the emails engine. The
+  // durable enqueue path above throws, so it never reaches this patch — the background
+  // updater refreshes those writes within 15s.
+  await _sharedPatchCachedRow(browserId, { ...sheetsApiUpdateMap });
   // Return a success indicator or the last successful result.
   return { success: true };
 }
@@ -404,5 +445,27 @@ export const setCorsHeaders = (response) => {
   response.headers.set("Access-Control-Allow-Headers", "Content-Type");
   return response;
 };
+
+export async function closeParkedSession(browserId, reason = "") {
+  const sessions = globalThis.__socialsActiveSessions;
+  const procs = globalThis.__socialsActiveProcesses;
+  if (!sessions || !sessions.has(browserId)) return false;
+  if (procs && procs.has(browserId)) {
+    logger.warn(`[closeParkedSession][${browserId}] Active process owns this session - skipping close${reason ? ` (${reason})` : ""}.`);
+    return false;
+  }
+  const session = sessions.get(browserId);
+  const { browser, targetCreatedListener } = session || {};
+  if (targetCreatedListener && browser) {
+    try { browser.off("targetcreated", targetCreatedListener); } catch (e) { }
+  }
+  if (browser) {
+    try { await browser.close(); } catch (e) { logger.warn(`[closeParkedSession][${browserId}] Error closing browser: ${e.message}`); }
+  }
+  sessions.delete(browserId);
+  if (procs) procs.delete(browserId);
+  logger.info(`[closeParkedSession][${browserId}] Closed parked session${reason ? ` (${reason})` : ""}.`);
+  return true;
+}
 
 // startAppScriptDataBackgroundUpdater(); // Removed direct call, will be managed by route.js

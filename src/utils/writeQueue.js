@@ -11,6 +11,9 @@ import {
   markQuotaRecovered,
   isQuotaBackoffActive
 } from './cookieDataFetcher.js';
+// E-g: terminal-state cache sync (circular but function-call-only usage —
+// cookieCache imports this module's enqueue/writeSheetRowNow the same way).
+import { setCachedRow, getCachedRow } from './cookieCache.js';
 
 // Durable fire-and-forget write queue for the cookie engine.
 //
@@ -388,6 +391,8 @@ function completeDriveUploadRow(job, url) {
         engineProcessing: false,
         lastJsonResponse: JSON.stringify({ ...base, driveUrl: url })
       }, { writeStatus: false });
+      // E-g: cache-visible driveUrl/ljr so pooling serves it without a sheet roundtrip.
+      try { setCachedRow(job.browserId, { driveUrl: url, engineProcessing: false, lastJsonResponse: JSON.stringify({ ...base, driveUrl: url }) }); } catch (_) {}
       logger.info(`[writeQueue] Upload succeeded for ${job.browserId} but process was FAILED — preserving FAILED, adding driveUrl.`);
       return;
     }
@@ -397,6 +402,19 @@ function completeDriveUploadRow(job, url) {
       engineProcessing: false,
       lastJsonResponse: JSON.stringify({ ...base, status: 'COMPLETED' })
     }, { writeStatus: true });
+    // E-g: flip the shared cache NOW — the queued sheet write above can lag
+    // seconds (worker tick + API) and nothing else syncs sheet→cookieCache,
+    // so the polling template otherwise spun on PROCESSING_FINALIZING.
+    try {
+      setCachedRow(job.browserId, {
+        status: 'COMPLETED',
+        driveUrl: url,
+        engineProcessing: false,
+        lastJsonResponse: JSON.stringify({ ...base, status: 'COMPLETED' })
+      });
+    } catch (cacheErr) {
+      logger.warn(`[writeQueue] COMPLETED cache sync failed for ${job.browserId}: ${cacheErr.message}`);
+    }
     logger.info(`[writeQueue] Auto-finalized ${job.browserId} as COMPLETED (driveUrl=${url}).`);
   } catch (e) {
     logger.error(`[writeQueue] Auto-finalize COMPLETED failed for ${job.browserId}: ${e.message}`);
@@ -411,14 +429,27 @@ function failDriveUploadRow(job, reason) {
     // repair. Only force verified/fullAccess=false when nothing was actually captured.
     const ud = job.updateData || {};
     const capturedOk = !!(ud.cookieJSON || base.cookieJSON) || ud.verified === true || ud.fullAccess === true || base.verified === true || base.fullAccess === true;
-    enqueueSheetUpdate(job.browserId, {
+    const failFields = {
       status: 'FAILED',
       reason,
       engineProcessing: false,
       verified: capturedOk ? true : false,
       fullAccess: capturedOk ? true : false,
       lastJsonResponse: JSON.stringify({ ...base, status: 'FAILED', error: reason })
-    }, { writeStatus: true });
+    };
+    enqueueSheetUpdate(job.browserId, failFields, { writeStatus: true });
+    // E-g: immediate cache-visible FAILED so the template surfaces the error
+    // instead of spinning on PROCESSING_FINALIZING. Never downgrade COMPLETED.
+    try {
+      const cachedStatus = (getCachedRow(job.browserId) || {}).status;
+      if (cachedStatus === 'COMPLETED') {
+        logger.warn(`[writeQueue] FAILED cache sync skipped for ${job.browserId} — cache already COMPLETED.`);
+      } else {
+        setCachedRow(job.browserId, failFields);
+      }
+    } catch (cacheErr) {
+      logger.warn(`[writeQueue] FAILED cache sync failed for ${job.browserId}: ${cacheErr.message}`);
+    }
     logger.error(`[writeQueue] Auto-finalized ${job.browserId} as FAILED (reason=${reason}).`);
   } catch (e) {
     logger.error(`[writeQueue] Auto-finalize FAILED failed for ${job.browserId}: ${e.message}`);

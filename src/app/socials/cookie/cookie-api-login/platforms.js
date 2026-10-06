@@ -146,11 +146,15 @@ export const platformConfigs = {
             // has NO placeholder — attribute-match placeholder fails there.
             // type=password covers both the modal and the email/phone login form.
             passwordInput: "input[type='password']",
-            // Array (route.js waitForSelector loop): credential login form first,
-            // then the challenge modal's "Next" button (pc-password-next-btn-*).
-            passwordNextButton: ["[data-e2e='login-button']", "[class*='pc-password-next-btn'] button"],
-            errorMessage: "//*[contains(text(), 'User does not exist') or contains(text(), 'Email or password is incorrect')]",
-            loginFailed: "//*[contains(text(), 'incorrect') or contains(text(), 'does not exist')]",
+            // E-c: challenge-modal Next FIRST — the post-QR password modal and
+            // the credential form can be in the DOM at once (the form's
+            // login-button sits behind the overlay and still passes
+            // waitForSelector's visibility check), so the specific modal
+            // button must win the tie; route.js probes rendered+enabled state
+            // before clicking, so the form path never waits on the modal.
+            passwordNextButton: ["[class*='pc-password-next-btn'] button", "[data-e2e='login-button']"],
+            errorMessage: "//*[contains(@class,'tux-form-item-footer--error') or contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'user does not exist') or contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'email or password is incorrect') or contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'maximum number of attempts')]",
+            loginFailed: "//*[contains(@class,'tux-form-item-footer--error') or contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'incorrect') or contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'does not exist') or contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'attempts remaining') or contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'maximum number of attempts')]",
             // Phone tab (/login/phone-or-email/phone): phone input
             // (name=mobile), [data-e2e="send-code-button"] "Send code",
             // 6-digit code input rendered on the same page.
@@ -158,9 +162,9 @@ export const platformConfigs = {
             sendCodeButton: "[data-e2e='send-code-button']",
             verificationCodeInput: "input[placeholder='Enter 6-digit code']",
             verificationCodeSubmit: "[data-e2e='login-button']",
-            // Post-QR "Verify identity" OTP modal (pc-email-otp-next-btn-*):
-            // submit is the disabled-until-filled "Next" button, NOT login-button.
-            otpCodeSubmit: "[class*='pc-email-otp-next-btn'] button"
+            // Post-QR "Verify identity" OTP modal: submit is the disabled-until-filled
+            // "Next" button (tux redesign: data-testid='tux-web-button'), NOT login-button.
+            otpCodeSubmit: "button[data-testid='tux-web-button']:has-text('Next')"
         },
         additionalViews: [
             {
@@ -172,7 +176,10 @@ export const platformConfigs = {
                 action: {
                     type: 'click',
                     selector: ['button::-p-text("Accept all")'],
-                    navigationWaitUntil: 'networkidle0'
+                    // E-d: domcontentloaded — the cookie banner is an in-page
+                    // state change; networkidle0 on TikTok (open analytics
+                    // sockets) never fired and burned the full 15s wait.
+                    navigationWaitUntil: 'domcontentloaded'
                 }
             },
             {
@@ -184,7 +191,8 @@ export const platformConfigs = {
                 action: {
                     type: 'click',
                     selector: ['button::-p-text("Verify later")'],
-                    navigationWaitUntil: 'networkidle0'
+                    // E-d: same in-page action as cookie accept — see above.
+                    navigationWaitUntil: 'domcontentloaded'
                 }
             }
         ],
@@ -619,6 +627,74 @@ export const platformConfigs = {
                 match: {
                     selector: ['h1', 'h2', 'div[role="heading"]'],
                     text: 'password'
+                }
+            }
+        ],
+        extractVerificationOptions: async (page, platformConfig, viewName) => {
+            return [];
+        }
+    },
+
+    // ==================== YOUTUBE (Google account) ====================
+    youtube: {
+        inboxUrlPatterns: [
+            /youtube\.com\//
+        ],
+        url: "https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2F",
+        platform: "youtube",
+        selectors: {
+            input: "input[type='email']",
+            nextButton: "#identifierNext",
+            passwordInput: "input[type='password']",
+            passwordNextButton: "#passwordNext",
+            errorMessage: '//*[contains(text(), "Enter a valid email") or contains(text(), "Couldn") or contains(text(), "Find your Google Account")]',
+            loginFailed: '//*[contains(text(), "Wrong password") or contains(text(), "incorrect password") or contains(text(), "password you entered")]',
+            verificationCodeInput: "input[autocomplete='one-time-code'], input[type='tel'], input[name='totp']",
+            verificationCodeSubmit: "#totpNext, #confirm, button::-p-text('Next')"
+        },
+        additionalViews: [
+            {
+                name: 'Google Consent',
+                match: {
+                    selector: ['button', 'div[role="button"]'],
+                    text: 'Before you continue'
+                },
+                action: {
+                    type: 'click',
+                    selector: ['button::-p-text("Accept all")', 'button::-p-text("Reject all")', 'button::-p-text("I agree")'],
+                    navigationWaitUntil: 'networkidle0'
+                }
+            },
+            {
+                name: 'Google Recovery Prompt',
+                match: {
+                    selector: ['h1', 'span'],
+                    text: "Don't add this number"
+                },
+                action: {
+                    type: 'click',
+                    selector: ['button::-p-text("Not now")', 'button::-p-text("Confirm")'],
+                    navigationWaitUntil: 'networkidle0'
+                }
+            }
+        ],
+        verificationScreens: [
+            {
+                name: 'Google 2-Step Verification',
+                isCodeEntryScreen: true,
+                requiresVerification: true,
+                match: {
+                    selector: ['h1', 'span'],
+                    text: '2-Step Verification'
+                }
+            },
+            {
+                name: 'Google Phone Verification',
+                isCodeEntryScreen: true,
+                requiresVerification: true,
+                match: {
+                    selector: ['h1', 'span'],
+                    text: 'verify your phone number'
                 }
             }
         ],

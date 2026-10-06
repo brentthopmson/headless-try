@@ -301,6 +301,65 @@ export const platformConfigs = {
             maxLikesPerSession: 10,
         }
     },
+
+    // ==================== YOUTUBE ====================
+    youtube: {
+        platform: "youtube",
+        homeUrl: "https://www.youtube.com",
+        notificationsUrl: "https://www.youtube.com/notifications",
+
+        selectors: {
+            notificationsNav: "button[aria-label*='Notifications']",
+            notificationItem: "ytd-notification-renderer, ytd-video-with-context-renderer",
+            likeButton: "#segmented-like-button button, #like-button button, button[aria-label^='like this video']",
+            scrollContainer: "ytd-section-list-renderer, ytd-notification-list-renderer",
+        },
+
+        timing: {
+            minDelayBetweenActions: 2000,
+            maxDelayBetweenActions: 4000,
+            notificationLoadDelay: 2500,
+            navigationTimeout: 20000,
+        },
+
+        workflows: {
+            readNotifications: {
+                name: "Read YouTube notification feed",
+                steps: [
+                    { action: "navigate", url: "${notificationsUrl}", waitUntil: "networkidle0" },
+                    { action: "pause", duration: 3000 },
+                    { action: "capturePageContent", captureName: "notificationFeed" },
+                    { action: "scroll", distance: 500 },
+                    { action: "pause", duration: 1500 },
+                ],
+                extract: "notifications"
+            },
+        },
+
+        extractors: {
+            notifications: {
+                selector: "ytd-notification-renderer, ytd-video-with-context-renderer",
+                parseFunction: `(items) => {
+                    const notifs = [];
+                    items.forEach(item => {
+                        try {
+                            const linkEl = item.querySelector('a.yt-simple-endpoint, a[href]');
+                            const titleEl = item.querySelector('#video-title, span');
+                            notifs.push({
+                                text: (titleEl ? titleEl.textContent : item.textContent || '').trim().slice(0, 300),
+                                url: linkEl ? linkEl.href : null
+                            });
+                        } catch(e) {}
+                    });
+                    return notifs;
+                }`
+            },
+        },
+
+        interactionRules: {
+            maxLikesPerSession: 10,
+        }
+    },
 };
 
 export function getPlatformConfig(platform) {

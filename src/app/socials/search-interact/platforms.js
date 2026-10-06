@@ -57,7 +57,7 @@ export const platformConfigs = {
                     
                     // Analyze post content with AI
                     { action: "capturePageContent" },
-                    { action: "aiAnalyzePost", prompt: "Summarize this post in 1-2 sentences. What is it about?" },
+                    { action: "aiAnalyzePost", prompt: "Summarize this post in 1-2 sentences. What is it about?", resultKey: "analyzedPost" },
                     
                     // Like the post
                     { action: "click", selector: "${selectors.likeButton}" },
@@ -69,10 +69,10 @@ export const platformConfigs = {
                     
                     // Get post replies/comments
                     { action: "capturePageContent" },
-                    { action: "aiAnalyzeComments", prompt: "What are people saying in the comments? Summarize the sentiment and main topics." },
+                    { action: "aiAnalyzeComments", prompt: "What are people saying in the comments? Summarize the sentiment and main topics.", resultKey: "analyzedComments" },
                     
                     // Generate and post a reply
-                    { action: "aiGenerateReply", postContent: "${analyzedPost}", comments: "${analyzedComments}" },
+                    { action: "aiGenerateReply", postContent: "${analyzedPost}", comments: "${analyzedComments}", prompt: "${platformConfig.aiPrompts.generateReply}", resultKey: "generatedReply" },
                     { action: "click", selector: "${selectors.replyButton}" },
                     { action: "pause", duration: 1000 },
                     { action: "fillText", selector: "${selectors.replyTextBox}", value: "${generatedReply}" },
@@ -241,7 +241,7 @@ Respond with ONLY: yes or no`
                     
                     // Step 2: Capture video info and analyze with AI
                     { action: "capturePageContent", captureName: "videoPage" },
-                    { action: "aiAnalyzeVideo", pageContent: "${videoPage}", prompt: "${aiPrompts.analyzeVideo}" },
+                    { action: "aiAnalyzeVideo", captureName: "videoPage", prompt: "${platformConfig.aiPrompts.analyzeVideo}", resultKey: "analyzedVideo" },
                     { action: "pause", duration: 1000 },
                     
                     // Step 3: Like the video
@@ -254,7 +254,7 @@ Respond with ONLY: yes or no`
                     
                     // Step 5: Capture and analyze existing comments
                     { action: "capturePageContent", captureName: "commentsSection" },
-                    { action: "aiAnalyzeComments", pageContent: "${commentsSection}", prompt: "${aiPrompts.analyzeComments}" },
+                    { action: "aiAnalyzeComments", captureName: "commentsSection", prompt: "${platformConfig.aiPrompts.analyzeComments}", resultKey: "analyzedComments" },
                     { action: "pause", duration: 1000 },
                     
                     // Step 6: Like relevant comments (max 2-3)
@@ -263,10 +263,10 @@ Respond with ONLY: yes or no`
                     
                     // Step 7: Generate intelligent comment using AI
                     { action: "aiGenerateComment", 
-                        videoCaption: "${videoCaption}",
                         videoAnalysis: "${analyzedVideo}",
                         commentsContext: "${analyzedComments}",
-                        prompt: "${aiPrompts.generateComment}" 
+                        prompt: "${platformConfig.aiPrompts.generateComment}",
+                        resultKey: "generatedComment"
                     },
                     { action: "pause", duration: 1000 },
                     
@@ -314,7 +314,6 @@ Be concise, capture the vibe.`,
 - NO generic phrases like "love this" or "so funny"
 - Should prompt engagement (ask a question or share a relatable thought)
 
-Video caption: {videoCaption}
 Video vibe: {videoAnalysis}
 Comments context: {commentsContext}
 
@@ -622,6 +621,139 @@ Respond with ONLY: like or skip`
             upvoteEveryPost: true,
             commentOnEveryPost: false,
             followUsers: false,
+        }
+    },
+
+    // ==================== YOUTUBE ====================
+    youtube: {
+        platform: "youtube",
+        homeUrl: "https://www.youtube.com",
+        searchUrl: "https://www.youtube.com/results",
+        profileUrl: "https://www.youtube.com",
+
+        selectors: {
+            searchBox: "input#search, input[name='search_query']",
+            searchSubmit: null,
+            videoItem: "ytd-video-renderer a#video-title",
+            videoTitle: "a#video-title",
+            videoAuthor: "ytd-channel-name a",
+            likeButton: "#segmented-like-button button, #like-button button, button[aria-label^='like this video']",
+            commentBox: "ytd-comment-simple-box-renderer div[contenteditable='true']",
+            commentSubmit: "ytd-comment-simple-box-renderer #submit-button button",
+            closeButton: "button[aria-label='Close']"
+        },
+
+        timing: {
+            minDelayBetweenActions: 2000,
+            maxDelayBetweenActions: 5000,
+            videoLoadDelay: 3000,
+            scrollDelay: 1500,
+            navigationTimeout: 20000
+        },
+
+        workflows: {
+            search: {
+                name: "Search YouTube videos",
+                steps: [
+                    { action: "navigate", url: "${searchUrl}", waitUntil: "networkidle0" },
+                    { action: "pause", duration: 1500 },
+                    { action: "fillSearch", selector: "${selectors.searchBox}", value: "${keyword}" },
+                    { action: "submitSearch" },
+                    { action: "pause", duration: 3000 }
+                ],
+                extract: "videos"
+            },
+
+            interactWithVideo: {
+                name: "YouTube engagement: open video → like → comment",
+                steps: [
+                    { action: "clickVideo", videoIndex: "${videoIndex}" },
+                    { action: "pause", duration: 3000 },
+                    { action: "capturePageContent" },
+                    { action: "aiAnalyzePost", prompt: "Summarize this YouTube video page (title and description) in 1-2 sentences. What is it about?", resultKey: "analyzedPost" },
+                    { action: "click", selector: "${selectors.likeButton}" },
+                    { action: "pause", duration: 1500 },
+                    { action: "scroll", distance: 800 },
+                    { action: "pause", duration: 2500 },
+                    { action: "capturePageContent" },
+                    { action: "aiAnalyzeComments", prompt: "What are people saying in the YouTube comments? Summarize the sentiment and main topics.", resultKey: "analyzedComments" },
+                    { action: "aiGenerateReply", postContent: "${analyzedPost}", comments: "${analyzedComments}", prompt: "${platformConfig.aiPrompts.generateReply}", resultKey: "generatedReply" },
+                    { action: "scroll", distance: 500 },
+                    { action: "pause", duration: 2000 },
+                    { action: "fillText", selector: "${selectors.commentBox}", value: "${generatedReply}" },
+                    { action: "pause", duration: 1000 },
+                    { action: "click", selector: "${selectors.commentSubmit}" },
+                    { action: "pause", duration: 2500 }
+                ]
+            }
+        },
+
+        aiPrompts: {
+            analyzePost: `Analyze this YouTube video page and provide:
+1. Main topic/theme
+2. Sentiment (positive/negative/neutral)
+3. Relevant keywords
+Keep response concise (2-3 sentences).`,
+
+            analyzeComments: `Analyze these YouTube comments and provide:
+1. General sentiment from commenters
+2. Main topics discussed
+3. What would be an appropriate response
+Keep response concise.`,
+
+            generateReply: `Based on the video content and comments, generate a natural, engaging YouTube comment that:
+- Is 1-2 sentences
+- Adds value to the conversation
+- Sounds authentic and conversational
+- NO hashtags unless absolutely relevant
+- NO @mentions
+
+Video: {postContent}
+Comments analysis: {comments}
+
+Comment (ONLY the comment text, nothing else):`,
+
+            shouldLikeComment: `Should this comment be liked? Consider:
+1. Is it relevant to the video?
+2. Is it constructive/helpful?
+3. Is it spam or low quality?
+Respond with ONLY: yes or no`
+        },
+
+        extractors: {
+            videos: {
+                selector: "ytd-video-renderer",
+                parseFunction: `(items) => {
+                    const videos = [];
+                    items.forEach((el, idx) => {
+                        try {
+                            const linkEl = el.querySelector("a#video-title");
+                            const authorEl = el.querySelector("ytd-channel-name a");
+                            if (linkEl) {
+                                videos.push({
+                                    index: idx,
+                                    title: (linkEl.getAttribute('title') || linkEl.textContent || '').trim().slice(0, 300),
+                                    author: authorEl ? authorEl.textContent.trim() : 'unknown',
+                                    url: linkEl.href,
+                                    liked: el.querySelector("button[aria-label^='remove this video from Liked']") !== null
+                                });
+                            }
+                        } catch (e) {
+                            console.error('Error extracting video:', e);
+                        }
+                    });
+                    return videos;
+                }`
+            }
+        },
+
+        interactionRules: {
+            likeEveryPost: true,
+            commentOnEveryPost: true,
+            maxCommentsPerPost: 1,
+            likeComments: false,
+            followUsers: false,
+            retweetPosts: false
         }
     },
 };

@@ -4,8 +4,9 @@ import { google } from "googleapis";
 import logger from "../../../utils/logger.js";
 import { getPlatformConfig, getWorkflow, getTiming } from "./platforms.js";
 import { resolveSocialSession, executeWorkflow } from "../_shared/routeHelper.js";
-import { checkActionAllowed } from "../_shared/limits.js";
-import { updateAccountUsage } from "../_shared/hubUpdater.js";
+import { checkActionAllowed, checkUserQuota } from "../_shared/limits.js";
+import { getAccountUsage, updateAccountUsage, updateAccountStatus, updateUserUsage } from "../_shared/hubUpdater.js";
+import { resolveAccountGate } from "../_shared/accountGate.js";
 import { requireFeature } from "../../../utils/featureGate.js";
 
 export const maxDuration = 120;
@@ -137,6 +138,7 @@ async function getCookieForProfile(profileId) {
   const platformIdx = headers.indexOf("category") !== -1 ? headers.indexOf("category") : headers.indexOf("platform");
   const identityIdx = headers.indexOf("browserIdentity");
   const driveUrlIdx = headers.indexOf("driveUrl");
+  const userIdIdx = headers.indexOf("userId");
 
   if (browserIdIdx === -1) return null;
   const row = cookieResult.data.find(r => String(r[browserIdIdx]).trim() === String(profileId).trim());
@@ -152,6 +154,7 @@ async function getCookieForProfile(profileId) {
     platform: platformIdx !== -1 ? String(row[platformIdx]).toLowerCase().trim() : null,
     browserIdentity,
     driveUrl: driveUrlIdx !== -1 ? row[driveUrlIdx] || "" : "",
+    userId: userIdIdx !== -1 ? String(row[userIdIdx] || "").trim() || null : null,
   };
 }
 
@@ -160,7 +163,7 @@ export async function POST(request) {
     const gate = await requireFeature('allowShooting', 'message sending');
     if (gate) return gate;
     const body = await request.json();
-    const { campaignId, fileUrl, platform, messageText, sendToAll, profileId, accountIds } = body;
+    const { campaignId, fileUrl, platform, messageText, sendToAll, profileId, accountIds, userId } = body;
 
     if (!fileUrl && !campaignId) {
       return NextResponse.json({ success: false, error: "Missing fileUrl or campaignId" }, { status: 400 });
@@ -193,6 +196,14 @@ export async function POST(request) {
         }
       }
     }
+
+    // USER tier identity: explicit body.userId (campaign DM step) → campaign
+    // settings.userId → per-profile cookie-sheet userId (fallback below).
+    const requestUserId = userId || settings.userId || null;
+    // Per-run cap per sending profile (settings cell accountSendPerRunLimit;
+    // standalone default 0 = off): rotate/skip capped profiles, stop when all
+    // profiles are capped.
+    const accountSendPerRunLimit = parseInt(settings.accountSendPerRunLimit, 10) || 0;
 
     // Build profile list: prefer accountIds array, fall back to single profileId
     const activeProfileIds = resolvedAccountIds.length > 0
@@ -255,6 +266,7 @@ export async function POST(request) {
           platform: data.platform || "",
           browserIdentity: data.browserIdentity || null,
           driveUrl: data.driveUrl || "",
+          userId: data.userId || null,
         });
       }
     }
@@ -306,8 +318,25 @@ export async function POST(request) {
     let sentCount = 0;
     let failedCount = 0;
     let profileIndex = 0;
+    let limitReached = false;
+    const profileSendCounts = new Map();
 
     for (const entry of recipients) {
+      // USER tier — monthly senderUsage budget, checked once per recipient
+      // (identity: body/settings.userId → owner in the cookie sheet).
+      const entryUserId = requestUserId || profileCookies.find(p => p.userId)?.userId || null;
+      if (entryUserId) {
+        const uq = await checkUserQuota(entryUserId, { keys: ["senderUsage"] });
+        if (!uq.allowed) {
+          logger.warn(`[Send Message][user-limit] ${uq.reason} — stopping sends.`);
+          limitReached = true;
+          results.push({ recipient: entry.recipient, platform: entry.platform, status: "SKIPPED", reason: uq.reason });
+          const uqRow = normalizedRows[entry.rowIndex];
+          if (validationIdx !== -1) uqRow[validationIdx] = "skipped";
+          break;
+        }
+      }
+
       let entrySent = false;
       const attempts = [];
 
@@ -319,11 +348,31 @@ export async function POST(request) {
         const profilePlatform = profile.platform || "";
         if (entry.platform && profilePlatform && profilePlatform !== entry.platform) continue;
 
+        // Per-run send cap per profile (0 = off): rotate to the next profile
+        if (accountSendPerRunLimit > 0 && profile.profileId &&
+            (profileSendCounts.get(profile.profileId) || 0) >= accountSendPerRunLimit) {
+          attempts.push({ profileId: profile.profileId, status: "SKIPPED", reason: `account_send_per_run_limit: ${accountSendPerRunLimit}` });
+          continue;
+        }
+
         try {
-          // Check limits — platform first, then the coldMessage action
-          const { allowed, reason } = await checkActionAllowed(entry.platform, "coldMessage");
+          // ACCOUNT-tier status gate — blocked accounts are skipped (never launched)
+          const statusGate = profile.profileId ? await resolveAccountGate(profile.profileId, entry.platform) : { blocked: false };
+          if (statusGate.blocked) {
+            logger.warn(`[Send Message][account-limit] ${profile.profileId} blocked: ${statusGate.reason}`);
+            attempts.push({ profileId: profile.profileId, status: "SKIPPED", reason: `account_limit: ${statusGate.reason}` });
+            continue;
+          }
+
+          // Check limits — platform policy vs THIS sending account's usage
+          const sendAccountUsageData = profile.profileId ? await getAccountUsage(profile.profileId) : null;
+          const sendAccountUsage = sendAccountUsageData?.interactionUsage || {};
+          const { allowed, reason } = await checkActionAllowed(entry.platform, "coldMessage", sendAccountUsage);
           if (!allowed) {
-            logger.warn(`[Send Message] Limit reached for ${entry.platform}: ${reason}`);
+            logger.warn(`[Send Message][platform-limit] ${entry.platform}: ${reason}`);
+            if (profile.profileId) {
+              await updateAccountStatus(profile.profileId, "RATE_LIMITED");
+            }
             attempts.push({ profileId: profile.profileId, status: "SKIPPED", reason });
             continue;
           }
@@ -374,8 +423,14 @@ export async function POST(request) {
           if (searchStatusIdx !== -1) row[searchStatusIdx] = "messaged";
           if (searchStampIdx !== -1) row[searchStampIdx] = now.toISOString();
 
-          // Update hub usage
-          await updateAccountUsage(profile.profileId, "sendMessage", 1);
+          // Update hub usage (coldMessage is the Limits-sheet action column)
+          await updateAccountUsage(profile.profileId, "coldMessage");
+          if (profile.profileId) {
+            profileSendCounts.set(profile.profileId, (profileSendCounts.get(profile.profileId) || 0) + 1);
+          }
+          if (entryUserId) {
+            try { await updateUserUsage(entryUserId, "senderUsage"); } catch (e) { logger.warn(`[Send Message][user-limit] increment failed: ${e.message}`); }
+          }
 
           results.push({ recipient: entry.recipient, platform: entry.platform, profileId: profile.profileId, status: "SENT" });
           logger.info(`[Send Message] Sent to ${entry.recipient} via ${entry.platform} (profile: ${profile.profileId})`);
@@ -393,6 +448,19 @@ export async function POST(request) {
       }
 
       if (!entrySent) {
+        // Every profile hit its per-run cap → stop the run with limitReached
+        // instead of recording a failure.
+        const onlyCapSkips = attempts.length > 0 &&
+          attempts.every(a => String(a.reason || "").startsWith("account_send_per_run_limit"));
+        if (onlyCapSkips && accountSendPerRunLimit > 0) {
+          limitReached = true;
+          logger.warn(`[Send Message] accountSendPerRunLimit (${accountSendPerRunLimit}) reached on every profile — stopping.`);
+          results.push({ recipient: entry.recipient, platform: entry.platform, status: "SKIPPED", reason: "account_send_per_run_limit" });
+          const capRow = normalizedRows[entry.rowIndex];
+          if (validationIdx !== -1) capRow[validationIdx] = "skipped";
+          break;
+        }
+
         failedCount++;
         results.push({ recipient: entry.recipient, platform: entry.platform, status: "FAILED", attempts });
 
@@ -428,10 +496,11 @@ export async function POST(request) {
 
     return NextResponse.json({
       success: true,
-      message: `Sent ${sentCount} messages, ${failedCount} failed`,
+      message: `Sent ${sentCount} messages, ${failedCount} failed${limitReached ? " (stopped by limit)" : ""}`,
       totalRecipients: recipients.length,
       sent: sentCount,
       failed: failedCount,
+      limitReached,
       results,
     });
 

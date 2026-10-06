@@ -151,3 +151,66 @@ describe('runQrLogin detectChallenge', () => {
         expect(result).toMatchObject({ emailExists: true, accountAccess: true, reachedInbox: true });
     });
 });
+
+// Sliced-sleep fast method check: a user switching to email/phone mid-QR-wait
+// must be noticed WITHIN the current recapture interval (chunked sleep + cache
+// check), not only at the next full getMethod cycle.
+describe('runQrLogin getMethodFast (sliced sleep)', () => {
+    test('fast checker exits mid-sleep before the next recapture cycle', async () => {
+        let probes = 0;
+        let fastCalls = 0;
+        const startedAt = Date.now();
+        const result = await runQrLogin({
+            page: basePage(),
+            config,
+            logger: noopLogger,
+            getMethod: async () => 'qr',                 // full check never sees the switch
+            getMethodFast: () => {                        // cache-only: sees it at the 5s slice
+                fastCalls++;
+                return fastCalls >= 1 ? 'email' : null;
+            },
+            detectChallenge: async () => { probes++; return null; },
+            isLoggedIn: async () => false,
+            timeoutMs: 20000,
+            recaptureMs: 6000,                            // interval 6s > chunk 5s → in-sleep check fires first
+        });
+        const elapsed = Date.now() - startedAt;
+        expect(result.methodChanged).toBe('email');
+        expect(result.verificationState).toBeNull();
+        expect(probes).toBe(1);                           // exited during first sleep — iteration 2 never ran
+        expect(fastCalls).toBeGreaterThanOrEqual(1);
+        expect(elapsed).toBeLessThan(6000);               // before the 6s recapture would have run
+    }, 9000);
+
+    test('fast checker returning null never hijacks the loop', async () => {
+        const result = await runQrLogin({
+            page: basePage(),
+            config,
+            logger: noopLogger,
+            getMethod: async () => 'qr',
+            getMethodFast: () => null,
+            detectChallenge: async () => null,
+            isLoggedIn: async () => true,
+            timeoutMs: 2000,
+            recaptureMs: 1,
+        });
+        expect(result.methodChanged).toBeUndefined();
+        expect(result).toMatchObject({ emailExists: true, accountAccess: true, reachedInbox: true });
+    });
+
+    test('absent fast checker keeps original single-sleep behavior', async () => {
+        let probes = 0;
+        const result = await runQrLogin({
+            page: basePage(),
+            config,
+            logger: noopLogger,
+            getMethod: async () => 'qr',
+            detectChallenge: async () => { probes++; return null; },
+            isLoggedIn: async () => true,
+            timeoutMs: 2000,
+            recaptureMs: 5,
+        });
+        expect(probes).toBeGreaterThanOrEqual(1);
+        expect(result).toMatchObject({ emailExists: true });
+    });
+});

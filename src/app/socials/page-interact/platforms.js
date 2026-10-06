@@ -412,6 +412,105 @@ export const platformConfigs = {
             maxFollowsPerProfile: 5,
         }
     },
+
+    // ==================== YOUTUBE ====================
+    youtube: {
+        platform: "youtube",
+        homeUrl: "https://www.youtube.com",
+        profileUrl: "https://www.youtube.com",
+
+        selectors: {
+            followButton: "#subscribe-button button, ytd-subscribe-button-renderer button",
+            unfollowButton: "ytd-subscribe-button-renderer button:has-text('Subscribed')",
+            postItem: "ytd-rich-item-renderer a#video-title, ytd-grid-video-renderer a#video-title",
+            likeButton: "#segmented-like-button button, #like-button button, button[aria-label^='like this video']",
+            profileName: "#channel-name yt-formatted-string, ytd-c4-tabbed-header-renderer h1",
+            profileBio: "#description-inner, ytd-channel-description-view-model",
+            subscriberCount: "#subscriber-count",
+            scrollContainer: "ytd-rich-grid-renderer, ytd-section-list-renderer",
+        },
+
+        timing: {
+            minDelayBetweenActions: 2000,
+            maxDelayBetweenActions: 5000,
+            followDelay: 1500,
+            scrollDelay: 2000,
+            navigationTimeout: 20000,
+        },
+
+        workflows: {
+            scrapeProfile: {
+                name: "Scrape YouTube channel",
+                steps: [
+                    { action: "navigate", url: "${profileUrl}/${keyword}", waitUntil: "networkidle0" },
+                    { action: "pause", duration: 2000 },
+                    { action: "capturePageContent", captureName: "profilePage" },
+                    { action: "pause", duration: 1000 },
+                ],
+                extract: "profileStats"
+            },
+
+            followUser: {
+                name: "Subscribe to a YouTube channel",
+                steps: [
+                    { action: "navigate", url: "${profileUrl}/${keyword}", waitUntil: "networkidle0" },
+                    { action: "pause", duration: 2500 },
+                    { action: "click", selector: "${selectors.followButton}" },
+                    { action: "pause", duration: 1500 },
+                    { action: "capturePageContent", captureName: "followResult" },
+                ],
+                extract: "followResult"
+            },
+
+            interactWithProfile: {
+                name: "Open a channel video and like it",
+                steps: [
+                    { action: "navigate", url: "${profileUrl}/${keyword}", waitUntil: "networkidle0" },
+                    { action: "pause", duration: 2000 },
+                    { action: "scroll", distance: 400 },
+                    { action: "pause", duration: 1500 },
+                    { action: "click", selector: "${selectors.postItem}" },
+                    { action: "pause", duration: 3000 },
+                    { action: "click", selector: "${selectors.likeButton}" },
+                    { action: "pause", duration: 1500 },
+                ],
+            },
+        },
+
+        aiPrompts: {
+            analyzeProfile: "Analyze this YouTube channel. What is their main focus/niche? What kind of content do they post?",
+            shouldFollowBack: "Based on this channel description, should we subscribe back? Respond with ONLY: yes or no",
+        },
+
+        extractors: {
+            profileStats: {
+                selector: "#channel-name, ytd-c4-tabbed-header-renderer, ytd-page-header-renderer",
+                parseFunction: `(container) => {
+                    const stats = {};
+                    try {
+                        const nameEl = document.querySelector('#channel-name yt-formatted-string, h1');
+                        const subsEl = document.querySelector('#subscriber-count');
+                        if (nameEl) stats.name = nameEl.textContent.trim();
+                        if (subsEl) stats.subscribers = subsEl.textContent.trim();
+                    } catch(e) {}
+                    return [stats];
+                }`
+            },
+            followResult: {
+                selector: "#subscribe-button button, ytd-subscribe-button-renderer button",
+                parseFunction: `(buttons) => {
+                    const btn = buttons[0];
+                    const label = btn ? (btn.getAttribute('aria-label') || btn.textContent || '') : '';
+                    return [{ subscribed: /subscribed/i.test(label) }];
+                }`
+            },
+        },
+
+        interactionRules: {
+            maxFollowsPerProfile: 5,
+            maxLikesPerProfile: 3,
+        }
+    },
 };
 
 export function getPlatformConfig(platform) {

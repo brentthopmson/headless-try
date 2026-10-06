@@ -15,7 +15,12 @@ function shouldLog(level) {
 }
 
 // --- Dev-only: clear logs on server restart ---
-if (isDev) {
+// E-h: truncate only ONCE per process. Next dev re-evaluates this module on HMR
+// compiles (e.g. when another route finishes compiling), and wiping engine.log
+// mid-run destroyed the forensic history needed to diagnose the duplicate-launch
+// race. A real restart still wipes because the global flag dies with the process.
+if (isDev && !globalThis.__engineLogTruncated) {
+    globalThis.__engineLogTruncated = true;
     try {
         fs.mkdirSync(LOG_DIR, { recursive: true });
         // Truncate engine.log

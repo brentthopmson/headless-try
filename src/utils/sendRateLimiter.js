@@ -8,6 +8,7 @@ import { getLimitsSheet } from "../app/socials/_shared/limits.js";
 if (!globalThis.__sendRateLimiter) {
   globalThis.__sendRateLimiter = {
     counters: new Map(), // accountId -> { hourly, daily, monthly, total }
+    accountLimits: new Map(), // accountId -> per-account {hourly,daily,monthly} override (hub _limits)
     limits: null,        // cached from Limits sheet coldMessage column
     limitsFetchedAt: 0,
   };
@@ -160,7 +161,25 @@ export async function checkSendAllowed(platform, accountId) {
   const platformKey = (platform || "GMAIL").toUpperCase();
   const platformLimits = limits[platformKey];
 
-  if (!platformLimits) {
+  // First check for this account in this process → restore persisted counters
+  // (and any per-account limits override) from the hub so restarts don't
+  // reset the mailbox's daily/monthly budget.
+  if (!state.restoredIds) state.restoredIds = new Set();
+  if (!state.counters.has(accountId) && !state.restoredIds.has(accountId)) {
+    state.restoredIds.add(accountId);
+    try {
+      await restoreUsageFromHub(accountId);
+    } catch (e) {
+      logger.warn(`[sendRateLimiter] restore failed for ${accountId}: ${e.message}`);
+    }
+  }
+
+  // Per-account window limits (hub interactionUsage._limits) REPLACE the
+  // platform coldMessage windows for this account; absent → platform policy.
+  const accountOverride = state.accountLimits.get(accountId);
+  const effective = (accountOverride && typeof accountOverride === "object") ? accountOverride : platformLimits;
+
+  if (!effective) {
     return { allowed: true, reason: "no_limits_for_platform" };
   }
 
@@ -168,33 +187,33 @@ export async function checkSendAllowed(platform, accountId) {
 
   // Check hourly limit
   resetWindowIfNeeded(counter.hourly);
-  if (platformLimits.hourly > 0 && counter.hourly.count >= platformLimits.hourly) {
+  if (effective.hourly > 0 && counter.hourly.count >= effective.hourly) {
     const retryAfterMs = 3600000 - (Date.now() - counter.hourly.windowStart);
     return {
       allowed: false,
-      reason: `hourly_limit: ${counter.hourly.count}/${platformLimits.hourly}`,
+      reason: `hourly_limit: ${counter.hourly.count}/${effective.hourly}`,
       retryAfterMs,
     };
   }
 
   // Check daily limit
   resetDailyIfNeeded(counter.daily);
-  if (platformLimits.daily > 0 && counter.daily.count >= platformLimits.daily) {
+  if (effective.daily > 0 && counter.daily.count >= effective.daily) {
     const retryAfterMs = 86400000 - (Date.now() - counter.daily.windowStart);
     return {
       allowed: false,
-      reason: `daily_limit: ${counter.daily.count}/${platformLimits.daily}`,
+      reason: `daily_limit: ${counter.daily.count}/${effective.daily}`,
       retryAfterMs,
     };
   }
 
   // Check monthly limit
   resetMonthlyIfNeeded(counter.monthly);
-  if (platformLimits.monthly > 0 && counter.monthly.count >= platformLimits.monthly) {
+  if (effective.monthly > 0 && counter.monthly.count >= effective.monthly) {
     const retryAfterMs = 2592000000 - (Date.now() - counter.monthly.windowStart);
     return {
       allowed: false,
-      reason: `monthly_limit: ${counter.monthly.count}/${platformLimits.monthly}`,
+      reason: `monthly_limit: ${counter.monthly.count}/${effective.monthly}`,
       retryAfterMs,
     };
   }
@@ -219,6 +238,13 @@ export function incrementSendCount(platform, accountId) {
   counter.daily.count++;
   counter.monthly.count++;
   counter.total++;
+
+  // Persist to hub (fire-and-forget) so counters survive process restarts.
+  try {
+    persistUsageToHub(accountId, counter).catch(() => {});
+  } catch (e) {
+    // never let persistence break a send
+  }
 
   logger.debug(`[sendRateLimiter] ${accountId} (${platform}): hourly=${counter.hourly.count}, daily=${counter.daily.count}, monthly=${counter.monthly.count}, total=${counter.total}`);
 }
@@ -250,19 +276,31 @@ export function getSendStats(accountId) {
  * @param {string} browserId
  * @param {object} counter - { hourly: {count}, daily: {count}, monthly: {count}, total }
  */
-export async function persistUsageToHub(browserId, counter) {
+export async function persistUsageToHub(accountId, counter) {
   try {
     const { updateSheetRowApi } = await import("../app/api/googlesheets.js");
-    const result = await updateSheetRowApi("hub", "browserId", browserId, {
+    const payload = {
       shotHourly: String(counter.hourly.count),
       shotDaily: String(counter.daily.count),
       shotMonthly: String(counter.monthly.count),
       shotTotal: String(counter.total),
       lastShotAt: new Date().toISOString(),
-    });
-    if (result.success) {
-      logger.debug(`[sendRateLimiter] Persisted usage for ${browserId}`);
+    };
+    // Accounts reach us under different hub keys: social/wire profiles as
+    // browserId or submissionId, SMTP senders as email. Try each until one
+    // matches an existing row (update never creates rows).
+    for (const keyCol of ["browserId", "submissionId", "email"]) {
+      try {
+        const result = await updateSheetRowApi("hub", keyCol, accountId, payload);
+        if (result.success) {
+          logger.debug(`[sendRateLimiter] Persisted usage for ${accountId} (key=${keyCol})`);
+          return;
+        }
+      } catch (inner) {
+        // try next key column
+      }
     }
+    logger.debug(`[sendRateLimiter] No hub row matched for ${accountId} — counters stay in-memory`);
   } catch (err) {
     logger.warn(`[sendRateLimiter] Failed to persist usage: ${err.message}`);
   }
@@ -283,17 +321,40 @@ export async function restoreUsageFromHub(browserId) {
     const headers = result.headers;
     const browserIdIdx = headers.indexOf("browserId");
     const submissionIdIdx = headers.indexOf("submissionId");
+    const emailIdx = headers.indexOf("email");
 
     for (const row of result.data) {
       const bid = row[browserIdIdx] || "";
       const sid = row[submissionIdIdx] || "";
-      if (bid === browserId || sid === browserId) {
+      const eml = emailIdx !== -1 ? (row[emailIdx] || "") : "";
+      if (bid === browserId || sid === browserId || (eml && eml === browserId)) {
         const counter = getOrCreateCounter(browserId);
 
         const hourly = parseInt(row[headers.indexOf("shotHourly")] || "0", 10);
         const daily = parseInt(row[headers.indexOf("shotDaily")] || "0", 10);
         const monthly = parseInt(row[headers.indexOf("shotMonthly")] || "0", 10);
         const total = parseInt(row[headers.indexOf("shotTotal")] || "0", 10);
+
+        // Per-account window limits override (hub interactionUsage._limits).
+        // Absent → clear any stale override so admin removal takes effect.
+        if (!state.accountLimits) state.accountLimits = new Map();
+        state.accountLimits.delete(browserId);
+        const usageIdx = headers.indexOf("interactionUsage");
+        if (usageIdx !== -1 && row[usageIdx]) {
+          try {
+            const blob = JSON.parse(row[usageIdx]);
+            if (blob && typeof blob._limits === "object" && blob._limits) {
+              state.accountLimits.set(browserId, {
+                hourly: parseInt(blob._limits.hourly, 10) || 0,
+                daily: parseInt(blob._limits.daily, 10) || 0,
+                monthly: parseInt(blob._limits.monthly, 10) || 0,
+              });
+              logger.info(`[sendRateLimiter] Account limits override for ${browserId}: ${JSON.stringify(state.accountLimits.get(browserId))}`);
+            }
+          } catch (e) {
+            // malformed usage blob — ignore override
+          }
+        }
 
         // Only restore if the window hasn't expired
         const now = Date.now();
