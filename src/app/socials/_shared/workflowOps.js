@@ -37,6 +37,31 @@ function normalizeWorkflowOp(operation, workflows) {
     return alias || op;
 }
 
+function resolveWorkflowOps(operationRaw, workflows) {
+    const raw = String(operationRaw == null ? '' : operationRaw).trim();
+    if (!raw) return [];
+    const segments = raw.split(',').map(s => s.trim()).filter(Boolean);
+    const resolved = [];
+    for (const seg of segments) {
+        const key = normalizeWorkflowOp(seg, workflows);
+        if (key && resolved.indexOf(key) === -1) resolved.push(key);
+    }
+    return resolved;
+}
+
+function pickWorkflowKey(candidates, workflows) {
+    const keys = Array.isArray(workflows)
+        ? workflows
+        : (workflows && typeof workflows === 'object' ? Object.keys(workflows) : []);
+    const byLower = {};
+    for (const k of keys) byLower[String(k).toLowerCase()] = k;
+    for (const c of (candidates || [])) {
+        const hit = byLower[String(c).toLowerCase()];
+        if (hit) return hit;
+    }
+    return null;
+}
+
 /**
  * Resolve the outbound social/DM message with the campaign fallback chain:
  * per-row CSV message → settings.socialMessage → settings.body → settings.message → ''.
@@ -51,5 +76,7 @@ function resolveSocialMessage(perRowMessage, settings) {
 module.exports = {
     WORKFLOW_ALIASES,
     normalizeWorkflowOp,
+    resolveWorkflowOps,
+    pickWorkflowKey,
     resolveSocialMessage,
 };

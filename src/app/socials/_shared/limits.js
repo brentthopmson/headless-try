@@ -1,5 +1,9 @@
 import logger from "../../../utils/logger.js";
 import { getSheetDataApi } from '../../api/googlesheets.js';
+import limitsCore from './limitsCore.js';
+import { getUserRecord } from './hubUpdater.js';
+
+const { evaluateActionPolicy, pickLimitNumber, evaluateUserQuota, parsePlanRow } = limitsCore;
 
 // Shared Limits sheet cache. Uses globalThis so ALL route modules (socials,
 // campaign engine) share the same instance even in Next.js dev mode where
@@ -22,7 +26,8 @@ const LIMITS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const ACTION_TYPES = [
     "likeOnStory", "likesOnPost", "likesOnComment",
     "commentOnComment", "commentOnStory", "commentOnPost",
-    "follow", "unfollow", "coldMessage"
+    "follow", "unfollow", "coldMessage",
+    "extract"
 ];
 
 /**
@@ -102,54 +107,102 @@ export async function getPlatformLimits(platform) {
 }
 
 export async function checkActionAllowed(platform, action, accountUsage = {}) {
+    const usage = accountUsage[action] || {};
+
+    // ACCOUNT-tier per-account override: a reserved `_limits` key inside the
+    // hub interactionUsage blob REPLACES the platform policy for this account
+    // (admin-set {hourly,daily,monthly}; absent = platform policy unchanged).
+    const override = accountUsage && accountUsage._limits;
+    if (override && typeof override === "object") {
+        return evaluateActionPolicy(override, usage);
+    }
+
     const limits = await getPlatformLimits(platform);
-    if (!limits) return { allowed: true, reason: "no_limits_configured" };
+    if (!limits) return { allowed: true, reason: "no_limits_configured", tier: "platform" };
 
     const actionLimits = limits[action];
-    if (!actionLimits) return { allowed: true, reason: "no_action_limits" };
+    if (!actionLimits) return { allowed: true, reason: "no_action_limits", tier: "platform" };
 
-    const hourly = parseInt(actionLimits.hourly, 10);
-    const daily = parseInt(actionLimits.daily, 10);
-    const monthly = parseInt(actionLimits.monthly, 10);
-    const cap = actionLimits.cap ? parseInt(actionLimits.cap, 10) : null;
+    return evaluateActionPolicy(actionLimits, usage);
+}
 
-    if (!hourly && !daily && !monthly && !cap) return { allowed: true, reason: "no_limits_defined" };
-
-    const usage = accountUsage[action] || { hourly: 0, daily: 0, monthly: 0, total: 0 };
-
-    if (cap !== null && usage.total >= cap) {
-        return { allowed: false, reason: `cap_reached: ${usage.total}/${cap}` };
+// USER tier: MONTHLY per-key quotas per human user across all their accounts.
+// Thresholds live in the Limits sheet plan row (matched by the user's plan;
+// 0/missing = unlimited); state lives in the users sheet usage blob's *Usage
+// keys. Fail-open on errors so a sheet outage never stalls campaigns.
+// checks: { keys: [...] } — which usage keys the caller gates.
+export async function checkUserQuota(userId, checks) {
+    if (!userId) {
+        return { allowed: true, reason: "no_user", tier: "user" };
     }
-    if (hourly && usage.hourly >= hourly) {
-        return { allowed: false, reason: `hourly_limit: ${usage.hourly}/${hourly}` };
+    try {
+        const record = await getUserRecord(userId);
+        const planLimits = await getPlanLimits(record.plan);
+        return evaluateUserQuota(record.usage, planLimits, checks);
+    } catch (e) {
+        logger.warn(`[limits] checkUserQuota failed for ${userId}: ${e.message} — allowing (fail-open)`);
+        return { allowed: true, reason: "quota_check_failed", tier: "user" };
     }
-    if (daily && usage.daily >= daily) {
-        return { allowed: false, reason: `daily_limit: ${usage.daily}/${daily}` };
-    }
-    if (monthly && usage.monthly >= monthly) {
-        return { allowed: false, reason: `monthly_limit: ${usage.monthly}/${monthly}` };
+}
+
+// Limits-sheet plan row → monthly USER limits keyed by *Usage.
+// Missing plan/plan column/row = {} = every key unlimited (fail-open).
+export async function getPlanLimits(plan) {
+    const sheet = await getLimitsSheet();
+    if (!sheet) return {};
+
+    const planIdx = sheet.headers.indexOf("plan");
+    if (planIdx === -1) {
+        logger.warn('[limits] Limits sheet has no "plan" column — USER monthly quotas unavailable (unlimited)');
+        return {};
     }
 
-    return { allowed: true, reason: "ok" };
+    const wanted = String(plan || "").trim().toUpperCase();
+    if (!wanted) return {};
+
+    const planRow = sheet.data.find(r => String(r[planIdx] || "").trim().toUpperCase() === wanted);
+    if (!planRow) {
+        logger.warn(`[limits] No Limits plan row for "${plan}" — USER monthly quotas unlimited`);
+        return {};
+    }
+
+    return parsePlanRow(sheet.headers, planRow) || {};
+}
+
+// Campaign row per-run caps fail closed (0 = block) — except interactionLimit
+// and accountSendPerRunLimit which protect accounts/SMTPs with per-run
+// defaults (10 interactions, 5 sends/account) when the cell is unset.
+const CAMPAIGN_LIMIT_DEFAULTS = {
+    validateLimit: 0,
+    enrichLimit: 0,
+    personalizeLimit: 0,
+    shootCampaignLimit: 0,
+    interactionLimit: 10,
+    campaignConcurrentLimit: 3,
+    accountSendPerRunLimit: 5,
+};
+
+// Cell → number, falling back to `whenEmpty` when the column or cell is unset.
+// An explicit 0 in the cell always wins (= off / block per caller semantics).
+function cellOr(headers, row, col, whenEmpty) {
+    const i = headers.indexOf(col);
+    if (i === -1) return whenEmpty;
+    const raw = row[i];
+    if (raw === null || raw === undefined || String(raw).trim() === "") return whenEmpty;
+    return pickLimitNumber(raw);
 }
 
 export async function getCampaignLimits() {
     const sheet = await getLimitsSheet();
     // Default to 0 (block) when sheet is unavailable
-    if (!sheet) return { validateLimit: 0, enrichLimit: 0, personalizeLimit: 0, shootCampaignLimit: 0, interactionLimit: 0, campaignConcurrentLimit: 3 };
+    if (!sheet) return { ...CAMPAIGN_LIMIT_DEFAULTS };
 
     const headers = sheet.headers;
     const categoryIdx = headers.indexOf("category");
-    if (categoryIdx === -1) return { validateLimit: 0, enrichLimit: 0, personalizeLimit: 0, shootCampaignLimit: 0, interactionLimit: 0, campaignConcurrentLimit: 3 };
+    if (categoryIdx === -1) return { ...CAMPAIGN_LIMIT_DEFAULTS };
 
     const campaignRow = sheet.data.find(r => String(r[categoryIdx]).trim().toLowerCase() === "campaign");
-    if (!campaignRow) return { validateLimit: 0, enrichLimit: 0, personalizeLimit: 0, shootCampaignLimit: 0, interactionLimit: 0, campaignConcurrentLimit: 3 };
-
-    const parseLimit = (val) => {
-        if (!val) return 0;
-        const n = parseInt(val, 10);
-        return (!isNaN(n) && n >= 0) ? n : 0;
-    };
+    if (!campaignRow) return { ...CAMPAIGN_LIMIT_DEFAULTS };
 
     const idx = (col) => {
         const i = headers.indexOf(col);
@@ -157,12 +210,13 @@ export async function getCampaignLimits() {
     };
 
     return {
-        validateLimit: parseLimit(idx("validateLimit")),
-        enrichLimit: parseLimit(idx("enrichLimit")),
-        personalizeLimit: parseLimit(idx("personalizeLimit")),
-        shootCampaignLimit: parseLimit(idx("shootCampaignLimit")),
-        interactionLimit: parseLimit(idx("interactionLimit")),
-        campaignConcurrentLimit: parseLimit(idx("campaignConcurrentLimit")) || 3,
+        validateLimit: pickLimitNumber(idx("validateLimit")),
+        enrichLimit: pickLimitNumber(idx("enrichLimit")),
+        personalizeLimit: pickLimitNumber(idx("personalizeLimit")),
+        shootCampaignLimit: pickLimitNumber(idx("shootCampaignLimit")),
+        interactionLimit: cellOr(headers, campaignRow, "interactionLimit", CAMPAIGN_LIMIT_DEFAULTS.interactionLimit),
+        campaignConcurrentLimit: pickLimitNumber(idx("campaignConcurrentLimit")) || 3,
+        accountSendPerRunLimit: cellOr(headers, campaignRow, "accountSendPerRunLimit", CAMPAIGN_LIMIT_DEFAULTS.accountSendPerRunLimit),
     };
 }
 

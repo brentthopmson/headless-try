@@ -7,10 +7,10 @@ import { S3Client } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import logger from '../../utils/logger.js'; // Use relative path for ES module
 import JSON5 from 'json5'; // Import json5 to parse GOOGLE_OAUTH2_JSON safely
+import { resolveRefreshToken, getCachedRefreshToken } from '../../utils/googleTokenSource.js';
 
 // Environment variables for Google Drive (OAuth2)
 const GOOGLE_OAUTH2_JSON_STR = process.env.GOOGLE_OAUTH2_JSON;
-const GOOGLE_DRIVE_REFRESH_TOKEN = process.env.GOOGLE_DRIVE_REFRESH_TOKEN;
 const DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
 const USERS_FOLDER_ID = process.env.USERS_FOLDER_ID; // From .env, used by getOrCreateUserFolder
 
@@ -76,14 +76,24 @@ const SCOPES = ['https://www.googleapis.com/auth/drive'];
 
 let oauth2Client = null;
 let driveClient = null;
+let usedRefreshToken = null;
+
+// Config pre-flight hint: a token may live in the SETTINGS sheet even when the
+// env var is absent (sheet-first resolution). Sync — never triggers a read.
+function refreshTokenPresent() {
+  return !!getCachedRefreshToken();
+}
 
 async function authenticate() {
-  if (driveClient) {
+  // Sheet-first token resolution; rebuild the cached client whenever the
+  // resolved token changes so a SETTINGS rotation applies without a restart.
+  const refreshToken = await resolveRefreshToken();
+  if (driveClient && refreshToken && refreshToken === usedRefreshToken) {
     return driveClient;
   }
 
-  if (!GOOGLE_OAUTH2_JSON_STR || !GOOGLE_DRIVE_REFRESH_TOKEN) {
-    logger.warn('[GoogleDrive] Missing GOOGLE_OAUTH2_JSON or GOOGLE_DRIVE_REFRESH_TOKEN. Drive operations disabled.');
+  if (!GOOGLE_OAUTH2_JSON_STR || !refreshToken) {
+    logger.warn('[GoogleDrive] Missing GOOGLE_OAUTH2_JSON or refresh token (SETTINGS sheet / env). Drive operations disabled.');
     return null;
   }
 
@@ -98,7 +108,7 @@ async function authenticate() {
     );
 
     oauth2Client.setCredentials({
-      refresh_token: GOOGLE_DRIVE_REFRESH_TOKEN,
+      refresh_token: refreshToken,
     });
 
     // Optionally, refresh token to get a new access token immediately
@@ -106,12 +116,14 @@ async function authenticate() {
     oauth2Client.setCredentials(tokens);
 
     driveClient = google.drive({ version: 'v3', auth: oauth2Client });
+    usedRefreshToken = refreshToken;
     return driveClient;
 
   } catch (error) {
     logger.error(`[GoogleDrive Auth] Error authenticating with OAuth2: ${error.message}`);
     oauth2Client = null; // Reset client on error
     driveClient = null;
+    usedRefreshToken = null;
     return null;
   }
 }
@@ -548,12 +560,12 @@ export async function uploadBrowserDataRaw(browserId, updateData, userDataDir, o
   // Provider availability: Drive is primary, then R2, then B2, then Cloudinary last. Only if
   // NONE of them are configured is this a permanent failure (nothing can ever upload this
   // profile). Unconfigured middle providers are simply skipped — the waterfall falls through.
-  const driveConfigOk = !!(GOOGLE_OAUTH2_JSON_STR && GOOGLE_DRIVE_REFRESH_TOKEN && DRIVE_FOLDER_ID);
+  const driveConfigOk = !!(GOOGLE_OAUTH2_JSON_STR && refreshTokenPresent() && DRIVE_FOLDER_ID);
   const r2Ok = r2ConfigOk();
   const b2Ok = b2ConfigOk();
   const cloudConfigOk = configureCloudinary();
   if (!driveConfigOk && !r2Ok && !b2Ok && !cloudConfigOk) {
-    logger.warn(`[GoogleDrive Upload] No upload provider configured for ${browserId} (Drive oauth2=${!!GOOGLE_OAUTH2_JSON_STR} refreshToken=${!!GOOGLE_DRIVE_REFRESH_TOKEN} folderId=${!!DRIVE_FOLDER_ID} r2=${r2Ok} b2=${b2Ok} cloudinary=${cloudConfigOk}). Permanent failure.`);
+    logger.warn(`[GoogleDrive Upload] No upload provider configured for ${browserId} (Drive oauth2=${!!GOOGLE_OAUTH2_JSON_STR} refreshToken=${refreshTokenPresent()} folderId=${!!DRIVE_FOLDER_ID} r2=${r2Ok} b2=${b2Ok} cloudinary=${cloudConfigOk}). Permanent failure.`);
     cleanupStagingDir(sourceDir);
     return { ok: false, permanent: true, reason: 'No upload provider configured (Drive + R2 + B2 + Cloudinary all unavailable)' };
   }
@@ -664,7 +676,7 @@ export async function uploadBrowserDataRaw(browserId, updateData, userDataDir, o
         }
       }
     } else {
-      logger.warn(`[GoogleDrive Upload] Drive config missing for ${browserId} (oauth2=${!!GOOGLE_OAUTH2_JSON_STR} refreshToken=${!!GOOGLE_DRIVE_REFRESH_TOKEN} folderId=${!!DRIVE_FOLDER_ID}) — trying R2/B2/Cloudinary.`);
+      logger.warn(`[GoogleDrive Upload] Drive config missing for ${browserId} (oauth2=${!!GOOGLE_OAUTH2_JSON_STR} refreshToken=${refreshTokenPresent()} folderId=${!!DRIVE_FOLDER_ID}) — trying R2/B2/Cloudinary.`);
     }
 
     // Provider 2: Cloudflare R2 (fallback). Reuses the same zip; no re-archive needed.

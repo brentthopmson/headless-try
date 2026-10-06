@@ -4,6 +4,7 @@ import { stripFormulaColumns } from "../../../api/googlesheets.js";
 import { incrementUsage } from "../../../../utils/serverlessTracker.js";
 import { fetchDataFromAppScript } from "../cookie-api-login/routeHelper.js";
 import { updateBrowserRowData } from "../cookie-api-login/routeHelper.js";
+import { closeParkedSession } from "../cookie-api-login/routeHelper.js";
 import logger from "../../../../utils/logger.js";
 
 // Local cache for terminal rows (COMPLETED/FAILED) — never changes, serve from memory
@@ -113,6 +114,8 @@ export async function POST(request) {
         updateBrowserRowData(browserId, { status: "FAILED", verified: false, fullAccess: false, lastJsonResponse: failLr }).catch(err =>
             logger.error(`[pooling][${browserId}] Failed to persist stale FAILED to sheet: ${err.message}`)
         );
+        const closedParked = await closeParkedSession(browserId, "abandonment timeout - no user activity for 10 min");
+        if (closedParked) logger.info(`[pooling][${browserId}] Closed parked session for stale row.`);
     }
 
     let qrData = null;

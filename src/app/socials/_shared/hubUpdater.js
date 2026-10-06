@@ -24,29 +24,37 @@ function defaultUsage(action) {
             hour: now.getHours(),
             day: now.getDate(),
             month: now.getMonth(),
+            year: now.getFullYear(),
         }
     };
 }
 
-function incrementUsage(existing, action) {
+function incrementUsage(existing, action, count = 1) {
     const now = new Date();
+    const n = Number.isFinite(parseInt(count, 10)) && parseInt(count, 10) > 0 ? parseInt(count, 10) : 1;
     const current = existing[action] || { hourly: 0, daily: 0, monthly: 0, total: 0 };
 
     const hourChanged = current.hour !== undefined && current.hour !== now.getHours();
     const dayChanged = current.day !== undefined && current.day !== now.getDate();
-    const monthChanged = current.month !== undefined && current.month !== now.getMonth();
+    // Monthly counters must roll over on month change AND on year change
+    // (same calendar month next year must not inherit last year's total).
+    const monthChanged = current.month !== undefined && (
+        current.month !== now.getMonth() ||
+        (current.year !== undefined && current.year !== now.getFullYear())
+    );
 
     return {
         ...existing,
         [action]: {
-            hourly: hourChanged ? 1 : (current.hourly || 0) + 1,
-            daily: dayChanged ? 1 : (current.daily || 0) + 1,
-            monthly: monthChanged ? 1 : (current.monthly || 0) + 1,
-            total: (current.total || 0) + 1,
+            hourly: hourChanged ? n : (current.hourly || 0) + n,
+            daily: dayChanged ? n : (current.daily || 0) + n,
+            monthly: monthChanged ? n : (current.monthly || 0) + n,
+            total: (current.total || 0) + n,
             lastAction: now.toISOString(),
             hour: now.getHours(),
             day: now.getDate(),
             month: now.getMonth(),
+            year: now.getFullYear(),
         }
     };
 }
@@ -77,11 +85,11 @@ export async function getAccountUsage(accountId) {
     }
 }
 
-export async function updateAccountUsage(accountId, action) {
+export async function updateAccountUsage(accountId, action, count = 1) {
     try {
         const accountData = await getAccountUsage(accountId);
         const currentUsage = accountData.interactionUsage || {};
-        const updatedUsage = incrementUsage(currentUsage, action);
+        const updatedUsage = incrementUsage(currentUsage, action, count);
 
         const result = await updateSheetRowApi(HUB_SHEET, "submissionId", accountId, {
             interactionUsage: JSON.stringify(updatedUsage),
@@ -137,32 +145,42 @@ export async function updateAccountInteractionData(accountId, interactionData) {
 
 // ==================== User-Level Usage Tracking ====================
 
-export async function getUserUsage(userId) {
+// Single users-sheet read returning BOTH the plan (plan-row lookup key for
+// monthly USER quotas) and the usage blob (the *Usage counters themselves).
+// Missing user/columns → { plan: '', usage: {} } (callers fail open).
+export async function getUserRecord(userId) {
     try {
         const result = await getSheetDataApi(USERS_SHEET);
-        if (!result.success) return {};
+        if (!result.success) return { plan: "", usage: {} };
 
         const headers = result.headers;
         const userIdIdx = headers.indexOf("userId");
         const usageIdx = headers.indexOf("usage");
+        const planIdx = headers.indexOf("plan");
 
-        if (userIdIdx === -1) return {};
+        if (userIdIdx === -1) return { plan: "", usage: {} };
 
         const row = result.data.find(r => String(r[userIdIdx]).trim() === String(userId).trim());
-        if (!row) return {};
+        if (!row) return { plan: "", usage: {} };
 
+        const plan = planIdx !== -1 ? String(row[planIdx] || "").trim() : "";
         const raw = usageIdx !== -1 ? row[usageIdx] : null;
-        return parseInteractionUsage(raw);
+        return { plan, usage: parseInteractionUsage(raw) };
     } catch (e) {
-        logger.error(`[getUserUsage] Error for ${userId}: ${e.message}`);
-        return {};
+        logger.error(`[getUserRecord] Error for ${userId}: ${e.message}`);
+        return { plan: "", usage: {} };
     }
 }
 
-export async function updateUserUsage(userId, action) {
+export async function getUserUsage(userId) {
+    const record = await getUserRecord(userId);
+    return record.usage;
+}
+
+export async function updateUserUsage(userId, action, count = 1) {
     try {
         const currentUsage = await getUserUsage(userId);
-        const updatedUsage = incrementUsage(currentUsage, action);
+        const updatedUsage = incrementUsage(currentUsage, action, count);
 
         const result = await updateSheetRowApi(USERS_SHEET, "userId", userId, {
             usage: JSON.stringify(updatedUsage),

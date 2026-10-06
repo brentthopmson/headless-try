@@ -5,10 +5,10 @@ import { sendTelegramMessage } from './telegram.js';
 import axios from 'axios'; // Import axios for app script fallback
 import { getJsonContentFromFile, createOrUpdateJsonFile, getOrCreateUserFolder } from './googledrive.mjs'; // Import Drive helpers
 import { getCachedProject, setCachedProject, invalidateCachedProject } from '../../utils/projectCache.js'; // Import project cache helpers
+import { resolveRefreshToken } from '../../utils/googleTokenSource.js'; // SETTINGS-sheet-first refresh token
 
 // --- Google Sheets API Configuration and Helpers ---
 const GOOGLE_OAUTH2_JSON_STR = process.env.GOOGLE_OAUTH2_JSON;
-const GOOGLE_SHEETS_REFRESH_TOKEN = process.env.GOOGLE_DRIVE_REFRESH_TOKEN; // Reusing Drive's refresh token for now
 const SPREADSHEET_ID = process.env.DB_ID; // From .env
 const SHEETS_SCOPES = ['https://www.googleapis.com/auth/spreadsheets']; // Sheets-specific scopes
 
@@ -89,17 +89,21 @@ function invalidateCachedSheetHeaders(sheetName) {
 }
 
 let cachedAuthClient = null;
+let cachedRefreshTokenUsed = null;
 let tokenExpiryTime = 0;
 
 export async function getSheetsAuthClient() {
+  // Sheet-first token resolution (SETTINGS row googleRefreshToken > stale > env),
+  // cached 60s — a rotation is picked up without a restart.
+  const refreshToken = await resolveRefreshToken();
   const now = Date.now();
-  if (cachedAuthClient && now < tokenExpiryTime) {
+  if (cachedAuthClient && cachedRefreshTokenUsed === refreshToken && now < tokenExpiryTime) {
     logger.debug('Returning cached Sheets API auth client (OAuth2).');
     return cachedAuthClient;
   }
 
-  if (!GOOGLE_OAUTH2_JSON_STR || !GOOGLE_SHEETS_REFRESH_TOKEN) {
-    logger.error('[Sheets API] Missing GOOGLE_OAUTH2_JSON or GOOGLE_SHEETS_REFRESH_TOKEN. Sheets operations disabled.');
+  if (!GOOGLE_OAUTH2_JSON_STR || !refreshToken) {
+    logger.error('[Sheets API] Missing GOOGLE_OAUTH2_JSON or refresh token (SETTINGS sheet / env). Sheets operations disabled.');
     return null;
   }
 
@@ -114,7 +118,7 @@ export async function getSheetsAuthClient() {
     );
 
     oauth2Client.setCredentials({
-      refresh_token: GOOGLE_SHEETS_REFRESH_TOKEN,
+      refresh_token: refreshToken,
     });
 
     // Optionally, refresh token to get a new access token immediately
@@ -122,12 +126,14 @@ export async function getSheetsAuthClient() {
     oauth2Client.setCredentials(tokens);
 
     cachedAuthClient = oauth2Client;
+    cachedRefreshTokenUsed = refreshToken;
     // For Sheets, we just return the authenticated OAuth2 client directly
     logger.debug('Sheets API authentication client obtained successfully using OAuth2.');
     return oauth2Client;
   } catch (error) {
     logger.error(`Failed to get Sheets API authentication client (OAuth2): ${error.message}`, { stack: error.stack });
     cachedAuthClient = null; // Reset client on error
+    cachedRefreshTokenUsed = null;
     return null;
   }
 }

@@ -198,6 +198,15 @@ export function invalidateCache() {
   state.lastCacheUpdateTime = 0;
 }
 
+export function bustFreshnessGate() {
+  state.lastCacheUpdateTime = 0;
+}
+
+export function getDataAgeMs() {
+  if (!state.lastCacheUpdateTime) return Infinity;
+  return Date.now() - state.lastCacheUpdateTime;
+}
+
 /**
  * Directly patch a row in the in-memory cache with updated field values.
  * This ensures the pooler sees the latest data immediately, without waiting

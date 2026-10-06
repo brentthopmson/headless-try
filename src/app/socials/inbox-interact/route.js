@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+﻿import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import {
     getPlatformConfig,
@@ -15,9 +15,10 @@ import {
 } from '../_shared/routeHelper.js';
 import workflowOps from '../_shared/workflowOps.js';
 
-const { normalizeWorkflowOp } = workflowOps;
+const { normalizeWorkflowOp, resolveWorkflowOps } = workflowOps;
 import { checkActionAllowed, getPlatformLimits } from '../_shared/limits.js';
 import { requireFeature } from '../../../utils/featureGate.js';
+import { resolveAccountGate, accountGateError } from '../_shared/accountGate.js';
 import { getAccountUsage, updateAccountUsage, updateAccountStatus, updateAccountInteractionData } from '../_shared/hubUpdater.js';
 
 export { processTask as processInboxInteractTask };
@@ -29,11 +30,6 @@ export const runtime = 'nodejs';
 const MAX_CONCURRENT_TASKS = parseInt(process.env.MAX_CONCURRENT_TASKS || '1', 10);
 const activeTasks = new Map();
 logger.info(`[Inbox Interact] Concurrency limit: ${MAX_CONCURRENT_TASKS}`);
-
-const ACTION_LIMIT_MAP = {
-    "sendMessage": "coldMessage",
-    "replyMessage": "coldMessage",
-};
 
 async function processTask(taskPayload) {
     let browser = null;
@@ -57,8 +53,15 @@ async function processTask(taskPayload) {
         if (!platform) throw new Error("Platform not specified");
         if (!cookieJSON) throw new Error("No cookies provided");
 
+        // ACCOUNT-tier status gate — RATE_LIMITED blocks until windows roll,
+        // CANCELLED always blocks. Before any browser launch.
+        const statusGate = await resolveAccountGate(profileId, platform);
+        if (statusGate.blocked) throw accountGateError(profileId, statusGate);
+
         // Check coldMessage limit before sending
-        if (operation === "sendmessage") {
+        const sendsMessage = operation === "sendmessage" ||
+            String(operationRaw).split(",").some(seg => seg.trim().toLowerCase() === "sendmessage");
+        if (sendsMessage) {
             const accountUsageData = profileId ? await getAccountUsage(profileId) : null;
             const accountUsage = accountUsageData?.interactionUsage || {};
             const check = await checkActionAllowed(platform, "coldMessage", accountUsage);
@@ -71,7 +74,7 @@ async function processTask(taskPayload) {
 
         // Generate AI message if messageText not provided but socialStrategyPrompt exists
         let finalMessageText = messageText;
-        if (!finalMessageText && socialStrategyPrompt && operation === "sendmessage") {
+        if (!finalMessageText && socialStrategyPrompt && sendsMessage) {
             try {
                 const promptTemplate = platformConfig.aiPrompts?.generateColdMessage || "";
                 const targetLink = taskPayload.targetLink || "";
@@ -104,7 +107,9 @@ async function processTask(taskPayload) {
             ({ browser, page } = await launchBrowserWithSession(cookieJSON));
         }
 
-        const workflow = getWorkflow(platform, normalizeWorkflowOp(operationRaw, platformConfig.workflows));
+        const workflowKeys = resolveWorkflowOps(operationRaw, platformConfig.workflows);
+        if (workflowKeys.length === 0) throw new Error(`No workflow resolved for operation: ${operationRaw}`);
+        const workflows = workflowKeys.map(key => getWorkflow(platform, key));
 
         const context = {
             platform,
@@ -115,18 +120,20 @@ async function processTask(taskPayload) {
             socialStrategyPrompt,
         };
 
-        const workflowResults = await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI);
-
-        if (workflow.extract) {
-            const extractor = getExtractor(platform, workflow.extract);
-            if (extractor && extractor.parseFunction) {
-                try {
-                    const parseFunc = new Function('items', extractor.parseFunction);
-                    const elements = await page.$$(extractor.selector);
-                    results = parseFunc(elements);
-                } catch (e) {
-                    logger.error(`[processTask] Extraction failed: ${e.message}`);
-                    results = [];
+        let workflowResults = {};
+        for (const workflow of workflows) {
+            Object.assign(workflowResults, await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI));
+            if (workflow.extract) {
+                const extractor = getExtractor(platform, workflow.extract);
+                if (extractor && extractor.parseFunction) {
+                    try {
+                        const parseFunc = new Function('items', 'return (' + extractor.parseFunction + '\n)(items);');
+                        const elements = await page.$$(extractor.selector);
+                        const extracted = parseFunc(elements);
+                        if (Array.isArray(extracted)) results.push(...extracted);
+                    } catch (e) {
+                        logger.error(`[processTask] Extraction failed: ${e.message}`);
+                    }
                 }
             }
         }
@@ -134,7 +141,8 @@ async function processTask(taskPayload) {
         finalStatus = "COMPLETED";
 
         if (profileId) {
-            if (operation === "sendmessage") {
+            const executedKeys = workflowKeys.map(k => String(k).toLowerCase());
+            if (executedKeys.includes("sendmessage") || operation === "sendmessage") {
                 await updateAccountUsage(profileId, "coldMessage");
             }
             await updateAccountInteractionData(profileId, {

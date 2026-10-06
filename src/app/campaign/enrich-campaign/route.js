@@ -7,9 +7,10 @@ import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, sanitizeForCsv, getPerformancePresets } from "../_shared/pipelineUtils.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, sanitizeForCsv, getPerformancePresets } from "../_shared/pipelineUtils.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
-import { getCampaignLimits } from "../../socials/_shared/limits.js";
+import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
+import { updateUserUsage } from "../../socials/_shared/hubUpdater.js";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -150,6 +151,21 @@ export async function POST(request) {
     const log = logger.child({ campaignId, stage: 'enrich' });
     log.info(`Received enrichment request${serverBatch ? ` [worker rowStart=${serverBatch.rowStart} rowEnd=${serverBatch.rowEnd}]` : ''}`);
 
+    // USER tier — monthly enrichUsage gate (GAS sends full settings; our own
+    // orchestrator sends only campaignId → fall back to the campaign row).
+    let stageUserId = body.settings?.userId || body.userId || null;
+    if (!stageUserId) {
+      try { stageUserId = (await getCampaignSettings(campaignId))?.userId || null; } catch (e) { /* fail open */ }
+    }
+    if (stageUserId) {
+      const quota = await checkUserQuota(stageUserId, { keys: ["enrichUsage"] });
+      if (!quota.allowed) {
+        log.info(`[user-limit] ${quota.reason} — blocking enrichment for ${campaignId}`);
+        await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
+        return NextResponse.json({ success: true, limitReached: true, userMonthlyLimit: true, message: `Enrichment blocked: ${quota.reason}` });
+      }
+    }
+
     if (serverBatch) {
       return await handleWorkerMode(campaignId, fileUrl, serverBatch, log);
     }
@@ -158,7 +174,7 @@ export async function POST(request) {
       return NextResponse.json({ success: false, error: "Missing fileUrl" }, { status: 400 });
     }
 
-    return await handleCoordinatorMode(campaignId, fileUrl, log);
+    return await handleCoordinatorMode(campaignId, fileUrl, log, stageUserId);
 
   } catch (error) {
     log.error(`Error: ${error.message}`, { stack: error.stack });
@@ -166,7 +182,7 @@ export async function POST(request) {
   }
 }
 
-async function handleCoordinatorMode(campaignId, fileUrl, log) {
+async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
   log.info(`Received enrichment request for campaign: ${campaignId}`);
 
   const fileId = extractFileId(fileUrl);
@@ -470,6 +486,17 @@ async function handleCoordinatorMode(campaignId, fileUrl, log) {
 
   // 8. Update campaign settings
   await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
+
+  // USER tier accounting: one monthly enrichUsage increment for the whole
+  // single-server run (multi-server dispatch exits before this point and is
+  // not metered — documented limitation).
+  if (stageUserId && dataRows.length > 0) {
+    try {
+      await updateUserUsage(stageUserId, "enrichUsage", dataRows.length);
+    } catch (e) {
+      log.warn(`[user-limit] enrichUsage increment failed: ${e.message}`);
+    }
+  }
 
   return NextResponse.json({
     success: true,

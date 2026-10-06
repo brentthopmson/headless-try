@@ -360,11 +360,14 @@ async function captureQrDataUrl(page, selectors, logger) {
  *   onQrData(dataUrl)  — persist to sheet/cache (called each capture)
  *   getMethod()        — fresh loginMethod; returning non-'qr' exits early so
  *                        processRow falls back to the credential path
+ *   getMethodFast()    — optional cache-only check run every ~5s between
+ *                        recaptures; detects a same-process method switch in
+ *                        seconds instead of waiting a full recapture cycle
  *   isLoggedIn()       — success detection (URL pattern + session cookie/inbox)
  * Result shape matches checkAccountAccess so processRow's tail maps it to
  * COMPLETED / WAITINGEMAIL uniformly.
  */
-async function runQrLogin({ page, config, logger, onQrData, getMethod, isLoggedIn, detectChallenge, timeoutMs, recaptureMs } = {}) {
+async function runQrLogin({ page, config, logger, onQrData, getMethod, getMethodFast, isLoggedIn, detectChallenge, timeoutMs, recaptureMs } = {}) {
     const qr = (config && config.qr) || {};
     const deadline = Date.now() + (timeoutMs || qr.timeoutMs || 8 * 60 * 1000);
     const interval = recaptureMs || qr.recaptureMs || 25000;
@@ -443,17 +446,51 @@ async function runQrLogin({ page, config, logger, onQrData, getMethod, isLoggedI
             logger && logger.warn('[QrLogin] QR element not found on first capture attempt.');
         }
 
-        await new Promise(r => setTimeout(r, interval));
+        // Sliced sleep: when a fast cache-only checker is provided, a user
+        // switching to email/phone mid-QR-wait is noticed within ~5s instead
+        // of a full recapture cycle (25s), so the credential form unlocks
+        // while the user is still filling it in. Without the checker this is
+        // behaviorally identical to one long sleep.
+        const chunkMs = 5000;
+        let sleptMs = 0;
+        let fastSwitch = null;
+        while (sleptMs < interval) {
+            const chunk = Math.min(chunkMs, interval - sleptMs);
+            await new Promise(r => setTimeout(r, chunk));
+            sleptMs += chunk;
+            if (Date.now() >= deadline) break;
+            if (typeof getMethodFast === 'function') {
+                try {
+                    const fm = await getMethodFast();
+                    if (fm && fm !== 'qr') { fastSwitch = fm; break; }
+                } catch (e) {
+                    logger && logger.debug(`[QrLogin] getMethodFast failed: ${e.message}`);
+                }
+            }
+        }
+        if (fastSwitch) {
+            return {
+                methodChanged: fastSwitch,
+                emailExists: false,
+                accountAccess: false,
+                reachedInbox: false,
+                requiresVerification: false,
+                verificationState: null,
+                verificationOptions: [],
+                message: `Login method switched to '${fastSwitch}' during QR wait.`
+            };
+        }
     }
 
     return {
+        qrTimedOut: true,
         emailExists: false,
         accountAccess: false,
         reachedInbox: false,
         requiresVerification: false,
         verificationState: null,
         verificationOptions: [],
-        message: 'QR login timed out. Please enter your credentials instead.'
+        message: 'QR login timed out. Please try again.'
     };
 }
 

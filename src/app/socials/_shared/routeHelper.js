@@ -657,20 +657,30 @@ export async function executeWorkflow(page, workflow, context, platformConfig, a
                         break;
                     }
                     case 'clickPost': {
-                        const postIndex = step.postIndex || 0;
                         const postSelector = platformConfig.selectors?.postItem;
                         if (postSelector) {
                             const allPosts = await page.$$(postSelector);
-                            if (allPosts[postIndex]) await allPosts[postIndex].click();
+                            if (allPosts.length) {
+                                const wanted = parseInt(interpolate(String(step.postIndex ?? 0), stepContext), 10);
+                                const idx = Number.isInteger(wanted) && wanted >= 0 && wanted < allPosts.length
+                                    ? wanted
+                                    : Math.floor(Math.random() * allPosts.length);
+                                await allPosts[idx].click();
+                            }
                         }
                         break;
                     }
                     case 'clickVideo': {
-                        const videoIndex = step.videoIndex || 0;
                         const videoSelector = platformConfig.selectors?.videoItem;
                         if (videoSelector) {
                             const allVideos = await page.$$(videoSelector);
-                            if (allVideos[videoIndex]) await allVideos[videoIndex].click();
+                            if (allVideos.length) {
+                                const wanted = parseInt(interpolate(String(step.videoIndex ?? 0), stepContext), 10);
+                                const idx = Number.isInteger(wanted) && wanted >= 0 && wanted < allVideos.length
+                                    ? wanted
+                                    : Math.floor(Math.random() * allVideos.length);
+                                await allVideos[idx].click();
+                            }
                         }
                         break;
                     }
@@ -695,8 +705,13 @@ export async function executeWorkflow(page, workflow, context, platformConfig, a
                     }
                     case 'aiGenerateReply':
                     case 'aiGenerateComment': {
-                        const prompt = step.prompt || '';
-                        const fullPrompt = Object.entries(stepContext).reduce((p, [key, val]) => {
+                        const prompt = interpolate(step.prompt || '', stepContext);
+                        const replaceContext = { ...stepContext };
+                        for (const [k, v] of Object.entries(step)) {
+                            if (k === 'action' || k === 'prompt') continue;
+                            replaceContext[k] = interpolate(v, stepContext);
+                        }
+                        const fullPrompt = Object.entries(replaceContext).reduce((p, [key, val]) => {
                             return p.replace(new RegExp(`\\{${key}\\}`, 'g'), String(val ?? ''));
                         }, prompt);
                         try {
@@ -717,6 +732,27 @@ export async function executeWorkflow(page, workflow, context, platformConfig, a
                             for (let j = 0; j < numToLike; j++) {
                                 try {
                                     await buttons[Math.floor(Math.random() * buttons.length)].click();
+                                    await DOMHelpers.randomDelay(500, 1500);
+                                } catch (e) { /* skip failed clicks */ }
+                            }
+                        }
+                        break;
+                    }
+                    case 'likeRandomPosts':
+                    case 'likeRandomNotifications': {
+                        const maxCount = step.maxCount || 3;
+                        const likeSelector = platformConfig.selectors?.likeButton;
+                        if (likeSelector) {
+                            const buttons = await page.$$(likeSelector);
+                            const picked = new Set();
+                            let liked = 0;
+                            while (liked < maxCount && picked.size < buttons.length) {
+                                const idx = Math.floor(Math.random() * buttons.length);
+                                if (picked.has(idx)) continue;
+                                picked.add(idx);
+                                try {
+                                    await buttons[idx].click();
+                                    liked++;
                                     await DOMHelpers.randomDelay(500, 1500);
                                 } catch (e) { /* skip failed clicks */ }
                             }

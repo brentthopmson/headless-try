@@ -9,6 +9,9 @@ import { applyMailMerge } from "../_shared/mailMerge.js";
 import { attemptStealthSend } from "../_shared/threadOps.js";
 import { ensureReplyFilter, buildFilterPattern, resolveFolderName } from "../_shared/replyFilter.js";
 import { calculateScheduleTimes } from "../../../utils/scheduleCalculator.js";
+import { requireFeature } from "../../../utils/featureGate.js";
+import { checkUserQuota } from "../../socials/_shared/limits.js";
+import { updateUserUsage } from "../../socials/_shared/hubUpdater.js";
 
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
@@ -31,6 +34,25 @@ async function getHubRowByBrowserId(browserId) {
     }
   }
   return null;
+}
+
+// USER tier identity: the cookie-sheet owner of this profile (null when the
+// profile has no owner → user quota fails open for it).
+async function getUserIdForBrowser(browserId) {
+  try {
+    const result = await getSheetDataApi("cookie");
+    if (!result.success) return null;
+    const headers = result.headers;
+    const browserIdIdx = headers.indexOf("browserId");
+    const userIdIdx = headers.indexOf("userId");
+    if (browserIdIdx === -1 || userIdIdx === -1) return null;
+    const row = result.data.find(r => String(r[browserIdIdx] || "").trim() === String(browserId).trim());
+    if (!row) return null;
+    const uid = String(row[userIdIdx] || "").trim();
+    return uid && uid !== "N/A" ? uid : null;
+  } catch (e) {
+    return null;
+  }
 }
 
 // ==================== Account Expiry Check ====================
@@ -187,6 +209,8 @@ async function scheduleSingleEmail(page, config, recipient, subject, body, sched
 
 export async function POST(request) {
   try {
+    const gate = await requireFeature('allowShooting', 'email shooting');
+    if (gate) return gate;
     const body = await request.json();
     const { browserId, contacts, subject, body: emailBody, method, mailMerge, projectId, sendMode, scheduleStartTime, replyFolder } = body;
 
@@ -218,11 +242,41 @@ export async function POST(request) {
       });
     }
 
+    // 2b. ACCOUNT-tier status gate — never shoot from a cancelled/rate-limited
+    // account (status written by interaction gates or manual hub edits).
+    const accountStatus = String(hubRow.interactionStatus || "").trim().toUpperCase();
+    if (accountStatus === "CANCELLED" || accountStatus === "RATE_LIMITED") {
+      log.warn(`[shoot][account-limit] ${browserId} status=${accountStatus} — refusing to shoot`);
+      return NextResponse.json({
+        success: false,
+        error: `Account status is ${accountStatus}`,
+        accountBlocked: true,
+        stopAll: accountStatus === "CANCELLED",
+      }, { status: 409 });
+    }
+
     // 3. Detect provider
     const accountEmail = hubRow.email || "";
     const platform = detectEmailPlatform(accountEmail);
     const config = getPlatformConfig(platform);
     const rateLimitPlatform = detectEmailProvider(platform);
+
+    // USER tier — monthly shootContactsUsage budget (identity: explicit
+    // body.userId → owner in the cookie sheet). No owner → fails open.
+    const shootUserId = body.userId || (await getUserIdForBrowser(browserId));
+    if (shootUserId) {
+      const quota = await checkUserQuota(shootUserId, { keys: ["shootContactsUsage"] });
+      if (!quota.allowed) {
+        log.warn(`[shoot][user-limit] ${quota.reason} — refusing to shoot for ${browserId}`);
+        return NextResponse.json({
+          success: false,
+          error: quota.reason,
+          userMonthlyLimit: true,
+          limitReached: true,
+          stopAll: true,
+        }, { status: 429 });
+      }
+    }
 
     log.info(`[shoot] Platform: ${platform}, account: ${accountEmail}`);
 
@@ -406,6 +460,17 @@ export async function POST(request) {
 
     const totalDone = sent + scheduled;
     log.info(`[shoot] Complete: ${sent} sent, ${scheduled} scheduled, ${failed} failed, total=${contacts.length}`);
+
+    // USER tier accounting: one monthly shootContactsUsage increment for the
+    // shoots actually dispatched by this run (sent + schedule-mode sends).
+    if (shootUserId && totalDone > 0) {
+      try {
+        await updateUserUsage(shootUserId, "shootContactsUsage", totalDone);
+      } catch (e) {
+        log.warn(`[shoot][user-limit] shootContactsUsage increment failed: ${e.message}`);
+      }
+    }
+
     return NextResponse.json({
       success: true,
       sent,

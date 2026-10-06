@@ -91,9 +91,11 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
     throw new Error(`Unsupported email provider: ${providerName}. Supported: ${Object.keys(PROVIDER_CONFIGS).join(", ")}`);
   }
 
-  // Rate limit check: detect platform, use recipient as account ID
+  // Rate limit check — keyed by the SENDING account (wire profile), never the
+  // recipient: recipient-keyed counters give every recipient its own budget,
+  // so the mailbox's real quota was never enforced.
   const platform = detectEmailProvider(providerName);
-  const accountId = recipient || "unknown";
+  const accountId = options.profileId || options.browserId || recipient || "unknown";
 
   const rateCheck = await checkSendAllowed(platform, accountId);
   if (!rateCheck.allowed) {
@@ -191,8 +193,9 @@ export async function scheduleViaBrowser(recipient, subject, body, cookieJSON, p
     throw new Error(`Unsupported email provider: ${providerName}. Supported: ${Object.keys(PROVIDER_CONFIGS).join(", ")}`);
   }
 
+  // Keyed by sending account (wire profile) — see sendViaBrowser.
   const platform = detectEmailProvider(providerName);
-  const accountId = recipient || "unknown";
+  const accountId = options.profileId || options.browserId || recipient || "unknown";
 
   const rateCheck = await checkSendAllowed(platform, accountId);
   if (!rateCheck.allowed) {

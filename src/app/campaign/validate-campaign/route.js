@@ -8,9 +8,10 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import { launchBrowser } from "../../../utils/utils.js";
 import { platformConfigs } from "../../emails/cookie/cookie-api-login/platforms.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getPerformancePresets } from "../_shared/pipelineUtils.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, getPerformancePresets } from "../_shared/pipelineUtils.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
-import { getCampaignLimits } from "../../socials/_shared/limits.js";
+import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
+import { updateUserUsage } from "../../socials/_shared/hubUpdater.js";
 
 const resolveMx = promisify(dns.resolveMx);
 
@@ -140,12 +141,28 @@ export async function POST(request) {
     }
 
     // ─── WORKER MODE ────────────────────────────────────────────────
+    // USER tier — monthly validateUsage gate (GAS sends full settings; our own
+    // orchestrator sends only campaignId → fall back to the campaign row).
+    let stageUserId = body.settings?.userId || body.userId || null;
+    if (!stageUserId) {
+      try { stageUserId = (await getCampaignSettings(campaignId))?.userId || null; } catch (e) { /* fail open */ }
+    }
+    if (stageUserId) {
+      const quota = await checkUserQuota(stageUserId, { keys: ["validateUsage"] });
+      if (!quota.allowed) {
+        log.info(`[user-limit] ${quota.reason} — blocking validation for ${campaignId}`);
+        await updateCampaignSettings(campaignId, { validationStatus: "completed" });
+        return NextResponse.json({ success: true, limitReached: true, userMonthlyLimit: true, message: `Validation blocked: ${quota.reason}` });
+      }
+    }
+
     if (serverBatch) {
       return await handleWorkerMode(campaignId, fileId, serverBatch, log);
     }
 
     // ─── COORDINATOR / SINGLE-SERVER MODE ──────────────────────────
-    return await handleCoordinatorMode(campaignId, fileId, fileUrl, log);
+    // COORDINATOR / SINGLE-SERVER MODE
+    return await handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUserId);
 
   } catch (error) {
     log.error(`Error: ${error.message}`, { stack: error.stack });
@@ -160,7 +177,7 @@ export async function POST(request) {
 /**
  * Coordinator mode: check multi-server, dispatch if enabled, otherwise run single-server.
  */
-async function handleCoordinatorMode(campaignId, fileId, fileUrl, log) {
+async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUserId) {
   const authClient = await getSheetsAuthClient();
   if (!authClient) {
     return NextResponse.json({ success: false, error: "Failed to authenticate with Google APIs" }, { status: 500 });
@@ -403,6 +420,17 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log) {
 
   // 6. Mark complete
   await updateCampaignSettings(campaignId, { validationStatus: "completed" });
+
+  // USER tier accounting: one monthly validateUsage increment for the whole
+  // single-server run (multi-server dispatch exits before this point and is
+  // not metered — documented limitation).
+  if (stageUserId && dataRows.length > 0) {
+    try {
+      await updateUserUsage(stageUserId, "validateUsage", dataRows.length);
+    } catch (e) {
+      log.warn(`[user-limit] validateUsage increment failed: ${e.message}`);
+    }
+  }
 
   const stats = {
     total: dataRows.length,

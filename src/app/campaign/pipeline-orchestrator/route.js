@@ -257,6 +257,10 @@ export async function POST(request) {
           limit: concurrentCheck.limit,
         }, { status: 429 });
       }
+
+      // USER tier campaign-start quota gate removed (plan redesign): monthly
+      // *Usage quotas are enforced inside stage routes; only the concurrency
+      // cap above still gates the start here.
     }
 
     // Mail merge: merge subject/body templates with CSV data before any stage

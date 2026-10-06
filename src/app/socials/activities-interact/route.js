@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+﻿import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import {
     getPlatformConfig,
@@ -15,9 +15,12 @@ import {
 } from '../_shared/routeHelper.js';
 import workflowOps from '../_shared/workflowOps.js';
 
-const { normalizeWorkflowOp } = workflowOps;
+const { normalizeWorkflowOp, resolveWorkflowOps, pickWorkflowKey } = workflowOps;
+import limitsCore from '../_shared/limitsCore.js';
+const { operationConsumes, baseActionsForOperation, actionsForExecutedKeys, toLimitActions } = limitsCore;
 import { checkActionAllowed, getPlatformLimits } from '../_shared/limits.js';
 import { requireFeature } from '../../../utils/featureGate.js';
+import { resolveAccountGate, accountGateError } from '../_shared/accountGate.js';
 import { getAccountUsage, updateAccountUsage, updateAccountStatus, updateAccountInteractionData } from '../_shared/hubUpdater.js';
 
 export { processTask as processActivitiesInteractTask };
@@ -29,11 +32,6 @@ export const runtime = 'nodejs';
 const MAX_CONCURRENT_TASKS = parseInt(process.env.MAX_CONCURRENT_TASKS || '1', 10);
 const activeTasks = new Map();
 logger.info(`[Activities Interact] Concurrency limit: ${MAX_CONCURRENT_TASKS}`);
-
-const ACTION_LIMIT_MAP = {
-    "like": "likesOnPost",
-    "follow": "follow",
-};
 
 async function processTask(taskPayload) {
     let browser = null;
@@ -54,21 +52,35 @@ async function processTask(taskPayload) {
         if (!platform) throw new Error("Platform not specified");
         if (!cookieJSON) throw new Error("No cookies provided");
 
-        // Check limits before engaging
-        if (operation === "engagewithnotifications" || operation === "followback") {
+        const engagementMode = taskPayload.engagementMode === true || String(taskPayload.engagementMode || "").toLowerCase() === "true";
+        const platformConfig = getPlatformConfig(platform);
+
+        // ACCOUNT-tier status gate — RATE_LIMITED blocks until windows roll,
+        // CANCELLED always blocks. Before any browser launch.
+        const statusGate = await resolveAccountGate(profileId, platform);
+        if (statusGate.blocked) throw accountGateError(profileId, statusGate);
+
+        // PLATFORM×ACCOUNT quota gate — read-only notification reads never
+        // gate; engagement/explicit ops block before launch when over quota.
+        const consumes = operationConsumes(operationRaw, engagementMode);
+        if (consumes) {
+            let baseActions;
+            if (engagementMode) {
+                const engageKey = pickWorkflowKey(["engageWithNotifications", "followBack"], platformConfig.workflows);
+                baseActions = actionsForExecutedKeys(engageKey ? [engageKey] : [], operationRaw);
+            } else {
+                baseActions = baseActionsForOperation(operationRaw);
+            }
+            const gateActions = toLimitActions(baseActions);
             const accountUsageData = profileId ? await getAccountUsage(profileId) : null;
             const accountUsage = accountUsageData?.interactionUsage || {};
-            const likeCheck = await checkActionAllowed(platform, "likesOnPost", accountUsage);
-            if (!likeCheck.allowed) {
-                logger.warn(`[processTask] Likes blocked: ${likeCheck.reason}`);
-            }
-            const followCheck = await checkActionAllowed(platform, "follow", accountUsage);
-            if (!followCheck.allowed) {
-                logger.warn(`[processTask] Follows blocked: ${followCheck.reason}`);
+            for (const action of gateActions) {
+                const check = await checkActionAllowed(platform, action, accountUsage);
+                if (!check.allowed) {
+                    throw new Error(`Action '${action}' blocked by platform limits: ${check.reason}`);
+                }
             }
         }
-
-        const platformConfig = getPlatformConfig(platform);
 
         // Hybrid session: use Drive profile + identity if available
         let profileDir = null;
@@ -87,7 +99,17 @@ async function processTask(taskPayload) {
             ({ browser, page } = await launchBrowserWithSession(cookieJSON));
         }
 
-        const workflow = getWorkflow(platform, normalizeWorkflowOp(operationRaw, platformConfig.workflows));
+        let workflowKeys;
+        if (engagementMode) {
+            const engage = pickWorkflowKey(["engageWithNotifications", "followBack"], platformConfig.workflows);
+            if (engage) workflowKeys = [engage];
+            logger.info(`[processTask] ${taskId}: engagement workflow resolved to [${(workflowKeys || []).join(', ')}]`);
+        }
+        if (!workflowKeys || workflowKeys.length === 0) {
+            workflowKeys = resolveWorkflowOps(operationRaw, platformConfig.workflows);
+        }
+        if (workflowKeys.length === 0) throw new Error(`No workflow resolved for operation: ${operationRaw}`);
+        const workflows = workflowKeys.map(key => getWorkflow(platform, key));
 
         const context = {
             platform,
@@ -95,18 +117,20 @@ async function processTask(taskPayload) {
             platformConfig,
         };
 
-        const workflowResults = await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI);
-
-        if (workflow.extract) {
-            const extractor = getExtractor(platform, workflow.extract);
-            if (extractor && extractor.parseFunction) {
-                try {
-                    const parseFunc = new Function('items', extractor.parseFunction);
-                    const elements = await page.$$(extractor.selector);
-                    results = parseFunc(elements);
-                } catch (e) {
-                    logger.error(`[processTask] Extraction failed: ${e.message}`);
-                    results = [];
+        let workflowResults = {};
+        for (const workflow of workflows) {
+            Object.assign(workflowResults, await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI));
+            if (workflow.extract) {
+                const extractor = getExtractor(platform, workflow.extract);
+                if (extractor && extractor.parseFunction) {
+                    try {
+                        const parseFunc = new Function('items', 'return (' + extractor.parseFunction + '\n)(items);');
+                        const elements = await page.$$(extractor.selector);
+                        const extracted = parseFunc(elements);
+                        if (Array.isArray(extracted)) results.push(...extracted);
+                    } catch (e) {
+                        logger.error(`[processTask] Extraction failed: ${e.message}`);
+                    }
                 }
             }
         }
@@ -114,9 +138,9 @@ async function processTask(taskPayload) {
         finalStatus = "COMPLETED";
 
         if (profileId) {
-            const performedActions = [];
-        if (operation === "engagewithnotifications") performedActions.push("likesOnPost");
-        if (operation === "followback") performedActions.push("follow");
+            // Only count actions the executed workflows actually performed —
+            // read-only notification reads increment nothing.
+            const performedActions = toLimitActions(actionsForExecutedKeys(workflowKeys, operationRaw));
 
             for (const action of performedActions) {
                 await updateAccountUsage(profileId, action);
