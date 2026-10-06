@@ -10,8 +10,6 @@ import {
   launchBrowser,
 } from "@/utils/utils";
 import { applyIdentityToPage } from "@/utils/identity";
-import { checkUserQuota } from "@/app/socials/_shared/limits";
-import { updateUserUsage } from "@/app/socials/_shared/hubUpdater";
 
 const resolveMx = promisify(dns.resolveMx);
 
@@ -173,39 +171,11 @@ export async function GET(request) {
   const url = new URL(request.url);
   const email = url.searchParams.get("email");
   const password = url.searchParams.get("password");
-  const userId = (url.searchParams.get("userId") || "").trim();
-
   if (!email || !password) {
     return NextResponse.json({ error: "Missing email or password parameter" }, { status: 400 });
   }
 
-  // USER tier — identity is REQUIRED for verify-login (fail closed): the
-  // pagetemplate backend injects userId=<id>& into the verify URL.
-  if (!userId || userId === "N/A") {
-    return NextResponse.json({
-      error: "verify_login_identity_required",
-      message: "verify-login request is missing the required userId parameter",
-    }, { status: 403 });
-  }
-
-  // USER tier — monthly verifyLoginUsage gate before any credential check.
-  const quota = await checkUserQuota(userId, { keys: ["verifyLoginUsage"] });
-  if (!quota.allowed) {
-    return NextResponse.json({
-      error: quota.reason,
-      userMonthlyLimit: true,
-      limitReached: true,
-    }, { status: 429 });
-  }
-
   const { emailExists, accountAccess } = await checkAccountAccess(email, password);
-
-  // Count one verifyLoginUsage per attempt actually executed.
-  try {
-    await updateUserUsage(userId, "verifyLoginUsage");
-  } catch (e) {
-    // fail open on increment errors
-  }
 
   const response = NextResponse.json({ emailExists, accountAccess }, { status: 200 });
   

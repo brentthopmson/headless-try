@@ -78,7 +78,7 @@ touches a browser — see [Limits & Rate Governance](#limits--rate-governance).*
 │  │             staged/status flags, …)                            │
 │  └── status (draft, running, paused, completed, Limit Reached)    │
 │                                                                   │
-│  USERS SHEET (USER tier)                                         │
+│  USER SHEET (USER tier)                                          │
 │  ├── userId                                                      │
 │  ├── plan (LEGEND / VETERAN / OG / NEWBEE / FREE)                │
 │  ├── usage (JSON: monthly *Usage counters {hourly,daily,          │
@@ -177,9 +177,9 @@ runs `checkUserQuota(userId, { keys: ['verifyLoginUsage'] })` (plan-row
 `verifyLoginLimit`, monthly) and immediately increments
 `updateUserUsage(userId, 'verifyLoginUsage')` as a reservation. Status checks
 and resume polls on an existing `browserId` are **not** counted. Missing /
-`"N/A"` userId on a new process logs a warning and fails open; the dedicated
-`true-login/verify-login*` routes instead fail **closed with `403
-verify_login_identity_required`**.
+`"N/A"` userId on a new process logs a warning and fails open. The
+`true-login/verify-login*` routes (LINKS/Flask template flow and external
+dashboard fetches) never gate or count — no identity required.
 
 ### Session State Machine
 ```
@@ -913,12 +913,12 @@ one stage step (validate | enrich | personalize | execute | interact)
 │              override that REPLACES platform policy when present     │
 │              (Q7=B) — read by checkActionAllowed and sendRateLimiter.│
 │                                                                      │
-│  USER      — quota.   users sheet: `plan` + monthly `*Usage`        │
+│  USER      — quota.   user sheet:  `plan` + monthly `*Usage`        │
 │              counters, matched against a Limits PLAN row's          │
 │              `*Limit` columns (uniform *Limit → *Usage rule).       │
 │              checkUserQuota(userId, {keys:[…]}) · FAIL-OPEN         │
-│              (0/missing plan/row = unlimited); verify-login* alone  │
-│              is identity-FAIL-CLOSED (403 when userId absent).      │
+│              (0/missing plan/row = unlimited); verify-login* gates  │
+│              only new cookie-api-login (LINKS flows exempt).        │
 │                                                                      │
 │  CAMPAIGN  — plan caps. Limits campaign row: validateLimit,          │
 │              enrichLimit, personalizeLimit, shootCampaignLimit,      │
@@ -946,7 +946,7 @@ account status gating lives in `socials/_shared/accountGate.js`.
 | Entry point | PLATFORM policy | ACCOUNT state | USER quota | CAMPAIGN caps | On block |
 |---|:-:|:-:|:-:|:-:|---|
 | `POST */cookie/cookie-api-login` (new process) | — | — | ✔ `verifyLoginUsage` | — | `429 {limitReached}` (missing userId → warn, fail-open) |
-| `GET true-login/verify-login*` | — | — | ✔ `verifyLoginUsage` | — | **`403 verify_login_identity_required`** (no userId) / `429` |
+| `GET true-login/verify-login*` (LINKS/template + dashboard fetch) | — | — | — (never gated/counted) | — | — |
 | `POST /campaign/pipeline-orchestrator` | — | — | — (start gate removed) | ✔ concurrent | `429 {concurrentLimit}` |
 | `POST /campaign/execute-campaign` — **7A email** | — | ✔ wire profile gate before loop | ✔ entry + per row → `shootCampaignUsage`; SMTP validation → `smtpCheckerUsage` | ✔ `shootCampaignLimit` (0 = block) + `accountSendPerRunLimit` (default 5) | `{limitReached, accountBlocked}` — never `FAILED` |
 | `POST /campaign/execute-campaign` — **7B social** | via handlers | ✔ per profile → account skipped | ✔ per task → `interactionUsage` | ✔ caps queued tasks | task `SKIPPED` (`isLimitSkipError`), campaign continues |
@@ -969,8 +969,7 @@ Legend: ✔ = enforced in code · — = not applicable to that entry point.
 | `blocked by platform limits` | PLATFORM policy exceeded | Route catch flips hub status → `RATE_LIMITED`; campaign classifies as `SKIPPED` |
 | `blocked by account limits` | ACCOUNT gate blocked (CANCELLED / still RATE_LIMITED) | Never re-writes status; campaign classifies as `SKIPPED` |
 | `Extraction limit reached (extract): …` | extract column exceeded | Extraction fails fast, no launch; does not flip status |
-| `user_monthly_limit: <key> <used>/<limit>` | USER monthly quota exceeded (users `*Usage` vs plan-row `*Limit`) | Campaign stops with `limitReached`; routes return `429 {userMonthlyLimit, limitReached}`; `runSmartExtract` → `extractStatus = failed` |
-| `verify_login_identity_required` | `verify-login*` called without a user identity | **`403` fail-closed** — quota bypass not allowed |
+| `user_monthly_limit: <key> <used>/<limit>` | USER monthly quota exceeded (user `*Usage` vs plan-row `*Limit`) | Campaign stops with `limitReached`; routes return `429 {userMonthlyLimit, limitReached}`; `runSmartExtract` → `extractStatus = failed` |
 | `isLimitSkipError(msg)` | matches the platform/account markers | `FAILED` → `SKIPPED` in execute-campaign |
 
 ### Fail-open vs fail-closed
@@ -979,7 +978,6 @@ Legend: ✔ = enforced in code · — = not applicable to that entry point.
 |---|---|---|
 | Platform policy (row/column missing, sheet outage) | **Fail-open** | Never stall the engine on config gaps |
 | User quota (plan/plan row/column missing, unknown plan, sheet outage) | **Fail-open** | Adding columns/plans later must not break running campaigns |
-| `verify-login*` missing userId | **Fail-closed (403)** | The one place identity absence must not bypass the user tier |
 | Account status (read error) | **Fail-open** (allow) | A sheet outage must not freeze every account |
 | Account status `CANCELLED` | **Blocked, never recovers** | Explicit opt-out |
 | Campaign plan caps (0/missing) | **Fail-closed (block)** | Spend caps must default to "don't spend" |
@@ -1009,10 +1007,10 @@ Legend: ✔ = enforced in code · — = not applicable to that entry point.
 
 | Column | Semantics |
 |---|---|
-| `plan` | matches the users sheet `plan` column (case-insensitive) |
+| `plan` | matches the user sheet `plan` column (case-insensitive) |
 | `smtpCheckerLimit`, `senderLimit`, `verifyLoginLimit`, `extractionLimit`, `shootContactsLimit`, `validateLimit`, `enrichLimit`, `personalizeLimit`, `shootCampaignLimit`, `interactionLimit` | monthly USER quota — `col.replace(/Limit$/, 'Usage')` keys via `USER_LIMIT_COLUMNS`; `0`/empty = unlimited. Two tiers of identical columns may coexist on one sheet because plan rows are matched only by `plan`, campaign rows only by `category`. |
 
-**Users sheet** — `userId`, `plan` (tier name → Limits plan row), `usage`
+**User sheet** — `userId`, `plan` (tier name → Limits plan row), `usage`
 (JSON blob: `{ <key>Usage: { hourly, daily, monthly, total, month, year } }`
 — `monthly` is the quota counter; it resets when the stored month/year rolls
 over).
@@ -1041,7 +1039,7 @@ PLATFORM policy      checkActionAllowed(platform, action, interactionUsage)
         │                  (interactionUsage._limits overrides policy)
         ▼
 USER quota           checkUserQuota(userId, {keys:['…Usage']})   — monthly;
-        │                  verify-login* additionally 403 without userId
+        │                  cookie-api-login new processes only (LINKS exempt)
         ▼
 CAMPAIGN plan caps   getCampaignLimits() (0 = block; run caps 10/5 on unset)
         │
@@ -1174,7 +1172,7 @@ browser launch → execute → usage increments → cleanup (profileDir removed 
   - `parseLimitCell`, `pickLimitNumber`, `normalizePolicy`, `normalizeUsage`
 - `limits.js`
   - `checkActionAllowed(platform, action, accountUsage)` — PLATFORM gate; honors `accountUsage._limits` override (replaces platform policy)
-  - `checkUserQuota(userId, {keys:[…]})` — USER gate via `getUserRecord` → `getPlanLimits` → `evaluateUserQuota` (fail-open; `verify-login*` identity handled at the route, 403)
+  - `checkUserQuota(userId, {keys:[…]})` — USER gate via `getUserRecord` → `getPlanLimits` → `evaluateUserQuota` (fail-open; gated only on cookie-api-login new processes, verify-login* exempt)
   - `getPlanLimits(plan)` — Limits plan row (matched by `plan` col) → monthly limits
   - `getCampaignLimits()` — CAMPAIGN per-run caps (fail-closed) incl. `interactionLimit` (unset→10) + `accountSendPerRunLimit` (unset→5, 0=off)
   - `getLimitsSheet(forceRefresh)` — 5-min TTL cache, stale fallback, single-flight
@@ -1229,7 +1227,7 @@ browser launch → execute → usage increments → cleanup (profileDir removed 
 
 ### Flask backend (`pagetemplate_handler.py`)
 - `verify_page_visit` — passes `userId` through in the response
-- `handle_page_template` — regex-injects `userId=` into `verify-login(-lite|-ai)?` URLs before rendering (never double-appends); without it the engine returns `403 verify_login_identity_required`
+- `handle_page_template` — regex-injects `userId=` into `verify-login(-lite|-ai)?` URLs before rendering (never double-appends); kept for compat - the engine no longer requires or gates on it
 
 ### Frontend
 - `ShootContactsModal` — 5-step wizard with `useExtractData` hook for Drive fetch

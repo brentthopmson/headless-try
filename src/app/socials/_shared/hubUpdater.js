@@ -2,7 +2,7 @@ import logger from "../../../utils/logger.js";
 import { getSheetDataApi, updateSheetRowApi } from '../../api/googlesheets.js';
 
 const HUB_SHEET = "hub";
-const USERS_SHEET = "users";
+const USERS_SHEET = "user";
 
 // ==================== Hub Account Interaction Tracking ====================
 

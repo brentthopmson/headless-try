@@ -128,7 +128,7 @@ export async function checkActionAllowed(platform, action, accountUsage = {}) {
 
 // USER tier: MONTHLY per-key quotas per human user across all their accounts.
 // Thresholds live in the Limits sheet plan row (matched by the user's plan;
-// 0/missing = unlimited); state lives in the users sheet usage blob's *Usage
+// 0/missing = unlimited); state lives in the user sheet usage blob's *Usage
 // keys. Fail-open on errors so a sheet outage never stalls campaigns.
 // checks: { keys: [...] } — which usage keys the caller gates.
 export async function checkUserQuota(userId, checks) {
