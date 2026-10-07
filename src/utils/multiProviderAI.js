@@ -2,6 +2,15 @@ import axios from 'axios';
 import logger from './logger.js';
 import { updateSheetRowApi } from '../app/api/googlesheets.js';
 import { getSettingsSheet, invalidateSettings } from './settingsCache.js';
+import aiCore from './multiProviderAICore.js';
+
+const {
+    TRANSIENT_MAX_ATTEMPTS,
+    shouldRetryTransient,
+    transientBackoffMs,
+    shouldStripThinkingConfig,
+    stripThinkingConfig,
+} = aiCore;
 
 // ============================================================
 // MULTI-PROVIDER AI — SETTINGS-DRIVEN WATERFALL
@@ -393,11 +402,13 @@ class MultiProviderAI {
             if (tried.has(key)) continue;
             tried.add(key);
 
-            for (let attempt = 0; attempt < 2; attempt++) {
+            // 3 tries: 503 "high demand" spikes from Gemini regularly outlast a
+            // single 2s retry, so back off 2s then 4s before giving up on the row.
+            for (let attempt = 0; attempt < TRANSIENT_MAX_ATTEMPTS; attempt++) {
                 try {
-                    if (attempt === 1) {
-                        logger.warn(`[MultiProviderAI] ${key} transient failure — retrying once`);
-                        await new Promise(r => setTimeout(r, 2000));
+                    if (attempt > 0) {
+                        logger.warn(`[MultiProviderAI] ${key} transient failure — retrying (attempt ${attempt + 1}/${TRANSIENT_MAX_ATTEMPTS})`);
+                        await new Promise(r => setTimeout(r, transientBackoffMs(attempt)));
                     }
                     logger.info(`[MultiProviderAI] Trying ${key} (sn:${provider.sn})...`);
                     const result = await this._callProvider(provider, messages, temperature, maxTokens);
@@ -408,7 +419,7 @@ class MultiProviderAI {
                 } catch (err) {
                     const transient = this.isTransientError(err) && !this.isRateLimitError(err);
                     logger.warn(`[MultiProviderAI] ${key} failed: ${err.message}`);
-                    if (transient && attempt === 0) continue;
+                    if (shouldRetryTransient(transient, attempt)) continue;
                     await this._handleProviderError(provider, err);
                     break;
                 }
@@ -501,7 +512,18 @@ class MultiProviderAI {
         }
 
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
-        const response = await axios.post(url, payload, { timeout: 60000 });
+        let response;
+        try {
+            response = await axios.post(url, payload, { timeout: 60000 });
+        } catch (err) {
+            if (shouldStripThinkingConfig(err.response?.status, payload.generationConfig)) {
+                logger.warn(`[MultiProviderAI] Gemini ${model} rejected thinkingConfig (400) — retrying without it`);
+                stripThinkingConfig(payload.generationConfig);
+                response = await axios.post(url, payload, { timeout: 60000 });
+            } else {
+                throw err;
+            }
+        }
 
         const candidate = response.data?.candidates?.[0];
         if (candidate?.finishReason === 'MAX_TOKENS') {
@@ -721,6 +743,27 @@ Emails:\n${sample}`;
             logger.warn(`[MultiProviderAI] extractFinancialSummaryAI unparsable response: ${String(response || '').slice(0, 200)}`);
         }
         return parsed;
+    }
+
+    // Fallback when extractFinancialSummaryAI had no email text to analyze
+    // (empty financialTexts) but box/personal/contacts data exists — the
+    // mailbox profile is still derivable from that context.
+    async generateMailboxProfileAI(context) {
+        const sample = typeof context === 'string' ? context : JSON.stringify(context || {});
+        if (!sample.trim()) return '';
+        const prompt = `Based on this mailbox data (personal info, box summary, contacts, activities), write a 2-4 sentence profile of the mailbox owner: name + business/role, what they do, and their key payment/payroll relationships (who pays them, who they pay, notable clients/vendors/employer). Use ONLY evidence from the data; '' if not enough info. Return the profile text only, no JSON, no preamble.\n\nData:\n${sample.slice(0, 20000)}`;
+        try {
+            const response = await this.generate(prompt, {
+                systemPrompt: 'You are a forensic account analyst. Return only the profile text.',
+                maxTokens: 600
+            });
+            const profile = String(response || '').trim().replace(/^["'\s]+|["'\s]+$/g, '');
+            logger.info(`[MultiProviderAI] generateMailboxProfileAI: ${profile.slice(0, 160)}`);
+            return profile.slice(0, 1000);
+        } catch (e) {
+            logger.warn(`[MultiProviderAI] generateMailboxProfileAI failed: ${e.message}`);
+            return '';
+        }
     }
 
     async extractActivitiesAI(emailList, terms = []) {

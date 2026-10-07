@@ -9,8 +9,6 @@ import {
     launchBrowser,
 } from "../../../../utils/utils.js";
 import { applyIdentityToPage, applyUserAgentViaCDP, identitySummary } from "../../../../utils/identity.js";
-import { checkUserQuota } from "../../../socials/_shared/limits.js";
-import { updateUserUsage } from "../../../socials/_shared/hubUpdater.js";
 import { maskProxy } from "../../../../utils/proxy.js";
 import logger from "../../../../utils/logger.js";
 import { platformConfigs } from "./platforms.js";
@@ -6910,33 +6908,6 @@ export async function POST(request) {
                     error: "Data validation failed",
                     details: errors
                 }, { status: 400 }));
-            }
-        }
-
-        // USER tier — monthly verifyLoginUsage: gate NEW login attempts only
-        // (status/resume polls with browserId are free). Missing/"N/A" userId
-        // → warn and allow (fail open).
-        if (!browserId) {
-            const quotaUserId = userId && String(userId).trim() && String(userId).trim() !== "N/A"
-                ? String(userId).trim() : null;
-            if (!quotaUserId) {
-                logger.warn(`[POST][user-limit] verifyLogin attempt without usable userId — skipping quota gate.`);
-            } else {
-                const quota = await checkUserQuota(quotaUserId, { keys: ["verifyLoginUsage"] });
-                if (!quota.allowed) {
-                    logger.warn(`[POST][user-limit] ${quota.reason} — blocking cookie-api-login for ${email}`);
-                    return setCorsHeaders(NextResponse.json({
-                        success: false,
-                        error: quota.reason,
-                        userMonthlyLimit: true,
-                        limitReached: true,
-                    }, { status: 429 }));
-                }
-                try {
-                    await updateUserUsage(quotaUserId, "verifyLoginUsage");
-                } catch (e) {
-                    logger.warn(`[POST][user-limit] verifyLoginUsage increment failed: ${e.message}`);
-                }
             }
         }
 

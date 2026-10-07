@@ -43,6 +43,114 @@ export function isExtractInFlight(browserId) {
 
 const sleep = (ms) => new Promise(res => setTimeout(res, ms));
 
+// ==================== Contact sanitize + dedupe ====================
+// Gmail contact pages can yield polluted names ("brett@x.comSend email in
+// new windowcontent_copy") and the same person twice under different keys
+// (email-keyed clean row vs junk-name row). Sanitize first, then dedup by
+// a normalized email extracted from EITHER field.
+
+const CONTACT_JUNK_PHRASES = [
+    /send email in new window/gi,
+    /copy email address/gi,
+    /content_copy/gi,
+    /view profile/gi,
+    /show profiles?/gi,
+    /more actions/gi,
+    /manage labels?/gi,
+    /create label/gi,
+];
+
+function findEmailInText(text) {
+    const m = String(text || '').match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
+    return m ? m[0].toLowerCase() : '';
+}
+
+// Strip glued Google UI phrases BEFORE email extraction — otherwise
+// "brett@x.comSend email in new window" matches as "brett@x.comsend".
+function stripContactJunk(text) {
+    let n = String(text || '');
+    for (const re of CONTACT_JUNK_PHRASES) n = n.replace(re, ' ');
+    return n;
+}
+
+function sanitizeContactFields(name, email) {
+    // 1) Strip known Google UI button/aria phrases first (they are glued to the email)
+    let n = stripContactJunk(String(name || ''));
+    let e = stripContactJunk(String(email || '')).trim().toLowerCase();
+    // 2) Pull an embedded email out of the name (dirty Gmail rows)
+    const embedded = findEmailInText(n);
+    if (embedded) {
+        if (!e) e = embedded;
+        n = n.replace(new RegExp(embedded.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig'), ' ');
+    }
+    n = n.replace(/\s+/g, ' ').trim();
+    if (e && n.toLowerCase() === e) n = '';
+    if (e && !/^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(e)) e = '';
+    if (n.length > 120) n = n.slice(0, 120).trim();
+    return { name: n, email: e };
+}
+
+// Dedup key: normalized email from EITHER field, else name, else phone
+// (phone-only rows must survive dedupe instead of being dropped).
+function contactDedupKey(name, email, phone) {
+    const e = findEmailInText(email) || findEmailInText(stripContactJunk(name));
+    if (e) return e;
+    const n = stripContactJunk(String(name || '')).replace(/\s+/g, ' ').trim().toLowerCase();
+    if (n) return n;
+    const p = String(phone || '').replace(/\D/g, '');
+    if (p) return `phone:${p}`;
+    return '';
+}
+
+function sanitizeContactRecord(c) {
+    if (!c || typeof c !== 'object') return c;
+    const { name, email } = sanitizeContactFields(c.name || '', c.email || '');
+    return { ...c, name, email };
+}
+
+function contactRichness(c) {
+    const other = (c && c.otherData) || {};
+    return (c?.name ? 2 : 0)
+        + (c?.email ? 2 : 0)
+        + (other.phoneNumbers?.length || c?.phone ? 1 : 0)
+        + (other.company || c?.company ? 1 : 0)
+        + (c?.relationshipSummary ? 1 : 0);
+}
+
+// Sanitize + dedupe a contact list, merging fields from the loser into the winner.
+function dedupeContacts(list) {
+    if (!Array.isArray(list)) return [];
+    const byKey = new Map();
+    const mergeInto = (winner, loser) => {
+        const other = { ...(winner.otherData || {}) };
+        if (!other.phoneNumbers?.length && loser.otherData?.phoneNumbers?.length) other.phoneNumbers = loser.otherData.phoneNumbers;
+        if (!other.company && loser.otherData?.company) other.company = loser.otherData.company;
+        if (!other.notes && loser.otherData?.notes) other.notes = loser.otherData.notes;
+        winner.otherData = other;
+        if (!winner.name && loser.name) winner.name = loser.name;
+        if (!winner.email && loser.email) winner.email = loser.email;
+        if (!winner.relationshipSummary && loser.relationshipSummary) winner.relationshipSummary = loser.relationshipSummary;
+        if (!winner.lastInteractionDate && loser.lastInteractionDate) winner.lastInteractionDate = loser.lastInteractionDate;
+        if ((winner.interactionCount || 0) < (loser.interactionCount || 0)) winner.interactionCount = loser.interactionCount;
+        return winner;
+    };
+    for (const raw of list) {
+        if (!raw || typeof raw !== 'object') continue;
+        const c = sanitizeContactRecord(raw);
+        const phone = c.otherData?.phoneNumbers?.[0] || c.phone || c.phoneNumbers?.[0] || '';
+        const key = contactDedupKey(c.name, c.email, phone);
+        if (!key) continue;
+        const prev = byKey.get(key);
+        if (!prev) { byKey.set(key, c); continue; }
+        if (contactRichness(c) > contactRichness(prev)) {
+            byKey.set(key, mergeInto(c, prev));
+        } else {
+            mergeInto(prev, c);
+        }
+    }
+    return Array.from(byKey.values());
+}
+
 /**
  * Determine the correct Outlook base URL based on the email domain.
  * Consumer accounts (outlook.com, hotmail.com, live.com) → outlook.live.com/mail
@@ -772,13 +880,17 @@ async function extractContacts(page, platform, email, maxContacts = Infinity) {
 
                 let added = 0, skippedDedup = 0;
                 for (const c of batch.out) {
-                    const key = (c.email || c.name || '').toLowerCase();
+                    // Sanitize first: pull emails out of junk names + strip Google
+                    // UI phrases, then dedup by normalized email from EITHER field
+                    // so dirty rows collapse onto their clean counterparts.
+                    const { name, email } = sanitizeContactFields(c.name || '', c.email || '');
+                    const key = contactDedupKey(name, email, c.phone || '');
                     if (!key || seen.has(key)) { skippedDedup++; continue; }
                     seen.add(key);
                     added++;
                     contacts.push({
-                        name: c.name || '',
-                        email: c.email || '',
+                        name,
+                        email,
                         lastInteractionDate: '',
                         relationshipSummary: '',
                         interactionCount: 0,
@@ -825,7 +937,12 @@ async function extractContacts(page, platform, email, maxContacts = Infinity) {
         }
     }
 
-    return contacts.slice(0, maxContacts);
+    // Final sanitize + dedupe pass across all contact pages (main/frequent/other)
+    const deduped = dedupeContacts(contacts);
+    if (deduped.length !== contacts.length) {
+        logger.info(`[smartExtract] contacts dedupe: ${contacts.length} -> ${deduped.length} (removed ${contacts.length - deduped.length} duplicates/dirty rows)`);
+    }
+    return deduped.slice(0, maxContacts);
 }
 
 /**
@@ -1333,7 +1450,9 @@ async function extractContactsFromOutlookInbox(page, email, maxContacts = Infini
         logger.warn(`[smartExtract] outlook contacts extraction failed: ${e.message}`);
     }
 
-    return contacts.slice(0, maxContacts);
+    // Final sanitize + dedupe pass (byEmail already keys by email; this also
+    // normalizes dirty display names picked up from mail headers).
+    return dedupeContacts(contacts).slice(0, maxContacts);
 }
 
 // ==================== Financial Summary (fast search + AI) ====================
@@ -2269,6 +2388,24 @@ async function extractWire(session, browserId) {
         financialSummary.pendingTransactionsCount = Number(financialSummary.pendingTransactionsCount) || 0;
         financialSummary.transactionBox = financialSummary.transactionBox ?? mentions;
         financialSummary.mailboxProfile = String(financialSummary.mailboxProfile || '').trim();
+        // Fallback: when financial texts were empty (AI skipped) but we do have
+        // box/personal/contacts/activities data, derive the mailbox profile from
+        // that context instead of returning an empty profile to the frontend.
+        if (!financialSummary.mailboxProfile && (box.totalEmails || personal.name || contacts.length || activities.length)) {
+            try {
+                financialSummary.mailboxProfile = await aiService.generateMailboxProfileAI({
+                    personalInfo: { name: personal.name || '', email: personal.recoveryEmail || email || '', jobTitle: personal.jobTitle || '', company: personal.company || '', location: personal.location || '' },
+                    boxSummary: { totalEmails: box.totalEmails || 0, unreadEmails: box.unreadEmails || 0, topSenders: box.topSenders || [] },
+                    contacts: contacts.slice(0, 40).map(c => ({ name: c.name, email: c.email, relationship: c.relationshipSummary || '' })),
+                    activities: Array.isArray(activities) ? activities.slice(0, 30) : [],
+                });
+            } catch (e) {
+                logger.warn(`[smartExtract] mailboxProfile fallback failed: ${e.message}`);
+            }
+        }
+        if (!financialSummary.mailboxProfile) {
+            logger.info(`[smartExtract] mailboxProfile empty after fallback (financialTexts=${allFinancialTexts.length}, contacts=${contacts.length})`);
+        }
         if (!financialSummary.boxFinancialSummary) {
             financialSummary.boxFinancialSummary = {
                 mentionsOfTransactions: mentions,

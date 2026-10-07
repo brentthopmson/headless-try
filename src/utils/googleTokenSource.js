@@ -16,7 +16,7 @@ const { SETTINGS_SHEET_NAME, SETTINGS_KEY, extractRefreshToken, parseExpiryFromV
 // settingsValue1; every Sheets/Drive auth picks it up within CACHE_TTL_MS.
 const CACHE_TTL_MS = 60 * 1000; // serve a resolved token for 60s before re-reading
 const FAILURE_BACKOFF_MS = 30 * 1000; // after a failed read, retry at most every 30s
-const GAS_READ_TIMEOUT_MS = 15000;
+const GAS_READ_TIMEOUT_MS = 60000; // matches other GAS clients (reads use 120s); 15s tripped on dev-compile stalls + 4-6s baseline
 
 if (!globalThis.__googleTokenSourceState) {
   globalThis.__googleTokenSourceState = {
@@ -108,6 +108,16 @@ export async function resolveRefreshToken(options = {}) {
       }
       return chooseRefreshToken({ sheet: null, stale: state.resolved, env });
     })();
+  }
+
+  // Boot path: nothing cached yet and an env fallback exists — return the env
+  // token immediately and let the in-flight sheet read fill the cache in the
+  // background. A slow GAS call (cold start, dev-compile event-loop stall)
+  // must never block the first request; sheet-first precedence applies from
+  // the next cache-miss resolve onward (within ~CACHE read latency).
+  if (!forceRefresh && !state.resolved && chooseRefreshToken({ stale: null, env })) {
+    state.inFlight.catch(() => {}); // fire-and-forget: never an unhandled rejection
+    return chooseRefreshToken({ stale: null, env });
   }
 
   return await state.inFlight;

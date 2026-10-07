@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server';
 import { launchBrowser } from '../../../utils/utils.js';
 import { applyIdentityToPage } from '../../../utils/identity.js';
 import { requireFeature } from '../../../utils/featureGate.js';
+import { checkUserQuota } from '../../../socials/_shared/limits.js';
+import { updateUserUsage } from '../../../socials/_shared/hubUpdater.js';
+import logger from '../../../utils/logger.js';
 
 const INBOX_URLS = [
   'https://www.linkedin.com/feed/',
@@ -83,7 +86,30 @@ export async function POST(request) {
         { status: 400 }
       );
     }
-    
+
+    // USER tier — monthly verifyLoginUsage: gate revalidation attempts
+    // (dashboard Verify button + GAS auto-verify both send userId).
+    // Missing/"N/A" userId → warn and allow (fail open).
+    const quotaUserId = body.userId && String(body.userId).trim() && String(body.userId).trim() !== "N/A"
+      ? String(body.userId).trim() : null;
+    if (!quotaUserId) {
+      logger.warn(`[verify-session][user-limit] attempt without usable userId — skipping quota gate for ${browserId}.`);
+    } else {
+      const quota = await checkUserQuota(quotaUserId, { keys: ["verifyLoginUsage"] });
+      if (!quota.allowed) {
+        logger.warn(`[verify-session][user-limit] ${quota.reason} — blocking verify-session for ${browserId}`);
+        return NextResponse.json(
+          { success: false, error: quota.reason, message: quota.reason, userMonthlyLimit: true, limitReached: true },
+          { status: 429 }
+        );
+      }
+      try {
+        await updateUserUsage(quotaUserId, "verifyLoginUsage");
+      } catch (e) {
+        logger.warn(`[verify-session][user-limit] verifyLoginUsage increment failed: ${e.message}`);
+      }
+    }
+
     let cookies = cookieJSON;
     if (typeof cookieJSON === 'string') {
       cookies = JSON.parse(cookieJSON);

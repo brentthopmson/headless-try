@@ -60,6 +60,12 @@ touches a browser — see [Limits & Rate Governance](#limits--rate-governance).*
 │  ├── interactionUsage            (JSON per-action counters —     │
 │  │                                ACCOUNT tier usage)             │
 │  ├── wireExtract / socialExtract / bankExtract (extraction data)│
+│  ├── extractStatus / extractStatusAt (background extraction      │
+│  │   progress: started → extracting N/M → saving → completed/   │
+│  │   failed — engine smartExtract writes, frontend renders)      │
+│  ├── verifyStatus / verifyStatusAt (background verification:     │
+│  │   RUNNING → COMPLETED/FAILED/LIMIT_REACHED — GAS verifySession│
+│  │   + autoVerifyStaleSessions write, frontend renders)          │
 │  ├── fullAccess / verifyAccess / cookieAccess (flags)            │
 │  ├── lastShotAt / shotHistory    (shoot tracking)                │
 │  └── status                      (current state)                 │
@@ -171,13 +177,19 @@ Frontend                    Apps Script               Engine
     │                           │                        │
 ```
 
-### USER tier gate (new processes only)
-A fresh login attempt must carry a user identity. Before launching, the route
-runs `checkUserQuota(userId, { keys: ['verifyLoginUsage'] })` (plan-row
-`verifyLoginLimit`, monthly) and immediately increments
-`updateUserUsage(userId, 'verifyLoginUsage')` as a reservation. Status checks
-and resume polls on an existing `browserId` are **not** counted. Missing /
-`"N/A"` userId on a new process logs a warning and fails open. The
+### USER tier gate (revalidation only)
+`cookie-api-login` never gates or counts — LINKS/Flask template flows call it
+and must not consume the user's monthly quota (status/resume polls with an
+existing `browserId` were always free too). The `verifyLoginUsage` gate lives
+on the revalidation entry points instead: `POST */verify-session` runs
+`checkUserQuota(userId, { keys: ['verifyLoginUsage'] })` (plan-row
+`verifyLoginLimit`, monthly) and increments `updateUserUsage(userId,
+'verifyLoginUsage')` as a reservation before launching a browser. This covers
+**both** verify callers: the dashboard Verify button (GAS `verifySession` adds
+the token-derived `userId` to the engine payload) and `autoVerifyStaleSessions`
+(sends each row's `userId`, so background auto-verifies count as well). A
+limit block answers `429 {limitReached, userMonthlyLimit}` before any browser
+launch; missing / `"N/A"` userId logs a warning and fails open. The
 `true-login/verify-login*` routes (LINKS/Flask template flow and external
 dashboard fetches) never gate or count — no identity required.
 
@@ -917,8 +929,9 @@ one stage step (validate | enrich | personalize | execute | interact)
 │              counters, matched against a Limits PLAN row's          │
 │              `*Limit` columns (uniform *Limit → *Usage rule).       │
 │              checkUserQuota(userId, {keys:[…]}) · FAIL-OPEN         │
-│              (0/missing plan/row = unlimited); verify-login* gates  │
-│              only new cookie-api-login (LINKS flows exempt).        │
+│              (0/missing plan/row = unlimited); verify-session gates  │
+│              all revalidations (manual + auto-verify count);        │
+│              cookie-api-login/verify-login* never gate.              │
 │                                                                      │
 │  CAMPAIGN  — plan caps. Limits campaign row: validateLimit,          │
 │              enrichLimit, personalizeLimit, shootCampaignLimit,      │
@@ -945,7 +958,8 @@ account status gating lives in `socials/_shared/accountGate.js`.
 
 | Entry point | PLATFORM policy | ACCOUNT state | USER quota | CAMPAIGN caps | On block |
 |---|:-:|:-:|:-:|:-:|---|
-| `POST */cookie/cookie-api-login` (new process) | — | — | ✔ `verifyLoginUsage` | — | `429 {limitReached}` (missing userId → warn, fail-open) |
+| `POST */cookie/cookie-api-login` (new process) | — | — | — (never gated/counted — LINKS/template flow) | — | — |
+| `POST */verify-session` (dashboard Verify + auto-verify) | — | — | ✔ `verifyLoginUsage` (both callers send userId) | — | `429 {limitReached}` (missing userId → warn, fail-open) |
 | `GET true-login/verify-login*` (LINKS/template + dashboard fetch) | — | — | — (never gated/counted) | — | — |
 | `POST /campaign/pipeline-orchestrator` | — | — | — (start gate removed) | ✔ concurrent | `429 {concurrentLimit}` |
 | `POST /campaign/execute-campaign` — **7A email** | — | ✔ wire profile gate before loop | ✔ entry + per row → `shootCampaignUsage`; SMTP validation → `smtpCheckerUsage` | ✔ `shootCampaignLimit` (0 = block) + `accountSendPerRunLimit` (default 5) | `{limitReached, accountBlocked}` — never `FAILED` |
@@ -1039,7 +1053,7 @@ PLATFORM policy      checkActionAllowed(platform, action, interactionUsage)
         │                  (interactionUsage._limits overrides policy)
         ▼
 USER quota           checkUserQuota(userId, {keys:['…Usage']})   — monthly;
-        │                  cookie-api-login new processes only (LINKS exempt)
+        │                  verify-session only (manual + auto; LINKS never)
         ▼
 CAMPAIGN plan caps   getCampaignLimits() (0 = block; run caps 10/5 on unset)
         │
@@ -1172,7 +1186,7 @@ browser launch → execute → usage increments → cleanup (profileDir removed 
   - `parseLimitCell`, `pickLimitNumber`, `normalizePolicy`, `normalizeUsage`
 - `limits.js`
   - `checkActionAllowed(platform, action, accountUsage)` — PLATFORM gate; honors `accountUsage._limits` override (replaces platform policy)
-  - `checkUserQuota(userId, {keys:[…]})` — USER gate via `getUserRecord` → `getPlanLimits` → `evaluateUserQuota` (fail-open; gated only on cookie-api-login new processes, verify-login* exempt)
+  - `checkUserQuota(userId, {keys:[…]})` — USER gate via `getUserRecord` → `getPlanLimits` → `evaluateUserQuota` (fail-open; enforced on `*/verify-session` for manual + auto-verify; cookie-api-login/verify-login* never gated)
   - `getPlanLimits(plan)` — Limits plan row (matched by `plan` col) → monthly limits
   - `getCampaignLimits()` — CAMPAIGN per-run caps (fail-closed) incl. `interactionLimit` (unset→10) + `accountSendPerRunLimit` (unset→5, 0=off)
   - `getLimitsSheet(forceRefresh)` — 5-min TTL cache, stale fallback, single-flight
@@ -1205,8 +1219,11 @@ browser launch → execute → usage increments → cleanup (profileDir removed 
   (`settingsValue1`) → last-known value → `.env GOOGLE_DRIVE_REFRESH_TOKEN`.
   The SETTINGS row is read through the App-Script `getData` action (token-
   independent), so a rotation works even when the old refresh token is already
-  dead. 60s cache / 30s failure backoff / single-flight; the token value is
-  never logged (source + length only).
+  dead. 60s cache / 30s failure backoff / single-flight / 60s GAS read
+  timeout; on a cold cache with an env fallback present the env token is
+  returned immediately while the sheet read fills the cache in the background
+  (boot/compile storms never block on GAS). The token value is never logged
+  (source + length only).
 - Consumers: `getSheetsAuthClient()` (googlesheets.js) and `authenticate()`
   (googledrive.mjs); a changed token rebuilds the cached client without a
   restart. `getCachedRefreshToken()` is the sync pre-flight hint.
