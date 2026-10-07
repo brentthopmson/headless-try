@@ -2,8 +2,8 @@ import { NextResponse } from 'next/server';
 import { launchBrowser } from '../../../utils/utils.js';
 import { applyIdentityToPage } from '../../../utils/identity.js';
 import { requireFeature } from '../../../utils/featureGate.js';
-import { checkUserQuota } from '../../../socials/_shared/limits.js';
-import { updateUserUsage } from '../../../socials/_shared/hubUpdater.js';
+import { checkUserQuota } from '../../socials/_shared/limits.js';
+import { updateUserUsage } from '../../socials/_shared/hubUpdater.js';
 import logger from '../../../utils/logger.js';
 
 const INBOX_URLS = [
