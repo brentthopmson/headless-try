@@ -196,16 +196,17 @@ Respond with ONLY: yes or no`
         profileUrl: "https://www.tiktok.com",
         
         selectors: {
-            searchBox: "input[placeholder*='Search']",
-            searchSubmit: "button[type='submit']",
-            videoItem: "div[data-testid='video-item']",
-            videoCaption: "div[data-testid='video-caption']",
-            videoAuthor: "a[data-testid='user-link']",
-            likeButton: "button[data-testid='like-button']",
-            commentButton: "button[data-testid='comment-button']",
+            searchBox: "input[data-e2e='search-user-input'], input[placeholder*='Search']",
+            searchSubmit: "", // TikTok search submits on Enter (executor falls back to Enter)
+            videoItem: "div[data-e2e='search-card-video'], div[data-e2e='search_top-item'], div[data-e2e='recommendation-video-item']",
+            videoCaption: "span[data-e2e='search-card-video-desc'], [data-e2e='browse-desc'], [data-e2e='video-desc']",
+            videoAuthor: "span[data-e2e='search-card-user-unique-id'], a[data-e2e='browse-username'], a[href*='/@']",
+            likeButton: "[data-e2e='like-icon'], [data-e2e='browse-like-icon']",
+            commentButton: "[data-e2e='comment-icon'], [data-e2e='browse-comment-icon']",
+            commentLikeButton: "[data-e2e='comment-like-icon']",
             commentBox: "div[contenteditable='true']",
-            commentSubmit: "button:has-text('Send')",
-            closeButton: "button[aria-label='Close']"
+            commentSubmit: "div[data-e2e='comment-post'], button[data-e2e='comment-post']",
+            closeButton: "button[aria-label='exit'], [data-e2e='browse-close']"
         },
 
         timing: {
@@ -223,7 +224,9 @@ Respond with ONLY: yes or no`
             search: {
                 name: "Search for videos",
                 steps: [
-                    { action: "navigate", url: "${searchUrl}", waitUntil: "networkidle0" },
+                    // q= in the URL renders results even if header typing fails;
+                    // domcontentloaded because TikTok rarely reaches networkidle0.
+                    { action: "navigate", url: "${searchUrl}?q=${keyword}", waitUntil: "domcontentloaded" },
                     { action: "pause", duration: 1500 },
                     { action: "fillSearch", selector: "${selectors.searchBox}", value: "${keyword}" },
                     { action: "submitSearch" },
@@ -330,22 +333,20 @@ Respond with ONLY: like or skip`
         // ===== EXTRACTORS =====
         extractors: {
             videos: {
-                selector: "div[data-testid='video-item']",
+                selector: "div[data-e2e='search-card-video'], div[data-e2e='search_top-item'], div[data-e2e='recommendation-video-item']",
                 parseFunction: `(items) => {
                     const videos = [];
                     items.forEach((item, idx) => {
                         try {
-                            const captionEl = item.querySelector("div[data-testid='video-caption']");
-                            const authorEl = item.querySelector("a[data-testid='user-link']");
-                            
-                            if (captionEl && authorEl) {
-                                videos.push({
-                                    index: idx,
-                                    caption: captionEl.textContent.trim(),
-                                    author: authorEl.textContent.trim(),
-                                    liked: item.querySelector("button[data-testid='like-button'][aria-pressed='true']") !== null
-                                });
-                            }
+                            const captionEl = item.querySelector("[data-e2e='search-card-video-desc'], [data-e2e='video-desc'], [data-e2e='browse-desc']");
+                            const authorEl = item.querySelector("[data-e2e='search-card-user-unique-id'], [data-e2e='browse-username'], a[href*='/@']");
+
+                            videos.push({
+                                index: idx,
+                                caption: captionEl ? captionEl.textContent.trim() : '',
+                                author: authorEl ? authorEl.textContent.trim() : '',
+                                liked: item.querySelector("[aria-pressed='true'], [data-e2e='like-icon'][class*='active']") !== null
+                            });
                         } catch (e) {
                             console.error('Error extracting video:', e);
                         }
@@ -355,12 +356,12 @@ Respond with ONLY: like or skip`
             },
 
             comments: {
-                selector: "div[data-testid='comment-item']",
+                selector: "div[data-e2e='comment-item']",
                 parseFunction: `(items) => {
                     const comments = [];
                     items.forEach((item, idx) => {
                         try {
-                            const textEl = item.querySelector("span[data-testid='comment-text']");
+                            const textEl = item.querySelector("span[data-e2e='comment-level-1'], p[data-e2e='comment-level-1'], span[data-testid='comment-text']");
                             if (textEl) {
                                 comments.push({
                                     index: idx,

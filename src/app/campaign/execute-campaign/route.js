@@ -162,13 +162,33 @@ function columnIndexToLetter(index) {
   return result;
 }
 
+const KNOWN_SOCIAL_PLATFORMS = ['tiktok', 'twitter', 'instagram', 'facebook', 'whatsapp', 'discord', 'linkedin'];
+
+// Normalize free-form sheet values (type/platform/category) to a social
+// platform token. Non-platform values (WIRE/SOCIAL/BANK, gmail/outlook, …)
+// normalize to "" so callers can fall through the resolution chain.
+function normalizeSocialPlatform(value) {
+  const p = String(value || '').toLowerCase().trim();
+  if (!p) return '';
+  if (p.includes('tiktok')) return 'tiktok';
+  if (p.includes('twitter')) return 'twitter';
+  if (p.includes('instagram')) return 'instagram';
+  if (p.includes('facebook')) return 'facebook';
+  if (p.includes('whatsapp')) return 'whatsapp';
+  if (p.includes('discord')) return 'discord';
+  if (p.includes('linkedin')) return 'linkedin';
+  if (p === 'x') return 'twitter';
+  return KNOWN_SOCIAL_PLATFORMS.includes(p) ? p : '';
+}
+
 async function getSocialProfileCookies(profileId) {
   const cookieResult = await getSheetDataApi("cookie");
   if (!cookieResult.success) return null;
   const headers = cookieResult.headers;
   const browserIdIdx = headers.indexOf("browserId");
   const cookieIdx = headers.indexOf("formattedCookie") !== -1 ? headers.indexOf("formattedCookie") : headers.indexOf("cookieJSON");
-  const platformIdx = headers.indexOf("category") !== -1 ? headers.indexOf("category") : headers.indexOf("platform");
+  const platformIdx = headers.indexOf("platform");
+  const categoryIdx = headers.indexOf("category");
   const identityIdx = headers.indexOf("browserIdentity");
   const driveUrlIdx = headers.indexOf("driveUrl");
 
@@ -182,9 +202,34 @@ async function getSocialProfileCookies(profileId) {
     try { browserIdentity = typeof row[identityIdx] === 'string' ? JSON.parse(row[identityIdx]) : row[identityIdx]; } catch (_) {}
   }
 
+  // Platform resolution chain: cookie row platform → cookie row category →
+  // hub row platform/type → "" (caller falls back to settings.platform/twitter).
+  // Legacy social rows have an empty platform column, so the hub fallback is
+  // what actually yields "tiktok" for TikTok accounts.
+  let platform = normalizeSocialPlatform(platformIdx !== -1 ? row[platformIdx] : '');
+  if (!platform && categoryIdx !== -1) platform = normalizeSocialPlatform(row[categoryIdx]);
+  if (!platform) {
+    try {
+      const hubResult = await getSheetDataApi("hub");
+      if (hubResult.success) {
+        const hh = hubResult.headers;
+        const sidIdx = hh.indexOf("submissionId");
+        const hubPlatformIdx = hh.indexOf("platform");
+        const typeIdx = hh.indexOf("type");
+        if (sidIdx !== -1) {
+          const hubRow = hubResult.data.find(r => String(r[sidIdx]).trim() === String(profileId).trim());
+          if (hubRow) {
+            platform = normalizeSocialPlatform(hubPlatformIdx !== -1 ? hubRow[hubPlatformIdx] : '');
+            if (!platform && typeIdx !== -1) platform = normalizeSocialPlatform(hubRow[typeIdx]);
+          }
+        }
+      }
+    } catch (_) { /* hub lookup is best-effort */ }
+  }
+
   return {
     cookies: row[cookieIdx] || "",
-    platform: platformIdx !== -1 ? String(row[platformIdx]).toLowerCase().trim() : "twitter",
+    platform,
     browserIdentity,
     driveUrl: driveUrlIdx !== -1 ? row[driveUrlIdx] || "" : "",
   };
@@ -917,7 +962,7 @@ export async function POST(request) {
           continue;
         }
 
-        const platform = profileData.platform || "twitter";
+        const platform = profileData.platform || normalizeSocialPlatform(settings.platform) || "twitter";
         profilePlatforms[profileId] = platform;
 
         // ACCOUNT-tier status gate — skip blocked profiles entirely (no tasks

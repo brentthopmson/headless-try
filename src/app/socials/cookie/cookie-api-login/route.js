@@ -3425,6 +3425,19 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             }
         }
         const finalSheetUpdate = { ...updateData };
+        // C11: stamp the resolved platform (and category mirror) so downstream
+        // consumers — execute-campaign getSocialProfileCookies platform chain and
+        // verify-session cookie inference — never see an empty platform cell on
+        // rows whose platform was resolved only after row creation (or legacy
+        // rows created before platform stamping existed).
+        if (platform && platform !== 'unknown') {
+            finalSheetUpdate.platform = platform;
+            // category is also the bank-extract fallback (smartExtract.js:2738)
+            // — only fill it when the row never had one.
+            if (!(getCachedRow(browserId) || {}).category) {
+                finalSheetUpdate.category = platform;
+            }
+        }
         // Always include email and password in final write so sheet never loses them
         // C1: an EXPLICIT updateData.email/password (including '' from intentional
         // clear sites) wins over the closure value — otherwise this line resurrected

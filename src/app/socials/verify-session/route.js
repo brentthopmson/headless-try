@@ -21,6 +21,81 @@ const INBOX_SELECTORS = [
   '#voyager-feed'
 ];
 
+// Normalize a free-form platform hint to a known token; non-platform values
+// (WIRE/SOCIAL/BANK, gmail/outlook, …) normalize to "".
+function normalizePlatformToken(value) {
+  const p = String(value || '').toLowerCase().trim();
+  if (!p) return '';
+  if (p.includes('tiktok')) return 'tiktok';
+  if (p.includes('twitter')) return 'twitter';
+  if (p.includes('instagram')) return 'instagram';
+  if (p.includes('facebook')) return 'facebook';
+  if (p.includes('linkedin')) return 'linkedin';
+  if (p.includes('whatsapp')) return 'whatsapp';
+  if (p.includes('discord')) return 'discord';
+  if (p === 'x') return 'twitter';
+  return (p === 'social' || p === 'wire' || p === 'bank') ? '' : '';
+}
+
+// Infer the platform from the session cookie domains (works when neither the
+// caller nor the sheet carries a platform value).
+function inferPlatformFromCookies(cookies) {
+  const domains = (Array.isArray(cookies) ? cookies : [])
+    .map(c => String((c && c.domain) || '').toLowerCase())
+    .join(' ');
+  if (domains.includes('tiktok')) return 'tiktok';
+  if (domains.includes('twitter') || domains.includes('x.com')) return 'twitter';
+  if (domains.includes('instagram')) return 'instagram';
+  if (domains.includes('facebook')) return 'facebook';
+  if (domains.includes('linkedin')) return 'linkedin';
+  return '';
+}
+
+// TikTok session check: login redirect = dead; otherwise logged-in UI
+// indicator (real data-e2e attributes) or the presence of the sessionid
+// cookie without a login redirect counts as valid.
+async function checkTikTokSession(browser) {
+  const page = await browser.newPage();
+  if (browser.identity) { await applyIdentityToPage(page, browser.identity); }
+
+  try {
+    await page.goto('https://www.tiktok.com/', { waitUntil: 'networkidle2', timeout: 30000 });
+    await page.waitForTimeout(3000);
+
+    const currentUrl = page.url();
+    if (currentUrl.includes('login') || currentUrl.includes('signup') || currentUrl.includes('authwall') || currentUrl.includes('checkpoint')) {
+      return { reachedInbox: false, message: 'Redirected to login - session expired' };
+    }
+
+    let hasSessionCookie = false;
+    try {
+      const cookies = await page.cookies('https://www.tiktok.com/');
+      hasSessionCookie = cookies.some(c => c.name === 'sessionid' && String(c.domain || '').includes('tiktok'));
+    } catch (e) { /* cookie probe is best-effort */ }
+
+    let loggedInUi = false;
+    try {
+      loggedInUi = await page.evaluate(() => {
+        const qs = (s) => !!document.querySelector(s);
+        return qs('[data-e2e="user-avatar"]') ||
+          qs('[data-e2e="profile-sidebar-avatar"]') ||
+          qs('[data-e2e="upload-icon"]') ||
+          qs('[data-e2e="nav-profile-link"]');
+      });
+    } catch (e) { /* DOM probe is best-effort */ }
+
+    if (loggedInUi) {
+      return { reachedInbox: true, message: 'TikTok feed accessible', url: currentUrl };
+    }
+    if (hasSessionCookie) {
+      return { reachedInbox: true, message: 'TikTok session cookie present (no login redirect)', url: currentUrl };
+    }
+    return { reachedInbox: false, message: 'No TikTok session detected - session expired' };
+  } finally {
+    await page.close();
+  }
+}
+
 async function checkSocialInbox(browser) {
   const page = await browser.newPage();
   if (browser.identity) { await applyIdentityToPage(page, browser.identity); }
@@ -79,13 +154,18 @@ export async function POST(request) {
     if (gate) return gate;
     const body = await request.json();
     const { browserId, cookieJSON } = body;
-    
+
     if (!browserId || !cookieJSON) {
       return NextResponse.json(
         { success: false, message: 'Missing browserId or cookieJSON' },
         { status: 400 }
       );
     }
+
+    // Resolve which platform's session this is: explicit hint from the
+    // caller → infer from the cookie domains.
+    const resolvedCookies = typeof cookieJSON === 'string' ? JSON.parse(cookieJSON) : cookieJSON;
+    const platform = normalizePlatformToken(body.platform) || inferPlatformFromCookies(resolvedCookies);
 
     // USER tier — monthly verifyLoginUsage: gate revalidation attempts
     // (dashboard Verify button + GAS auto-verify both send userId).
@@ -142,7 +222,9 @@ export async function POST(request) {
       }
     }
     
-    const result = await checkSocialInbox(browser);
+    const result = platform === 'tiktok'
+      ? await checkTikTokSession(browser)
+      : await checkSocialInbox(browser);
     
     return NextResponse.json({
       success: true,

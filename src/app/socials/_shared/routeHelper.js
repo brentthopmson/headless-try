@@ -612,7 +612,10 @@ export async function executeWorkflow(page, workflow, context, platformConfig, a
             const step = workflow.steps[i];
             const stepNum = i + 1;
             const action = step.action;
-            const stepContext = { ...context, ...results, selectors: platformConfig.selectors };
+            // platformConfig is spread so workflow step tokens like ${searchUrl}
+            // / ${homeUrl} resolve (they were previously left literal and the
+            // navigate step hit a garbage URL).
+            const stepContext = { ...context, ...results, platformConfig, selectors: platformConfig.selectors, ...platformConfig };
 
             logger.debug(`[executeWorkflow] Step ${stepNum}/${workflow.steps.length}: ${action}`);
 
@@ -725,9 +728,14 @@ export async function executeWorkflow(page, workflow, context, platformConfig, a
                     }
                     case 'likeRandomComments': {
                         const maxCount = step.maxCount || 3;
-                        const commentSelector = platformConfig.selectors?.commentButton;
+                        // Prefer an explicit per-comment like selector when the
+                        // platform config provides one (TikTok comment rows are
+                        // not siblings of the comment toolbar button).
+                        const commentLikeSel = platformConfig.selectors?.commentLikeButton;
+                        const commentSelector = commentLikeSel
+                            || `${platformConfig.selectors?.commentButton}~button[aria-label*='like']`;
                         if (commentSelector) {
-                            const buttons = await page.$$(`${commentSelector}~button[aria-label*='like']`);
+                            const buttons = await page.$$(commentSelector);
                             const numToLike = Math.min(maxCount, buttons.length);
                             for (let j = 0; j < numToLike; j++) {
                                 try {

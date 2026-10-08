@@ -177,9 +177,11 @@ async function processTask(taskRow, columnIndexes) {
                 const extractor = getExtractor(platform, workflow.extract);
                 if (extractor && extractor.parseFunction) {
                     try {
+                        // parseFunction is browser-context code (item.querySelector),
+                        // so it must run inside the page via $$eval — running it on
+                        // Node ElementHandles always threw and extraction returned [].
                         const parseFunc = new Function('items', 'return (' + extractor.parseFunction + '\n)(items);');
-                        const elements = await page.$$(extractor.selector);
-                        const extracted = parseFunc(elements);
+                        const extracted = await page.$$eval(extractor.selector, parseFunc);
                         if (Array.isArray(extracted)) results.push(...extracted);
                         logger.info(`[processTask] Extracted ${Array.isArray(extracted) ? extracted.length : 0} items after '${workflow.name}'`);
                     } catch (e) {
