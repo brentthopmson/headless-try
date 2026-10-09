@@ -203,9 +203,10 @@ async function getSocialProfileCookies(profileId) {
   }
 
   // Platform resolution chain: cookie row platform → cookie row category →
-  // hub row platform/type → "" (caller falls back to settings.platform/twitter).
-  // Legacy social rows have an empty platform column, so the hub fallback is
-  // what actually yields "tiktok" for TikTok accounts.
+  // hub row platform/type → project templateTitle → "" (caller falls back to
+  // settings.platform/twitter). Hub `type` only holds templateType
+  // (COOKIE/TRUE-LOGIN) so the useful hub fallback is the platform column;
+  // older rows predate it and resolve via the project's templateTitle.
   let platform = normalizeSocialPlatform(platformIdx !== -1 ? row[platformIdx] : '');
   if (!platform && categoryIdx !== -1) platform = normalizeSocialPlatform(row[categoryIdx]);
   if (!platform) {
@@ -216,15 +217,31 @@ async function getSocialProfileCookies(profileId) {
         const sidIdx = hh.indexOf("submissionId");
         const hubPlatformIdx = hh.indexOf("platform");
         const typeIdx = hh.indexOf("type");
+        const hubProjectIdIdx = hh.indexOf("projectId");
         if (sidIdx !== -1) {
           const hubRow = hubResult.data.find(r => String(r[sidIdx]).trim() === String(profileId).trim());
           if (hubRow) {
             platform = normalizeSocialPlatform(hubPlatformIdx !== -1 ? hubRow[hubPlatformIdx] : '');
             if (!platform && typeIdx !== -1) platform = normalizeSocialPlatform(hubRow[typeIdx]);
+            if (!platform && hubProjectIdIdx !== -1) {
+              const hubProjectId = String(hubRow[hubProjectIdIdx] || '').trim();
+              if (hubProjectId) {
+                const projResult = await getSheetDataApi("projects");
+                if (projResult.success) {
+                  const ph = projResult.headers;
+                  const pIdIdx = ph.indexOf("projectId");
+                  const templateTitleIdx = ph.indexOf("templateTitle");
+                  if (pIdIdx !== -1 && templateTitleIdx !== -1) {
+                    const projRow = projResult.data.find(r => String(r[pIdIdx]).trim() === hubProjectId);
+                    if (projRow) platform = normalizeSocialPlatform(projRow[templateTitleIdx]);
+                  }
+                }
+              }
+            }
           }
         }
       }
-    } catch (_) { /* hub lookup is best-effort */ }
+    } catch (_) { /* hub/project lookup is best-effort */ }
   }
 
   return {
@@ -906,9 +923,9 @@ export async function POST(request) {
       if (activeProfiles.length === 0) {
         throw new Error("No active SOCIAL profiles selected for social campaign");
       }
-      if (keywords.length === 0) {
-        throw new Error("No keywords configured for social outreach campaign");
-      }
+      // Target validation happens AFTER the CSV load below: campaigns driven
+      // purely by an uploaded CSV (SOCIALUSERNAME column) or inbox-only
+      // campaigns (no list required) are valid and must not be rejected here.
 
       // Step 4a: Optionally normalize CSV if fileUrl is present
       const socialFileUrl = settings.fileUrl || settings.csvFileUrl;
@@ -929,6 +946,20 @@ export async function POST(request) {
             }
           }
         }
+      }
+
+      // Step 4a2: Resolve campaign-wide targets. CSV handles (SOCIALUSERNAME)
+      // override the campaign-level keyword chips when a CSV is present.
+      const csvHandleIdx = socialCsvRows ? socialCsvRows[0].indexOf("SOCIALUSERNAME") : -1;
+      const csvPlatformIdx = socialCsvRows ? socialCsvRows[0].indexOf("SOCIALPLATFORM") : -1;
+      let csvHandles = [];
+      if (socialCsvRows && csvHandleIdx !== -1) {
+        csvHandles = socialCsvRows.slice(1).map(r => String(r[csvHandleIdx] || "").trim()).filter(Boolean);
+      }
+      const effectiveKeywords = csvHandles.length > 0 ? csvHandles : keywords;
+      const inboxHookEnabled = interactionTypes.includes("inbox");
+      if (effectiveKeywords.length === 0 && !inboxHookEnabled) {
+        throw new Error("No targets configured: add targeting keywords, upload a CSV with a SOCIALUSERNAME column, or enable an interaction hook (inbox works without a list)");
       }
 
       // Step 4b: Fetch both shootCampaignLimit and interactionLimit from the cached Limits sheet
@@ -955,6 +986,27 @@ export async function POST(request) {
       const pendingSocialTasks = [];
       const profilePlatforms = {};
 
+      const queueSocialTask = (operation, keyword, platform, profileData, profileId) => {
+        pendingSocialTasks.push({
+          taskId: "task-" + Math.random().toString(36).substring(2, 11),
+          platform,
+          operation,
+          priority: PRIORITY_MAP[operation] !== undefined ? PRIORITY_MAP[operation] : 99,
+          engagementMode,
+          searchQuery: keyword,
+          cookieJSON: typeof profileData.cookies === "string" ? profileData.cookies : JSON.stringify(profileData.cookies),
+          browserIdentity: profileData.browserIdentity || null,
+          driveUrl: profileData.driveUrl || "",
+          profileId,
+          // AI context: strategy + target link so messages are crafted with the destination in mind
+          targetLink: settings.targetLink || "",
+          socialStrategyPrompt: settings.socialStrategyPrompt || "",
+          campaignMode: settings.campaignMode || "",
+          status: "PENDING",
+          createdAt: new Date().toISOString()
+        });
+      };
+
       for (const profileId of activeProfiles) {
         const profileData = await getSocialProfileCookies(profileId);
         if (!profileData || !profileData.cookies) {
@@ -977,42 +1029,45 @@ export async function POST(request) {
           log.warn(` Account gate check failed for ${profileId} (continuing): ${gateErr.message}`);
         }
 
-        // If CSV rows exist, derive keywords from SOCIALUSERNAME column for this profile
-        const profileKeywords = socialCsvRows
-          ? socialCsvRows.slice(1).map(r => {
-              const userIdx = socialCsvRows[0].indexOf("SOCIALUSERNAME");
-              return userIdx !== -1 ? String(r[userIdx]).trim() : "";
-            }).filter(Boolean)
-          : keywords;
+        // Per-profile targets. CSV rows carrying a SOCIALPLATFORM value only
+        // feed accounts of that platform (rows without a platform match every
+        // account); campaign keywords are the fallback when no CSV handles exist.
+        let profileKeywords;
+        if (csvHandles.length > 0 && socialCsvRows && csvPlatformIdx !== -1) {
+          profileKeywords = socialCsvRows.slice(1)
+            .filter(r => {
+              const handle = String(r[csvHandleIdx] || "").trim();
+              if (!handle) return false;
+              const rowPlatform = normalizeSocialPlatform(String(r[csvPlatformIdx] || ""));
+              return !rowPlatform || rowPlatform === platform;
+            })
+            .map(r => String(r[csvHandleIdx] || "").trim());
+        } else {
+          profileKeywords = effectiveKeywords;
+        }
+
+        // Inbox hook: exactly ONE task per profile — it monitors/answers DMs
+        // and needs no per-keyword fan-out (previously it was duplicated once
+        // per keyword, and queued zero tasks when no keywords existed).
+        if (inboxHookEnabled && pendingSocialTasks.length < interactionLimit) {
+          queueSocialTask("inbox-interact", "", platform, profileData, profileId);
+        }
 
         for (const keyword of profileKeywords) {
           for (const op of interactionTypes) {
             if (pendingSocialTasks.length >= interactionLimit) break;
+            if (op === "inbox") continue; // queued once per profile above
 
             const operation = op === "search" ? "search-interact"
-              : op === "inbox" ? "inbox-interact"
               : op === "activities" ? "activities-interact"
               : "page-interact";
-            const taskId = "task-" + Math.random().toString(36).substring(2, 11);
-
-            pendingSocialTasks.push({
-              taskId,
-              platform,
-              operation,
-              priority: PRIORITY_MAP[operation] !== undefined ? PRIORITY_MAP[operation] : 99,
-              engagementMode,
-              searchQuery: keyword,
-              cookieJSON: typeof profileData.cookies === "string" ? profileData.cookies : JSON.stringify(profileData.cookies),
-              browserIdentity: profileData.browserIdentity || null,
-              driveUrl: profileData.driveUrl || "",
-              profileId,
-              // AI context: strategy + target link so messages are crafted with the destination in mind
-              targetLink: settings.targetLink || "",
-              socialStrategyPrompt: settings.socialStrategyPrompt || "",
-              campaignMode: settings.campaignMode || "",
-              status: "PENDING",
-              createdAt: new Date().toISOString()
-            });
+            // page-interact opens /<handle> directly — hashtags, search phrases
+            // and URLs would produce broken profile URLs, so only handle-shaped
+            // targets are queued for it.
+            if (operation === "page-interact" && !/^[A-Za-z0-9._-]+$/.test(keyword.replace(/^@+/, ""))) {
+              continue;
+            }
+            queueSocialTask(operation, keyword, platform, profileData, profileId);
           }
           if (pendingSocialTasks.length >= interactionLimit) break;
         }

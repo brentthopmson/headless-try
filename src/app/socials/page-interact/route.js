@@ -45,7 +45,9 @@ async function processTask(taskPayload) {
         const platform = (taskPayload.platform || "").toLowerCase();
         const operationRaw = String(taskPayload.operation || "scrapeProfile");
         const operation = operationRaw.toLowerCase();
-        const keyword = taskPayload.searchQuery || taskPayload.targetUsername || "";
+        // Strip leading @ so platform URL templates never double it
+        // (tiktok builds `${profileUrl}/@${keyword}` → /@@handle otherwise).
+        const keyword = String(taskPayload.searchQuery || taskPayload.targetUsername || "").trim().replace(/^@+/, "");
         const cookieJSON = taskPayload.cookieJSON;
         const profileId = taskPayload.profileId || taskPayload.accountId || null;
         const socialStrategyPrompt = taskPayload.socialStrategyPrompt || null;
@@ -129,9 +131,11 @@ async function processTask(taskPayload) {
                 const extractor = getExtractor(platform, workflow.extract);
                 if (extractor && extractor.parseFunction) {
                     try {
+                        // parseFunction is browser-context code (item.querySelector),
+                        // so it must run inside the page via $$eval — running it on
+                        // Node-side ElementHandles always yields garbage.
                         const parseFunc = new Function('items', 'return (' + extractor.parseFunction + '\n)(items);');
-                        const elements = await page.$$(extractor.selector);
-                        const extracted = parseFunc(elements);
+                        const extracted = await page.$$eval(extractor.selector, parseFunc);
                         if (Array.isArray(extracted)) results.push(...extracted);
                     } catch (e) {
                         logger.error(`[processTask] Extraction failed: ${e.message}`);

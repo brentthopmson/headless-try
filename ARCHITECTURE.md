@@ -772,9 +772,15 @@ POST /campaign/execute-campaign  (channel = social)
     │  (no whole-run USER pre-flight — quota is per task, monthly)
     │  shootCampaignLimit <= 0 → { limitReached: true }← CAMPAIGN cap
     │
+    │  resolve targets (see "Target resolution" below) — the pre-flight
+    │  throws ONLY when the campaign has no keywords, no CSV handles,
+    │  AND no inbox hook
+    │
     │  for each active profile:
     │    resolveAccountGate(profileId, platform)        ← ACCOUNT tier
     │    blocked → skip profile (campaign continues with the rest)
+    │    filter CSV rows by SOCIALPLATFORM (rows w/o platform match all)
+    │    queue ONE inbox task (hook enabled) + one task per handle × hook
     │
     │  tasksToExecute = pendingSocialTasks.slice(0, shootCampaignLimit)
     │
@@ -804,10 +810,53 @@ POST /campaign/execute-campaign  (channel = social)
 { success, queuedTasks, executed, failed, skippedLimit, analytics }
 ```
 
+#### Target resolution (task queueing)
+
+Sources, in priority order:
+
+1. **CSV rows** (`SOCIALUSERNAME` column — one handle per row; aliases
+   `USERNAME`/`HANDLE` fuzzy-map via `normalizeAndMapCSV` + `STANDARD_88_COLUMNS`)
+   — override the campaign keyword chips whenever the campaign has a file.
+   - Rows carrying a `SOCIALPLATFORM` value only feed accounts whose platform
+     matches (free-form values normalized via `normalizeSocialPlatform`;
+     rows with an **empty** platform match every account). This makes mixed
+     platform CSVs safe: a Twitter account never receives TikTok handles.
+2. **Campaign keywords** (`settings.socialKeywords` — JSON array stored in
+   the single `settings` cell of the campaigns sheet) — fallback when no CSV
+   handles exist.
+
+Per-hook fan-out (queued per profile):
+
+- `inbox` → **exactly one task per profile**. It monitors/answers DMs and
+  needs no list; it is NOT duplicated per keyword (it used to be — and queued
+  zero tasks when no keywords existed).
+- `search` → one task per handle/keyword (search-box query).
+- `other` → `page-interact`, one task per **handle-shaped** target only
+  (`@handle` or bare handle; hashtags, multi-word phrases and URLs are
+  skipped — page-interact navigates to `/<handle>` directly). The route
+  strips a leading `@` so TikTok's `/@${keyword}` template never produces
+  `/@@handle`.
+- `activities` → one task per profile per keyword (notifications feed).
+
+A campaign fails the pre-flight only when it has no keyword chips, no CSV
+handles, and no inbox hook. DM sending (`shouldSendMessage` + CSV) runs as
+Step 4f regardless and is unaffected by target resolution.
+
+Per-row DM personalization: `socialMessage` → `enhancedSocialMessage` →
+campaign DM template (`resolveSocialMessage`).
+
 **Skip-account-continue-campaign:** when an account's limits block a task, the
 task is recorded `SKIPPED` (with the account marked `RATE_LIMITED` in the hub
 if it was a platform-policy block) and the campaign moves on — skips never
 count as failures.
+
+**Profile platform resolution** (`getSocialProfileCookies`): cookie row
+`platform` → cookie row `category` → hub row `platform` → hub row `type` →
+hub row `projectId` → projects sheet `templateTitle` → `""` (caller falls
+back to `settings.platform || "twitter"`). The projects-sheet step resolves
+legacy social rows whose cookie/hub platform columns predate the platform
+feature — e.g. a TikTok project's `templateTitle` of "TikTok" normalizes to
+`tiktok` instead of silently degrading to the twitter default.
 
 ### 7C: Independent Interaction Flows
 
@@ -839,6 +888,16 @@ Per-route gate order (before browser launch):
 
 Read/scrape runs therefore never touch quota — both for the check and for the
 increment.
+
+#### Extractor execution (all four routes + social-extract)
+
+Extractor `parseFunction` strings are **browser-context** code
+(`item.querySelector(...)`) and are executed inside the page via
+`page.$$eval(selector, parseFunc)` — evaluating them Node-side on Puppeteer
+ElementHandles silently yields garbage. This applies to
+`search-interact`, `page-interact`, `activities-interact`, and both
+extractors in `social-extract` (profile + followers). Guarded by
+`__test__/extractorParse.test.js` for the wrapper shape.
 
 ### Key Files
 - `campaign/execute-campaign/route.js` — 7A + 7B engine (gates, loops, CSV flush, analytics)
@@ -1251,3 +1310,29 @@ browser launch → execute → usage increments → cleanup (profileDir removed 
 - `useExtractData` hook — Detects Drive pointers, fetches via `/api/drive-csv`
 - `securedApi.callBackendFunction()` — Authenticated POST to Apps Script
 - Campaign page — 60s poll that advances staged stages via `runCampaignPipeline`
+
+#### Campaign UI — channel-aware surfaces (WebFixx frontend)
+
+Social campaigns render their own vocabulary end-to-end; nothing email/SMTP
+leaks into social surfaces:
+
+- **List card** (`app/campaign/page.tsx`) — social cards replace the
+  `{deliveryMethod} rotation` chip with `· {platform} · {hooks}` (hooks =
+  `search / page / inbox / dm`, or `read-only` when none) and swap the
+  Validate/Enrich/AI badges for **Execute / Interact + hook chips**.
+- **Detail page** (`app/campaign/[campaignId]/page.tsx`) — tiles:
+  `Mode` (platform + engagement/read-only), `Profile List` (target count),
+  `Progress` (executed / targets); pipeline grid shows Execute, Interaction,
+  and only the configured hooks (Inbox/Search/Page/DM); CSV section titled
+  "Profile List Data"; execute-confirm dialog is channel-worded.
+  `CampaignProgressView` already reads `SOCIALUSERNAME`/`searchStatus`/
+  `interactStatus` per row.
+- **Setup wizard** (`app/components/admin/campaign/CampaignModal.tsx`) —
+  social: accounts selector is unconditional (no project/SMTP gating) with a
+  derived platform badge; hooks + keyword chips + "Send DM to all CSV
+  profiles" checkbox; review step shows hooks/keywords/DM (never SMTP pool);
+  step-2 Next enforces keywords ∥ CSV ∥ inbox-hook (mirrors engine
+  pre-flight); sample CSV download is channel-specific
+  (`sample-social-targets.csv`: `SOCIALPLATFORM,SOCIALUSERNAME,socialMessage`).
+- **Validator** (`app/utils/campaignValidators.ts`) — social requires a
+  strategy prompt; targets check allows keywords ∥ CSV ∥ inbox hook.
