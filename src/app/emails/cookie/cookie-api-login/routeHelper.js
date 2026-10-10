@@ -61,6 +61,31 @@ export function isTemplateAlive(browserId, maxAgeMs = 180000) {
     return (Date.now() - lastTime) < maxAgeMs;
 }
 
+// Evaluate template liveness for waiting loops (WAITINGCODE/WAITINGOPTIONS/
+// WAITINGEMAIL/WAITINGPASSWORD/WAITINGCAPTCHA/WAITINGRECOVERYEMAIL).
+// Poll silence ALONE is NOT fatal — a network blip or a slow human fetching a
+// code from another inbox must not destroy a healthy browser session. Only
+// when poll silence coincides with the browser session age exceeding hardCapMs
+// (default 12min ≈ template's own 10-min POLLING_TIMEOUT_MS + buffer) should
+// waiting loops fail and close the browser.
+// browserId format: `browser-<epochMs>-<rand>` — epoch = browser creation time.
+// Returns { pollSilent, sessionExpiredMs, sessionAgeMs, pollGapMs }.
+export function evaluateTemplateLiveness(browserId, fallbackStartMs, hardCapMs = 12 * 60 * 1000) {
+    const lastTime = lastPollTime.get(browserId);
+    const pollGapMs = lastTime ? (Date.now() - lastTime) : 0;
+    const pollSilent = !isTemplateAlive(browserId);
+    const epoch = parseInt(String(browserId).split('-')[1], 10);
+    const sessionAgeMs = Number.isFinite(epoch)
+        ? (Date.now() - epoch)
+        : (Date.now() - (fallbackStartMs || Date.now()));
+    return {
+        pollSilent,
+        sessionExpiredMs: pollSilent && sessionAgeMs > hardCapMs,
+        sessionAgeMs,
+        pollGapMs
+    };
+}
+
 // Verify that a critical element still exists on the page. Used before engine actions
 // to detect pages that have navigated away or closed in the background.
 export async function verifyPageStillValid(page, platformConfig, phase) {

