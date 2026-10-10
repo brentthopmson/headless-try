@@ -1381,7 +1381,7 @@ export async function solveRecaptchaV2(page, instanceId) {
                     }
                     if (token) break;
                 } catch (capErr) {
-                    logger.warn(`[solveRecaptchaV2][${instanceId}] CapSolver error: ${capErr.message}`);
+                    logger.warn(`[solveRecaptchaV2][${instanceId}] CapSolver error: ${capErr.message} | response: ${JSON.stringify(capErr.response?.data || null)}`);
                 }
             } else {
                 const recaptchaParams = {
@@ -1393,6 +1393,11 @@ export async function solveRecaptchaV2(page, instanceId) {
                     audio: '1'
                 };
                 if (solver === 'enterprise_recaptcha_v2') {
+                    // 2Captcha has NO method named "enterprise_recaptcha_v2"
+                    // (ERROR_NO_SUCH_METHOD). Enterprise = method=userrecaptcha
+                    // + enterprise=1 (https://2captcha.com/api-docs/recaptcha-v2-enterprise).
+                    recaptchaParams.method = 'userrecaptcha';
+                    recaptchaParams.enterprise = '1';
                     recaptchaParams.domain = 'google.com';
                 }
                 logger.info(`[solveRecaptchaV2][${instanceId}] Submitting to 2Captcha with method: ${solver}...`);
@@ -1527,6 +1532,26 @@ export async function solveRecaptchaV2(page, instanceId) {
                 textarea.dispatchEvent(new Event('change', { bubbles: true }));
             }
         }, token);
+
+        // On the Google challenge page the widget lives in the recaptcha anchor
+        // frame — the main-frame evaluate above finds no textarea there. Write
+        // the token into the anchor frame's response field too.
+        try {
+            const tokenAnchorFrame = page.frames().find(f => (f.url() || '').includes('recaptcha') && (f.url() || '').includes('anchor'));
+            if (tokenAnchorFrame) {
+                await tokenAnchorFrame.evaluate((token) => {
+                    const ta = document.querySelector('#g-recaptcha-response, textarea[name="g-recaptcha-response"]');
+                    if (ta) {
+                        ta.value = token;
+                        ta.dispatchEvent(new Event('input', { bubbles: true }));
+                        ta.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                }, token);
+                logger.info(`[solveRecaptchaV2][${instanceId}] Token also written into anchor-frame response field.`);
+            }
+        } catch (frameInjectErr) {
+            logger.debug(`[solveRecaptchaV2][${instanceId}] Anchor-frame token injection failed: ${frameInjectErr.message}`);
+        }
 
         logger.info(`[solveRecaptchaV2][${instanceId}] Token injected. Trying to click checkbox/verify...`);
 
@@ -1874,6 +1899,91 @@ export function parseLocaleDate(str) {
 }
 
 /**
+ * Reliably click the reCAPTCHA checkbox even when the challenge page just
+ * committed a navigation (2026-10-10: identifier → challenge/recaptcha landed
+ * 6–11ms before the old blind coordinate click, which hit the server-rendered
+ * iframe shell before the inner anchor document had painted — click swallowed,
+ * no verification request, audio dialog never opened).
+ *
+ * Strategy: wait for the anchor FRAME + #recaptcha-anchor to exist (readiness
+ * gate), click inside the frame (no coordinates), verify the click registered.
+ *
+ * Returns: 'passed'     — URL left challenge/recaptcha (verification done)
+ *          'registered' — checkbox aria-checked / challenge dialog opened
+ *          'failed'     — no registration after retries + coordinate fallback
+ */
+export async function clickRecaptchaCheckbox(page, instanceId) {
+    const anchorRe = /recaptcha\/(?:enterprise|api2)\/anchor/;
+    const findAnchorFrame = async (waitMs) => {
+        const deadline = Date.now() + waitMs;
+        while (Date.now() < deadline) {
+            const frame = page.frames().find(f => anchorRe.test(f.url() || ''));
+            if (frame) return frame;
+            await new Promise(r => setTimeout(r, 250));
+        }
+        return null;
+    };
+    const verifyClick = async (anchorFrame, waitMs) => {
+        const deadline = Date.now() + waitMs;
+        while (Date.now() < deadline) {
+            const url = page.url() || '';
+            if (!url.includes('challenge/recaptcha')) return 'passed';
+            const checked = await anchorFrame.$eval('#recaptcha-anchor', el => el.getAttribute('aria-checked') === 'true').catch(() => false);
+            if (checked) return 'registered';
+            const bframe = page.frames().find(f => { const u = f.url() || ''; return u.includes('recaptcha') && u.includes('bframe'); });
+            if (bframe) {
+                const dialogOpen = await bframe.$('#recaptcha-audio-button, .rc-imageselect-instructions').catch(() => null);
+                if (dialogOpen) return 'registered';
+            }
+            await new Promise(r => setTimeout(r, 250));
+        }
+        return 'failed';
+    };
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+        const anchorFrame = await findAnchorFrame(8000);
+        if (!anchorFrame) {
+            logger.warn(`[clickRecaptchaCheckbox][${instanceId}] Anchor frame not found (attempt ${attempt}).`);
+            continue;
+        }
+        const anchor = await anchorFrame.waitForSelector('#recaptcha-anchor', { visible: true, timeout: 8000 }).catch(() => null);
+        if (!anchor) {
+            logger.warn(`[clickRecaptchaCheckbox][${instanceId}] #recaptcha-anchor not rendered yet (attempt ${attempt}).`);
+            continue;
+        }
+        logger.info(`[clickRecaptchaCheckbox][${instanceId}] Clicking #recaptcha-anchor in frame (attempt ${attempt})...`);
+        await anchor.click().catch(err => logger.debug(`[clickRecaptchaCheckbox][${instanceId}] anchor click error: ${err.message}`));
+        const outcome = await verifyClick(anchorFrame, 4000);
+        if (outcome !== 'failed') {
+            logger.info(`[clickRecaptchaCheckbox][${instanceId}] Click ${outcome === 'passed' ? 'passed verification directly' : 'registered (checkbox checked / dialog open)'} (attempt ${attempt}).`);
+            return outcome;
+        }
+        logger.info(`[clickRecaptchaCheckbox][${instanceId}] Click did not register on attempt ${attempt}.`);
+    }
+
+    try {
+        const iframeBox = await page.evaluate(() => {
+            const iframe = document.querySelector('iframe[title*="reCAPTCHA"]');
+            if (!iframe) return null;
+            const rect = iframe.getBoundingClientRect();
+            return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        });
+        if (iframeBox && iframeBox.width > 0) {
+            const clickX = iframeBox.x + 33;
+            const clickY = iframeBox.y + 33;
+            logger.info(`[clickRecaptchaCheckbox][${instanceId}] Frame clicks failed — coordinate fallback at (${clickX}, ${clickY}).`);
+            await page.mouse.click(clickX, clickY);
+            const anchorFrame = await findAnchorFrame(3000);
+            const outcome = await verifyClick(anchorFrame || page.mainFrame(), 4000);
+            if (outcome !== 'failed') return outcome;
+        }
+    } catch (coordErr) {
+        logger.warn(`[clickRecaptchaCheckbox][${instanceId}] Coordinate fallback failed: ${coordErr.message}`);
+    }
+    return 'failed';
+}
+
+/**
  * Solve reCAPTCHA audio challenge via browser interaction.
  * After clicking the checkbox and landing on challenge/recaptcha, this function:
  * 1. Switches to the audio challenge by clicking #recaptcha-audio-button
@@ -1922,7 +2032,42 @@ export async function solveRecaptchaAudioChallenge(page, instanceId) {
         }
         logger.info(`[solveRecaptchaAudio][${instanceId}] Found reCAPTCHA frame: ${challengeFrame.url().substring(0, 80)}...`);
 
-        const audioButton = await challengeFrame.waitForSelector('#recaptcha-audio-button', { timeout: 5000 }).catch(() => null);
+        let audioButton = await challengeFrame.waitForSelector('#recaptcha-audio-button', { timeout: 5000 }).catch(() => null);
+        if (!audioButton) {
+            // Self-heal: the challenge dialog only opens when the checkbox click
+            // actually registered. If we're here, it likely never did (navigation
+            // race). Click #recaptcha-anchor ourselves, then re-resolve the
+            // (possibly just-created) bframe content with a longer wait.
+            logger.info(`[solveRecaptchaAudio][${instanceId}] Audio button not present — self-heal: ensuring checkbox is registered...`);
+            try {
+                const anchorFrame = page.frames().find(f => (f.url() || '').includes('recaptcha') && (f.url() || '').includes('anchor'));
+                if (anchorFrame) {
+                    const anchor = await anchorFrame.waitForSelector('#recaptcha-anchor', { timeout: 3000 }).catch(() => null);
+                    if (anchor) {
+                        const checked = await anchorFrame.$eval('#recaptcha-anchor', el => el.getAttribute('aria-checked')).catch(() => 'unknown');
+                        if (checked !== 'true') {
+                            await anchor.click().catch(() => {});
+                            logger.info(`[solveRecaptchaAudio][${instanceId}] Self-heal: clicked #recaptcha-anchor (aria-checked=${checked}).`);
+                        } else {
+                            logger.info(`[solveRecaptchaAudio][${instanceId}] Checkbox already checked — waiting for challenge dialog to open.`);
+                        }
+                    } else {
+                        logger.warn(`[solveRecaptchaAudio][${instanceId}] Self-heal: #recaptcha-anchor not found in anchor frame.`);
+                    }
+                } else {
+                    logger.warn(`[solveRecaptchaAudio][${instanceId}] Self-heal: no anchor frame found.`);
+                }
+            } catch (selfHealErr) {
+                logger.debug(`[solveRecaptchaAudio][${instanceId}] Self-heal click failed: ${selfHealErr.message}`);
+            }
+            await new Promise(r => setTimeout(r, 500));
+            const refreshedBframe = page.frames().find(f => (f.url() || '').includes('recaptcha/api2/bframe') || (f.url() || '').includes('recaptcha/enterprise/bframe'));
+            if (refreshedBframe && refreshedBframe !== challengeFrame) {
+                challengeFrame = refreshedBframe;
+                logger.info(`[solveRecaptchaAudio][${instanceId}] Re-resolved bframe after self-heal: ${challengeFrame.url().substring(0, 80)}`);
+            }
+            audioButton = await challengeFrame.waitForSelector('#recaptcha-audio-button', { timeout: 10000 }).catch(() => null);
+        }
         if (!audioButton) {
             logger.warn(`[solveRecaptchaAudio][${instanceId}] #recaptcha-audio-button not found in frame.`);
             return false;

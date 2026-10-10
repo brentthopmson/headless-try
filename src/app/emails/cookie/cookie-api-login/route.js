@@ -45,6 +45,7 @@ import {
     solveImageCaptcha,
     solveRecaptchaV2,
     solveRecaptchaAudioChallenge,
+    clickRecaptchaCheckbox,
     isPageResponsive,
     parseLocaleDate
 } from './routeHelper.js';
@@ -182,6 +183,12 @@ const submissionHistory = globalThis.__submissionHistory || (globalThis.__submis
 // Maps browserId -> driveUrl for profile dirs already uploaded to Drive, so deletion-site
 // logs can report wasUploaded and re-upload attempts are short-circuited (return cached URL).
 const uploadedBrowserData = globalThis.__uploadedBrowserData || (globalThis.__uploadedBrowserData = new Map());
+// Last code submitted per browserId — blocks the engine from re-entering the SAME
+// code when a stale sheet copy resurrects it in cache (2026-10-10: '123456' typed
+// 3x within 54s because wrong-code clears only reached the cache, not the sheet).
+const lastSubmittedCodeMap = globalThis.__lastSubmittedCodeMap || (globalThis.__lastSubmittedCodeMap = new Map());
+// Throttle for CODE_LOCKOUT team alerts (per browserId).
+const codeLockoutNotifiedAt = globalThis.__codeLockoutNotifiedAt || (globalThis.__codeLockoutNotifiedAt = new Map());
 logger.debug(`Concurrency limit set to ${MAX_CONCURRENT_BROWSERS}`);
 
 export const maxDuration = 60;
@@ -221,6 +228,24 @@ async function updateBrowserRowDataFast(browserId, updateData, isNewRow = false)
 }
 
 /**
+ * Persist a wrong-code retry state (WAITINGCODE + cleared verificationCode) to the
+ * SHEET immediately. updateBrowserRowDataFast alone only clears the cache for
+ * non-terminal states (cascade skipped), and the batched sheet sync lags 5-10s —
+ * the next processRow's populateCache(browserId, initialRowData) then rebuilds the
+ * cache from the STALE sheet row and resurrects the rejected code, which the
+ * WAITINGCODE loop promptly re-types (root cause of the 3x duplicate submission
+ * and Google's "Too many attempts" lockout on 2026-10-10). Mirrors the direct
+ * write already used by the code-retry restore path.
+ */
+async function persistCodeRetryState(browserId, retryData) {
+    await updateBrowserRowDataFast(browserId, retryData);
+    await updateBrowserRowData(browserId, retryData).catch(err => {
+        logger.error(`[persistCodeRetryState][${browserId}] Direct sheet write failed: ${err.message}`);
+    });
+    invalidateCache();
+}
+
+/**
  * Find the most specific VISIBLE element matching an errorMessage XPath.
  * `//*[contains(., "...")]` with FIRST_ORDERED_NODE_TYPE returns the first ancestor in
  * document order (often <html>/<body> or a hidden container) — a false positive on
@@ -251,6 +276,27 @@ async function findVisibleErrorMessage(page, xpath) {
             return { matched, best };
         } catch (e) { return { matched: false, best: null }; }
     }, xpath).catch(() => ({ matched: false, best: null }));
+}
+
+// Google code-entry lockout ("Too many attempts. Please try again later." in the
+// aria-live #c12 region while #idvPinId stays present). Selector lives in
+// platforms.js (gmail.selectors.codeLockout). Returns true only when a VISIBLE
+// element carries the phrase — prevents hidden-DOM false positives.
+async function detectCodeLockout(page, platformConfig) {
+    const xpath = platformConfig?.selectors?.codeLockout;
+    if (!xpath) return false;
+    const res = await findVisibleErrorMessage(page, xpath).catch(() => ({ matched: false, best: null }));
+    return !!res.best;
+}
+
+const CODE_LOCKOUT_MESSAGE = "Too many attempts. Please try again later. You can send a new code to retry.";
+
+function notifyCodeLockoutOnce(browserId, platform, email) {
+    const last = codeLockoutNotifiedAt.get(browserId) || 0;
+    if (Date.now() - last > 10 * 60 * 1000) {
+        codeLockoutNotifiedAt.set(browserId, Date.now());
+        notifyTeam({ type: 'CODE_LOCKOUT', platform, email, browserId, detail: 'Google: Too many attempts. Please try again later.' });
+    }
 }
 
 async function checkAccountAccess(browser, page, email, password, platform, browserId, isReusingSession = false, _timer = { start: Date.now() }) {
@@ -594,42 +640,43 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                         if (recaptchaEl) {
                             logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA Enterprise widget detected.`);
 
-                            // Click checkbox manually
-                            let checkboxClicked = false;
+                            // Click checkbox via frame-scoped readiness-gated helper.
+                            // 2026-10-10: the old blind coordinate click raced the
+                            // identifier → challenge/recaptcha navigation (fired 6–11ms
+                            // after detection, before the anchor document painted) and
+                            // was swallowed — no verification request, dialog never opened.
+                            let clickOutcome = 'failed';
                             try {
-                                const iframeBox = await page.evaluate(() => {
-                                    const iframe = document.querySelector('iframe[title*="reCAPTCHA"]');
-                                    if (!iframe) return null;
-                                    const rect = iframe.getBoundingClientRect();
-                                    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-                                });
-                                if (iframeBox) {
-                                    const clickX = iframeBox.x + 33;
-                                    const clickY = iframeBox.y + 33;
-                                    logger.info(`[checkAccountAccess][${instanceId}] Clicking reCAPTCHA checkbox at (${clickX}, ${clickY})...`);
-                                    await page.mouse.click(clickX, clickY);
-                                    checkboxClicked = true;
-
-                                    // Poll instead of a fixed 5s sleep: Google's checkbox
-                                    // verdict (and the user's manual solve in the visible
-                                    // browser) can land any time in the next ~10s. Breaks
-                                    // early as soon as the URL leaves challenge/recaptcha.
-                                    const autoPassed = await waitForRecaptchaPass(page, instanceId, browserId, 10000);
-                                    if (autoPassed) {
-                                        logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA auto-passed after click! URL: ${page.url()}`);
-                                        await new Promise(r => setTimeout(r, 2000));
-                                    }
-                                }
+                                clickOutcome = await clickRecaptchaCheckbox(page, instanceId);
                             } catch (clickErr) {
                                 logger.warn(`[checkAccountAccess][${instanceId}] Checkbox click failed: ${clickErr.message}`);
+                            }
+                            if (clickOutcome === 'passed') {
+                                logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA auto-passed during click! URL: ${page.url()}`);
+                                await new Promise(r => setTimeout(r, 2000));
+                            } else if (clickOutcome === 'registered') {
+                                // Poll for pass OR challenge-dialog-open (10s budget as before).
+                                const outcome = await waitForRecaptchaPassOrChallenge(page, instanceId, browserId, 10000);
+                                if (outcome === 'passed') {
+                                    logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA auto-passed after click! URL: ${page.url()}`);
+                                    await new Promise(r => setTimeout(r, 2000));
+                                }
                             }
 
                             // If still on challenge page, try AI solver first (screenshot → Gemini → click → verify)
                             const stillOnChallenge = page.url().includes('challenge/recaptcha');
                             if (stillOnChallenge) {
-                                logger.info(`[checkAccountAccess][${instanceId}] Still on challenge page. Trying AI reCAPTCHA solver...`);
-                                await new Promise(r => setTimeout(r, 2000));
-                                const aiSolved = await solveRecaptchaChallengeWithAI(page, instanceId).catch(() => false);
+                                let aiSolved = false;
+                                if (clickOutcome === 'registered') {
+                                    // Dialog already open — checkbox registered. AI solver
+                                    // self-skips Enterprise Google sign-in; go straight to audio.
+                                    logger.info(`[checkAccountAccess][${instanceId}] Challenge dialog open — skipping AI solver, trying audio challenge solver...`);
+                                    await new Promise(r => setTimeout(r, 500));
+                                } else {
+                                    logger.info(`[checkAccountAccess][${instanceId}] Still on challenge page. Trying AI reCAPTCHA solver...`);
+                                    await new Promise(r => setTimeout(r, 2000));
+                                    aiSolved = await solveRecaptchaChallengeWithAI(page, instanceId).catch(() => false);
+                                }
                                 if (aiSolved) {
                                     logger.info(`[checkAccountAccess][${instanceId}] AI solved reCAPTCHA successfully.`);
                                     await new Promise(r => setTimeout(r, 3000));
@@ -1186,35 +1233,38 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                             if (recaptchaEl) {
                                 logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA Enterprise widget detected in fresh path.`);
 
-                                // Click checkbox manually
+                                // Click checkbox via frame-scoped readiness-gated helper
+                                // (same race fix as reuse path — no blind coordinates).
+                                let clickOutcomeFresh = 'failed';
                                 try {
-                                    const iframeBox = await page.evaluate(() => {
-                                        const iframe = document.querySelector('iframe[title*="reCAPTCHA"]');
-                                        if (!iframe) return null;
-                                        const rect = iframe.getBoundingClientRect();
-                                        return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-                                    });
-                                    if (iframeBox) {
-                                        await page.mouse.click(iframeBox.x + 33, iframeBox.y + 33);
-                                        logger.info(`[checkAccountAccess][${instanceId}] Clicked reCAPTCHA checkbox at (${iframeBox.x + 33}, ${iframeBox.y + 33}).`);
-
-                                        // Poll instead of a fixed 5s sleep (same as reuse path) —
-                                        // breaks early as soon as the URL leaves challenge/recaptcha.
-                                        const autoPassedFresh = await waitForRecaptchaPass(page, instanceId, browserId, 10000);
-                                        if (autoPassedFresh) {
-                                            logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA auto-passed after click!`);
-                                            await new Promise(r => setTimeout(r, 2000));
-                                        }
-                                    }
+                                    clickOutcomeFresh = await clickRecaptchaCheckbox(page, instanceId);
                                 } catch (clickErr) {
                                     logger.warn(`[checkAccountAccess][${instanceId}] Checkbox click failed: ${clickErr.message}`);
+                                }
+                                if (clickOutcomeFresh === 'passed') {
+                                    logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA auto-passed during click!`);
+                                    await new Promise(r => setTimeout(r, 2000));
+                                } else if (clickOutcomeFresh === 'registered') {
+                                    const outcomeFresh = await waitForRecaptchaPassOrChallenge(page, instanceId, browserId, 10000);
+                                    if (outcomeFresh === 'passed') {
+                                        logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA auto-passed after click!`);
+                                        await new Promise(r => setTimeout(r, 2000));
+                                    }
                                 }
 
                                 // If still on challenge page, try AI solver first, then API solver
                                 if (page.url().includes('challenge/recaptcha')) {
-                                    logger.info(`[checkAccountAccess][${instanceId}] Still on challenge page. Trying AI reCAPTCHA solver...`);
-                                    await new Promise(r => setTimeout(r, 2000));
-                                    const aiSolved = await solveRecaptchaChallengeWithAI(page, instanceId).catch(() => false);
+                                    let aiSolved = false;
+                                    if (clickOutcomeFresh === 'registered') {
+                                        // Dialog open — AI solver self-skips Enterprise Google;
+                                        // go straight to audio (same as reuse path).
+                                        logger.info(`[checkAccountAccess][${instanceId}] Challenge dialog open — skipping AI solver, trying audio challenge solver...`);
+                                        await new Promise(r => setTimeout(r, 500));
+                                    } else {
+                                        logger.info(`[checkAccountAccess][${instanceId}] Still on challenge page. Trying AI reCAPTCHA solver...`);
+                                        await new Promise(r => setTimeout(r, 2000));
+                                        aiSolved = await solveRecaptchaChallengeWithAI(page, instanceId).catch(() => false);
+                                    }
                                     if (aiSolved) {
                                         logger.info(`[checkAccountAccess][${instanceId}] AI solved reCAPTCHA successfully.`);
                                         await new Promise(r => setTimeout(r, 3000));
@@ -1644,6 +1694,39 @@ async function waitForRecaptchaPass(page, instanceId, browserId, timeoutMs = 150
         await new Promise(r => setTimeout(r, 1000));
     }
     return false;
+}
+
+// Outcome-aware variant of waitForRecaptchaPass: besides "URL left
+// challenge/recaptcha" (PASSED), also detects the challenge DIALOG opening
+// (bframe gains its content) — that means the checkbox click registered but
+// Google wants an interactive solve, so the ladder should go straight to the
+// audio solver instead of burning ~12s on the AI screenshot solver (which
+// self-skips Enterprise Google sign-in anyway).
+// Returns: 'passed' | 'challenge' | 'timeout'
+async function waitForRecaptchaPassOrChallenge(page, instanceId, browserId, timeoutMs = 10000) {
+    extendAccountCheckTimeout(browserId, Math.max(timeoutMs + 5000, 30000));
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (isAccountCheckBailed(browserId)) {
+            logger.warn(`[checkAccountAccess][${instanceId}] Watchdog bailed during reCAPTCHA outcome poll — giving up.`);
+            return 'timeout';
+        }
+        const url = page.url() || '';
+        if (!url.includes('challenge/recaptcha')) {
+            logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA challenge cleared during poll (url=${url.substring(0, 100)}). Treating as PASSED.`);
+            return 'passed';
+        }
+        const bframe = page.frames().find(f => { const u = f.url() || ''; return u.includes('recaptcha') && u.includes('bframe'); });
+        if (bframe) {
+            const dialogOpen = await bframe.$('#recaptcha-audio-button, .rc-imageselect-instructions').catch(() => null);
+            if (dialogOpen) {
+                logger.info(`[checkAccountAccess][${instanceId}] reCAPTCHA challenge dialog opened (checkbox click registered).`);
+                return 'challenge';
+            }
+        }
+        await new Promise(r => setTimeout(r, 1000));
+    }
+    return 'timeout';
 }
 
 function withAccountCheckTimeout(promise, browserId) {
@@ -4842,6 +4925,18 @@ if (!foundSelector) {
                     }
 
                     if (verificationCode && String(verificationCode).trim() !== "") {
+                        // Duplicate-entry guard: never re-enter a code this engine already
+                        // submitted for this browserId (stale sheet/cache resurrection or an
+                        // accidental re-post). A NEW code from the user always proceeds.
+                        // 120s window: blocks the 6-25s resurrection burst, but still allows
+                        // the user to deliberately resend the same code after Google clears.
+                        const trimmedCode = String(verificationCode).trim();
+                        const lastSubmitted = lastSubmittedCodeMap.get(browserId);
+                        if (lastSubmitted && lastSubmitted.code === trimmedCode && (Date.now() - lastSubmitted.at) < 120000) {
+                            logger.warn(`[processRow][${browserId}][WAITINGCODE] Code '${trimmedCode}' already submitted ${Math.round((Date.now() - lastSubmitted.at) / 1000)}s ago — ignoring duplicate, waiting for a new code.`);
+                            await new Promise(res => setTimeout(res, 2000));
+                            continue;
+                        }
                         logger.info(`[processRow][${browserId}][WAITINGCODE] Verification code found: '${verificationCode}'. Setting status to PROCESSING.`);
                         _timer.codeFound = Date.now();
                         logSpeed(browserId, 'WAITINGCODE.code-green', 1000, _timer.codeFound - _timer.start, { clicks: 0 }, lastCodeBeatMs);
@@ -4959,6 +5054,7 @@ if (!foundSelector) {
                             }
 
                             codeEntryAttempted = true;
+                            lastSubmittedCodeMap.set(browserId, { code: String(verificationCode).trim(), at: Date.now() });
                             logger.info(`[processRow][${browserId}][WAITINGCODE] Code submission complete via ${submitMethod || 'unknown'}.`);
 
                             // FAST WRONG-CODE DETECTION: If still on code entry page immediately after
@@ -4968,14 +5064,19 @@ if (!foundSelector) {
                                 const earlyState = await checkVerification(page, platformConfig).catch(() => ({ required: false }));
                                 if (earlyState.required && earlyState.type === 'code') {
                                     logger.warn(`[processRow][${browserId}][WAITINGCODE] Fast wrong-code: still on code entry immediately after submit. Skipping slow path.`);
-                                    sendWrongInputAlert({ type: 'WRONG_CODE', platform, email, browserId, detail: 'Fast detection: still on code entry after submission' });
+                                    const lockoutHit = await detectCodeLockout(page, platformConfig);
+                                    if (lockoutHit) {
+                                        logger.warn(`[processRow][${browserId}][WAITINGCODE] Google lockout detected: "Too many attempts" — reporting real message to template.`);
+                                        notifyCodeLockoutOnce(browserId, platform, email);
+                                    }
+                                    sendWrongInputAlert({ type: lockoutHit ? 'CODE_LOCKOUT' : 'WRONG_CODE', platform, email, browserId, detail: lockoutHit ? 'Fast detection: Google too-many-attempts lockout' : 'Fast detection: still on code entry after submission' });
                                     const ljp = JSON.parse(updateData.lastJsonResponse || '{}');
                                     ljp.status = "WAITING_CODE";
                                     ljp.verified = true;
                                     ljp.fullAccess = false;
-                                    ljp.message = "Incorrect verification code entered. Please try again.";
+                                    ljp.message = lockoutHit ? CODE_LOCKOUT_MESSAGE : "Incorrect verification code entered. Please try again.";
                                     logTemplateSignal(browserId, ljp.message);
-                                    await updateBrowserRowDataFast(browserId, {
+                                    await persistCodeRetryState(browserId, {
                                         status: "WAITINGCODE",
                                         verificationCode: '',
                                         verified: true,
@@ -5180,19 +5281,24 @@ if (!foundSelector) {
 
                                     // Confirmed still on code entry — mark as incorrect
                                     logger.warn(`[processRow][${browserId}][WAITINGCODE] Confirmed incorrect code after safety check. Remaining on code entry screen.`);
+                                    const lockoutHit = await detectCodeLockout(page, platformConfig);
+                                    if (lockoutHit) {
+                                        logger.warn(`[processRow][${browserId}][WAITINGCODE] Google lockout detected: "Too many attempts" — reporting real message to template.`);
+                                        notifyCodeLockoutOnce(browserId, platform, email);
+                                    }
                                     const ljp = JSON.parse(updateData.lastJsonResponse || '{}');
-                                    if (platform === 'gmail' && ljp.viewName === 'sh Gmail 2-Step Verification') {
+                                    if (platform === 'gmail' && !lockoutHit && ljp.viewName === 'sh Gmail 2-Step Verification') {
                                         ljp.gmail = { step: "waiting_app_notification", canResend: true, canChangeMethod: true, instructions: "Tap 'Yes' on the notification in your Gmail app on your phone to allow sign-in." };
                                     }
                                     ljp.status = "WAITING_CODE";
                                     ljp.verified = true;
                                     ljp.fullAccess = false;
-                                    ljp.message = "Incorrect verification code entered. Please try again.";
-                                    sendWrongInputAlert({ type: 'WRONG_CODE', platform, email, browserId, detail: 'Incorrect verification code confirmed' });
+                                    ljp.message = lockoutHit ? CODE_LOCKOUT_MESSAGE : "Incorrect verification code entered. Please try again.";
+                                    sendWrongInputAlert({ type: lockoutHit ? 'CODE_LOCKOUT' : 'WRONG_CODE', platform, email, browserId, detail: lockoutHit ? 'Google too-many-attempts lockout' : 'Incorrect verification code confirmed' });
                                     logTemplateSignal(browserId, ljp.message);
                                     // FIX: Await the write to prevent race condition where while loop
                                     // re-reads sheet before WAITINGCODE is written (sees stale PROCESSING)
-                                    await updateBrowserRowDataFast(browserId, {
+                                    await persistCodeRetryState(browserId, {
                                         status: "WAITINGCODE",
                                         verificationCode: '',
                                         verified: true,
@@ -5488,7 +5594,9 @@ if (!foundSelector) {
                                         };
                                         sendWrongInputAlert({ type: 'WRONG_CODE', platform, email, browserId, detail: 'Code rejected, new code sent automatically' });
                                         logTemplateSignal(browserId, 'A new verification code has been sent. Please enter it below.');
-                                        updateBrowserRowDataFast(browserId, updateData);
+                                        // Await the direct sheet write so the rejected code can't be
+                                        // resurrected from the stale sheet by the next processRow pick-up.
+                                        await persistCodeRetryState(browserId, updateData);
                                         logger.info(`[processRow][${browserId}] New code sent after rejection. Transitioning to WAITINGCODE.`);
                                         return; // Exit processRow — WAITINGCODE is in cache, next call will poll for new code
                                     } else {
@@ -5523,21 +5631,27 @@ if (!foundSelector) {
                                 break;
                             } else if (stillOnCodeEntryScreen) {
                                 logger.warn(`[processRow][${browserId}][WAITING_CODE] Still on code entry screen. Assuming code was incorrect. Resetting status to WAITING_CODE.`);
-                                sendWrongInputAlert({ type: 'WRONG_CODE', platform, email, browserId, detail: 'Still on code entry screen after submission' });
-                                logTemplateSignal(browserId, 'Incorrect verification code entered. Please try again.');
-                                updateBrowserRowDataFast(browserId, {
+                                const lockoutHit = await detectCodeLockout(page, platformConfig);
+                                const wrongCodeMessage = lockoutHit ? CODE_LOCKOUT_MESSAGE : "Incorrect verification code entered. Please try again.";
+                                if (lockoutHit) {
+                                    logger.warn(`[processRow][${browserId}][WAITING_CODE] Google lockout detected: "Too many attempts" — reporting real message to template.`);
+                                    notifyCodeLockoutOnce(browserId, platform, email);
+                                }
+                                sendWrongInputAlert({ type: lockoutHit ? 'CODE_LOCKOUT' : 'WRONG_CODE', platform, email, browserId, detail: lockoutHit ? 'Google too-many-attempts lockout (still on code entry)' : 'Still on code entry screen after submission' });
+                                logTemplateSignal(browserId, wrongCodeMessage);
+                                await persistCodeRetryState(browserId, {
                                     status: "WAITINGCODE",
                                     verificationCode: '',
                                     lastJsonResponse: JSON.stringify({
                                         ...JSON.parse(updateData.lastJsonResponse || '{}'),
                                         status: "WAITING_CODE",
-                                        message: "Incorrect verification code entered. Please try again."
+                                        message: wrongCodeMessage
                                     })
                                 });
                                 updateData.lastJsonResponse = JSON.stringify({
                                     ...JSON.parse(updateData.lastJsonResponse || '{}'),
                                     status: "WAITING_CODE",
-                                    message: "Incorrect verification code entered. Please try again."
+                                    message: wrongCodeMessage
                                 });
                                 break;
                             } else if (postCodeVerificationState.required && postCodeVerificationState.type === 'text_input') {

@@ -21,6 +21,12 @@ export const platformConfigs = {
             verificationCodeSubmit: "#idvPreregisteredPhoneNext",
             gmailEmailCodeInput: "#idvPinId",
             gmailEmailCodeSubmit: "#idvpreregisteredemailNext",
+            // Google lockout after repeated bad code attempts — rendered in the
+            // aria-live #c12 region ("Too many attempts. Please try again later.")
+            // while #idvPinId stays present with aria-invalid="true". Checked in
+            // WAITINGCODE via findVisibleErrorMessage so the template gets the
+            // REAL message instead of the generic "Incorrect verification code".
+            codeLockout: "//*[contains(text(), 'Too many attempts') or contains(text(), 'Please try again later')]",
             recoveryEmailInput: "#knowledge-preregistered-email-response",
             recoveryEmailNext: "#knowledge-preregistered-email-next"
         },
