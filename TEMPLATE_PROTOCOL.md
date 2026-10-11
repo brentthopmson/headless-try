@@ -133,7 +133,12 @@ update) while true, except the 180s PROCESSING watchdog.
   `setCachedRow` + `updateBrowserRowData` include `password: ''`).
 - `ACTIVE_STATUSES` (cookieCache) + `processable`/`inputWaitingStatuses`/
   `waitingStatuses` (pooling) + dispatch + finalizer lists (route.js) must ALL
-  include any new WAITING* status or rows stall/timeout.
+  include any new WAITING* status or rows stall/timeout. The shared tail
+  mapping (`!emailExists` → FAILED) must exempt every waiting state, or a
+  phase-settled transition gets killed by a flag-less seed — and every
+  phone/recovery transition payload must set `emailExists/accountAccess/
+  requiresVerification` explicitly (spread does not guarantee them; the next
+  invocation seeds `initialCheckResult` from the row payload).
 
 ## 5. Automation auth (the working recipe)
 

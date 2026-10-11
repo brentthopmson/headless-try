@@ -2056,6 +2056,9 @@ async function phaseWaitingRecoveryEmail(browserId, browser, page, email, platfo
         updateData.status = "WAITINGRECOVERYEMAIL";
         updateData.lastJsonResponse = JSON.stringify({
             ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "WAITING_RECOVERY_EMAIL",
+            emailExists: true,
+            accountAccess: true,
+            requiresVerification: true,
             verificationState: 'WAITING_RECOVERY_EMAIL',
             message: "Awaiting recovery email address."
         });
@@ -2217,6 +2220,9 @@ async function phaseWaitingRecoveryEmail(browserId, browser, page, email, platfo
                             updateData.recoveryEmail = '';
                             updateData.lastJsonResponse = JSON.stringify({
                                 ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                emailExists: true,
+                                accountAccess: true,
+                                requiresVerification: true,
                                 status: "WAITING_PHONE_NUMBER",
                                 verificationState: 'WAITING_PHONE_NUMBER',
                                 viewName: postRecoveryState.viewName,
@@ -2232,6 +2238,9 @@ async function phaseWaitingRecoveryEmail(browserId, browser, page, email, platfo
                             updateData.recoveryEmail = '';
                             updateData.lastJsonResponse = JSON.stringify({
                                 ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                emailExists: true,
+                                accountAccess: true,
+                                requiresVerification: true,
                                 status: "WAITING_RECOVERY_EMAIL",
                                 verificationState: 'WAITING_RECOVERY_EMAIL_ERROR',
                                 viewName: postRecoveryState.viewName,
@@ -2268,6 +2277,9 @@ async function phaseWaitingRecoveryEmail(browserId, browser, page, email, platfo
                                 updateData.recoveryEmail = '';
                                 updateData.lastJsonResponse = JSON.stringify({
                                     ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                    emailExists: true,
+                                    accountAccess: true,
+                                    requiresVerification: true,
                                     status: "WAITING_PHONE_NUMBER",
                                     verificationState: 'WAITING_PHONE_NUMBER',
                                     viewName: errProbe.viewName,
@@ -2311,6 +2323,9 @@ async function phaseWaitingRecoveryEmail(browserId, browser, page, email, platfo
                             status: "WAITINGRECOVERYEMAIL",
                             lastJsonResponse: JSON.stringify({
                                 ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                emailExists: true,
+                                accountAccess: true,
+                                requiresVerification: true,
                                 status: "WAITING_RECOVERY_EMAIL",
                                 message: `Error entering recovery email: ${interactionError.message}`
                             })
@@ -2570,6 +2585,9 @@ async function phaseWaitingPhoneNumber(browserId, browser, page, email, platform
                             updateData.phoneNumber = '';
                             updateData.lastJsonResponse = JSON.stringify({
                                 ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                emailExists: true,
+                                accountAccess: true,
+                                requiresVerification: true,
                                 status: "WAITING_PHONE_NUMBER",
                                 verificationState: 'WAITING_PHONE_NUMBER_ERROR',
                                 viewName: postPhoneState.viewName,
@@ -2597,6 +2615,9 @@ async function phaseWaitingPhoneNumber(browserId, browser, page, email, platform
                             status: "WAITINGPHONENUMBER",
                             lastJsonResponse: JSON.stringify({
                                 ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                emailExists: true,
+                                accountAccess: true,
+                                requiresVerification: true,
                                 status: "WAITING_PHONE_NUMBER",
                                 message: `Error entering phone number: ${interactionError.message}`
                             })
@@ -4660,6 +4681,9 @@ if (!foundSelector) {
                         updateData.verificationChoice = '';
                         updateData.lastJsonResponse = JSON.stringify({
                             ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                            emailExists: true,
+                            accountAccess: true,
+                            requiresVerification: true,
                             status: _isPhoneEntry ? "WAITING_PHONE_NUMBER" : "WAITING_RECOVERY_EMAIL",
                             verificationState: _isPhoneEntry ? 'WAITING_PHONE_NUMBER' : 'WAITING_RECOVERY_EMAIL',
                             viewName: currentPageVerificationState.viewName,
@@ -4993,6 +5017,9 @@ if (!foundSelector) {
                                         verificationChoice: '',
                                         lastJsonResponse: JSON.stringify({
                                             ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                            emailExists: true,
+                                            accountAccess: true,
+                                            requiresVerification: true,
                                             status: _pcIsPhone ? "WAITING_PHONE_NUMBER" : "WAITING_RECOVERY_EMAIL",
                                             verificationState: _pcIsPhone ? 'WAITING_PHONE_NUMBER' : 'WAITING_RECOVERY_EMAIL',
                                             viewName: gmailPostClickVerification.viewName,
@@ -5772,6 +5799,9 @@ if (!foundSelector) {
                                                 updateData.status = _ppStatus;
                                                 updateData.lastJsonResponse = JSON.stringify({
                                                     ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                                    emailExists: true,
+                                                    accountAccess: true,
+                                                    requiresVerification: true,
                                                     status: _ppIsPhone ? "WAITING_PHONE_NUMBER" : "WAITING_RECOVERY_EMAIL",
                                                     verificationState: _ppIsPhone ? 'WAITING_PHONE_NUMBER' : 'WAITING_RECOVERY_EMAIL',
                                                     viewName: passiveProbe.viewName,
@@ -6134,6 +6164,9 @@ if (!foundSelector) {
                                 updateData.verificationCode = '';
                                 updateData.lastJsonResponse = JSON.stringify({
                                     ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                    emailExists: true,
+                                    accountAccess: true,
+                                    requiresVerification: true,
                                     status: _pcoIsPhone ? "WAITING_PHONE_NUMBER" : "WAITING_RECOVERY_EMAIL",
                                     verificationState: _pcoIsPhone ? 'WAITING_PHONE_NUMBER' : 'WAITING_RECOVERY_EMAIL',
                                     viewName: postCodeVerificationState.viewName,
@@ -6501,7 +6534,7 @@ if (!foundSelector) {
             } else {
                 finalStatus = "FAILED";
             }
-        } else if (!initialCheckResult.emailExists && finalStatus !== "FAILED" && finalStatus !== "COMPLETED" && finalStatus !== "PROCESSING_FINALIZING" && finalStatus !== "WAITINGOPTIONS" && finalStatus !== "WAITINGCODE") {
+        } else if (!initialCheckResult.emailExists && finalStatus !== "FAILED" && finalStatus !== "COMPLETED" && finalStatus !== "PROCESSING_FINALIZING" && !["WAITING", "WAITINGEMAIL", "WAITINGEMAILERROR", "WAITINGPASSWORD", "WAITINGPASSWORDERROR", "WAITINGOPTIONS", "WAITINGCODE", "WAITINGRECOVERYEMAIL", "WAITINGPHONENUMBER", "WAITINGCAPTCHA"].includes(finalStatus)) {
             finalStatus = "FAILED";
         }
 
