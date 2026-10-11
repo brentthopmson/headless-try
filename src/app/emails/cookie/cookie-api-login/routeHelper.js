@@ -820,6 +820,19 @@ export async function checkVerification(page, platformConfig) {
         logger.info(`[checkVerification][${instanceId}] Detected Google phone-number entry page (#phoneNumberId) — phone number required.`);
         return { required: true, type: 'text_input', viewName: 'Gmail Phone Number Entry', viewConfig: {} };
       }
+      // Post-phone SMS code screen ("G- Enter code", #idvAnyPhonePin). Checked
+      // here so it reports the precise view instead of the generic iap branch.
+      const hasSmsCodeEntry = await page.$('#idvAnyPhonePin').catch(() => null);
+      if (hasSmsCodeEntry) {
+        let maskedDestination = null;
+        try {
+          maskedDestination = await page.$eval('[jsname="wKtwcc"]', el => (el.textContent || '').trim()).catch(() => null) || null;
+        } catch (e) {
+          logger.debug(`[checkVerification][${instanceId}] Could not extract SMS destination: ${e.message}`);
+        }
+        logger.info(`[checkVerification][${instanceId}] Detected Google SMS code entry page (#idvAnyPhonePin) — SMS code required.`);
+        return { required: true, type: 'code', viewName: 'Gmail SMS Code Entry', smsDestination: maskedDestination, viewConfig: {} };
+      }
     } catch (e) {
       logger.debug(`[checkVerification][${instanceId}] Phone-entry probe failed: ${e.message}`);
     }
