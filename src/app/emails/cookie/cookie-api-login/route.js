@@ -753,6 +753,8 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                             return { emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true, verificationState: 'WAITING_OPTIONS', verificationOptions: options, viewName: verificationAfterEmail.viewName };
                         } else if (verificationAfterEmail.type === 'password') {
                             return { emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true, verificationState: 'WAITING_PASSWORD', viewName: verificationAfterEmail.viewName };
+                        } else if (verificationAfterEmail.type === 'text_input' && verificationAfterEmail.viewName === 'Gmail Phone Number Entry') {
+                            return { emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true, verificationState: 'WAITING_PHONE_NUMBER', viewName: verificationAfterEmail.viewName };
                         } else {
                             return { emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true, verificationState: 'WAITING_CODE', viewName: verificationAfterEmail.viewName };
                         }
@@ -941,6 +943,9 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                             const options = await platformConfig.extractVerificationOptions(page, platformConfig, verificationDetails.viewName);
                                             return { emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true, verificationState: 'WAITING_OPTIONS', verificationOptions: options, viewName: verificationDetails.viewName };
                                         }
+                                        if (verificationDetails.type === 'text_input' && verificationDetails.viewName === 'Gmail Phone Number Entry') {
+                                            return { emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true, verificationState: 'WAITING_PHONE_NUMBER', viewName: verificationDetails.viewName };
+                                        }
                                         return { emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true, verificationState: 'WAITING_CODE', viewName: verificationDetails.viewName };
                                     }
                                     // Handle additional views after password submission (e.g. "Stay signed in?" prompt)
@@ -1117,7 +1122,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                             accountAccess: true,
                                             reachedInbox: false,
                                             requiresVerification: true,
-                                            verificationState: freshVerification.type === 'choice' ? 'WAITING_OPTIONS' : freshVerification.type === 'password' ? 'WAITING_PASSWORD' : 'WAITING_CODE',
+                                            verificationState: freshVerification.type === 'choice' ? 'WAITING_OPTIONS' : freshVerification.type === 'text_input' && freshVerification.viewName === 'Gmail Phone Number Entry' ? 'WAITING_PHONE_NUMBER' : freshVerification.type === 'password' ? 'WAITING_PASSWORD' : 'WAITING_CODE',
                                             verificationOptions: freshVerification.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function' ? await platformConfig.extractVerificationOptions(page, platformConfig, freshVerification.viewName) : [],
                                             viewName: freshVerification.viewName
                                         };
@@ -1139,7 +1144,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                 accountAccess: true,
                                 reachedInbox: false,
                                 requiresVerification: true,
-                                verificationState: verificationDetailsAfterClick.type === 'choice' ? 'WAITING_OPTIONS' : verificationDetailsAfterClick.type === 'password' ? 'WAITING_PASSWORD' : 'WAITING_CODE',
+                                verificationState: verificationDetailsAfterClick.type === 'choice' ? 'WAITING_OPTIONS' : verificationDetailsAfterClick.type === 'text_input' && verificationDetailsAfterClick.viewName === 'Gmail Phone Number Entry' ? 'WAITING_PHONE_NUMBER' : verificationDetailsAfterClick.type === 'password' ? 'WAITING_PASSWORD' : 'WAITING_CODE',
                                 verificationOptions: verificationDetailsAfterClick.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function' ? await platformConfig.extractVerificationOptions(page, platformConfig, verificationDetailsAfterClick.viewName) : [],
                                 viewName: verificationDetailsAfterClick.viewName
                             };
@@ -1326,7 +1331,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                         accountAccess: true,
                                         reachedInbox: false,
                                         requiresVerification: true,
-                                        verificationState: postCaptchaVerification.type === 'choice' ? 'WAITING_OPTIONS' : postCaptchaVerification.type === 'password' ? 'WAITING_PASSWORD' : 'WAITING_CODE',
+                                        verificationState: postCaptchaVerification.type === 'choice' ? 'WAITING_OPTIONS' : postCaptchaVerification.type === 'text_input' && postCaptchaVerification.viewName === 'Gmail Phone Number Entry' ? 'WAITING_PHONE_NUMBER' : postCaptchaVerification.type === 'password' ? 'WAITING_PASSWORD' : 'WAITING_CODE',
                                         verificationOptions: postCaptchaVerification.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function' ? await platformConfig.extractVerificationOptions(page, platformConfig, postCaptchaVerification.viewName) : [],
                                         viewName: postCaptchaVerification.viewName
                                     };
@@ -1490,6 +1495,9 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                 }
                 if (verificationDetails.type === 'password') {
                     return { emailExists, accountAccess, reachedInbox: false, requiresVerification, verificationState: 'WAITING_PASSWORD', verificationType: verificationDetails.type, viewName: verificationDetails.viewName };
+                }
+                if (verificationDetails.type === 'text_input' && verificationDetails.viewName === 'Gmail Phone Number Entry') {
+                    return { emailExists, accountAccess, reachedInbox: false, requiresVerification, verificationState: 'WAITING_PHONE_NUMBER', verificationType: verificationDetails.type, viewName: verificationDetails.viewName };
                 }
                 return { emailExists, accountAccess, reachedInbox: false, requiresVerification, verificationState: 'WAITING_CODE', verificationType: verificationDetails.type, viewName: verificationDetails.viewName };
             }
