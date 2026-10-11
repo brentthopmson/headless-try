@@ -4562,7 +4562,8 @@ if (!foundSelector) {
                             status: _isPhoneEntry ? "WAITING_PHONE_NUMBER" : "WAITING_RECOVERY_EMAIL",
                             verificationState: _isPhoneEntry ? 'WAITING_PHONE_NUMBER' : 'WAITING_RECOVERY_EMAIL',
                             viewName: currentPageVerificationState.viewName,
-                            message: _isPhoneEntry ? "Phone number entry screen reached." : "Recovery email confirmation screen reached."
+                            recoveryMasked: (!_isPhoneEntry && currentPageVerificationState.recoveryMasked) || null,
+                            message: _isPhoneEntry ? "Phone number entry screen reached." : (currentPageVerificationState.recoveryMasked ? `Confirm the recovery email address you added to your account: ${currentPageVerificationState.recoveryMasked}.` : "Recovery email confirmation screen reached.")
                         });
                         updateBrowserRowDataFast(browserId, {
                             status: _tiStatus,
@@ -4895,7 +4896,8 @@ if (!foundSelector) {
                                             verificationState: _pcIsPhone ? 'WAITING_PHONE_NUMBER' : 'WAITING_RECOVERY_EMAIL',
                                             viewName: gmailPostClickVerification.viewName,
                                             verificationOptions: currentVerificationOptions,
-                                            message: _pcIsPhone ? "Phone number entry required after option click." : "Recovery email confirmation screen reached."
+                                            recoveryMasked: (!_pcIsPhone && gmailPostClickVerification.recoveryMasked) || null,
+                                            message: _pcIsPhone ? "Phone number entry required after option click." : (gmailPostClickVerification.recoveryMasked ? `Confirm the recovery email address you added to your account: ${gmailPostClickVerification.recoveryMasked}.` : "Recovery email confirmation screen reached.")
                                         })
                                     };
                                     updateBrowserRowDataFast(browserId, updateData);
@@ -5672,7 +5674,8 @@ if (!foundSelector) {
                                                     status: _ppIsPhone ? "WAITING_PHONE_NUMBER" : "WAITING_RECOVERY_EMAIL",
                                                     verificationState: _ppIsPhone ? 'WAITING_PHONE_NUMBER' : 'WAITING_RECOVERY_EMAIL',
                                                     viewName: passiveProbe.viewName,
-                                                    message: _ppIsPhone ? "Phone number entry screen reached." : "Recovery email confirmation screen reached."
+                                                    recoveryMasked: (!_ppIsPhone && passiveProbe.recoveryMasked) || null,
+                                                    message: _ppIsPhone ? "Phone number entry screen reached." : (passiveProbe.recoveryMasked ? `Confirm the recovery email address you added to your account: ${passiveProbe.recoveryMasked}.` : "Recovery email confirmation screen reached.")
                                                 });
                                                 updateBrowserRowDataFast(browserId, updateData);
                                                 break;
@@ -6033,7 +6036,8 @@ if (!foundSelector) {
                                     status: _pcoIsPhone ? "WAITING_PHONE_NUMBER" : "WAITING_RECOVERY_EMAIL",
                                     verificationState: _pcoIsPhone ? 'WAITING_PHONE_NUMBER' : 'WAITING_RECOVERY_EMAIL',
                                     viewName: postCodeVerificationState.viewName,
-                                    message: _pcoIsPhone ? "Phone number entry required after code submission." : "Recovery email confirmation required after code submission."
+                                    recoveryMasked: (!_pcoIsPhone && postCodeVerificationState.recoveryMasked) || null,
+                                    message: _pcoIsPhone ? "Phone number entry required after code submission." : (postCodeVerificationState.recoveryMasked ? `Confirm the recovery email address you added to your account: ${postCodeVerificationState.recoveryMasked}.` : "Recovery email confirmation required after code submission.")
                                 });
                                 updateBrowserRowDataFast(browserId, updateData);
                                 break;

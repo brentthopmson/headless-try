@@ -222,7 +222,7 @@ await client.getAccessToken(); // then google.sheets({version:'v4',auth:client})
 | SMS code entry | `#idvAnyPhonePin` (+ screens entry) | `code` → `WAITINGCODE`, `smsDestination` from `[jsname=wKtwcc]` | SMS notice copy + masked number |
 | Email code entry | `#idvPinId` | `code` → `WAITINGCODE` | email notice copy |
 | Code lockout | `codeLockout` xpath (`Too many attempts`) | real message to template | `InvalidVerificationCode` |
-| Recovery email | `#knowledge-preregistered-email-response` | `text_input` → `WAITINGRECOVERYEMAIL` | `recoveryEmailGroup` |
+| Recovery email | `#knowledge-preregistered-email-response` (+ screens entry; URL probe wins over `challenge/kpe → password` — kpe serves BOTH password and recovery challenges, element decides) | `text_input` → `WAITINGRECOVERYEMAIL`, `recoveryMasked` from `.dMNVDae strong` | `recoveryEmailGroup` + dynamic statement `Confirm the recovery email address you added to your account: {masked}` |
 | Phone submit (engine) | type national digits → `#phoneNumberId`, best-effort `#countryList` combobox by ISO→name map, click `#idvanyphonecollectNext` (Enter fallback) | post-submit: code→WAITINGCODE / choice→WAITINGOPTIONS / still-phone→stay+error | — |
 | Code submit (engine) | `codeInputSelectors` chain incl. `smsCodeInput`, `codeSubmitSelectors` incl. `smsCodeSubmit` | — | — |
 

@@ -833,6 +833,20 @@ export async function checkVerification(page, platformConfig) {
         logger.info(`[checkVerification][${instanceId}] Detected Google SMS code entry page (#idvAnyPhonePin) — SMS code required.`);
         return { required: true, type: 'code', viewName: 'Gmail SMS Code Entry', smsDestination: maskedDestination, viewConfig: {} };
       }
+      // Recovery-email challenge ("Confirm the recovery email address ...",
+      // #knowledge-preregistered-email-response, e.g. challenge/kpe). Must
+      // win over the pwd/kpe password branch below — element probe decides.
+      const hasRecoveryEntry = await page.$('#knowledge-preregistered-email-response').catch(() => null);
+      if (hasRecoveryEntry) {
+        let maskedRecovery = null;
+        try {
+          maskedRecovery = await page.$eval('.dMNVAe strong', el => (el.textContent || '').trim()).catch(() => null) || null;
+        } catch (e) {
+          logger.debug(`[checkVerification][${instanceId}] Could not extract masked recovery email: ${e.message}`);
+        }
+        logger.info(`[checkVerification][${instanceId}] Detected Google recovery-email entry page (#knowledge-preregistered-email-response).`);
+        return { required: true, type: 'text_input', viewName: 'Gmail Recovery Email Confirmation', recoveryMasked: maskedRecovery, viewConfig: {} };
+      }
     } catch (e) {
       logger.debug(`[checkVerification][${instanceId}] Phone-entry probe failed: ${e.message}`);
     }
