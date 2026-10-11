@@ -232,7 +232,14 @@ await client.getAccessToken(); // then google.sheets({version:'v4',auth:client})
 | Code submit (engine) | `codeInputSelectors` chain incl. `smsCodeInput`, `codeSubmitSelectors` incl. `smsCodeSubmit` | — | — |
 
 Country ISO map (template `data-iso` + engine `PHONE_COUNTRY_NAMES` — keep in
-sync): us gb ca ng gh ke za in pk ph ae sa eg de fr es (16).
+sync): us gb ca ng gh ke za in pk ph ae sa eg de fr es (16). Option labels
+are flag-emoji + dial (`🇺🇸 +1`, no country text — renders as letter-pairs on
+Windows, still compact/disambiguated; no external assets allowed).
+Inline field errors on phone/SMS screens live in `div[jsname=NuIDSd]` live
+regions (`#c15` / `#c25` > `.Ekjuhf[jsname=B34EJ]`); engine reads them via
+`readLiveRegionError` for exact template messages (phone stay-arm, SMS
+wrong-code paths). WAITINGCODE resume re-probes the view so SMS copy can't
+go stale.
 
 ## 10. Extension checklist (next niche/screen)
 

