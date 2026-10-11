@@ -28,7 +28,11 @@ export const platformConfigs = {
             // REAL message instead of the generic "Incorrect verification code".
             codeLockout: "//*[contains(text(), 'Too many attempts') or contains(text(), 'Please try again later')]",
             recoveryEmailInput: "#knowledge-preregistered-email-response",
-            recoveryEmailNext: "#knowledge-preregistered-email-next"
+            recoveryEmailNext: "#knowledge-preregistered-email-next",
+            // Google "Verify it's you — Enter a phone number to get a text message
+            // with a verification code" screen (challenge/iap): phone number entry.
+            phoneNumberInput: "#phoneNumberId",
+            phoneNumberNext: "#idvanyphonecollectNext"
         },
         captchaConfig: {
             urlPatterns: [/\/challenge\/recaptcha/, /\/signin\/challenge\//],
@@ -167,6 +171,14 @@ export const platformConfigs = {
                 requiresTextInput: true,
                 match: {
                     selector: ['#knowledge-preregistered-email-response']
+                }
+            },
+            {
+                name: 'Gmail Phone Number Entry',
+                requiresVerification: true,
+                requiresTextInput: true,
+                match: {
+                    selector: ['#phoneNumberId']
                 }
             },
             {

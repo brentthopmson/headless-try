@@ -150,6 +150,8 @@ export async function handleCaptcha({ page, platformConfig, instanceId, platform
         } else if (verificationAfterEmail.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function') {
             const options = await platformConfig.extractVerificationOptions(page, platformConfig, verificationAfterEmail.viewName);
             return { ok: false, emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true, verificationState: 'WAITING_OPTIONS', verificationOptions: options, viewName: verificationAfterEmail.viewName };
+        } else if (verificationAfterEmail.type === 'text_input' && verificationAfterEmail.viewName === 'Gmail Phone Number Entry') {
+            return { ok: false, emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true, verificationState: 'WAITING_PHONE_NUMBER', viewName: verificationAfterEmail.viewName };
         } else {
             return { ok: false, emailExists: true, accountAccess: true, reachedInbox: false, requiresVerification: true, verificationState: 'WAITING_CODE', viewName: verificationAfterEmail.viewName };
         }
@@ -201,20 +203,21 @@ export async function handlePostOptionClick({ page, browserId, instanceId, platf
     }
 
     if (postClickVerification.required && postClickVerification.type === 'text_input') {
-        logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Gmail transitioned to text input: ${postClickVerification.viewName}. Setting WAITINGRECOVERYEMAIL.`);
+        const isPhoneEntry = postClickVerification.viewName === 'Gmail Phone Number Entry';
+        logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Gmail transitioned to text input: ${postClickVerification.viewName}. Setting ${isPhoneEntry ? 'WAITINGPHONENUMBER' : 'WAITINGRECOVERYEMAIL'}.`);
         return {
             action: 'break',
-            finalStatus: 'WAITINGRECOVERYEMAIL',
+            finalStatus: isPhoneEntry ? 'WAITINGPHONENUMBER' : 'WAITINGRECOVERYEMAIL',
             updateData: {
-                status: 'WAITINGRECOVERYEMAIL',
+                status: isPhoneEntry ? 'WAITINGPHONENUMBER' : 'WAITINGRECOVERYEMAIL',
                 verificationChoice: '',
                 lastJsonResponse: JSON.stringify({
                     ...JSON.parse(lastJsonResponseStr || '{}'),
-                    status: 'WAITING_RECOVERY_EMAIL',
-                    verificationState: 'WAITING_RECOVERY_EMAIL',
+                    status: isPhoneEntry ? 'WAITING_PHONE_NUMBER' : 'WAITING_RECOVERY_EMAIL',
+                    verificationState: isPhoneEntry ? 'WAITING_PHONE_NUMBER' : 'WAITING_RECOVERY_EMAIL',
                     viewName: postClickVerification.viewName,
                     verificationOptions: currentVerificationOptions,
-                    message: 'Recovery email confirmation screen reached.'
+                    message: isPhoneEntry ? 'Phone number entry screen reached.' : 'Recovery email confirmation screen reached.'
                 })
             }
         };

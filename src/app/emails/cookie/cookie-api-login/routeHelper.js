@@ -811,6 +811,18 @@ export async function checkVerification(page, platformConfig) {
 
   // Google challenge URL detection: accounts.google.com/v3/signin/challenge/* pages
   if (currentUrl.includes('accounts.google.com') && currentUrl.includes('/challenge/')) {
+    // Phone-number entry ("Enter a phone number to get a text message with a
+    // verification code", e.g. challenge/iap) must win over the URL-based
+    // branches below — element probe is URL-agnostic.
+    try {
+      const hasPhoneEntry = await page.$('#phoneNumberId').catch(() => null);
+      if (hasPhoneEntry) {
+        logger.info(`[checkVerification][${instanceId}] Detected Google phone-number entry page (#phoneNumberId) — phone number required.`);
+        return { required: true, type: 'text_input', viewName: 'Gmail Phone Number Entry', viewConfig: {} };
+      }
+    } catch (e) {
+      logger.debug(`[checkVerification][${instanceId}] Phone-entry probe failed: ${e.message}`);
+    }
     if (currentUrl.includes('challenge/selection')) {
       logger.info(`[checkVerification][${instanceId}] Detected Google challenge/selection page — verification choice required.`);
       return { required: true, type: 'choice', viewName: 'Gmail Verification Choices', viewConfig: {} };
