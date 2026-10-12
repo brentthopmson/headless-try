@@ -22,7 +22,7 @@ import { requireFeature } from "../../../utils/featureGate.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { dispatchToServers } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getFirestickEmails, getPerformancePresets, updateCampaignSettings } from "../_shared/pipelineUtils.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getFirestickEmails, getPerformancePresets, updateCampaignSettings, getCampaignSettings } from "../_shared/pipelineUtils.js";
 import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
 import { calculateScheduleTimes } from "../../../utils/scheduleCalculator.js";
 import { detectEmailProvider } from "../../../utils/sendRateLimiter.js";
@@ -33,6 +33,44 @@ function embedCampaignIdentifier(subject, body, campaignId) {
   const identifierComment = `<!-- campaign:${campaignId} -->`;
   const taggedBody = body.includes(identifierComment) ? body : `${body}\n\n${identifierComment}`;
   return { subject: taggedSubject, body: taggedBody };
+}
+
+/**
+ * Per-server fan-out completion bookkeeping. Each scoped run registers its
+ * finished accounts under its serverScope; the campaign-level `status` column
+ * flips only once every account in the FULL list has been covered by some
+ * scope — no premature "completed" while sibling servers still run.
+ * @returns {Promise<{ allDone: boolean }>}
+ */
+async function finalizeScopedRun(campaignId, serverScope, scopedAccounts, finalStatus) {
+  try {
+    const fresh = await getCampaignSettings(campaignId);
+    if (!fresh) return { allDone: false };
+    const s = fresh.settings || {};
+    const done = s._scopedCompleted || {};
+    done[serverScope || "unknown"] = {
+      accounts: (scopedAccounts || []).map(String),
+      status: finalStatus || "completed",
+      at: new Date().toISOString(),
+    };
+    const covered = new Set();
+    Object.values(done).forEach(e => (e.accounts || []).forEach(id => covered.add(String(id))));
+    const full = (s._fullAccounts || s.accounts || []).map(String);
+    const allDone = full.length > 0 && full.every(id => covered.has(id));
+    await updateCampaignSettings(campaignId, { _scopedCompleted: done });
+    if (allDone && finalStatus) {
+      await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+        status: finalStatus,
+        updatedOn: new Date().toISOString(),
+      });
+      // Clear transient scope bookkeeping
+      await updateCampaignSettings(campaignId, { _scopedCompleted: {}, _fullAccounts: [] });
+    }
+    return { allDone };
+  } catch (err) {
+    logger.warn(`[execute-campaign] finalizeScopedRun failed for ${campaignId}: ${err.message}`);
+    return { allDone: false };
+  }
 }
 
 const STANDARD_88_COLUMNS = [
@@ -317,6 +355,28 @@ export async function POST(request) {
     const channel = settings.channel || "email";
     const userId = settings.userId || null;
 
+    // ── Per-server fan-out scope (GAS dispatchCampaignToServers) ──────────
+    // body.accountIds = this server's account subset; body.serverScope = the
+    // owning server URL (or 'fallback'). Absent → full-list legacy behavior.
+    // Scoping intersects with settings.accounts so a stale/malicious payload
+    // can never shoot accounts outside the campaign.
+    const scopedIds = Array.isArray(body.accountIds) ? body.accountIds.map(String) : null;
+    const serverScope = typeof body.serverScope === "string" && body.serverScope ? body.serverScope : null;
+    const isScopedRun = !!(scopedIds && scopedIds.length > 0);
+    if (isScopedRun) {
+      const fullAccounts = (settings.accounts || []).map(String);
+      settings._fullAccounts = fullAccounts;
+      settings.accounts = fullAccounts.filter(id => scopedIds.includes(id));
+      log.info(` Scoped run (serverScope=${serverScope}): ${settings.accounts.length}/${fullAccounts.length} accounts on this instance`);
+      if (settings.accounts.length === 0) {
+        return NextResponse.json({ success: true, message: "No accounts in scope for this server", emptyScope: true });
+      }
+      // Persist the full account list so finalizeScopedRun (fresh sheet read)
+      // can compute cross-server coverage even if settings.accounts is later
+      // narrowed. Merge-write keeps sibling scopes' bookkeeping intact.
+      await updateCampaignSettings(campaignId, { _fullAccounts: fullAccounts });
+    }
+
     // USER tier — monthly shootCampaign budget gates the email run before any
     // browser launches or CSV is downloaded. Social stage is gated per task
     // below; campaign starts are no longer quota-gated (plan row *Limit only).
@@ -369,10 +429,21 @@ export async function POST(request) {
         // The AI inbox watcher (interact-inbox) handles keyword discovery and
         // AI replies against the selected hub email accounts. Nothing to send here.
         log.info(` Interaction-only email campaign (no contact list) — marking execute complete, AI inbox watcher will drive interactions`);
-        await updateSheetRowApi("campaigns", "campaignId", campaignId, {
-          status: "completed",
-          updatedOn: new Date().toISOString()
-        });
+        if (isScopedRun) {
+          // Fan-out sibling scopes may still be finalizing — coverage-gated flip.
+          const { allDone } = await finalizeScopedRun(campaignId, serverScope, (settings.accounts || []).map(String), "completed");
+          if (allDone) {
+            await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+              status: "completed",
+              updatedOn: new Date().toISOString()
+            });
+          }
+        } else {
+          await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+            status: "completed",
+            updatedOn: new Date().toISOString()
+          });
+        }
         await updateCampaignSettings(campaignId, {
           executionStatus: "completed",
           campaignMode: "interactions-only",
@@ -891,20 +962,51 @@ export async function POST(request) {
       };
 
       settings.analytics = analytics;
-      const statusUpdate = {
-        settings: JSON.stringify(settings),
-        updatedOn: new Date().toISOString()
-      };
-      if (!pausedByAdmin) {
-        delete settings.lastProcessedRow;
-        statusUpdate.status = finalStatus;
-      } else {
-        // Preserve checkpoint so resume continues from where the pause interrupted.
-        settings.lastProcessedRow = startIndex + sentCount;
-        statusUpdate.settings = JSON.stringify(settings);
-        statusUpdate.status = "paused";
+      // Scoped runs: capture this server's account subset, restore the full
+      // account list before persisting settings (settings.accounts was
+      // narrowed to this server's subset in-memory only). _fullAccounts stays
+      // persisted so sibling scopes can compute coverage; finalizeScopedRun
+      // clears it once every account is covered.
+      const scopedRunAccounts = isScopedRun ? (settings.accounts || []).map(String) : null;
+      if (isScopedRun) {
+        settings.accounts = settings._fullAccounts || settings.accounts;
       }
-      await updateSheetRowApi("campaigns", "campaignId", campaignId, statusUpdate);
+      if (isScopedRun) {
+        // Merge-write (preserves sibling scopes' _scopedCompleted records —
+        // a full settings blob overwrite would wipe them).
+        const scopedUpdate = { analytics, accounts: settings.accounts };
+        if (pausedByAdmin) {
+          // Preserve checkpoint so resume continues from where the pause interrupted.
+          scopedUpdate.lastProcessedRow = startIndex + sentCount;
+          await updateCampaignSettings(campaignId, scopedUpdate);
+          await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+            status: "paused",
+            updatedOn: new Date().toISOString()
+          });
+        } else {
+          // lastProcessedRow: undefined → key dropped by JSON.stringify.
+          scopedUpdate.lastProcessedRow = undefined;
+          await updateCampaignSettings(campaignId, scopedUpdate);
+          // Status flips only once every account in the full list is covered.
+          await finalizeScopedRun(campaignId, serverScope, scopedRunAccounts, finalStatus);
+        }
+      } else {
+        const statusUpdate = {
+          settings: JSON.stringify(settings),
+          updatedOn: new Date().toISOString()
+        };
+        if (!pausedByAdmin) {
+          delete settings.lastProcessedRow;
+          statusUpdate.settings = JSON.stringify(settings);
+          statusUpdate.status = finalStatus;
+        } else {
+          // Preserve checkpoint so resume continues from where the pause interrupted.
+          settings.lastProcessedRow = startIndex + sentCount;
+          statusUpdate.settings = JSON.stringify(settings);
+          statusUpdate.status = "paused";
+        }
+        await updateSheetRowApi("campaigns", "campaignId", campaignId, statusUpdate);
+      }
 
       return NextResponse.json({
         success: true,
@@ -1284,11 +1386,29 @@ export async function POST(request) {
       }
 
       settings.analytics = analytics;
-      await updateSheetRowApi("campaigns", "campaignId", campaignId, {
-        settings: JSON.stringify(settings),
-        status: finalStatus,
-        updatedOn: new Date().toISOString()
-      });
+      // Scoped runs: capture this server's subset, restore the full account
+      // list before persisting (same pattern as the email path above).
+      const scopedRunAccounts = isScopedRun ? (settings.accounts || []).map(String) : null;
+      if (isScopedRun) {
+        settings.accounts = settings._fullAccounts || settings.accounts;
+      }
+      if (isScopedRun && !pausedByAdmin) {
+        // Merge-write (preserves sibling scopes' _scopedCompleted records —
+        // a full settings blob overwrite would wipe them). Status flips only
+        // once every account in the full list is covered.
+        await updateCampaignSettings(campaignId, {
+          analytics,
+          accounts: settings.accounts,
+        });
+        await finalizeScopedRun(campaignId, serverScope, scopedRunAccounts, finalStatus);
+      } else {
+        const socialStatusUpdate = {
+          settings: JSON.stringify(settings),
+          status: finalStatus,
+          updatedOn: new Date().toISOString()
+        };
+        await updateSheetRowApi("campaigns", "campaignId", campaignId, socialStatusUpdate);
+      }
 
       return NextResponse.json({
         success: true,

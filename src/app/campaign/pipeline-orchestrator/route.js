@@ -111,13 +111,22 @@ async function checkConcurrentLimit(userId) {
   }
 }
 
-async function triggerStage(campaignId, stage, settings) {
+async function triggerStage(campaignId, stage, settings, scope) {
   const config = STAGE_CONFIG[stage];
   const selfUrl = getSelfUrlWithFallback();
   let route = config.route;
   const log = logger.child({ campaignId, stage: 'orchestrator' });
 
   const body = { campaignId };
+
+  // Per-server fan-out scope: thread into the execute stage so it shoots only
+  // this instance's accounts (other instances get their own scoped trigger).
+  if (scope && stage === "execute") {
+    if (Array.isArray(scope.accountIds) && scope.accountIds.length > 0) {
+      body.accountIds = scope.accountIds;
+      body.serverScope = scope.serverScope || selfUrl;
+    }
+  }
 
   if (stage !== "execute") {
     const fileUrl = settings.fileUrl;
@@ -235,6 +244,15 @@ export async function POST(request) {
       return NextResponse.json({ success: false, error: "Campaign not found" }, { status: 404 });
     }
 
+    // Per-server fan-out scope (GAS dispatchCampaignToServers). Scoped runs
+    // use a same-instance in-memory lock only — cross-server parallel is
+    // intentional (disjoint account subsets).
+    const scopeAccountIds = Array.isArray(body.accountIds) && body.accountIds.length > 0
+      ? body.accountIds.map(String)
+      : null;
+    const scopeServer = typeof body.serverScope === "string" && body.serverScope ? body.serverScope : null;
+    const scope = scopeAccountIds ? { accountIds: scopeAccountIds, serverScope: scopeServer } : null;
+
     const { settings } = campaignData;
     settings._campaignStatus = campaignData.status;
 
@@ -327,21 +345,40 @@ export async function POST(request) {
       return NextResponse.json({ success: true, message: `${config.label} already processing`, waitingStage: stage });
     }
 
-    // Acquire per-campaign lock before triggering stage
+    // Acquire per-campaign lock before triggering stage.
+    // Scoped fan-out runs skip the shared sheet lock (siblings run in parallel
+    // on other instances by design) and keep a same-instance memory guard only.
     const serverlessId = getSelfId() || process.env.SERVERLESS_ID || "unknown";
-    const lockResult = await acquireCampaignLock(campaignId, serverlessId);
-    if (!lockResult.acquired) {
-      log.info(`Cannot acquire lock: ${lockResult.reason}`);
-      return NextResponse.json({
-        success: true,
-        message: `Campaign locked (${lockResult.reason}), skipping`,
-        locked: true,
-        lockReason: lockResult.reason,
-      });
+    let scopedMemKey = null;
+    if (scope) {
+      scopedMemKey = `${campaignId}::${scope.serverScope || serverlessId}`;
+      if (!globalThis.__scopedCampaignLocks) globalThis.__scopedCampaignLocks = new Map();
+      const scopedLocks = globalThis.__scopedCampaignLocks;
+      const held = scopedLocks.get(scopedMemKey);
+      if (held && (Date.now() - held.at) < 300_000) {
+        return NextResponse.json({
+          success: true,
+          message: `Scoped campaign already running on this instance`,
+          locked: true,
+          lockReason: "scoped_already_running",
+        });
+      }
+      scopedLocks.set(scopedMemKey, { at: Date.now() });
+    } else {
+      const lockResult = await acquireCampaignLock(campaignId, serverlessId);
+      if (!lockResult.acquired) {
+        log.info(`Cannot acquire lock: ${lockResult.reason}`);
+        return NextResponse.json({
+          success: true,
+          message: `Campaign locked (${lockResult.reason}), skipping`,
+          locked: true,
+          lockReason: lockResult.reason,
+        });
+      }
     }
 
     try {
-      const result = await triggerStage(campaignId, stage, settings);
+      const result = await triggerStage(campaignId, stage, settings, scope);
 
       if (!result || !result.success) {
         // If the route is still processing in background (fetch failed but route alive),
@@ -386,7 +423,7 @@ export async function POST(request) {
         if (nextResolution && nextResolution.action === "run") {
           const nextConfig = STAGE_CONFIG[nextResolution.stage];
           log.info(`Auto-advancing to ${nextConfig.label}`);
-          const nextResult = await triggerStage(campaignId, nextResolution.stage, updatedData.settings);
+          const nextResult = await triggerStage(campaignId, nextResolution.stage, updatedData.settings, scope);
           return NextResponse.json({
             success: true,
             message: `${config.label} complete, advanced to ${nextConfig.label}`,
@@ -404,7 +441,11 @@ export async function POST(request) {
         result,
       });
     } finally {
-      await releaseCampaignLock(campaignId, serverlessId);
+      if (scopedMemKey && globalThis.__scopedCampaignLocks) {
+        globalThis.__scopedCampaignLocks.delete(scopedMemKey);
+      } else {
+        await releaseCampaignLock(campaignId, serverlessId);
+      }
     }
 
   } catch (error) {

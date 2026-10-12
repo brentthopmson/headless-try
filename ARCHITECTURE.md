@@ -76,6 +76,9 @@ touches a browser — see [Limits & Rate Governance](#limits--rate-governance).*
 │  ├── cookieJSON / formattedCookie                                │
 │  ├── browserIdentity             (fingerprint JSON)              │
 │  ├── driveUrl                    (profile ZIP URL)               │
+│  ├── platform                    (WIRE / SOCIAL / BANK)          │
+│  ├── server                      (owning instance URL — stamped  │
+│  │                                at login; primary routing key)  │
 │  └── status                      (WAITINGCODE, COMPLETED, etc.)  │
 │                                                                   │
 │  CAMPAIGNS SHEET                                                 │
@@ -105,6 +108,69 @@ touches a browser — see [Limits & Rate Governance](#limits--rate-governance).*
 │       extractionLimit, shootContactsLimit, validateLimit, …)     │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Engine Routing (GAS → Serverless Fleet)
+
+Google Apps Script (GAS) is the control plane; the browser-shooting engine
+runs on a fleet of serverless instances. Every account-bound call must land on
+the **instance that owns the session** (browser state, profile ZIP, cookies
+live on that node's filesystem).
+
+### Registry
+
+- **Links sheet** rows (registered at creation with `category='LINK'`) hold one
+  row per serverless instance: `severlessURL`, `severlessStatus`,
+  `severlessHealth`, and (for platform rows) `platform` + `type`.
+- `getBestServerlessEndpoint(category, fallback, …)` picks a healthy instance
+  from this registry.
+- **Cookie sheet `server` column** is stamped at login
+  (`server: assignedServer || getSelfUrl()`) — the authoritative owner of that
+  account's session.
+
+### Category semantics
+
+| Registry category | Serves |
+|---|---|
+| `LINK` (+platform) | Template submission and **extractions** (`smartExtract`) |
+| `CAMPAIGN` | Shooting / campaign execution (`execute-campaign`, orchestrator) |
+
+`resolveEngineUrl` defaults to `requestingCategory='CAMPAIGN'` — extraction
+callers must **not** route through it without a `LINK`-category lookup, or the
+LINK rows are filtered out and the dead `CONFIG.EXTERNAL_API` fallback is hit.
+
+### Precedence chain (account-bound calls)
+
+1. **Cookie-row `server` column** (primary when the account is involved) —
+   `getServerForBrowserId(browserId)`.
+2. **Fleet registry** — `getBestServerlessEndpoint(…)` filtered by category +
+   platform (`WIRE→EMAIL`, `SOCIAL→SOCIAL`, `BANK→BANK`).
+3. **`CONFIG.EXTERNAL_API`** — static last-resort fallback (left as-is).
+
+### Multi-account fan-out
+
+A campaign touching accounts owned by **multiple instances** fans out per
+owning server — `dispatchCampaignToServers` groups accounts by owner (active
+registry check: `ACTIVE` + health ≠ `DOWN`), then fires one scoped trigger per
+server with `accountIds` + `serverScope` in the payload. The engine's
+`execute-campaign` intersects `body.accountIds` with `settings.accounts`
+(scoping can never shoot outside the campaign's list) and shoots only that
+subset. **Not first-account-wins** — GMAIL environment affinity: cookies +
+profile ZIP only exist on the owning instance.
+
+Coverage: each scoped run reports its finished accounts via
+`finalizeScopedRun`; the campaign-level `status` column flips only once every
+account in the full list is covered (no premature "completed" while siblings
+still run). Scoped runs use a same-instance in-memory lock only — cross-server
+parallel is intentional (disjoint account subsets).
+
+### Gotchas
+
+- `resolveEngineUrl` is CAMPAIGN-scoped by default; list/validate/enrich/
+  personalize calls (no session affinity) may use it, extractions must not.
+- Unmatched URL fallbacks still trust the requesting server (no registry row →
+  self), but fan-out only targets servers with an active registry row.
 
 ---
 
@@ -219,6 +285,13 @@ WAITING_EMAIL → WAITING_PASSWORD → WAITINGCODE → PROCESSING → COMPLETED
 
 ### Purpose
 After login, extract data from the platform: contacts, emails, financial info, personal info.
+
+### Routing
+GAS `runSmartExtract` resolves the engine URL via the **cookie-row `server`
+column first** (`getServerForBrowserId`), falling back to
+`getBestServerlessEndpoint(…, 'LINK', platform)` — extractions run on `LINK`
+registry rows, **not** `resolveEngineUrl` (CAMPAIGN-scoped default filters
+LINK rows out; see [Engine Routing](#engine-routing-gas--serverless-fleet)).
 
 ### Flow
 ```
@@ -684,6 +757,14 @@ Automated bulk outreach across contacts and accounts, driven by the orchestrator
 (Flow 6). The `execute` stage has two personalities — **7A email** and
 **7B social** — and the four social interaction routes also run standalone as
 **7C independent interaction flows**.
+
+### Routing
+GAS `createNewCampaign` / `executeCampaign` / `runCampaignPipeline` fan out per
+owning server (`dispatchCampaignToServers`): accounts are grouped by their
+cookie-row `server` column (active registry check) and each instance receives a
+scoped trigger (`accountIds` + `serverScope`) that shoots only its subset —
+coverage-gated status flip via `finalizeScopedRun` (see
+[Engine Routing](#engine-routing-gas--serverless-fleet)).
 
 ```
 ┌────────────────────────────────────────────────────────────┐
@@ -1293,13 +1374,18 @@ browser launch → execute → usage increments → cleanup (profileDir removed 
   `settingsValue2=expires=<epoch>` logs a warning once past. Env var remains
   bootstrap/fallback only.
 
-### Apps Script (`POST.js`, `LINKS.js`)
+### Apps Script (`POST.js`, `LINKS.js`, `CAMPAIGN.js`, `UTILITIES.js`)
 - `shootEmails(params)` — Forwards to `/emails/send-email`; derives `userId` from `params.userId` → auth token (`userId|role|ts|random`)
 - `verifyPageVisit(params)` (LINKS.js) — returns `{success, userId}` (project-row owner) for the Flask verify-login chain
 - `composeAIMessage(params)` — Forwards to `/emails/compose-email`
 - `runCampaignPipeline(params)` — Forwards to `/campaign/pipeline-orchestrator`
 - `pauseShoot / resumeShoot / stopShoot` — PropertiesService flags
 - `cleanupShootFlags / cleanupOldShootFlags` — Garbage collection
+- `getBestServerlessEndpoint(category, fallback, …)` (LINKS.js) — picks a healthy instance from the links-sheet registry (category/platform-filtered)
+- `resolveEngineUrl(path, params, …)` (CAMPAIGN.js) — CAMPAIGN-scoped endpoint resolution; list ops may use it, extractions must not (LINK rows filtered)
+- `resolveServerGroupsForAccounts / dispatchCampaignToServers / fireEngineTrigger` (CAMPAIGN.js) — per-owning-server fan-out for multi-account campaigns
+- `getServerForBrowserId / getPlatformForBrowserId` (UTILITIES.js) — cookie-row `server` / `platform` column reads (primary routing key)
+- Server stamping — login writes `server: assignedServer || getSelfUrl()` into the cookie row; `updateProcess` (LINKS.js) follows the same column-write pattern
 
 ### Flask backend (`pagetemplate_handler.py`)
 - `verify_page_visit` — passes `userId` through in the response
