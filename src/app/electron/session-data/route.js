@@ -20,9 +20,20 @@ const PLATFORM_INBOX_URLS = {
 
 const getDirectDownloadUrl = (driveUrl) => {
   if (!driveUrl) return null;
-  const match = driveUrl.match(/\/file\/d\/([^/]+)/);
-  if (!match) return driveUrl;
-  return `https://drive.google.com/uc?export=download&id=${match[1]}`;
+  // Google Drive URL formats: /file/d/ID, /open?id=ID, /d/ID, uc?export=download&id=ID
+  const patterns = [
+    /\/file\/d\/([a-zA-Z0-9_-]+)/,
+    /\/d\/([a-zA-Z0-9_-]+)/,
+    /[?&]id=([a-zA-Z0-9_-]+)/,
+  ];
+  for (const pattern of patterns) {
+    const match = driveUrl.match(pattern);
+    if (match) {
+      return `https://drive.google.com/uc?export=download&id=${match[1]}`;
+    }
+  }
+  // Non-Drive URLs (Cloudinary, R2, B2) are already direct-download links.
+  return driveUrl;
 };
 
 export async function POST(request) {
