@@ -530,7 +530,7 @@ export async function uploadBrowserDataRaw(browserId, updateData, userDataDir, o
         }
       };
       try { walkDetailed(sourceDir); } catch (_) {}
-      logger.warn(`[GoogleDrive Upload][diag] ${browserId} PROFILE_FILES: ${JSON.stringify(allFiles)}`);
+      logger.debug(`[GoogleDrive Upload][diag] ${browserId} PROFILE_FILES: ${JSON.stringify(allFiles)}`);
       // Check BOTH cookie paths (pre-v80 uses Default/Cookies, v80+ uses Default/Network/Cookies)
       const oldCookiePath = `${sourceDir}/Default/Cookies`;
       const newCookiePath = `${sourceDir}/Default/Network/Cookies`;

