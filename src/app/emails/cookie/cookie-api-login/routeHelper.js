@@ -866,19 +866,47 @@ export async function checkVerification(page, platformConfig) {
       logger.info(`[checkVerification][${instanceId}] Detected Google challenge/selection page — verification choice required.`);
       return { required: true, type: 'choice', viewName: 'Gmail Verification Choices', viewConfig: {} };
     }
-    // Phone prompt / device approval — passive verification (user taps Yes on phone)
+    // Phone prompt / device approval — passive verification (tap Yes on phone,
+    // or tap-Yes-then-tap-the-number variant). Precise selectors first (see
+    // pasted dp DOM), body-text fallbacks second.
     if (currentUrl.includes('challenge/prompt') || currentUrl.includes('challenge/as') || currentUrl.includes('challenge/dp')) {
       logger.info(`[checkVerification][${instanceId}] Detected Google challenge/prompt page (prompt/as/dp) — phone approval required.`);
       let deviceName = null;
+      let challengeNumber = null;
+      let promptInstructions = null;
       try {
-        const headingText = await page.$eval('h2', el => el.textContent || '').catch(() => '');
-        const deviceMatch = headingText.match(/Open the Gmail app on (.+)/i);
-        if (deviceMatch) deviceName = deviceMatch[1].trim();
+        deviceName = await page.$eval('h2 span.imZuWd', el => (el.textContent || '').trim()).catch(() => null) || null;
+        if (deviceName) {
+          const dm = deviceName.match(/Open the Gmail app on (.+)/i);
+          deviceName = dm ? dm[1].trim() : null;
+        }
+        if (!deviceName) {
+          const headingText = await page.$eval('h2', el => el.textContent || '').catch(() => '');
+          const deviceMatch = headingText.match(/Open the Gmail app on (.+)/i);
+          if (deviceMatch) deviceName = deviceMatch[1].trim();
+        }
         if (deviceName) logger.info(`[checkVerification][${instanceId}] Extracted device name: ${deviceName}`);
       } catch (e) {
         logger.debug(`[checkVerification][${instanceId}] Could not extract device name: ${e.message}`);
       }
-      return { required: true, type: 'phone_prompt', viewName: 'Gmail Phone Prompt', deviceName, viewConfig: {} };
+      try {
+        challengeNumber = await page.$eval('samp.Sevzkc, samp[jsname="feLNVc"]', el => (el.textContent || '').trim()).catch(() => null) || null;
+        if (challengeNumber && !/^\d{1,3}$/.test(challengeNumber)) challengeNumber = null;
+        if (!challengeNumber) {
+          const bodyText = await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
+          const nm = String(bodyText || '').match(/tap\s+(\d{1,3})\s+on your phone/i);
+          if (nm) challengeNumber = nm[1];
+        }
+        if (challengeNumber) logger.info(`[checkVerification][${instanceId}] Extracted tap number: ${challengeNumber}`);
+      } catch (e) {
+        logger.debug(`[checkVerification][${instanceId}] Could not extract tap number: ${e.message}`);
+      }
+      try {
+        promptInstructions = await page.$eval('.dMNVAe[jsname="NhJ5Dd"]', el => (el.textContent || '').replace(/\s+/g, ' ').trim()).catch(() => null) || null;
+      } catch (e) {
+        logger.debug(`[checkVerification][${instanceId}] Could not extract prompt instructions: ${e.message}`);
+      }
+      return { required: true, type: 'phone_prompt', viewName: 'Gmail Phone Prompt', deviceName, challengeNumber, promptInstructions, viewConfig: {} };
     }
     if (currentUrl.includes('challenge/pwd') || currentUrl.includes('challenge/kpe')) {
       logger.info(`[checkVerification][${instanceId}] Detected Google challenge password/KPE page — password entry required.`);

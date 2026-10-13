@@ -55,7 +55,9 @@ export const platformConfigs = {
                         listItems.forEach((li, index) => {
                             const link = li.querySelector('.VV3oRb');
                             if (link) {
-                                const text = link.textContent.trim();
+                                let text = '';
+                                try { text = (link.innerText || '').replace(/\s+/g, ' ').trim(); } catch (_) {}
+                                if (!text) text = link.textContent.trim();
                                 // Unavailable options stay visible but unclickable: Google
                                 // marks them aria-disabled and/or renders an
                                 // "Unavailable because of ..." note in the label.
@@ -63,6 +65,7 @@ export const platformConfigs = {
                                     || li.getAttribute('aria-disabled') === 'true'
                                     || /unavailable/i.test(text);
                                 const challengeType = link.getAttribute('data-challengetype');
+                                const challengeVariant = link.getAttribute('data-challengevariant');
                                 const actionType = link.getAttribute('data-action');
                                 const isAccountRecovery = link.getAttribute('data-accountrecovery') === 'true';
                                 let optionType = 'unknown';
@@ -71,15 +74,20 @@ export const platformConfigs = {
                                 } else if (challengeType === '39') {
                                     optionType = 'tap_yes';
                                 } else if (challengeType === '9') {
-                                    optionType = 'sms';
+                                    optionType = (challengeVariant === 'VOICE' ? 'voice_call' : 'sms');
                                 } else if (challengeType === '30') {
                                     optionType = 'email_code';
                                 } else if (challengeType === '42') {
                                     optionType = 'device_approval';
                                 } else if (challengeType === '12') {
                                     optionType = 'recovery_email';
+                                } else if (!challengeType && !actionType && !isAccountRecovery) {
+                                    optionType = 'help';
                                 }
-                                const requiresInput = (challengeType === '9' && text.includes('verification code'));
+                                // Only demand inline input when the input is actually
+                                // present: labels like "Get a verification code at…"
+                                // otherwise false-trigger the last-4-digits flow.
+                                const requiresInput = (challengeType === '9' && text.includes('verification code') && !!document.querySelector('#iProofPhone'));
                                 extracted.push({
                                     label: text,
                                     choiceIndex: (index + 1).toString(),
