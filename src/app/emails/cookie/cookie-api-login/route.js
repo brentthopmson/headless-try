@@ -5274,19 +5274,19 @@ if (!foundSelector) {
                 const _gmailMeta = _cachedRowForGmail.gmail || _existingLjr.gmail || _cachedLjr.gmail || null;
                 // Refresh the view identity: the row can resume WAITINGCODE while
                 // Google actually shows the SMS screen (stale email copy otherwise).
-                let _freshView = null, _freshSms = null;
+                let _freshView = null, _freshSms = null, _freshEmail = null;
                 try {
                     const _resumeProbe = await checkVerification(page, platformConfig).catch(() => ({ required: false }));
                     if (_resumeProbe.required && _resumeProbe.type === 'code' && _resumeProbe.viewName) {
                         _freshView = _resumeProbe.viewName;
                         _freshSms = _resumeProbe.smsDestination || null;
+                        _freshEmail = _resumeProbe.emailDestination || null;
                         if (_freshView !== (_existingLjr.viewName || _cachedLjr.viewName)) {
                             logger.info(`[processRow][${browserId}] WAITINGCODE resume: view refreshed to ${_freshView}.`);
                         }
                     }
                 } catch (_) {}
                 const _isSmsResume = _freshView === 'Gmail SMS Code Entry';
-                const _freshEmail = _resumeProbe.emailDestination || null;
                 updateData.lastJsonResponse = JSON.stringify({
                     ..._existingLjr,
                     ...(_gmailMeta ? { gmail: _gmailMeta } : {}),
