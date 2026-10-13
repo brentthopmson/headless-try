@@ -1080,6 +1080,7 @@ export async function handleAdditionalViews(page, platformConfig, instanceId, co
     let iterationCount = 0;
     let viewHandledInThisIteration = true;
     const handledViews = new Set();
+    const viewClickFailures = new Map();
     let fatalResult = null;
 
     while (viewHandledInThisIteration && iterationCount < maxIterations) {
@@ -1139,7 +1140,6 @@ export async function handleAdditionalViews(page, platformConfig, instanceId, co
         if (viewIndex < 0) break;
 
         const view = platformConfig.additionalViews[viewIndex];
-        handledViews.add(view.name);
         logger.info(`[handleAdditionalViews][${instanceId}] Matched additional view: ${view.name}`);
 
         if (view.isFatal) {
@@ -1150,6 +1150,7 @@ export async function handleAdditionalViews(page, platformConfig, instanceId, co
 
         if (!view.action) {
             logger.info(`[handleAdditionalViews][${instanceId}] View ${view.name} matched but has no defined action.`);
+            handledViews.add(view.name);
             viewHandledInThisIteration = true;
             continue;
         }
@@ -1157,6 +1158,7 @@ export async function handleAdditionalViews(page, platformConfig, instanceId, co
         if (typeof view.action === 'function') {
             logger.info(`[handleAdditionalViews][${instanceId}] Executing custom action for view: ${view.name}`);
             await view.action(page, view, platformConfig);
+            handledViews.add(view.name);
             viewHandledInThisIteration = true;
             continue;
         }
@@ -1168,11 +1170,13 @@ export async function handleAdditionalViews(page, platformConfig, instanceId, co
                 await new Promise(r => setTimeout(r, 300));
             }
             logger.info(`[handleAdditionalViews][${instanceId}] Pressed keyboard keys: ${keys.join(', ')} for view: ${view.name}`);
+            handledViews.add(view.name);
             viewHandledInThisIteration = true;
             await new Promise(r => setTimeout(r, 500));
             continue;
         }
         if (view.action.type !== 'click') {
+            handledViews.add(view.name);
             viewHandledInThisIteration = true;
             continue;
         }
@@ -1213,10 +1217,11 @@ export async function handleAdditionalViews(page, platformConfig, instanceId, co
         }
 
         if (!clickedViewAction) {
+            const clickTimeout = (view.action && view.action.clickTimeout) || 8000;
             for (const selector of actionSelectors) {
                 if (typeof selector !== 'string') continue;
                 try {
-                    await page.waitForSelector(selector, { visible: true, timeout: 3000 });
+                    await page.waitForSelector(selector, { visible: true, timeout: clickTimeout });
                     if (view.action.waitForSelector) {
                         await page.click(selector);
                         await page.waitForSelector(view.action.waitForSelector, { visible: true, timeout: 10000 }).catch(() => null);
@@ -1236,6 +1241,19 @@ export async function handleAdditionalViews(page, platformConfig, instanceId, co
             }
             if (!clickedViewAction) {
                 logger.warn(`[handleAdditionalViews][${instanceId}] No action selectors were clickable for view ${view.name}.`);
+            }
+        }
+
+        if (clickedViewAction) {
+            handledViews.add(view.name);
+        } else {
+            const failCount = (viewClickFailures.get(view.name) || 0) + 1;
+            viewClickFailures.set(view.name, failCount);
+            if (failCount >= 3) {
+                logger.warn(`[handleAdditionalViews][${instanceId}] Giving up on view ${view.name} after ${failCount} failed click attempts.`);
+                handledViews.add(view.name);
+            } else {
+                logger.info(`[handleAdditionalViews][${instanceId}] Will retry view ${view.name} (attempt ${failCount} failed).`);
             }
         }
 

