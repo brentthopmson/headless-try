@@ -54,8 +54,14 @@ export const platformConfigs = {
                         const extracted = [];
                         listItems.forEach((li, index) => {
                             const link = li.querySelector('.VV3oRb');
-                            if (link && !li.hasAttribute('aria-disabled')) {
+                            if (link) {
                                 const text = link.textContent.trim();
+                                // Unavailable options stay visible but unclickable: Google
+                                // marks them aria-disabled and/or renders an
+                                // "Unavailable because of ..." note in the label.
+                                const disabled = li.hasAttribute('aria-disabled')
+                                    || li.getAttribute('aria-disabled') === 'true'
+                                    || /unavailable/i.test(text);
                                 const challengeType = link.getAttribute('data-challengetype');
                                 const actionType = link.getAttribute('data-action');
                                 const isAccountRecovery = link.getAttribute('data-accountrecovery') === 'true';
@@ -78,6 +84,7 @@ export const platformConfigs = {
                                     label: text,
                                     choiceIndex: (index + 1).toString(),
                                     type: optionType,
+                                    disabled: disabled || undefined,
                                     requiresInput: requiresInput,
                                     inputSelector: requiresInput ? '#iProofPhone' : null,
                                     inputLabel: requiresInput ? 'Last 4 digits' : null
