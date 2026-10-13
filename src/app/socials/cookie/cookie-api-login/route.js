@@ -28,6 +28,7 @@ import {
     getDataAgeMs
 } from './routeHelper.js';
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
+import { STAGING_ROOT as SHARED_STAGING_ROOT } from "../../../../utils/paths.js";
 import { populateCache, setCachedRow, evictRow, getCachedRow } from '../../../../utils/cookieCache.js';
 import { identifySelf as identifyServerlessSelf, getSelfUrl } from '../../../../utils/serverlessTracker.js';
 import platformHelper from './platformHelper/main.js';
@@ -111,7 +112,7 @@ const DRIVE_FINALIZER_AWAIT_MS = parseInt(process.env.DRIVE_FINALIZER_AWAIT_MS |
 // segment scans, cleanup paths, and the external stale-segment cleaner never touch a profile
 // mid-upload. At close, the live browser dir is moved (or copied) here and the original path
 // is left empty; the upload reads ONLY this staged copy.
-const STAGING_ROOT = process.env.STAGING_ROOT || '/tmp/webfixx_uploading';
+const STAGING_ROOT = process.env.STAGING_ROOT || SHARED_STAGING_ROOT;
 // E-h: shared across duplicate module scopes. Next dev re-evaluates this route
 // module on HMR compiles while the old instance keeps its interval/timers alive;
 // module-local Sets let both instances select the same WAITING row and launch two

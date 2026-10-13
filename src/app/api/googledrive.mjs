@@ -8,6 +8,7 @@ import { Upload } from '@aws-sdk/lib-storage';
 import logger from '../../utils/logger.js'; // Use relative path for ES module
 import JSON5 from 'json5'; // Import json5 to parse GOOGLE_OAUTH2_JSON safely
 import { resolveRefreshToken, getCachedRefreshToken } from '../../utils/googleTokenSource.js';
+import { PROFILE_ROOT, STAGING_ROOT } from '../../utils/paths.js';
 
 // Environment variables for Google Drive (OAuth2)
 const GOOGLE_OAUTH2_JSON_STR = process.env.GOOGLE_OAUTH2_JSON;
@@ -261,12 +262,12 @@ const UPLOAD_RETRY_DELAY_MS = 5000; // 5 seconds
 // with. Scanning every segment is the durable fallback before we ever classify a profile
 // as gone (which would fail the upload permanently and lose the cookies).
 function resolveProfileDir(browserId) {
-  const parent = '/tmp/users_data';
+  const parent = PROFILE_ROOT;
   try {
     if (fs.existsSync(parent)) {
       for (const seg of fs.readdirSync(parent)) {
         if (seg.startsWith('.')) continue;
-        const candidate = `${parent}/${seg}/${browserId}`;
+        const candidate = path.join(parent, seg, browserId);
         if (fs.existsSync(candidate)) return candidate;
       }
     }
@@ -276,10 +277,10 @@ function resolveProfileDir(browserId) {
 
 // Clean the dedicated staging copy after an upload settles (success OR permanent). Transient
 // failures intentionally keep the staging dir so the queue's next retry can still zip it.
-// Staging lives OUTSIDE /tmp/users_data (route.js moves the profile there at close), so this
+// Staging lives OUTSIDE the profile root (route.js moves the profile there at close), so this
 // never conflicts with live profile dirs, segment scans, or the external segment cleaner.
 function cleanupStagingDir(sourceDir) {
-  if (!String(sourceDir).includes('/webfixx_uploading/')) return;
+  if (!sourceDir.startsWith(STAGING_ROOT + path.sep)) return;
   try {
     if (fs.existsSync(sourceDir)) {
       fs.rmSync(sourceDir, { recursive: true, force: true });
@@ -471,7 +472,7 @@ export async function uploadBrowserDataRaw(browserId, updateData, userDataDir, o
   // globalThis.__profileWriter, so the requested dir may be the wrong one while the real
   // profile lives under another segment. Resolve across all segments before classifying
   // the profile as gone (which would lose the cookies and mark a good run FAILED).
-  let sourceDir = userDataDir || `/tmp/users_data/${browserId}`;
+  let sourceDir = userDataDir || path.join(PROFILE_ROOT, browserId);
   if (!fs.existsSync(sourceDir)) {
     const resolved = resolveProfileDir(browserId);
     if (resolved) {

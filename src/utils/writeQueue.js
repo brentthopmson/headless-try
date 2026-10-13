@@ -4,6 +4,7 @@ import axios from 'axios';
 import { URLSearchParams } from 'url';
 import logger from './logger.js';
 import { notifyTeam } from './notifyTeam.js';
+import { PROFILE_ROOT } from './paths.js';
 import { stripFormulaColumns, FORMULA_PROTECTED_COLUMNS } from '../app/api/googlesheets.js';
 import {
   isQuotaError,
@@ -32,7 +33,7 @@ import { setCachedRow, getCachedRow } from './cookieCache.js';
 // The engine NEVER awaits the worker: enqueue() is synchronous and returns
 // immediately (Drive returns a promise resolved when the job finishes).
 
-const JOURNAL_PATH = path.join('/tmp', 'users_data', '.write_queue.json');
+const JOURNAL_PATH = path.join(PROFILE_ROOT, '.write_queue.json');
 const WORKER_INTERVAL_MS = 5000;
 const SHEET_MAX_PER_TICK = 5;
 const DRIVE_MIN_INTERVAL_MS = 10000;   // never start an upload <10s after the last one finished

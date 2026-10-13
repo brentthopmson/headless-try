@@ -52,15 +52,16 @@ import {
 import { sendTelegramMessage } from '../../../api/telegram.js';
 import { getProjectDetails, getSheetDataApi, stripFormulaColumns } from '../../../api/googlesheets.js'; // Import getProjectDetails
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
+import { PROFILE_ROOT, STAGING_ROOT as SHARED_STAGING_ROOT } from "../../../../utils/paths.js";
 import { PLATFORM_INBOX_URLS, TAB_WHITELIST, getCookieCaptureUrls, validateEmailAgainstStrictly } from './platformHelper/index.js';
 
 // ── Profile-deletion watchdog ──────────────────────────────────────────────────
-// Every in-process removal of a path under /tmp/users_data is logged with its call
+// Every in-process removal of a path under the profile root is logged with its call
 // site. Legitimate deletes already emit their own "[PROFILE] ... DELETING" line, so
 // any watchdog hit WITHOUT that pairing is the silent mid-run culprit that has been
 // destroying successful rows' profiles (2026-08-16 trial: dir vanished at 62.1s while
 // the browser was attached, then Chromium lazily recreated a fresh/empty one).
-const _PROFILE_ROOT = '/tmp/users_data';
+const _PROFILE_ROOT = PROFILE_ROOT;
 function _profileWatchdogPath(p) {
     const s = String(p || '');
     const i = s.indexOf(_PROFILE_ROOT);
@@ -106,12 +107,12 @@ const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || 
 // Per-worker segment so browser profile dirs are never shared between two Next.js workers
 // (or restarted processes) on the same container. A second worker must never be able to
 // delete the LIVE profile of a browser the first worker is driving — shared unscoped
-// /tmp/users_data/{browserId} dirs were the root cause of the production
+// profile-root/{browserId} dirs were the root cause of the production
 // "Aborting upload (profile gone)" losses (a duplicate launch hit ETXTBSY, fs.remove()'d
 // the dir the other session was still writing, and its finalizer then found dirExists=false).
 const WORKER_SEGMENT = `${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 function buildUserDataDir(browserId) {
-  return `/tmp/users_data/${WORKER_SEGMENT}/${browserId}`;
+  return path.join(PROFILE_ROOT, WORKER_SEGMENT, browserId);
 }
 // Resolves the REAL on-disk profile dir for a browserId, which can differ from
 // buildUserDataDir() when this module was hot-recompiled (Next dev re-imports the module
@@ -124,14 +125,14 @@ function resolveUserDataDir(browserId) {
     const candidates = [];
     const push = (d) => { if (d && !seen.has(d)) { seen.add(d); candidates.push(d); } };
     const writerSeg = globalThis.__profileWriter && globalThis.__profileWriter.get(browserId);
-    if (writerSeg) push(`/tmp/users_data/${writerSeg}/${browserId}`);
+    if (writerSeg) push(path.join(PROFILE_ROOT, writerSeg, browserId));
     push(buildUserDataDir(browserId));
     try {
-        const parent = '/tmp/users_data';
+        const parent = PROFILE_ROOT;
         if (fs.existsSync(parent)) {
             for (const seg of fs.readdirSync(parent)) {
                 if (seg.startsWith('.')) continue;
-                push(`/tmp/users_data/${seg}/${browserId}`);
+                push(path.join(PROFILE_ROOT, seg, browserId));
             }
         }
     } catch (_) {}
@@ -144,12 +145,12 @@ function resolveUserDataDir(browserId) {
 // PROCESSING_FINALIZING pending state and letting the durable queue finish it in the
 // background (the queue never gives up on transient failures; Drive→Cloudinary fallback).
 const DRIVE_FINALIZER_AWAIT_MS = parseInt(process.env.DRIVE_FINALIZER_AWAIT_MS || '120000', 10);
-// Dedicated staging root for COMPLETED-finalizer uploads. Lives OUTSIDE /tmp/users_data so
+// Dedicated staging root for COMPLETED-finalizer uploads. Lives OUTSIDE the profile root so
 // the segment machinery (resolve* profile scans, PROFILE-DELETE watchdog, writeQueue journal,
 // and the external stale-segment cleaner) never touches a profile mid-upload. At close, the
 // live browser dir is moved (or copied) here and the original segment path is left empty;
 // the upload reads ONLY this staged copy, so manipulated sessions and uploads never clash.
-const STAGING_ROOT = process.env.STAGING_ROOT || '/tmp/webfixx_uploading';
+const STAGING_ROOT = process.env.STAGING_ROOT || SHARED_STAGING_ROOT;
 const activeProcesses = globalThis.__activeProcesses || (globalThis.__activeProcesses = new Set());
 // jobMap: per-browserId Promise of the processRow job currently executing (launched by
 // processWaitingRows OR the wake-up handler). Unlike `activelyProcessing`, it is NOT
@@ -2774,8 +2775,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     _dirSeenMissing = true;
                     logger.warn(`[DIAG-profile][${browserId}] elapsed=${elapsed}s dirExists=FALSE mid-run (silent deletion) dir=${userDataDir}`);
                     try {
-                        const parent = '/tmp/users_data';
-                        const segDir = String(userDataDir).slice(0, String(userDataDir).lastIndexOf('/'));
+                        const parent = PROFILE_ROOT;
+                        const segDir = path.dirname(String(userDataDir));
                         const segs = fs.existsSync(parent) ? (fs.readdirSync(parent).filter(n => !n.startsWith('.')).join(',') || '(empty)') : 'unreadable';
                         const segListing = fs.existsSync(segDir) ? (fs.readdirSync(segDir).join(',') || '(empty)') : '(segment gone)';
                         logger.warn(`[DIAG-profile][${browserId}] DIAG vanish-context: segments=[${segs}] segmentDir=${segListing} expected=${userDataDir}`);
@@ -6735,14 +6736,14 @@ if (!foundSelector) {
                     logger.warn(`[UPLOAD][${browserId}] attempt caller=COMPLETED_FINALIZER status=${finalStatus} driveUrlBefore=${updateData.driveUrl || 'none'} dirExists=${userDataDir ? fs.existsSync(userDataDir) : false} segment=${WORKER_SEGMENT} pid=${process.pid} writer=${__writer} userDataDir=${userDataDir}`);
                     if (userDataDir && !fs.existsSync(userDataDir)) {
                         try {
-                            const parent = '/tmp/users_data';
+                            const parent = PROFILE_ROOT;
                             let segs = 'unreadable';
                             if (fs.existsSync(parent)) {
                                 segs = fs.readdirSync(parent).filter(n => !n.startsWith('.')).join(',') || '(empty)';
                             }
                             let writerDirs = 'n/a';
                             if (__writer !== 'none') {
-                                const writerSeg = `/tmp/users_data/${__writer}`;
+                                const writerSeg = path.join(PROFILE_ROOT, __writer);
                                 if (fs.existsSync(writerSeg)) {
                                     writerDirs = fs.readdirSync(writerSeg).join(',') || '(empty)';
                                 }
@@ -6831,9 +6832,9 @@ if (!foundSelector) {
                             }
                         }
                         // STAGED-PROFILE SEPARATION: immediately after close, MOVE (or copy) the
-                        // now-flushed profile into the dedicated staging root, OUTSIDE /tmp/users_data.
+                        // now-flushed profile into the dedicated staging root, OUTSIDE the profile root.
                         // The upload reads only this staged copy, so a segment rotation (dev HMR),
-                        // the external stale-segment cleaner, or any other /tmp/users_data consumer
+                        // the external stale-segment cleaner, or any other profile-root consumer    
                         // can never delete or clash with the profile while it is mid-upload. Move is
                         // atomic + instant on the same filesystem; copy is the fallback when a
                         // still-exiting process blocks the rename (Windows dev). If staging is

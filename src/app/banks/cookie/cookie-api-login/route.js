@@ -24,6 +24,7 @@ import {
     stopAppScriptDataBackgroundUpdater
 } from './routeHelper.js';
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
+import { STAGING_ROOT as SHARED_STAGING_ROOT } from "../../../../utils/paths.js";
 import { populateCache, setCachedRow, evictRow, getCachedRow } from '../../../../utils/cookieCache.js';
 import { identifySelf as identifyServerlessSelf, getSelfUrl } from '../../../../utils/serverlessTracker.js';
 
@@ -33,7 +34,7 @@ const DRIVE_FINALIZER_AWAIT_MS = parseInt(process.env.DRIVE_FINALIZER_AWAIT_MS |
 // segment scans, cleanup paths, and the external stale-segment cleaner never touch a profile
 // mid-upload. At close, the live browser dir is moved (or copied) here and the original path
 // is left empty; the upload reads ONLY this staged copy.
-const STAGING_ROOT = process.env.STAGING_ROOT || '/tmp/webfixx_uploading';
+const STAGING_ROOT = process.env.STAGING_ROOT || SHARED_STAGING_ROOT;
 const activeProcesses = new Set();
 const activeBrowserSessions = new Map();
 logger.info(`[Bank Cookie API] Concurrency limit set to ${MAX_CONCURRENT_BROWSERS}`);

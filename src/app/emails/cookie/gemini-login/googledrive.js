@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import archiver from 'archiver';
 import logger from '@/utils/logger.js'; // Assuming logger path alias
+import { PROFILE_ROOT } from '@/utils/paths.js';
 
 const KEY_FILE_PATH = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH;
 const DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
@@ -91,9 +92,9 @@ export async function uploadBrowserData(browserId) {
     return null;
   }
 
-  const sourceDir = `/tmp/users_data/${browserId}`;
+  const sourceDir = path.join(PROFILE_ROOT, browserId);
   const zipFileName = `${browserId}_profile_${Date.now()}.zip`; // Add timestamp for uniqueness
-  const zipFilePath = `/tmp/users_data/${zipFileName}`;
+  const zipFilePath = path.join(PROFILE_ROOT, zipFileName);
 
   logger.info(`[GoogleDrive Upload] Attempting to zip directory ${sourceDir} for ${browserId}...`);
 
