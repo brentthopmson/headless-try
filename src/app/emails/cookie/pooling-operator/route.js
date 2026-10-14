@@ -153,9 +153,19 @@ export async function POST(request) {
                     if (enginePickupStatuses.has(row.status)) {
                         const recentActivity = new Date(row.lastUserActivity || row.lastRun || row.timestamp);
                         const age = Date.now() - recentActivity.getTime();
-                        if (age < 8000) {
+                        // Only bridge when the activity is NEWER than the engine's last finish.
+                        // The engine stamps lastUserActivity on its own terminal writes (e.g. the
+                        // wrong-password error state) — if those counted as "user activity" the
+                        // fallback would keep engineProcessing=true for 8s after the engine is
+                        // already done, hiding the error from the template until long after the
+                        // Telegram alert went out. finishedAt later than activity means the
+                        // engine already consumed that input → release immediately.
+                        const finishedAt = globalThis.__engineFinishedAt?.get?.(browserId) || 0;
+                        if (age < 8000 && finishedAt <= recentActivity.getTime()) {
                             engineProcessing = true;
                             logger.info(`[pooling][${browserId}] Recent user activity (${age}ms ago). engineProcessing=true to protect template from re-render.`);
+                        } else if (age < 8000) {
+                            logger.info(`[pooling][${browserId}] Recent activity (${age}ms ago) already consumed by engine (finishedAt later) — not pinning.`);
                         }
                     }
                 }

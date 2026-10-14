@@ -161,6 +161,13 @@ const activeProcesses = globalThis.__activeProcesses || (globalThis.__activeProc
 // respawn path) short-circuits at processRow entry instead of launching a second browser
 // on the same profile.
 const jobMap = globalThis.__jobMap || (globalThis.__jobMap = new Map());
+// Per-browserId epoch of the last processRow exit (stamped in the finally). The pooling
+// operator compares this against lastUserActivity: the 8s anti-flash fallback may only pin
+// engineProcessing=true when the user activity is NEWER than the engine's last finish —
+// otherwise the engine's own terminal write (e.g. the wrong-password error state, which
+// stamps lastUserActivity) would re-arm the fallback and hide the very state it just
+// produced from the template for ~8s (long after the Telegram alert went out).
+const engineFinishedAt = globalThis.__engineFinishedAt || (globalThis.__engineFinishedAt = new Map());
 const activeBrowserSessions = globalThis.__activeBrowserSessions || (globalThis.__activeBrowserSessions = new Map());
 const passwordRetryCounts = globalThis.__passwordRetryCounts || (globalThis.__passwordRetryCounts = new Map());
 // Guards against a stray duplicate checkAccountAccess (e.g. spawned by a RETRY_TECHNICAL
@@ -5703,6 +5710,7 @@ if (!foundSelector) {
                                             try { await fs.remove(userDataDir); } catch (e) {}
                                         }
                                         // Transition to COMPLETED as the final terminal status.
+                                        finalStatus = "COMPLETED";
                                         updateData.status = "COMPLETED";
                                         break;
                                     }
@@ -5790,6 +5798,7 @@ if (!foundSelector) {
                                                 try { await fs.remove(userDataDir); } catch (e) {}
                                             }
                                             // Transition to COMPLETED as the final terminal status.
+                                            finalStatus = "COMPLETED";
                                             updateData.status = "COMPLETED";
                                             break;
                                         }
@@ -6000,6 +6009,7 @@ if (!foundSelector) {
                                             }
                                         }
                                         // Transition to COMPLETED as the final terminal status.
+                                        finalStatus = "COMPLETED";
                                         updateData.status = "COMPLETED";
                                         break; // Break the passive check loop
                                     } else {
@@ -6378,6 +6388,8 @@ if (!foundSelector) {
                                 logger.warn(`[PROFILE][${browserId}] DELETING userDataDir reason=WAITINGCODE_NO_CODE_INBOX status=COMPLETED driveUrl=${updateData.driveUrl || 'none'} wasUploaded=${uploadedBrowserData.has(browserId)}`);
                                 try { await fs.remove(userDataDir); } catch (e) {}
                             }
+                            // Transition to COMPLETED as the final terminal status.
+                            finalStatus = "COMPLETED";
                             updateData.status = "COMPLETED";
                             break;
                         }
@@ -7135,6 +7147,7 @@ if (!foundSelector) {
         clearInterval(dirHeartbeatInterval);
         logger.info(`[engineProcess][${browserId}] -FINALLY (cleanup)`);
         activelyProcessing.delete(browserId);
+        engineFinishedAt.set(browserId, Date.now());
         // Release the per-browser single-flight lock. Must happen here (this finally covers
         // every early `return` path in the body) and ONLY here — the interval's stale-cleanup
         // and the POST catch must never release it, or a peer run re-admits the same
@@ -7195,6 +7208,24 @@ if (!foundSelector) {
             await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
         }
 
+        // FINAL-STATUS GUARD: a row whose profile is already uploaded (driveUrl set) is done —
+        // flip PROCESSING_FINALIZING to COMPLETED before the terminal write. Paths that close
+        // the browser and upload inline can leave finalStatus at PROCESSING_FINALIZING while
+        // browserFullyClosed=true skips the main finalizer that normally performs this
+        // conversion; without this guard the row is written PROCESSING_FINALIZING + driveUrl
+        // and processWaitingRows never re-picks it (permanent orphan stuck in the sheet).
+        // PROCESSING_FINALIZING WITHOUT driveUrl (upload still pending in the background
+        // queue) is intentionally left untouched so the durable worker can finish it.
+        if (finalStatus === "PROCESSING_FINALIZING" && updateData.driveUrl) {
+            finalStatus = "COMPLETED";
+            updateData.status = "COMPLETED";
+            try {
+                updateData.lastJsonResponse = JSON.stringify({
+                    ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "COMPLETED"
+                });
+            } catch (_) { /* keep original lastJsonResponse */ }
+            logger.warn(`[processRow][${browserId}] Final-status guard: PROCESSING_FINALIZING + driveUrl present → COMPLETED.`);
+        }
         const finalSheetUpdate = { ...updateData };
         // Restore email/password from function scope for terminal states only (COMPLETED/FAILED).
         // WAITING states already updated the sheet directly via updateBrowserRowDataFast; restoring here
