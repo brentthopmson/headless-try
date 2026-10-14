@@ -137,7 +137,8 @@ export async function POST(request) {
                 // user to type it again — it will submit it automatically. Keep the template in
                 // loading so it never flickers out of the loading state into the waiting form.
                 const autoSubmittable = (row.status === "WAITINGPASSWORD" && row.password && String(row.password).trim() !== '')
-                    || (row.status === "WAITINGEMAIL" && row.email && String(row.email).trim() !== '');
+                    || (row.status === "WAITINGEMAIL" && row.email && String(row.email).trim() !== '')
+                    || (row.status === "WAITINGCODE" && row.verificationCode && String(row.verificationCode).trim() !== '');
                 if (autoSubmittable) {
                     engineProcessing = true;
                     logger.info(`[pooling][${browserId}] ${row.status} already has the credential in cache. engineProcessing=true (engine will submit it automatically).`);
