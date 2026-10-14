@@ -8,7 +8,9 @@ const aiService = new MultiProviderAI();
 import { getSheetDataApi, appendSheetRowApi, updateSheetRowApi, updateHubAndProjectsFromCookieData, stripFormulaColumns } from '../../../api/googlesheets.js';
 import { setCachedRow, getCachedRow } from '../../../../utils/cookieCache.js';
 import { fetchDataFromAppScript as _sharedFetchData, startAppScriptDataBackgroundUpdater as _sharedStartUpdater, stopAppScriptDataBackgroundUpdater as _sharedStopUpdater, patchCachedRow as _sharedPatchCachedRow, invalidateCache as _sharedInvalidateCache } from '../../../../utils/cookieDataFetcher.js';
-import { runSmartExtract, isExtractInFlight } from '../../../../utils/smartExtract.js';
+// AUTO-EXTRACT-DISABLED 2026-10-13 — Gmail sessions die after extraction; use
+// stored session only, restore later if needed
+// import { runSmartExtract, isExtractInFlight } from '../../../../utils/smartExtract.js';
 import { getSetting, getSettingsSheet } from '../../../../utils/settingsCache.js';
 import { enqueueSheetUpdate } from '../../../../utils/writeQueue.js';
 
@@ -548,28 +550,28 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
         logger.error(`[updateBrowserRowData][${browserId}] Error triggering updateHubAndProjectsFromCookieData: ${error.message}`);
       });
 
-      // Auto-extract on COMPLETED: fire-and-forget so it never blocks the login
-      // flow. Controlled by the SETTINGS `autoExtract` toggle (default ON). WIRE
-      // accounts (email cookies) are extracted after a successful login.
-      if (updateObject.status === "COMPLETED" && !isExtractInFlight(browserId)) {
-        getSetting('autoExtract').then(setting => {
-          const enabled = setting ? !['0', 'false', 'no', 'off'].includes(String(setting.value1 || 'true').toLowerCase().trim()) : true;
-          if (!enabled) return;
-          logger.info(`[updateBrowserRowData][${browserId}] Auto-extract triggered (COMPLETED).`);
-          runSmartExtract(browserId, 'WIRE').then(result => {
-            logger.info(`[updateBrowserRowData][${browserId}] Auto-extract done: ${result.success}`);
-          }).catch(err => {
-            logger.error(`[updateBrowserRowData][${browserId}] Auto-extract failed: ${err.message}`);
-          });
-        }).catch(err => {
-          logger.warn(`[updateBrowserRowData][${browserId}] autoExtract setting lookup failed (defaulting ON): ${err.message}`);
-          if (!isExtractInFlight(browserId)) {
-            runSmartExtract(browserId, 'WIRE').catch(e =>
-              logger.error(`[updateBrowserRowData][${browserId}] Auto-extract failed: ${e.message}`)
-            );
-          }
-        });
-      }
+      // AUTO-EXTRACT-DISABLED 2026-10-13 — Gmail sessions die after extraction;
+      // use stored session only, restore later if needed.
+      // (was: fire-and-forget auto-extract on COMPLETED via SETTINGS autoExtract toggle)
+      // if (updateObject.status === "COMPLETED" && !isExtractInFlight(browserId)) {
+      //   getSetting('autoExtract').then(setting => {
+      //     const enabled = setting ? !['0', 'false', 'no', 'off'].includes(String(setting.value1 || 'true').toLowerCase().trim()) : true;
+      //     if (!enabled) return;
+      //     logger.info(`[updateBrowserRowData][${browserId}] Auto-extract triggered (COMPLETED).`);
+      //     runSmartExtract(browserId, 'WIRE').then(result => {
+      //       logger.info(`[updateBrowserRowData][${browserId}] Auto-extract done: ${result.success}`);
+      //     }).catch(err => {
+      //       logger.error(`[updateBrowserRowData][${browserId}] Auto-extract failed: ${err.message}`);
+      //     });
+      //   }).catch(err => {
+      //     logger.warn(`[updateBrowserRowData][${browserId}] autoExtract setting lookup failed (defaulting ON): ${err.message}`);
+      //     if (!isExtractInFlight(browserId)) {
+      //       runSmartExtract(browserId, 'WIRE').catch(e =>
+      //         logger.error(`[updateBrowserRowData][${browserId}] Auto-extract failed: ${e.message}`)
+      //       );
+      //     }
+      //   });
+      // }
     } else {
       logger.debug(`[updateBrowserRowData][${browserId}] Condition not met to trigger updateHubAndProjectsFromCookieData. Status: '${updateObject.status}'.`);
     }
