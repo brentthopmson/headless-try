@@ -2124,6 +2124,21 @@ async function phaseWaitingRecoveryEmail(browserId, browser, page, email, platfo
                 }
             }
 
+            // Cache-status check first: only terminal states represent a real external
+            // change. The engine writes WAITINGRECOVERYEMAIL to cache only, so the
+            // sheet's stale status (e.g. WAITINGPASSWORD from a pre-transition write
+            // racing the fetch) must never be treated as an exit — mirroring the
+            // WAITINGCODE/WAITINGOPTIONS fix.
+            const TERMINAL_RECOVERY_POLL_STATUSES = ["COMPLETED", "PROCESSING_FINALIZING", "FAILED"];
+            let cachedStatusForRecoveryPoll = null;
+            try { cachedStatusForRecoveryPoll = getCachedRow(browserId)?.status; } catch (_) {}
+            if (cachedStatusForRecoveryPoll && TERMINAL_RECOVERY_POLL_STATUSES.includes(cachedStatusForRecoveryPoll)) {
+                logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Status changed externally to ${cachedStatusForRecoveryPoll}. Exiting loop.`);
+                finalStatus = cachedStatusForRecoveryPoll;
+                if (finalStatus === "FAILED") pollingTimedOut = true;
+                break;
+            }
+
             const checkData = await fetchDataFromAppScript(1, 30000, false);
             const checkHeaders = checkData[0];
             const checkColumnIndexes = getColumnIndexes(checkHeaders);
@@ -2153,9 +2168,11 @@ async function phaseWaitingRecoveryEmail(browserId, browser, page, email, platfo
                 if (sheetRecovery && String(sheetRecovery).trim() !== "") recoveryEmailValue = String(sheetRecovery).trim();
             }
 
-            if (currentSheetStatus !== "WAITINGRECOVERYEMAIL") {
+            // Sheet-status fallback guard only when the cache had no status entry to trust.
+            if (!cachedStatusForRecoveryPoll && TERMINAL_RECOVERY_POLL_STATUSES.includes(currentSheetStatus)) {
                 logger.info(`[processRow][${browserId}][WAITINGRECOVERYEMAIL] Status changed externally to ${currentSheetStatus}. Exiting loop.`);
                 finalStatus = currentSheetStatus;
+                if (finalStatus === "FAILED") pollingTimedOut = true;
                 break;
             }
 
@@ -2461,14 +2478,27 @@ async function phaseWaitingPhoneNumber(browserId, browser, page, email, platform
             let phoneNumberValue = null;
             let phoneCountryDial = '';
             let phoneCountryIso = '';
+            let cachedStatusForPhonePoll = null;
             try {
                 const cachedRowForPhone = getCachedRow(browserId);
+                cachedStatusForPhonePoll = cachedRowForPhone?.status;
                 if (cachedRowForPhone?.phoneNumber && String(cachedRowForPhone.phoneNumber).trim() !== "") {
                     phoneNumberValue = String(cachedRowForPhone.phoneNumber).trim();
                 }
                 if (cachedRowForPhone?.phoneCountryDial) phoneCountryDial = String(cachedRowForPhone.phoneCountryDial).trim();
                 if (cachedRowForPhone?.phoneCountryIso) phoneCountryIso = String(cachedRowForPhone.phoneCountryIso).trim().toLowerCase();
             } catch (_) {}
+            // Only terminal states represent a real external change. The engine writes
+            // WAITINGPHONENUMBER to cache only, so the sheet's stale status (e.g.
+            // WAITINGPASSWORD from a pre-transition write racing the fetch) must never
+            // be treated as an exit — mirroring the WAITINGCODE/WAITINGOPTIONS fix.
+            const TERMINAL_PHONE_POLL_STATUSES = ["COMPLETED", "PROCESSING_FINALIZING", "FAILED"];
+            if (cachedStatusForPhonePoll && TERMINAL_PHONE_POLL_STATUSES.includes(cachedStatusForPhonePoll)) {
+                logger.info(`[processRow][${browserId}][WAITINGPHONENUMBER] Status changed externally to ${cachedStatusForPhonePoll}. Exiting loop.`);
+                finalStatus = cachedStatusForPhonePoll;
+                if (finalStatus === "FAILED") pollingTimedOut = true;
+                break;
+            }
             let checkRowForPhone = null;
             if (!phoneNumberValue) {
                 const checkData = await fetchDataFromAppScript(1, 30000, false);
@@ -2485,9 +2515,11 @@ async function phaseWaitingPhoneNumber(browserId, browser, page, email, platform
                 }
 
                 const currentSheetStatus = checkRowForPhone[columnIndexes['status']];
-                if (currentSheetStatus !== "WAITINGPHONENUMBER") {
+                // Sheet-status fallback guard only when the cache had no status entry to trust.
+                if (!cachedStatusForPhonePoll && TERMINAL_PHONE_POLL_STATUSES.includes(currentSheetStatus)) {
                     logger.info(`[processRow][${browserId}][WAITINGPHONENUMBER] Status changed externally to ${currentSheetStatus}. Exiting loop.`);
                     finalStatus = currentSheetStatus;
+                    if (finalStatus === "FAILED") pollingTimedOut = true;
                     break;
                 }
 
@@ -5285,11 +5317,21 @@ if (!foundSelector) {
             finalStatus = _recoveryResult.finalStatus;
             Object.assign(updateData, _recoveryResult.updateData);
             pollingTimedOut = _recoveryResult.pollingTimedOut;
+            // Email was already accepted before this phase — pre-seed so the generic
+            // email-error fallthrough (~6703) never clobbers a waiting-state return
+            // into WAITINGEMAILERROR + a false WRONG_EMAIL alert.
+            initialCheckResult.accountAccess = true;
+            initialCheckResult.emailExists = true;
         } else if (status === "WAITINGPHONENUMBER") {
             const _phoneResult = await phaseWaitingPhoneNumber(browserId, browser, page, email, platform, platformConfig, columnIndexes, instanceId, _timer);
             finalStatus = _phoneResult.finalStatus;
             Object.assign(updateData, _phoneResult.updateData);
             pollingTimedOut = _phoneResult.pollingTimedOut;
+            // Email + code were already accepted before this phase — pre-seed so the
+            // generic email-error fallthrough (~6703) never clobbers a waiting-state
+            // return into WAITINGEMAILERROR + a false WRONG_EMAIL alert.
+            initialCheckResult.accountAccess = true;
+            initialCheckResult.emailExists = true;
         } else if (status === "WAITINGCODE") {
             logger.warn(`[processRow][${browserId}] —RESUME WAITINGCODE— sheetStatus=${sheetStatus} verified=${row[columnIndexes['verified']] ?? 'n/a'} driveUrl=${updateData.driveUrl || 'none'} code=${row[columnIndexes['verificationCode']] ? String(row[columnIndexes['verificationCode']]).slice(0, 4) : 'none'}`);
             finalStatus = "WAITINGCODE";
