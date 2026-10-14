@@ -3045,7 +3045,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                     logger.info(`[processRow][${browserId}] Attempt ${i + 1}/${maxLaunchRetries} to launch browser.`);
                     browser = await launchBrowser({
                         userDataDir,
-                        headless: isDev ? false : "new",
+                        headless: process.env.SHOW_BROWSER === 'true' ? false : "new",
                         ipData,
                         realGeo: isGoogleDomain
                     });
