@@ -1,0 +1,182 @@
+   ▲ Next.js 14.0.4
+   - Local:        http://localhost:3001
+   - Environments: .env
+
+ ✓ Ready in 51.3s
+ ○ Compiling /socials/bulk-follow ...
+ ✓ Compiled /socials/bulk-follow in 93.4s (1652 modules)
+[INFO] 2026-10-15T21:44:02.895Z - [Chrome] UA major version: 155 full version: 155.0.8059.40 (exe=C:\Program Files\Google\Chrome\Application\chrome.exe)
+ ○ Compiling /socials/bulk-unfollow ...
+ ✓ Compiled /socials/bulk-unfollow in 4.7s (1652 modules)
+[INFO] 2026-10-15T21:44:53.832Z - [googleTokenSource] refresh token source=sheet len=103
+[INFO] 2026-10-15T21:44:59.850Z - [Chrome] UA major version: 155 full version: 155.0.8059.40 (exe=C:\Program Files\Google\Chrome\Application\chrome.exe)
+Hub accounts fetched: 2323 rows
+No matching platform found for: gmail
+No matching platform found for: outlook
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: outlook
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+Hub accounts fetched: 2323 rows
+No matching platform found for: gmail
+No matching platform found for: outlook
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: outlook
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+ ○ Compiling /socials/bulk-follow ...
+ ✓ Compiled /socials/bulk-follow in 3.1s (1652 modules)
+[INFO] 2026-10-15T21:48:02.405Z - [Chrome] UA major version: 155 full version: 155.0.8059.40 (exe=C:\Program Files\Google\Chrome\Application\chrome.exe)
+[INFO] 2026-10-15T21:48:24.175Z - [googleTokenSource] refresh token source=sheet len=103
+Hub accounts fetched: 2323 rows
+No matching platform found for: gmail
+No matching platform found for: outlook
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: outlook
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+[?25h

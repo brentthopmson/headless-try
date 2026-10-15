@@ -1,0 +1,147 @@
+   ▲ Next.js 14.0.4
+   - Local:        http://localhost:3001
+   - Environments: .env
+
+ ✓ Ready in 19.9s
+ ○ Compiling /campaign/interact-campaign ...
+ ✓ Compiled /campaign/interact-campaign in 22.6s (1645 modules)
+[INFO] 2026-10-15T09:14:32.902Z - [ServerlessTracker] Host header did not match any registered server. Running in local/dev mode — will process all rows.
+[INFO] 2026-10-15T09:14:33.574Z - [googleTokenSource] refresh token source=sheet len=103
+ ○ Compiling /campaign/interact-inbox ...
+ ✓ Compiled /campaign/interact-inbox in 2.5s (1702 modules)
+[INFO] 2026-10-15T09:14:46.818Z - [Chrome] UA major version: 155 full version: 155.0.8059.40 (exe=C:\Program Files\Google\Chrome\Application\chrome.exe)
+ ○ Compiling /campaign/validate-campaign ...
+ ✓ Compiled /campaign/validate-campaign in 839ms (1706 modules)
+[INFO] 2026-10-15T09:14:50.827Z - [Chrome] UA major version: 155 full version: 155.0.8059.40 (exe=C:\Program Files\Google\Chrome\Application\chrome.exe)
+[INFO] 2026-10-15T09:14:55.072Z - [ServerlessTracker] Host header did not match any registered server. Running in local/dev mode — will process all rows.
+ ○ Compiling /campaign/enrich-campaign ...
+ ✓ Compiled /campaign/enrich-campaign in 5.2s (1787 modules)
+[INFO] 2026-10-15T09:15:07.540Z - [ServerlessTracker] Host header did not match any registered server. Running in local/dev mode — will process all rows.
+ ○ Compiling /campaign/personalize-campaign ...
+ ✓ Compiled /campaign/personalize-campaign in 2.3s (1789 modules)
+[INFO] 2026-10-15T09:15:12.154Z - [ServerlessTracker] Host header did not match any registered server. Running in local/dev mode — will process all rows.
+ ○ Compiling /campaign/execute-campaign ...
+ ✓ Compiled /campaign/execute-campaign in 2.4s (1848 modules)
+[INFO] 2026-10-15T09:15:16.849Z - [Chrome] UA major version: 155 full version: 155.0.8059.40 (exe=C:\Program Files\Google\Chrome\Application\chrome.exe)
+[INFO] 2026-10-15T09:15:16.877Z - [Search Interact] Concurrency limit: 2
+[INFO] 2026-10-15T09:15:16.884Z - [Page Interact] Concurrency limit: 2
+[INFO] 2026-10-15T09:15:16.889Z - [Inbox Interact] Concurrency limit: 1
+[INFO] 2026-10-15T09:15:16.894Z - [Activities Interact] Concurrency limit: 1
+[INFO] 2026-10-15T09:15:20.982Z - [ServerlessTracker] Host header did not match any registered server. Running in local/dev mode — will process all rows.
+[INFO] 2026-10-15T09:15:22.538Z - [settingsCache] SETTINGS data loaded (71 rows).
+ ○ Compiling /campaign/pipeline-orchestrator ...
+ ✓ Compiled /campaign/pipeline-orchestrator in 4.9s (1849 modules)
+[INFO] 2026-10-15T09:15:36.926Z - [ServerlessTracker] Host header did not match any registered server. Running in local/dev mode — will process all rows.
+ ○ Compiling /socials/bulk-follow ...
+ ✓ Compiled /socials/bulk-follow in 34s (1652 modules)
+[INFO] 2026-10-15T12:39:44.069Z - [Chrome] UA major version: 155 full version: 155.0.8059.40 (exe=C:\Program Files\Google\Chrome\Application\chrome.exe)
+[INFO] 2026-10-15T12:40:05.720Z - [googleTokenSource] refresh token source=sheet len=103
+ ○ Compiling /socials/bulk-unfollow ...
+ ✓ Compiled /socials/bulk-unfollow in 8.2s (1654 modules)
+[INFO] 2026-10-15T12:40:17.214Z - [Chrome] UA major version: 155 full version: 155.0.8059.40 (exe=C:\Program Files\Google\Chrome\Application\chrome.exe)
+Hub accounts fetched: 2323 rows
+No matching platform found for: gmail
+No matching platform found for: outlook
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: outlook
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+Hub accounts fetched: 2323 rows
+No matching platform found for: gmail
+No matching platform found for: outlook
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: outlook
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: tiktok
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
+No matching platform found for: gmail
