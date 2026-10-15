@@ -295,11 +295,18 @@ export async function POST(request) {
     const hoursElapsed = (Date.now() - startedAt.getTime()) / 3600000;
     let replyCount = settings.interactionRepliesCount || 0;
     const maxReplies = settings.interactionMaxReplies || 100;
-    let planInteractionLimit = Infinity;
+    // Strict per-run interaction cap: unset/empty/0 in the Limits sheet
+    // (category=campaign row) blocks the watcher entirely — no Infinity
+    // fallback (was the last fail-open path for interactionLimit).
+    let planInteractionLimit = 0;
     try {
       const limits = await getCampaignLimits();
-      planInteractionLimit = limits.interactionLimit || Infinity;
-    } catch { /* unlimited if limits unavailable */ }
+      planInteractionLimit = limits.interactionLimit || 0;
+    } catch { /* 0 = block below */ }
+    if (planInteractionLimit <= 0) {
+      log.info(` interactionLimit is 0 or unavailable, blocking AI inbox watcher — set interactionLimit in the Limits sheet (category=campaign row)`);
+      return NextResponse.json({ success: true, limitReached: true, message: "Interact blocked: interactionLimit is 0 — set it in the Limits sheet" });
+    }
 
     if (hoursElapsed >= stopAfterHours) {
       await updateCampaignSettings(campaignId, { interactionStatus: "completed", interactionStoppedReason: "time_limit_reached" });

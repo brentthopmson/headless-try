@@ -169,15 +169,16 @@ export async function getPlanLimits(plan) {
     return parsePlanRow(sheet.headers, planRow) || {};
 }
 
-// Campaign row per-run caps fail closed (0 = block) — except interactionLimit
-// and accountSendPerRunLimit which protect accounts/SMTPs with per-run
-// defaults (10 interactions, 5 sends/account) when the cell is unset.
+// Campaign row per-run caps fail closed (0 = block) — every interaction
+// cap must be explicitly set in the Limits sheet (category=campaign row);
+// no magic defaults. Only accountSendPerRunLimit keeps a per-run default
+// (5 sends/account) as an account-protection floor.
 const CAMPAIGN_LIMIT_DEFAULTS = {
     validateLimit: 0,
     enrichLimit: 0,
     personalizeLimit: 0,
     shootCampaignLimit: 0,
-    interactionLimit: 10,
+    interactionLimit: 0,
     campaignConcurrentLimit: 3,
     accountSendPerRunLimit: 5,
 };

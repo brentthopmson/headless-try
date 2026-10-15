@@ -1064,24 +1064,26 @@ export async function POST(request) {
         throw new Error("No targets configured: add targeting keywords, upload a CSV with a SOCIALUSERNAME column, or enable an interaction hook (inbox works without a list)");
       }
 
-      // Step 4b: Fetch both shootCampaignLimit and interactionLimit from the cached Limits sheet
-      let shootCampaignLimit = 0;
+      // Step 4b: Fetch interactionLimit (the social per-run cap) from the
+      // cached Limits sheet. Strict fail-closed: unset/empty/0 blocks — the
+      // admin must set interactionLimit in the Limits sheet (category=campaign
+      // row). shootCampaignLimit is email-only ("Campaign sends") and must
+      // never gate social runs.
       let interactionLimit = 0;
       try {
         const campaignLimits = await getCampaignLimits();
-        shootCampaignLimit = campaignLimits.shootCampaignLimit;
         interactionLimit = campaignLimits.interactionLimit;
       } catch (limitErr) {
         log.warn(` Failed to fetch social limits, blocking: ${limitErr.message}`);
       }
 
-      if (shootCampaignLimit <= 0) {
-        log.info(` shootCampaignLimit is 0 or unavailable, blocking social execution`);
+      if (interactionLimit <= 0) {
+        log.info(` interactionLimit is 0 or unavailable, blocking social execution — set interactionLimit in the Limits sheet (category=campaign row)`);
         // Also write the campaign-level controlling key ('Limit Reached' is a
         // known GAS state that resolveCurrentStage skips) so the orchestrator
         // doesn't re-resolve execute and re-block on every poll.
         await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "Limit Reached" });
-        return NextResponse.json({ success: true, message: "Execution blocked: shootCampaignLimit is 0", limitReached: true });
+        return NextResponse.json({ success: true, message: "Execution blocked: interactionLimit is 0 — set it in the Limits sheet", limitReached: true });
       }
 
       log.info(` Queueing social tasks for ${activeProfiles.length} profiles (interactionLimit=${interactionLimit})...`);
@@ -1182,8 +1184,10 @@ export async function POST(request) {
       // Step 4d: Sort tasks by priority (inbox > activities > page > search)
       pendingSocialTasks.sort((a, b) => a.priority - b.priority);
 
-      // Step 4e: Execute tasks directly via social route handlers
-      const tasksToExecute = pendingSocialTasks.slice(0, Math.min(pendingSocialTasks.length, shootCampaignLimit));
+      // Step 4e: Execute tasks directly via social route handlers.
+      // pendingSocialTasks is already capped at interactionLimit during
+      // queueing (Step 4c) — no second cap.
+      const tasksToExecute = pendingSocialTasks;
       const executionResults = [];
       let executedCount = 0;
       let failedCount = 0;
@@ -1362,7 +1366,7 @@ export async function POST(request) {
       }
 
       // Step 4g: Single campaign status update
-      const limitReached = executedCount < pendingSocialTasks.length || executedCount >= shootCampaignLimit;
+      const limitReached = executedCount < pendingSocialTasks.length || executedCount >= interactionLimit;
       const finalStatus = pausedByAdmin ? "paused" : (limitReached ? "Limit Reached" : "completed");
       const analytics = {
         totalRows: tasksToExecute.length,

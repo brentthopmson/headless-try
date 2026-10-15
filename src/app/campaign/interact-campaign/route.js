@@ -94,6 +94,21 @@ export async function POST(request) {
       return NextResponse.json({ success: true, skipped: true, message: "Interact stage is email-only" });
     }
 
+    // Strict per-run interaction cap: unset/empty/0 in the Limits sheet
+    // (category=campaign row) blocks the interact stage entirely — covers
+    // both coordinator and worker dispatch below. No magic defaults.
+    let entryInteractionLimit = 0;
+    try {
+      const campaignLimits = await getCampaignLimits();
+      entryInteractionLimit = campaignLimits.interactionLimit;
+    } catch (limitErr) {
+      log.warn(` Failed to fetch interactionLimit: ${limitErr.message}`);
+    }
+    if (entryInteractionLimit <= 0) {
+      log.info(` interactionLimit is 0 or unavailable, blocking interact stage — set interactionLimit in the Limits sheet (category=campaign row)`);
+      return NextResponse.json({ success: true, limitReached: true, message: "Interact blocked: interactionLimit is 0 — set it in the Limits sheet" });
+    }
+
     if (serverBatch) {
       return await handleWorkerMode(campaignId, fileId, serverBatch, log);
     }
