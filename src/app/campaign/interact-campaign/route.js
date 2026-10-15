@@ -84,6 +84,16 @@ export async function POST(request) {
       return NextResponse.json({ success: false, error: "Invalid fileUrl or Drive file ID" }, { status: 400 });
     }
 
+    // This route monitors EMAIL replies (requires an EMAIL column + sent rows).
+    // Social campaigns run their interactions inside the execute stage — reject
+    // them here so a mis-staged flag can't crash on "No email column found".
+    const campaignData = await getCampaignSettings(campaignId);
+    const channel = campaignData?.settings?.channel || "email";
+    if (channel !== "email") {
+      log.info(`Interact stage is email-only — skipping for ${channel} campaign`);
+      return NextResponse.json({ success: true, skipped: true, message: "Interact stage is email-only" });
+    }
+
     if (serverBatch) {
       return await handleWorkerMode(campaignId, fileId, serverBatch, log);
     }

@@ -47,7 +47,13 @@ const STAGE_CONFIG = {
 };
 
 function resolveCurrentStage(settings) {
+  const channel = settings.channel || "email";
   for (const stage of STAGE_ORDER) {
+    // Social campaigns execute in one step (interactions run inside the
+    // execute stage) — mirror the frontend, which hides validate/enrich/
+    // personalize/interact for social. Never run email-only stages on them.
+    if (channel === "social" && stage !== "execute") continue;
+
     const config = STAGE_CONFIG[stage];
     const isStaged = settings[config.stagedField] === true;
     if (!isStaged) continue;
@@ -72,10 +78,14 @@ function resolveCurrentStage(settings) {
 
 /**
  * Check if the user has exceeded their concurrent campaign limit.
+ * The campaign being polled is excluded from the count — GAS marks it
+ * 'running' before dispatching, so counting it would make capacity
+ * limit-1 and permanently 429-block a campaign when limit=1.
  * @param {string} userId
+ * @param {string} [excludeCampaignId]
  * @returns {Promise<{ allowed: boolean, current: number, limit: number }>}
  */
-async function checkConcurrentLimit(userId) {
+async function checkConcurrentLimit(userId, excludeCampaignId) {
   if (!userId) return { allowed: true, current: 0, limit: 3 };
 
   try {
@@ -88,12 +98,16 @@ async function checkConcurrentLimit(userId) {
     const headers = campaignsResult.headers;
     const userIdIdx = headers.indexOf("userId");
     const statusIdx = headers.indexOf("status");
+    const campaignIdIdx = headers.indexOf("campaignId");
 
     if (userIdIdx === -1) return { allowed: true, current: 0, limit: concurrentLimit };
 
+    const excludeId = excludeCampaignId ? String(excludeCampaignId).trim() : null;
     // Count active campaigns for this user (running, processing, or staged)
     const activeStatuses = ["running", "processing", "staged"];
     const activeCampaigns = campaignsResult.data.filter(r => {
+      const rCampaignId = campaignIdIdx !== -1 ? String(r[campaignIdIdx] || "").trim() : "";
+      if (excludeId && rCampaignId === excludeId) return false;
       const rUserId = String(r[userIdIdx] || "").trim();
       const rStatus = String(r[statusIdx] || "").trim().toLowerCase();
       return rUserId === String(userId).trim() && activeStatuses.includes(rStatus);
@@ -229,6 +243,9 @@ async function triggerStage(campaignId, stage, settings, scope) {
 
 export async function POST(request) {
   let campaignId = null;
+  // Hoisted so the catch block can always log (body-parse errors happen
+  // before campaignId is known — a try-scoped `log` would ReferenceError).
+  let log = logger.child({ campaignId: null, stage: 'orchestrator' });
   try {
     await identifySelfFromHost(request.headers.get('host'));
     const body = await request.json();
@@ -238,7 +255,7 @@ export async function POST(request) {
       return NextResponse.json({ success: false, error: "Missing campaignId" }, { status: 400 });
     }
 
-    const log = logger.child({ campaignId, stage: 'orchestrator' });
+    log = logger.child({ campaignId, stage: 'orchestrator' });
     const campaignData = await getCampaignSettings(campaignId);
     if (!campaignData) {
       return NextResponse.json({ success: false, error: "Campaign not found" }, { status: 404 });
@@ -261,10 +278,10 @@ export async function POST(request) {
       return NextResponse.json({ success: true, message: "Campaign is paused", paused: true });
     }
 
-    // Check concurrent campaign limit per user
+    // Check concurrent campaign limit per user (exclude this campaign)
     const userId = settings.userId || body.userId;
     if (userId) {
-      const concurrentCheck = await checkConcurrentLimit(userId);
+      const concurrentCheck = await checkConcurrentLimit(userId, campaignId);
       if (!concurrentCheck.allowed) {
         log.info(`User ${userId} exceeded concurrent limit: ${concurrentCheck.current}/${concurrentCheck.limit}`);
         return NextResponse.json({
@@ -281,22 +298,30 @@ export async function POST(request) {
       // cap above still gates the start here.
     }
 
-    // Mail merge: merge subject/body templates with CSV data before any stage
+    // Mail merge: merge templates with CSV data before any stage. Only
+    // campaigns WITH a CSV need it — social-no-CSV and interactions-only
+    // email have nothing to merge (the route 400s without fileUrl and
+    // would retry every poll). Mark those done once so polls skip them.
     if (!settings.mailMerged) {
-      const mailMergeUrl = getSelfUrlWithFallback();
-      try {
-        const mailMergeResp = await fetch(`${mailMergeUrl}/campaign/mail-merge`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ campaignId, fileUrl: settings.fileUrl }),
-        });
-        const mailMergeResult = await mailMergeResp.json();
-        log.info(`Mail merge result: ${JSON.stringify(mailMergeResult).slice(0, 300)}`);
-        if (mailMergeResult.success) {
-          await updateCampaignSettings(campaignId, { mailMerged: true });
+      if (!settings.fileUrl) {
+        await updateCampaignSettings(campaignId, { mailMerged: true });
+        log.info(`No CSV (fileUrl) — mail merge not applicable, marked as done`);
+      } else {
+        const mailMergeUrl = getSelfUrlWithFallback();
+        try {
+          const mailMergeResp = await fetch(`${mailMergeUrl}/campaign/mail-merge`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ campaignId, fileUrl: settings.fileUrl }),
+          });
+          const mailMergeResult = await mailMergeResp.json();
+          log.info(`Mail merge result: ${JSON.stringify(mailMergeResult).slice(0, 300)}`);
+          if (mailMergeResult.success) {
+            await updateCampaignSettings(campaignId, { mailMerged: true });
+          }
+        } catch (mmErr) {
+          log.warn(`Mail merge failed (non-fatal): ${mmErr.message}`);
         }
-      } catch (mmErr) {
-        log.warn(`Mail merge failed (non-fatal): ${mmErr.message}`);
       }
     } else {
       log.info(`Mail merge already done, skipping`);
@@ -317,17 +342,25 @@ export async function POST(request) {
     const config = STAGE_CONFIG[stage];
 
     if (action === "fail") {
-      log.info(`Stage ${config.label} is failed, auto-resetting`);
-      const resetUpdates = {};
-      if (config.statusField) {
-        resetUpdates[config.statusField] = null;
-      }
-      resetUpdates.serverAssignments = settings.serverAssignments || {};
-      if (resetUpdates.serverAssignments[stage]) {
-        delete resetUpdates.serverAssignments[stage];
-      }
-      await updateCampaignSettings(campaignId, resetUpdates);
-      // Re-run this stage
+      // Terminal: never auto-reset+re-trigger here (the old fall-through
+      // retried the same failing stage on every poll — infinite loop).
+      // The row shows 'failed' so the UI can surface it; a manual re-trigger
+      // is required to clear the stage status and retry.
+      log.info(`Stage ${config.label} is failed — marking campaign failed`);
+      await notifyCampaignFailure({
+        campaignId,
+        stage,
+        channelType: 'campaign',
+        failedCount: 1,
+        reason: `${config.label} stage failed`,
+        details: { stageStatus: settings[config.statusField] },
+      });
+      await updateCampaignSettings(campaignId, { status: "failed" });
+      return NextResponse.json({
+        success: false,
+        message: `${config.label} stage failed`,
+        failedStage: stage,
+      });
     }
 
     if (action === "wait") {
@@ -399,6 +432,11 @@ export async function POST(request) {
           reason: `${config.label} stage failed`,
           details: result,
         });
+        // Controlling key: flip the campaign row out of 'running' so the
+        // UI shows a truthful terminal state instead of running forever.
+        if (stage !== "execute" || !result?.limitReached) {
+          await updateCampaignSettings(campaignId, { status: "failed" });
+        }
         return NextResponse.json({
           success: false,
           message: `${config.label} stage failed`,
@@ -416,11 +454,23 @@ export async function POST(request) {
         });
       }
 
+      // Terminal for this run: execute reported a cap/limit stop. Do NOT
+      // auto-advance (execute has no statusField and resolves to itself —
+      // advancing would re-trigger execute in the same invocation forever).
+      if (result.limitReached) {
+        return NextResponse.json({
+          success: true,
+          message: `${config.label} stopped: limit reached`,
+          limitReached: true,
+          completedStage: stage,
+        });
+      }
+
       const updatedData = await getCampaignSettings(campaignId);
       if (updatedData) {
         updatedData.settings._campaignStatus = updatedData.status;
         const nextResolution = resolveCurrentStage(updatedData.settings);
-        if (nextResolution && nextResolution.action === "run") {
+        if (nextResolution && nextResolution.action === "run" && nextResolution.stage !== stage) {
           const nextConfig = STAGE_CONFIG[nextResolution.stage];
           log.info(`Auto-advancing to ${nextConfig.label}`);
           const nextResult = await triggerStage(campaignId, nextResolution.stage, updatedData.settings, scope);
@@ -458,6 +508,9 @@ export async function POST(request) {
       error: error.message,
       details: { stack: error.stack },
     });
+    if (campaignId) {
+      try { await updateCampaignSettings(campaignId, { status: "failed" }); } catch { /* best-effort */ }
+    }
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }

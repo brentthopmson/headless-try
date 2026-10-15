@@ -384,7 +384,7 @@ export async function POST(request) {
       const userQuota = await checkUserQuota(userId, { keys: ["shootCampaignUsage"] });
       if (!userQuota.allowed) {
         log.warn(` [user-limit] Campaign ${campaignId} blocked: ${userQuota.reason}`);
-        await updateCampaignSettings(campaignId, { executionStatus: "completed" });
+        await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "Limit Reached" });
         return NextResponse.json({
           success: true,
           message: `Execution blocked: ${userQuota.reason}`,
@@ -517,7 +517,7 @@ export async function POST(request) {
           const scQuota = await checkUserQuota(userId, { keys: ["smtpCheckerUsage"] });
           if (!scQuota.allowed) {
             log.info(` [user-limit] ${scQuota.reason} — blocking SMTP validation for campaign ${campaignId}.`);
-            await updateCampaignSettings(campaignId, { executionStatus: "completed" });
+            await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "Limit Reached" });
             return NextResponse.json({
               success: true,
               message: `Execution blocked: ${scQuota.reason}`,
@@ -565,7 +565,7 @@ export async function POST(request) {
 
       if (shootCampaignLimit <= 0) {
         log.info(` shootCampaignLimit is 0 or unavailable, blocking execution`);
-        await updateCampaignSettings(campaignId, { executionStatus: "completed" });
+        await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "Limit Reached" });
         return NextResponse.json({ success: true, message: "Execution blocked: shootCampaignLimit is 0", limitReached: true });
       }
 
@@ -1077,7 +1077,10 @@ export async function POST(request) {
 
       if (shootCampaignLimit <= 0) {
         log.info(` shootCampaignLimit is 0 or unavailable, blocking social execution`);
-        await updateCampaignSettings(campaignId, { executionStatus: "completed" });
+        // Also write the campaign-level controlling key ('Limit Reached' is a
+        // known GAS state that resolveCurrentStage skips) so the orchestrator
+        // doesn't re-resolve execute and re-block on every poll.
+        await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "Limit Reached" });
         return NextResponse.json({ success: true, message: "Execution blocked: shootCampaignLimit is 0", limitReached: true });
       }
 
