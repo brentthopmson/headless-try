@@ -1,6 +1,7 @@
 ﻿import chromium from "@sparticuz/chromium-min";
 import readlineSync from 'readline-sync';
 import axios from 'axios';
+import { NextResponse } from "next/server";
 import {
   localExecutablePath,
   isDev,
@@ -11,6 +12,10 @@ import {
 import { applyIdentityToPage } from "@/utils/identity";
 import fs from 'fs';
 import qs from 'qs';
+import { getSheetDataApi, updateSheetRowApi } from "../../api/googlesheets.js";
+import { checkActionAllowed } from "../_shared/limits.js";
+import { getAccountUsage, updateAccountUsage, updateAccountInteractionData } from "../_shared/hubUpdater.js";
+import { resolveAccountGate } from "../_shared/accountGate.js";
 
 
 // Add a global variable to track if the process is running
@@ -44,31 +49,36 @@ async function launchLocalBrowser(cookieJson) {
   return browser;
 }
 
-// Helper function to save cookies back to Google Sheets
+// Helper function to save cookies back to the hub sheet. MERGE (upsert by
+// name+domain) so visiting one platform never drops the account's other
+// domains' cookies. The legacy Accounts GAS endpoint is gone (403).
 async function saveCookiesToSheet(cookieJson, rowId) {
   try {
-    const endpoint = "https://script.google.com/macros/s/AKfycbzQZxwzDMuGgu5PdkyYTMkaoLXHM4MR1SNBNqR17zXQA6QE_oPxogTW8Gi_OgUBuUu9/exec";
-    const updateData = {
-      action: 'updateData',
-      dbname: 'Accounts',
-      accountId: rowId, // Row ID to identify the row
-      cookie: cookieJson, // Updated cookies as a JSON string
-      follower: "cookieJson", // Updated cookies as a JSON string
-      following: "cookieJson", // Updated cookies as a JSON string
-      friends: "cookieJson", // Updated cookies as a JSON string
-      posts: "cookieJson", // Updated cookies as a JSON string
-      totalLike: "cookieJson", // Updated cookies as a JSON string
-      followedToday: "cookieJson", // Updated cookies as a JSON string
-      followStamp: "cookieJson", // Updated cookies as a JSON string
-    };
+    const incoming = JSON.parse(cookieJson);
+    if (!Array.isArray(incoming) || incoming.length === 0) return;
 
-    const response = await axios.post(endpoint, qs.stringify(updateData), {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
+    const sheet = await getSheetDataApi("hub");
+    if (!sheet.success) throw new Error(sheet.error || "hub read failed");
+    const idIdx = sheet.headers.indexOf("submissionId");
+    const cookieIdx = sheet.headers.indexOf("cookieJSON");
+    if (idIdx === -1 || cookieIdx === -1) throw new Error("hub sheet missing submissionId/cookieJSON columns");
+    const row = sheet.data.find(r => String(r[idIdx]).trim() === String(rowId).trim());
+    if (!row) throw new Error(`row ${rowId} not found in hub`);
+
+    let existing = [];
+    try { existing = JSON.parse(row[cookieIdx] || "[]"); } catch { existing = []; }
+    if (!Array.isArray(existing)) existing = [];
+
+    const keyOf = (c) => `${c.name}::${c.domain || ""}`;
+    const byKey = new Map(existing.map(c => [keyOf(c), c]));
+    for (const c of incoming) byKey.set(keyOf(c), c);
+    const merged = [...byKey.values()];
+
+    const res = await updateSheetRowApi("hub", "submissionId", rowId, {
+      cookieJSON: JSON.stringify(merged),
     });
-
-    console.log(`Cookies updated successfully for row ID ${rowId}`);
+    if (!res.success) throw new Error(res.error || "cookie write failed");
+    console.log(`Cookies merged and saved for ${rowId} (${merged.length} cookies)`);
   } catch (error) {
     console.error(`Failed to update cookies for row ID ${rowId}:`, error.message);
   }
@@ -120,70 +130,16 @@ function waitForContinue() {
 }
 
 
-// Helper function to fetch data from App Script endpoint with retry logic
-async function fetchDataFromAppScript(retries = 3, timeout = 120000) {
-  const endpoint = "https://script.google.com/macros/s/AKfycbzQZxwzDMuGgu5PdkyYTMkaoLXHM4MR1SNBNqR17zXQA6QE_oPxogTW8Gi_OgUBuUu9/exec?action=getData&sheetname=Accounts&range=A1:BD";
-
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      // Attempt to fetch the data with an extended timeout
-      const response = await axios.get(endpoint, { timeout });
-      console.log(`Data fetched successfully on attempt ${attempt}`);
-      console.log(`Data: ${response}`);
-
-      return response.data;
-    } catch (error) {
-      console.error(`Attempt ${attempt} failed: ${error.message}`);
-      if (attempt === retries) {
-        throw new Error(`Failed to fetch data after ${retries} attempts.`);
-      }
-      console.log(`Retrying... (${attempt}/${retries})`);
-    }
+// Read the live hub sheet. The legacy Accounts GAS endpoint is dead (403 on
+// every call), so accounts (platform / cookieJSON / submissionId) now come
+// straight from the hub via the Sheets API.
+async function fetchAccountsFromHub() {
+  const result = await getSheetDataApi("hub");
+  if (!result.success || !result.headers) {
+    throw new Error(`Failed to fetch hub accounts: ${result.error || "unknown error"}`);
   }
-}
-
-// Helper function to fetch data from App Script endpoint with retry logic
-async function fetchLimitsDataFromAppScript(limitCategory, limitValue, retries = 3, timeout = 120000) {
-  const endpoint = "https://script.google.com/macros/s/AKfycbzQZxwzDMuGgu5PdkyYTMkaoLXHM4MR1SNBNqR17zXQA6QE_oPxogTW8Gi_OgUBuUu9/exec?action=getData&sheetname=Limits&range=A1:Z";
-  
-  // Fetch the data with retry logic
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      const response = await axios.get(endpoint, { timeout });
-      console.log(`Data fetched successfully on attempt ${attempt}`);
-      
-      const data = response.data;
-      const headers = data[0]; // The header row
-      const categoryColumnIndex = headers.indexOf("category"); // Assuming the category column is named "category"
-      const limitColumnIndex = headers.indexOf("headername"); // The column where limitValue should be found (replace "headername" with the actual column name)
-      
-      if (categoryColumnIndex === -1 || limitColumnIndex === -1) {
-        throw new Error("Category or limit column not found.");
-      }
-
-      // Find the row where the limitCategory matches the value in the "category" column
-      const categoryRow = data.find(row => row[categoryColumnIndex] === limitCategory);
-      
-      if (!categoryRow) {
-        console.error(`Category '${limitCategory}' not found.`);
-        return null;
-      }
-      
-      // Get the value from the corresponding row and column (based on limitValue)
-      const result = categoryRow[limitColumnIndex];
-
-      // Return the result
-      console.log(`Found value: ${result}`);
-      return result;
-      
-    } catch (error) {
-      console.error(`Attempt ${attempt} failed: ${error.message}`);
-      if (attempt === retries) {
-        throw new Error(`Failed to fetch data after ${retries} attempts.`);
-      }
-      console.log(`Retrying... (${attempt}/${retries})`);
-    }
-  }
+  console.log(`Hub accounts fetched: ${result.data.length} rows`);
+  return { headers: result.headers, data: result.data };
 }
 
 
@@ -198,7 +154,7 @@ function getColumnIndexes(headers) {
 
 
 // Function to handle platform-specific posting logic based on conditions
-async function handlePlatformLogic(platformData, platformName, content, browser) {
+async function handlePlatformLogic(platformData, platformName, content, browser, rowId) {
   const { contentId, jobType, contentType, shouldSend, title, longTitle, description, longDescription, imageUrls, videos, location, ticktokStamp, quoraStamp } = content;
 
   let page;
@@ -225,6 +181,7 @@ async function handlePlatformLogic(platformData, platformName, content, browser)
         await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 60000 }); // Wait for profile page to load
       } else {
         console.error("Profile button not found.");
+        return;
       }
 
       // Get the values of follower, following, totalLike from elements
@@ -236,62 +193,57 @@ async function handlePlatformLogic(platformData, platformName, content, browser)
 
       // Click the follower element and wait for modal to show (3 sec)
       const followerElement = await page.$('div[data-e2e="followers-count"]');
-      await followerElement.click();
-      await page.waitForTimeout(3000); // Wait for modal to show
+      if (followerElement) {
+        await followerElement.click();
+        await page.waitForTimeout(3000); // Wait for modal to show
+      } else {
+        console.error("Follower element not found.");
+        return;
+      }
 
       // Click "Suggested" tab
       const suggestedTab = await page.$('.suggested-tab-selector');
-      await suggestedTab.click();
-
-      // Fetch limit values from the App Script (limitCategory and limitValue)
-      const limitCategory = "tiktokLimit";
-      const limitValue = "hourlyFollowLimitValue"; 
-
-      const result = await fetchLimitsDataFromAppScript(limitCategory, limitValue);
-
-      // Check if limit value exists and proceed to follow or follow back accordingly
-      if (result && parseInt(result) > 0) {
-        const followLimit = parseInt(result);
-        let followCount = 0;
-
-        // Follow Back or Follow (based on the result value)
-        const usersToFollow = await page.$$('.user-to-follow'); // Modify the selector accordingly
-        for (const user of usersToFollow) {
-          if (followCount >= followLimit) break;
-
-          // Follow action (either follow or follow back based on the condition)
-          const followButton = await user.$('.follow-button-selector');
-          if (followButton) {
-            await followButton.click();
-            followCount++;
-          }
-        }
-
-        console.log(`Followed ${followCount} users, Limit: ${followLimit}`);
+      if (suggestedTab) {
+        await suggestedTab.click();
       } else {
-        console.log("No valid limit data found or limit exceeded.");
+        console.error("Suggested tab not found.");
+        return;
       }
 
-      // Update the timestamp and data in Google Sheets
-      const currentTimestamp = new Date().toISOString();
-      const updateData = {
-        action: 'updateData',
-        dbname: 'Accounts',
-        accountId: rowId,
+      // PLATFORM-tier unfollow gate (Limits sheet via _shared/limits) — replaces
+      // the removed legacy `category` lookup, whose GAS endpoint is dead (403).
+      let unfollowCount = 0;
+      let usage = (await getAccountUsage(rowId)).interactionUsage || {};
+
+      const usersToUnfollow = await page.$$('.user-to-follow'); // Modify the selector accordingly
+      for (const user of usersToUnfollow) {
+        const gate = await checkActionAllowed("TikTok", "unfollow", usage);
+        if (!gate.allowed) {
+          console.log(`Unfollow limit reached for ${rowId}: ${gate.reason}`);
+          break;
+        }
+
+        const followButton = await user.$('.follow-button-selector');
+        if (followButton) {
+          await followButton.click();
+          unfollowCount++;
+          await updateAccountUsage(rowId, "unfollow");
+          usage = (await getAccountUsage(rowId)).interactionUsage || usage;
+        }
+      }
+
+      console.log(`Unfollowed ${unfollowCount} users for ${rowId}`);
+
+      // Persist run stats to the hub (the legacy Accounts sheet endpoint is gone).
+      await updateAccountInteractionData(rowId, {
+        lastOperation: "bulkUnfollow",
+        lastRun: new Date().toISOString(),
         follower: followerCount,
         following: followingCount,
         totalLike: totalLikeCount,
-        followedToday: followCount,
-        followStamp: currentTimestamp,
-      };
-
-      // Send the updated data to Google Sheets
-      await updateTimestamp(
-        'https://script.google.com/macros/s/AKfycbzQZxwzDMuGgu5PdkyYTMkaoLXHM4MR1SNBNqR17zXQA6QE_oPxogTW8Gi_OgUBuUu9/exec',
-        updateData,
-        3,
-        10000
-      );
+        unfollowedInRun: unfollowCount,
+        status: "ACTIVE",
+      });
 
       console.log("Updated data successfully for TikTok.");
 
@@ -406,8 +358,7 @@ async function runAutomation(platformsToRun, postContent) {
   isRunning = true; // Set the flag to prevent other instances from starting
 
   try {
-    const data = await fetchDataFromAppScript();
-    const headers = data[0];
+    const { headers, data } = await fetchAccountsFromHub();
     const columnIndexes = getColumnIndexes(headers);
     const platforms = [
       { name: "Facebook", url: "https://facebook.com" },
@@ -422,18 +373,15 @@ async function runAutomation(platformsToRun, postContent) {
       platformsToRun.includes(platform.name)
     );
 
-    for (let i = 1; i < data.length; i++) {
+    let processed = 0;
+    for (let i = 0; i < data.length; i++) {
       const row = data[i];
       const platformName = row[columnIndexes['platform']];
-      const cookieJson = row[columnIndexes['cookie']];
-      const followLimitReached = row[columnIndexes['followLimtReached']];
-      const rowId = row[columnIndexes['accountId']];
+      const cookieJson = row[columnIndexes['cookieJSON']];
+      const rowId = row[columnIndexes['submissionId']];
 
-      // Check if followLimitReached is "TRUE", and skip the current row if true
-      if (followLimitReached === true) {
-        console.log(`Skipping account: followLimitReached is TRUE for row ${i + 1}`);
-        continue;
-      }
+      // Non-social hub rows carry no platform — skip quietly.
+      if (!platformName) continue;
 
       // Check if rowId is defined (you can add additional checks here if needed)
       if (!rowId) {
@@ -441,10 +389,19 @@ async function runAutomation(platformsToRun, postContent) {
         continue;
       }
 
-      // Match platform with URL
-      const platformData = platforms.find(p => p.name === platformName);
+      // Match platform with URL (only the requested platforms run)
+      const platformData = selectedPlatforms.find(p => p.name === platformName);
       if (!platformData) {
         console.log(`No matching platform found for: ${platformName}`);
+        continue;
+      }
+
+      // ACCOUNT-tier status gate BEFORE any browser launch — CANCELLED blocks,
+      // RATE_LIMITED blocks until windows roll. Replaces the legacy
+      // followLimtReached flag (that column only existed in the dead sheet).
+      const statusGate = await resolveAccountGate(rowId, platformName);
+      if (statusGate.blocked) {
+        console.log(`Skipping account ${rowId}: account limits (${statusGate.reason || statusGate.status})`);
         continue;
       }
 
@@ -474,35 +431,39 @@ async function runAutomation(platformsToRun, postContent) {
       const content = { /* Your content object setup here */ };
 
       console.log(`Posting content for ${platformName}`);
-      await handlePlatformLogic(platformData, platformName, content, browser);
+      await handlePlatformLogic(platformData, platformName, content, browser, rowId);
+      processed++;
 
       await browser.close(); // Close browser after each account
     }
+    return { ok: true, rows: data.length, processed };
   } catch (error) {
     console.error("Error running automation:", error);
+    return { ok: false, error: error.message };
   } finally {
     isRunning = false;
   }
 }
 
+// On-demand entry point: runs ONE automation pass per request. The old
+// module-load auto-loop (runAutomationLoop) was removed — importing a route
+// must never start a background 15s interval that fires headed browsers and
+// blocks the event loop on readline-sync.
+export const dynamic = "force-dynamic";
 
-
-// Wrapper to run automation repeatedly every 2 minutes
-function runAutomationLoop() {
-  const platforms = ["Quora", "TikTok"]; // Platforms you want to post on
-  const postContent = "This is the content I'm posting!"; // Your post content
-
-  // Run the automation every 2 minutes (120000 ms)
-  setInterval(async () => {
-    try {
-      console.log("Running automation...");
-      await runAutomation(platforms, postContent);
-      console.log("Automation cycle complete.");
-    } catch (error) {
-      console.error("Error running automation:", error);
-    }
-  }, 15000); // 2 minutes interval
+export async function POST(request) {
+  try {
+    const body = await request.json().catch(() => ({}));
+    const platforms = Array.isArray(body.platforms) && body.platforms.length > 0
+      ? body.platforms
+      : ["Quora", "TikTok"];
+    const summary = await runAutomation(platforms, body.postContent || "");
+    const ok = !!(summary && summary.ok);
+    return NextResponse.json(
+      { success: ok, platforms, ...(summary || {}) },
+      { status: ok ? 200 : 500 }
+    );
+  } catch (e) {
+    return NextResponse.json({ success: false, error: e.message }, { status: 500 });
+  }
 }
-
-// Start the automation loop
-runAutomationLoop();
