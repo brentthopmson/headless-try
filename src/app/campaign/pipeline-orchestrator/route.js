@@ -90,7 +90,7 @@ async function checkConcurrentLimit(userId, excludeCampaignId) {
 
   try {
     const limits = await getCampaignLimits();
-    const concurrentLimit = limits.campaignConcurrentLimit || 3;
+    const concurrentLimit = limits.campaignConcurrentLimit || 1;
 
     const campaignsResult = await getSheetDataApi("campaigns");
     if (!campaignsResult.success) return { allowed: true, current: 0, limit: concurrentLimit };
@@ -454,10 +454,15 @@ export async function POST(request) {
         });
       }
 
-      // Terminal for this run: execute reported a cap/limit stop. Do NOT
+      // Terminal for this run: a stage reported a cap/limit stop. Do NOT
       // auto-advance (execute has no statusField and resolves to itself —
       // advancing would re-trigger execute in the same invocation forever).
+      // Single-point controlling-key write: any stage's block (execute,
+      // validate, enrich, personalize, interact) flips status so the UI shows
+      // 'Limit Reached' instead of polling forever. Idempotent — execute and
+      // interact already write the same value themselves.
       if (result.limitReached) {
+        await updateCampaignSettings(campaignId, { status: "Limit Reached" });
         return NextResponse.json({
           success: true,
           message: `${config.label} stopped: limit reached`,

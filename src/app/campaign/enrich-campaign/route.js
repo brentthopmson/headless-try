@@ -238,9 +238,13 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
 
   const dataRows = parsedRows.slice(1);
 
-  // Apply enrichLimit from Limits sheet
+  // Per-run cap from SETTINGS (enrichBatchLimit) — strict: missing key = block
   const campaignLimits = await getCampaignLimits();
-  if (campaignLimits.enrichLimit > 0 && dataRows.length > campaignLimits.enrichLimit) {
+  if (!(campaignLimits.enrichLimit > 0)) {
+    log.info(`enrichBatchLimit is 0 or unavailable, blocking enrichment - set enrichBatchLimit in the SETTINGS sheet`);
+    return NextResponse.json({ success: true, limitReached: true, message: "Enrichment blocked: enrichBatchLimit is 0 - set it in the SETTINGS sheet" });
+  }
+  if (dataRows.length > campaignLimits.enrichLimit) {
     dataRows.length = campaignLimits.enrichLimit;
     log.info(`enrichLimit (${campaignLimits.enrichLimit}) applied: capped to ${dataRows.length} rows`);
   }

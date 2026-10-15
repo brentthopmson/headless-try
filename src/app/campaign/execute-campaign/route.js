@@ -552,7 +552,7 @@ export async function POST(request) {
         }
       }
 
-      // Step 3b: Fetch plan limit (shootCampaignLimit) from the cached Limits sheet
+      // Step 3b: Fetch the per-run email cap from SETTINGS (shootingBatchLimit)
       let shootCampaignLimit = 0;
       let accountSendPerRunLimit = 0;
       try {
@@ -564,9 +564,9 @@ export async function POST(request) {
       }
 
       if (shootCampaignLimit <= 0) {
-        log.info(` shootCampaignLimit is 0 or unavailable, blocking execution`);
+        log.info(` shootingBatchLimit is 0 or unavailable, blocking execution - set shootingBatchLimit in the SETTINGS sheet`);
         await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "Limit Reached" });
-        return NextResponse.json({ success: true, message: "Execution blocked: shootCampaignLimit is 0", limitReached: true });
+        return NextResponse.json({ success: true, message: "Execution blocked: shootingBatchLimit is 0 - set it in the SETTINGS sheet", limitReached: true });
       }
 
       // Load firestick emails if warm-up is enabled
@@ -1065,10 +1065,12 @@ export async function POST(request) {
       }
 
       // Step 4b: Fetch interactionLimit (the social per-run cap) from the
-      // cached Limits sheet. Strict fail-closed: unset/empty/0 blocks — the
-      // admin must set interactionLimit in the Limits sheet (category=campaign
-      // row). shootCampaignLimit is email-only ("Campaign sends") and must
-      // never gate social runs.
+      // SETTINGS sheet (interactionBatchLimit). Strict fail-closed: unset/empty/
+      // 0 blocks — the admin must set interactionBatchLimit in the SETTINGS
+      // sheet. shootCampaignLimit/shootingBatchLimit is email-only ("Campaign
+      // sends") and must never gate social runs. Monthly spend stays gated by
+      // checkUserQuota(interactionUsage) per task; platform actions stay gated
+      // by the Limits platform rows vs per-account hub usage.
       let interactionLimit = 0;
       try {
         const campaignLimits = await getCampaignLimits();
@@ -1078,12 +1080,12 @@ export async function POST(request) {
       }
 
       if (interactionLimit <= 0) {
-        log.info(` interactionLimit is 0 or unavailable, blocking social execution — set interactionLimit in the Limits sheet (category=campaign row)`);
+        log.info(` interactionBatchLimit is 0 or unavailable, blocking social execution - set interactionBatchLimit in the SETTINGS sheet`);
         // Also write the campaign-level controlling key ('Limit Reached' is a
         // known GAS state that resolveCurrentStage skips) so the orchestrator
         // doesn't re-resolve execute and re-block on every poll.
         await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "Limit Reached" });
-        return NextResponse.json({ success: true, message: "Execution blocked: interactionLimit is 0 — set it in the Limits sheet", limitReached: true });
+        return NextResponse.json({ success: true, message: "Execution blocked: interactionBatchLimit is 0 - set it in the SETTINGS sheet", limitReached: true });
       }
 
       log.info(` Queueing social tasks for ${activeProfiles.length} profiles (interactionLimit=${interactionLimit})...`);

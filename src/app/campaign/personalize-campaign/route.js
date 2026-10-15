@@ -152,9 +152,13 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
 
   const dataRows = rows.slice(1);
 
-  // Apply personalizeLimit from Limits sheet
+  // Per-run cap from SETTINGS (personalizeBatchLimit) — strict: missing key = block
   const campaignLimits = await getCampaignLimits();
-  if (campaignLimits.personalizeLimit > 0 && dataRows.length > campaignLimits.personalizeLimit) {
+  if (!(campaignLimits.personalizeLimit > 0)) {
+    log.info(` personalizeBatchLimit is 0 or unavailable, blocking personalization - set personalizeBatchLimit in the SETTINGS sheet`);
+    return NextResponse.json({ success: true, limitReached: true, message: "Personalization blocked: personalizeBatchLimit is 0 - set it in the SETTINGS sheet" });
+  }
+  if (dataRows.length > campaignLimits.personalizeLimit) {
     dataRows.length = campaignLimits.personalizeLimit;
     log.info(` personalizeLimit (${campaignLimits.personalizeLimit}) applied: capped to ${dataRows.length} rows`);
   }

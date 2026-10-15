@@ -218,11 +218,15 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
 
   const dataRows = normalizedRows.slice(1);
 
-  // Apply validateLimit from Limits sheet
+  // Per-run cap from SETTINGS (validateBatchLimit) — strict: missing key = block
   const campaignLimits = await getCampaignLimits();
+  if (!(campaignLimits.validateLimit > 0)) {
+    log.info(` validateBatchLimit is 0 or unavailable, blocking validation - set validateBatchLimit in the SETTINGS sheet`);
+    return NextResponse.json({ success: true, limitReached: true, message: "Validation blocked: validateBatchLimit is 0 - set it in the SETTINGS sheet" });
+  }
   const originalCount = dataRows.length;
   let limitApplied = false;
-  if (campaignLimits.validateLimit > 0 && dataRows.length > campaignLimits.validateLimit) {
+  if (dataRows.length > campaignLimits.validateLimit) {
     dataRows.length = campaignLimits.validateLimit;
     limitApplied = true;
     log.info(` validateLimit (${campaignLimits.validateLimit}) applied: ${originalCount} → ${dataRows.length} rows`);

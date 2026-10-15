@@ -1,5 +1,6 @@
 import logger from "../../../utils/logger.js";
 import { getSheetDataApi } from '../../api/googlesheets.js';
+import { getSetting } from "../../../utils/settingsCache.js";
 import limitsCore from './limitsCore.js';
 import { getUserRecord } from './hubUpdater.js';
 
@@ -27,6 +28,7 @@ const ACTION_TYPES = [
     "likeOnStory", "likesOnPost", "likesOnComment",
     "commentOnComment", "commentOnStory", "commentOnPost",
     "follow", "unfollow", "coldMessage",
+    "inboxReply",
     "extract"
 ];
 
@@ -169,56 +171,47 @@ export async function getPlanLimits(plan) {
     return parsePlanRow(sheet.headers, planRow) || {};
 }
 
-// Campaign row per-run caps fail closed (0 = block) — every interaction
-// cap must be explicitly set in the Limits sheet (category=campaign row);
-// no magic defaults. Only accountSendPerRunLimit keeps a per-run default
-// (5 sends/account) as an account-protection floor.
-const CAMPAIGN_LIMIT_DEFAULTS = {
-    validateLimit: 0,
-    enrichLimit: 0,
-    personalizeLimit: 0,
-    shootCampaignLimit: 0,
-    interactionLimit: 0,
-    campaignConcurrentLimit: 3,
-    accountSendPerRunLimit: 5,
+// Per-run caps live in the SETTINGS sheet (operational batch keys), NOT the
+// Limits sheet — the Limits sheet only carries monthly plan quotas and
+// platform action policies. Strict: a missing/unparseable key yields 0 and the
+// calling stage blocks with an actionable message (no silent defaults), except
+// campaignConcurrentLimit which falls back to 1 (safety valve, not a spend
+// cap) and accountSendPerRunLimit which keeps a 5 sends/account floor as an
+// account-protection default.
+const CAMPAIGN_CAP_SETTINGS_KEYS = {
+    validateLimit: "validateBatchLimit",
+    enrichLimit: "enrichBatchLimit",
+    personalizeLimit: "personalizeBatchLimit",
+    shootCampaignLimit: "shootingBatchLimit",
+    interactionLimit: "interactionBatchLimit",
+    campaignConcurrentLimit: "campaignConcurrentLimit",
 };
 
-// Cell → number, falling back to `whenEmpty` when the column or cell is unset.
-// An explicit 0 in the cell always wins (= off / block per caller semantics).
-function cellOr(headers, row, col, whenEmpty) {
-    const i = headers.indexOf(col);
-    if (i === -1) return whenEmpty;
-    const raw = row[i];
-    if (raw === null || raw === undefined || String(raw).trim() === "") return whenEmpty;
-    return pickLimitNumber(raw);
-}
-
 export async function getCampaignLimits() {
-    const sheet = await getLimitsSheet();
-    // Default to 0 (block) when sheet is unavailable
-    if (!sheet) return { ...CAMPAIGN_LIMIT_DEFAULTS };
-
-    const headers = sheet.headers;
-    const categoryIdx = headers.indexOf("category");
-    if (categoryIdx === -1) return { ...CAMPAIGN_LIMIT_DEFAULTS };
-
-    const campaignRow = sheet.data.find(r => String(r[categoryIdx]).trim().toLowerCase() === "campaign");
-    if (!campaignRow) return { ...CAMPAIGN_LIMIT_DEFAULTS };
-
-    const idx = (col) => {
-        const i = headers.indexOf(col);
-        return i !== -1 ? campaignRow[i] : null;
+    const out = {
+        accountSendPerRunLimit: 5,
+        campaignConcurrentLimit: 1,
     };
 
-    return {
-        validateLimit: pickLimitNumber(idx("validateLimit")),
-        enrichLimit: pickLimitNumber(idx("enrichLimit")),
-        personalizeLimit: pickLimitNumber(idx("personalizeLimit")),
-        shootCampaignLimit: pickLimitNumber(idx("shootCampaignLimit")),
-        interactionLimit: cellOr(headers, campaignRow, "interactionLimit", CAMPAIGN_LIMIT_DEFAULTS.interactionLimit),
-        campaignConcurrentLimit: pickLimitNumber(idx("campaignConcurrentLimit")) || 3,
-        accountSendPerRunLimit: cellOr(headers, campaignRow, "accountSendPerRunLimit", CAMPAIGN_LIMIT_DEFAULTS.accountSendPerRunLimit),
-    };
+    for (const [cap, key] of Object.entries(CAMPAIGN_CAP_SETTINGS_KEYS)) {
+        let value = 0;
+        try {
+            const setting = await getSetting(key);
+            const raw = setting ? setting.value1 : null;
+            if (raw !== null && raw !== undefined && String(raw).trim() !== "") {
+                value = pickLimitNumber(raw);
+            }
+        } catch (e) {
+            logger.warn(`[limits] Failed to read setting "${key}" — treating as 0 (block): ${e.message}`);
+        }
+        if (cap === "campaignConcurrentLimit") {
+            out[cap] = value > 0 ? value : 1;
+        } else {
+            out[cap] = value;
+        }
+    }
+
+    return out;
 }
 
 export function getLimitsCacheStats() {

@@ -7,7 +7,7 @@ import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, getPerformancePresets } from "../_shared/pipelineUtils.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
-import { getCampaignLimits } from "../../socials/_shared/limits.js";
+import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
@@ -94,19 +94,19 @@ export async function POST(request) {
       return NextResponse.json({ success: true, skipped: true, message: "Interact stage is email-only" });
     }
 
-    // Strict per-run interaction cap: unset/empty/0 in the Limits sheet
-    // (category=campaign row) blocks the interact stage entirely — covers
+    // Strict per-run interaction cap: unset/empty/0 in the SETTINGS sheet
+    // (interactionBatchLimit) blocks the interact stage entirely — covers
     // both coordinator and worker dispatch below. No magic defaults.
     let entryInteractionLimit = 0;
     try {
       const campaignLimits = await getCampaignLimits();
       entryInteractionLimit = campaignLimits.interactionLimit;
     } catch (limitErr) {
-      log.warn(` Failed to fetch interactionLimit: ${limitErr.message}`);
+      log.warn(` Failed to fetch interactionBatchLimit: ${limitErr.message}`);
     }
     if (entryInteractionLimit <= 0) {
-      log.info(` interactionLimit is 0 or unavailable, blocking interact stage — set interactionLimit in the Limits sheet (category=campaign row)`);
-      return NextResponse.json({ success: true, limitReached: true, message: "Interact blocked: interactionLimit is 0 — set it in the Limits sheet" });
+      log.info(` interactionBatchLimit is 0 or unavailable, blocking interact stage - set interactionBatchLimit in the SETTINGS sheet`);
+      return NextResponse.json({ success: true, limitReached: true, message: "Interact blocked: interactionBatchLimit is 0 - set it in the SETTINGS sheet" });
     }
 
     if (serverBatch) {
@@ -207,15 +207,6 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log) {
   const maxReplies = settings.interactionMaxReplies || 100;
   const interactionStartedAt = settings.interactionStartedAt || new Date().toISOString();
 
-  // Fetch interactionLimit from Limits sheet
-  let interactionLimit = 0;
-  try {
-    const campaignLimits = await getCampaignLimits();
-    interactionLimit = campaignLimits.interactionLimit;
-  } catch (limitErr) {
-    log.warn(` Failed to fetch interactionLimit: ${limitErr.message}`);
-  }
-
   const batchCount = Math.ceil(sentRows.length / BATCH_SIZE);
   for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
     if (await isCampaignPaused(campaignId)) {
@@ -252,17 +243,21 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log) {
       });
     }
 
-    // Stop guard: check plan interactionLimit
-    if (interactionLimit > 0 && replyCount >= interactionLimit) {
-      log.info(` Stop guard: plan interactionLimit reached (${replyCount} >= ${interactionLimit})`);
+    // Stop guard: monthly interactionUsage quota (plan row vs users sheet)
+    const coordinatorQuota = await checkUserQuota(settings.userId || null, { keys: ["interactionUsage"] });
+    if (!coordinatorQuota.allowed) {
+      log.info(` Stop guard: monthly interaction quota exhausted (${coordinatorQuota.reason})`);
       await updateCampaignSettings(campaignId, {
+        executionStatus: "completed",
+        status: "Limit Reached",
         interactionStatus: "completed",
-        interactionStoppedReason: "reply_limit_reached"
+        interactionStoppedReason: "monthly_interaction_quota"
       });
       return NextResponse.json({
         success: true,
-        message: `Interaction stopped: plan limit reached (${interactionLimit})`,
-        stats: { monitored: sentRows.length, replies: replyCount, autoReplied: autoReplyCount, stoppedReason: "reply_limit_reached" }
+        limitReached: true,
+        message: `Interaction stopped: monthly interaction quota reached (${coordinatorQuota.reason})`,
+        stats: { monitored: sentRows.length, replies: replyCount, autoReplied: autoReplyCount, stoppedReason: "monthly_interaction_quota" }
       });
     }
 
@@ -386,15 +381,6 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
   const maxReplies = settings.interactionMaxReplies || 100;
   const interactionStartedAt = settings.interactionStartedAt || new Date().toISOString();
 
-  // Fetch interactionLimit from Limits sheet
-  let interactionLimit = 0;
-  try {
-    const campaignLimits = await getCampaignLimits();
-    interactionLimit = campaignLimits.interactionLimit;
-  } catch (limitErr) {
-    log.warn(`[Worker] Failed to fetch interactionLimit: ${limitErr.message}`);
-  }
-
   let wasPaused = false;
   const batchCount = Math.ceil(mySentRows.length / BATCH_SIZE);
   for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
@@ -421,12 +407,15 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
       break;
     }
 
-    // Stop guard: check plan interactionLimit
-    if (interactionLimit > 0 && replyCount >= interactionLimit) {
-      log.info(`[Worker] Stop guard: plan interactionLimit reached`);
+    // Stop guard: monthly interactionUsage quota (plan row vs users sheet)
+    const workerQuota = await checkUserQuota(settings.userId || null, { keys: ["interactionUsage"] });
+    if (!workerQuota.allowed) {
+      log.info(`[Worker] Stop guard: monthly interaction quota exhausted (${workerQuota.reason})`);
       await updateCampaignSettings(campaignId, {
+        executionStatus: "completed",
+        status: "Limit Reached",
         interactionStatus: "completed",
-        interactionStoppedReason: "reply_limit_reached"
+        interactionStoppedReason: "monthly_interaction_quota"
       });
       break;
     }

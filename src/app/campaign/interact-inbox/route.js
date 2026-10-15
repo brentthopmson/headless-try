@@ -2,7 +2,9 @@ import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import { launchBrowserWithSession, resolveSocialSession, DOMHelpers } from "../../socials/_shared/routeHelper.js";
-import { getCampaignLimits } from "../../socials/_shared/limits.js";
+import { getCampaignLimits, checkActionAllowed, checkUserQuota } from "../../socials/_shared/limits.js";
+import { resolveAccountGate } from "../../socials/_shared/accountGate.js";
+import { getAccountUsage, updateAccountUsage, updateUserUsage } from "../../socials/_shared/hubUpdater.js";
 import { isCampaignPaused, updateCampaignSettings, getCampaignSettings } from "../_shared/pipelineUtils.js";
 import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
 
@@ -240,6 +242,7 @@ async function getHubRows(accountIds) {
   const cookieIdx = headers.indexOf("formattedCookie") !== -1 ? headers.indexOf("formattedCookie") : headers.indexOf("cookieJSON");
   const identityIdx = headers.indexOf("browserIdentity");
   const driveUrlIdx = headers.indexOf("driveUrl");
+  const platformIdx = headers.indexOf("platform");
   const idSet = new Set(accountIds);
   const out = [];
   for (const row of result.data) {
@@ -257,6 +260,7 @@ async function getHubRows(accountIds) {
       provider: detectInboxProvider(row[emailIdx] || ""),
       browserIdentity,
       driveUrl: driveUrlIdx !== -1 ? row[driveUrlIdx] || "" : "",
+      platform: platformIdx !== -1 ? String(row[platformIdx] || "").trim() : "",
     });
   }
   return out;
@@ -295,8 +299,8 @@ export async function POST(request) {
     const hoursElapsed = (Date.now() - startedAt.getTime()) / 3600000;
     let replyCount = settings.interactionRepliesCount || 0;
     const maxReplies = settings.interactionMaxReplies || 100;
-    // Strict per-run interaction cap: unset/empty/0 in the Limits sheet
-    // (category=campaign row) blocks the watcher entirely — no Infinity
+    // Strict per-run interaction cap: unset/empty/0 in the SETTINGS sheet
+    // (interactionBatchLimit) blocks the watcher entirely — no Infinity
     // fallback (was the last fail-open path for interactionLimit).
     let planInteractionLimit = 0;
     try {
@@ -304,8 +308,8 @@ export async function POST(request) {
       planInteractionLimit = limits.interactionLimit || 0;
     } catch { /* 0 = block below */ }
     if (planInteractionLimit <= 0) {
-      log.info(` interactionLimit is 0 or unavailable, blocking AI inbox watcher — set interactionLimit in the Limits sheet (category=campaign row)`);
-      return NextResponse.json({ success: true, limitReached: true, message: "Interact blocked: interactionLimit is 0 — set it in the Limits sheet" });
+      log.info(` interactionBatchLimit is 0 or unavailable, blocking AI inbox watcher - set interactionBatchLimit in the SETTINGS sheet`);
+      return NextResponse.json({ success: true, limitReached: true, message: "Interact blocked: interactionBatchLimit is 0 - set it in the SETTINGS sheet" });
     }
 
     if (hoursElapsed >= stopAfterHours) {
@@ -314,6 +318,21 @@ export async function POST(request) {
     }
     if (await isCampaignPaused(campaignId)) {
       return NextResponse.json({ success: true, message: "Campaign paused", replies: 0 });
+    }
+
+    // Monthly spend gate: plan interactionLimit vs users-sheet interactionUsage.
+    // Exhausted = stop the watcher with the campaign controlling key.
+    const userId = settings.userId || null;
+    const entryQuota = await checkUserQuota(userId, { keys: ["interactionUsage"] });
+    if (!entryQuota.allowed) {
+      log.info(` Stop guard: monthly interaction quota exhausted (${entryQuota.reason})`);
+      await updateCampaignSettings(campaignId, {
+        executionStatus: "completed",
+        status: "Limit Reached",
+        interactionStatus: "completed",
+        interactionStoppedReason: "monthly_interaction_quota"
+      });
+      return NextResponse.json({ success: true, limitReached: true, message: `Interact blocked: monthly interaction quota reached (${entryQuota.reason})`, replies: 0 });
     }
 
     // ─── Resolve hub accounts → cookies ─────────────────────────────
@@ -337,11 +356,45 @@ export async function POST(request) {
 
     for (const account of accounts) {
       if (await isCampaignPaused(campaignId)) break;
-      if (replyCount >= maxReplies || replyCount >= planInteractionLimit) break;
+      if (replyCount >= maxReplies) break;
+
+      // Monthly quota re-check per account (spend can move between passes)
+      const accountQuota = await checkUserQuota(userId, { keys: ["interactionUsage"] });
+      if (!accountQuota.allowed) {
+        log.info(` Stop guard: monthly interaction quota exhausted (${accountQuota.reason})`);
+        await updateCampaignSettings(campaignId, {
+          executionStatus: "completed",
+          status: "Limit Reached",
+          interactionStatus: "completed",
+          interactionStoppedReason: "monthly_interaction_quota"
+        });
+        break;
+      }
 
       const cfg = INBOX_CONFIGS[account.provider];
       if (!cfg) {
         log.warn(` Unsupported inbox provider for account ${account.identifier}: ${account.provider}`);
+        continue;
+      }
+
+      // Account status gate (CANCELLED / RATE_LIMITED) + platform inboxReply
+      // policy vs this account's hub usage — same tier as every other route
+      // that performs actions. Blocked accounts are skipped for this pass.
+      const gate = await resolveAccountGate(account.accountId, account.platform || "");
+      if (gate.blocked) {
+        log.warn(` [${account.identifier}] blocked by account limits: ${gate.reason}`);
+        continue;
+      }
+      let accountUsage = {};
+      try {
+        const accountData = await getAccountUsage(account.accountId);
+        accountUsage = (accountData && accountData.interactionUsage) || {};
+      } catch (uErr) {
+        log.warn(` [${account.identifier}] usage read failed: ${uErr.message}`);
+      }
+      const platformCheck = await checkActionAllowed(account.platform || "", "inboxReply", accountUsage);
+      if (!platformCheck.allowed) {
+        log.warn(` [${account.identifier}] blocked by platform limits: ${platformCheck.reason}`);
         continue;
       }
 
@@ -386,9 +439,17 @@ export async function POST(request) {
           }
 
           for (const item of candidates) {
-            if (replyCount >= maxReplies || replyCount >= planInteractionLimit) break;
+            if (replyCount >= maxReplies) break;
             const key = ledgerKey(item);
             if (repliedThreads.has(key)) continue;
+
+            // Re-check the platform policy with locally-incremented usage so
+            // a batch can't overshoot the hourly/daily window mid-pass.
+            const actionCheck = await checkActionAllowed(account.platform || "", "inboxReply", accountUsage);
+            if (!actionCheck.allowed) {
+              log.warn(` [${account.identifier}] blocked by platform limits: ${actionCheck.reason}`);
+              break;
+            }
 
             const replyText = await aiGenerate(buildReplyPrompt(item, settings));
             if (!replyText) continue;
@@ -399,6 +460,18 @@ export async function POST(request) {
               replyCount++;
               newReplies++;
               log.info(` [${account.identifier}] AI replied to: ${item.subject || item.sender}`);
+              // Count the action against BOTH tiers: platform account usage
+              // (inboxReply column) and the user's monthly interactionUsage.
+              await updateAccountUsage(account.accountId, "inboxReply");
+              if (userId) await updateUserUsage(userId, "interactionUsage");
+              const cur = accountUsage["inboxReply"] || { hourly: 0, daily: 0, monthly: 0, total: 0 };
+              accountUsage["inboxReply"] = {
+                ...cur,
+                hourly: (cur.hourly || 0) + 1,
+                daily: (cur.daily || 0) + 1,
+                monthly: (cur.monthly || 0) + 1,
+                total: (cur.total || 0) + 1,
+              };
               // Persist ledger + count after each reply so we never double-reply
               await updateCampaignSettings(campaignId, {
                 repliedThreads: Array.from(repliedThreads).slice(-200),
@@ -420,7 +493,7 @@ export async function POST(request) {
       }
     }
 
-    const done = replyCount >= maxReplies || replyCount >= planInteractionLimit;
+    const done = replyCount >= maxReplies;
     if (done) {
       await updateCampaignSettings(campaignId, { interactionStatus: "completed", interactionStoppedReason: "reply_limit_reached" });
     }
