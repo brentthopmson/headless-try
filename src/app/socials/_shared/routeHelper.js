@@ -258,14 +258,17 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
         }
 
         // Inject cookies via CDP:
-        // - Gmail: Skip CDP cookie injection when userDataDir is present, because CDP cookie injection
-        //   over a restored Chrome profile clobbers Google session tokens and triggers sign-in redirects.
-        // - Microsoft / Outlook / Others: Inject CDP cookies AND load persistent userDataDir profile (BOTH),
+        // - Any platform WITH a restored userDataDir profile: SKIP injection —
+        //   the profile IS the browser data (same as the desktop launcher).
+        //   CDP-injecting the sheet's login-time cookie snapshot over a live
+        //   profile clobbers rotated session tokens (TikTok logged-out bug).
+        // - Microsoft auth platforms: still inject AND load the profile (BOTH),
         //   as required for Microsoft authentication sessions.
         // - No userDataDir: Always inject CDP cookies as fallback.
         const platform = (options.platform || '').toLowerCase();
-        const isGmail = platform === 'gmail';
-        const shouldInjectCDPCookies = cookieJSON && (!options.userDataDir || !isGmail);
+        const MS_AUTH_PLATFORMS = new Set(['microsoft', 'outlook', 'office365', 'hotmail', 'live', 'msn']);
+        const isMsAuth = MS_AUTH_PLATFORMS.has(platform);
+        const shouldInjectCDPCookies = cookieJSON && (!options.userDataDir || isMsAuth);
 
         if (shouldInjectCDPCookies) {
             const cookies = await loadBrowserSession(cookieJSON);

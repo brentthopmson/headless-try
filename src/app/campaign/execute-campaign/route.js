@@ -220,73 +220,90 @@ function normalizeSocialPlatform(value) {
 }
 
 async function getSocialProfileCookies(profileId) {
-  const cookieResult = await getSheetDataApi("cookie");
-  if (!cookieResult.success) return null;
-  const headers = cookieResult.headers;
-  const browserIdIdx = headers.indexOf("browserId");
-  const cookieIdx = headers.indexOf("formattedCookie") !== -1 ? headers.indexOf("formattedCookie") : headers.indexOf("cookieJSON");
-  const platformIdx = headers.indexOf("platform");
-  const categoryIdx = headers.indexOf("category");
-  const identityIdx = headers.indexOf("browserIdentity");
-  const driveUrlIdx = headers.indexOf("driveUrl");
-
-  if (browserIdIdx === -1) return null;
-  
-  const row = cookieResult.data.find(r => String(r[browserIdIdx]).trim() === String(profileId).trim());
-  if (!row) return null;
-
+  const sid = String(profileId).trim();
+  let cookies = "";
+  let platform = "";
   let browserIdentity = null;
-  if (identityIdx !== -1 && row[identityIdx]) {
-    try { browserIdentity = typeof row[identityIdx] === 'string' ? JSON.parse(row[identityIdx]) : row[identityIdx]; } catch (_) {}
+  let driveUrl = "";
+
+  // Cookie sheet (legacy capture table) — first choice when it has data.
+  const cookieResult = await getSheetDataApi("cookie");
+  if (cookieResult.success) {
+    const headers = cookieResult.headers;
+    const browserIdIdx = headers.indexOf("browserId");
+    const cookieIdx = headers.indexOf("formattedCookie") !== -1 ? headers.indexOf("formattedCookie") : headers.indexOf("cookieJSON");
+    const platformIdx = headers.indexOf("platform");
+    const categoryIdx = headers.indexOf("category");
+    const identityIdx = headers.indexOf("browserIdentity");
+    const driveUrlIdx = headers.indexOf("driveUrl");
+    if (browserIdIdx !== -1) {
+      const row = cookieResult.data.find(r => String(r[browserIdIdx]).trim() === sid);
+      if (row) {
+        cookies = row[cookieIdx] || "";
+        platform = normalizeSocialPlatform(platformIdx !== -1 ? row[platformIdx] : '');
+        if (!platform && categoryIdx !== -1) platform = normalizeSocialPlatform(row[categoryIdx]);
+        if (identityIdx !== -1 && row[identityIdx]) {
+          try { browserIdentity = typeof row[identityIdx] === 'string' ? JSON.parse(row[identityIdx]) : row[identityIdx]; } catch (_) {}
+        }
+        driveUrl = driveUrlIdx !== -1 ? row[driveUrlIdx] || "" : "";
+      }
+    }
   }
 
-  // Platform resolution chain: cookie row platform → cookie row category →
-  // hub row platform/type → project templateTitle → "" (caller falls back to
-  // settings.platform/twitter). Hub `type` only holds templateType
-  // (COOKIE/TRUE-LOGIN) so the useful hub fallback is the platform column;
-  // older rows predate it and resolve via the project's templateTitle.
-  let platform = normalizeSocialPlatform(platformIdx !== -1 ? row[platformIdx] : '');
-  if (!platform && categoryIdx !== -1) platform = normalizeSocialPlatform(row[categoryIdx]);
-  if (!platform) {
+  // Hub sheet (live account registry) — fallback when the cookie sheet row is
+  // missing or an empty shell. Accounts logged in via the hub carry cookieJSON,
+  // the profile ZIP link (cookieFileURL), platform and identity here only.
+  let hub = null;
+  if (!cookies || !platform) {
     try {
       const hubResult = await getSheetDataApi("hub");
       if (hubResult.success) {
         const hh = hubResult.headers;
         const sidIdx = hh.indexOf("submissionId");
-        const hubPlatformIdx = hh.indexOf("platform");
-        const typeIdx = hh.indexOf("type");
-        const hubProjectIdIdx = hh.indexOf("projectId");
         if (sidIdx !== -1) {
-          const hubRow = hubResult.data.find(r => String(r[sidIdx]).trim() === String(profileId).trim());
-          if (hubRow) {
-            platform = normalizeSocialPlatform(hubPlatformIdx !== -1 ? hubRow[hubPlatformIdx] : '');
-            if (!platform && typeIdx !== -1) platform = normalizeSocialPlatform(hubRow[typeIdx]);
-            if (!platform && hubProjectIdIdx !== -1) {
-              const hubProjectId = String(hubRow[hubProjectIdIdx] || '').trim();
-              if (hubProjectId) {
-                const projResult = await getSheetDataApi("projects");
-                if (projResult.success) {
-                  const ph = projResult.headers;
-                  const pIdIdx = ph.indexOf("projectId");
-                  const templateTitleIdx = ph.indexOf("templateTitle");
-                  if (pIdIdx !== -1 && templateTitleIdx !== -1) {
-                    const projRow = projResult.data.find(r => String(r[pIdIdx]).trim() === hubProjectId);
-                    if (projRow) platform = normalizeSocialPlatform(projRow[templateTitleIdx]);
-                  }
-                }
-              }
-            }
-          }
+          const hubRow = hubResult.data.find(r => String(r[sidIdx]).trim() === sid);
+          if (hubRow) hub = { headers: hh, row: hubRow };
         }
       }
-    } catch (_) { /* hub/project lookup is best-effort */ }
+    } catch (_) { /* hub lookup is best-effort */ }
+  }
+
+  if (hub) {
+    const getH = (name) => { const i = hub.headers.indexOf(name); return i !== -1 ? hub.row[i] : ""; };
+    if (!cookies) cookies = getH("cookieJSON") || "";
+    if (!driveUrl) driveUrl = getH("cookieFileURL") || "";
+    if (!browserIdentity) {
+      const raw = getH("browserIdentity");
+      if (raw) { try { browserIdentity = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (_) {} }
+    }
+    if (!platform) platform = normalizeSocialPlatform(getH("platform"));
+    if (!platform) platform = normalizeSocialPlatform(getH("type"));
+    // Oldest rows predate the hub platform column — resolve via the project's
+    // templateTitle.
+    if (!platform) {
+      const hubProjectId = String(getH("projectId") || "").trim();
+      if (hubProjectId) {
+        try {
+          const projResult = await getSheetDataApi("projects");
+          if (projResult.success) {
+            const ph = projResult.headers;
+            const pIdIdx = ph.indexOf("projectId");
+            const templateTitleIdx = ph.indexOf("templateTitle");
+            if (pIdIdx !== -1 && templateTitleIdx !== -1) {
+              const projRow = projResult.data.find(r => String(r[pIdIdx]).trim() === hubProjectId);
+              if (projRow) platform = normalizeSocialPlatform(projRow[templateTitleIdx]);
+            }
+          }
+        } catch (_) { /* project lookup is best-effort */ }
+      }
+    }
   }
 
   return {
-    cookies: row[cookieIdx] || "",
+    cookies,
     platform,
     browserIdentity,
-    driveUrl: driveUrlIdx !== -1 ? row[driveUrlIdx] || "" : "",
+    driveUrl,
   };
 }
 
