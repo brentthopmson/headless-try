@@ -47,8 +47,16 @@ async function processTask(taskPayload) {
         const operation = operationRaw.toLowerCase();
         const cookieJSON = taskPayload.cookieJSON;
         const profileId = taskPayload.profileId || taskPayload.accountId || null;
+        // Batch mode: searchQueries array (optional; activities often have no
+        // per-keyword targets — falls back to single searchQuery or empty).
+        let searchQueries = [];
+        if (Array.isArray(taskPayload.searchQueries) && taskPayload.searchQueries.length > 0) {
+            searchQueries = taskPayload.searchQueries.map(q => String(q || '').trim()).filter(Boolean);
+        } else if (taskPayload.searchQuery) {
+            searchQueries = [String(taskPayload.searchQuery).trim()].filter(Boolean);
+        }
 
-        logger.info(`[processTask] ${taskId}: ${platform}/${operation}`);
+        logger.info(`[processTask] ${taskId}: ${platform}/${operation} queries=${searchQueries.length}`);
 
         if (!platform) throw new Error("Platform not specified");
         if (!cookieJSON) throw new Error("No cookies provided");
@@ -111,41 +119,49 @@ async function processTask(taskPayload) {
         if (workflowKeys.length === 0) throw new Error(`No workflow resolved for operation: ${operationRaw}`);
         const workflows = workflowKeys.map(key => getWorkflow(platform, key));
 
-        const context = {
-            platform,
-            operation,
-            platformConfig,
-        };
+        // ---- Single-session batch: loop in ONE browser session ----
+        // Activities workflows are notification-centric (no per-keyword loop
+        // needed), but when searchQueries are provided we iterate them (e.g.
+        // multiple notification filters) without reopening the browser.
+        const queryLoop = searchQueries.length > 0 ? searchQueries : [null];
+        let handledIterations = 0;
+        for (const kw of queryLoop) {
+            const context = {
+                platform,
+                operation,
+                keyword: kw || undefined,
+                platformConfig,
+            };
 
-        let workflowResults = {};
-        for (const workflow of workflows) {
-            Object.assign(workflowResults, await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI));
-            if (workflow.extract) {
-                const extractor = getExtractor(platform, workflow.extract);
-                if (extractor && extractor.parseFunction) {
-                    try {
-                        // parseFunction is browser-context code (item.querySelector),
-                        // so it must run inside the page via $$eval — running it on
-                        // Node-side ElementHandles always yields garbage.
-                        const parseFunc = new Function('items', 'return (' + extractor.parseFunction + '\n)(items);');
-                        const extracted = await page.$$eval(extractor.selector, parseFunc);
-                        if (Array.isArray(extracted)) results.push(...extracted);
-                    } catch (e) {
-                        logger.error(`[processTask] Extraction failed: ${e.message}`);
+            let workflowResults = {};
+            for (const workflow of workflows) {
+                Object.assign(workflowResults, await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI));
+                if (workflow.extract) {
+                    const extractor = getExtractor(platform, workflow.extract);
+                    if (extractor && extractor.parseFunction) {
+                        try {
+                            const parseFunc = new Function('items', 'return (' + extractor.parseFunction + '\n)(items);');
+                            const extracted = await page.$$eval(extractor.selector, parseFunc);
+                            if (Array.isArray(extracted)) results.push(...extracted.map(e => ({ ...e, keyword: kw || undefined })));
+                        } catch (e) {
+                            logger.error(`[processTask] Extraction failed: ${e.message}`);
+                        }
                     }
                 }
             }
+            handledIterations++;
         }
 
         finalStatus = "COMPLETED";
 
         if (profileId) {
             // Only count actions the executed workflows actually performed —
-            // read-only notification reads increment nothing.
+            // read-only notification reads increment nothing. In batch mode
+            // the workflow ran handledIterations times → multiply the count.
             const performedActions = toLimitActions(actionsForExecutedKeys(workflowKeys, operationRaw));
 
             for (const action of performedActions) {
-                await updateAccountUsage(profileId, action);
+                await updateAccountUsage(profileId, action, Math.max(1, handledIterations));
             }
 
             await updateAccountInteractionData(profileId, {
@@ -156,7 +172,7 @@ async function processTask(taskPayload) {
             });
         }
 
-        logger.info(`[processTask] ${taskId} completed: ${finalStatus}`);
+        logger.info(`[processTask] ${taskId} completed: ${finalStatus} (${handledIterations} iterations)`);
 
     } catch (error) {
         logger.error(`[processTask] ${taskId} failed: ${error.message}`);

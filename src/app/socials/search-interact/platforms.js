@@ -196,17 +196,46 @@ Respond with ONLY: yes or no`
         profileUrl: "https://www.tiktok.com",
         
         selectors: {
-            searchBox: "input[data-e2e='search-user-input'], input[placeholder*='Search']",
-            searchSubmit: "", // TikTok search submits on Enter (executor falls back to Enter)
-            videoItem: "div[data-e2e='search-card-video'], div[data-e2e='search_top-item'], div[data-e2e='recommendation-video-item']",
-            videoCaption: "span[data-e2e='search-card-video-desc'], [data-e2e='browse-desc'], [data-e2e='video-desc']",
-            videoAuthor: "span[data-e2e='search-card-user-unique-id'], a[data-e2e='browse-username'], a[href*='/@']",
-            likeButton: "[data-e2e='like-icon'], [data-e2e='browse-like-icon']",
-            commentButton: "[data-e2e='comment-icon'], [data-e2e='browse-comment-icon']",
-            commentLikeButton: "[data-e2e='comment-like-icon']",
-            commentBox: "div[contenteditable='true']",
-            commentSubmit: "div[data-e2e='comment-post'], button[data-e2e='comment-post']",
-            closeButton: "button[aria-label='exit'], [data-e2e='browse-close']"
+            // Search page
+            searchBox: "input[data-key-interaction='search_input'], input[data-e2e='search-user-input'], input[placeholder*='Search']",
+            searchSubmit: "button[data-e2e='search-box-button'], button[data-e2e='nav-search']", // both carry .TUXButton-label "Search"
+            searchResultsContainer: "#search_top-item-list, div[data-e2e='search_top-item-list']",
+            searchResultItem: "div[data-e2e='search_top-item'], div[id^='grid-item-container-']",
+            postLink: "a[href*='/photo/'], a[href*='/video/']",
+            videoCaption: "div[data-e2e='search-card-video-caption'], span[data-e2e='search-card-video-desc'], [data-e2e='browse-desc']",
+            videoAuthor: "a[data-e2e='search-card-user-link'], span[data-e2e='search-card-user-unique-id'], a[data-e2e='browse-username']",
+            videoViews: "strong[data-e2e='video-views']",
+            // Opened post overlay
+            likeButton: "div[data-e2e='browse-like-icon'], [data-e2e='like-icon']",
+            likeCount: "span[data-e2e='browse-like-count']",
+            commentButton: "div[data-e2e='browse-comment-icon'], [data-e2e='comment-icon']",
+            commentCount: "span[data-e2e='browse-comment-count']",
+            browseUsername: "[data-e2e='browse-username']",
+            browseDesc: "[data-e2e='browse-desc']",
+            browseClose: "button[data-e2e='browse-close']",
+            followButton: "[data-e2e='browse-follow']",
+            // Comment list
+            commentContainer: "div[data-e2e='search-comment-container'], div[class*='DivCommentItemContainer']",
+            commentItem: "div[class*='DivCommentItemContainer']",
+            commentLevel1: "p[data-e2e='comment-level-1'], span[data-e2e='comment-level-1']",
+            commentUsername: "span[data-e2e='comment-username-1'], span[data-e2e^='comment-username-']",
+            commentLikeButton: "div[data-e2e='comment-like-icon']",
+            commentLikeCount: "span[data-e2e='comment-like-count']",
+            commentReplyButton: "span[data-e2e='comment-reply-1'], span[data-e2e^='comment-reply-']",
+            viewMoreReplies: "p[data-e2e='view-more-1'], p[data-e2e^='view-more-']",
+            // Comment composer (bottom bar)
+            commentInputContainer: "div[data-e2e='comment-input']",
+            commentBox: "div[data-e2e='comment-text'][contenteditable='true'], div[data-key-interaction='comment_input']",
+            commentSubmit: "button[data-e2e='comment-post'], button[data-key-interaction='comment_submit']",
+            // TikTok TUX audio captcha (main page, not iframe)
+            captchaContainer: "#captcha-verify-container-main-page",
+            captchaClose: "#captcha_close_button",
+            captchaSwitch: "#captcha_switch_button", // label "Image" ⇒ currently on audio; label "Audio" ⇒ on image
+            captchaRefresh: "#captcha_refresh_button",
+            captchaPlay: "button[aria-label='Play']",
+            captchaAudio: "#captcha-verify-container-main-page audio",
+            captchaInput: "#captcha-verify-container-main-page input[placeholder='Enter what you hear'], #captcha-verify-container-main-page input.TUXTextInputCore-input",
+            captchaVerify: "#captcha-verify-container-main-page button .TUXButton-label"
         },
 
         timing: {
@@ -327,24 +356,41 @@ YOUR COMMENT (only the comment text, no quotes, just the text):`,
 2. Is it relevant to the video?
 3. Is it constructive or adds value?
 4. Is it spam, promotional, or low-quality?
-Respond with ONLY: like or skip`
+Respond with ONLY: like or skip`,
+
+            replyToComment: `Generate a NATURAL, SHORT reply to this TikTok comment on a video you just commented on:
+- 1 sentence maximum
+- Conversational, like a real person responding
+- Can include 1 emoji if natural
+- NO hashtags, NO @mentions
+- Adds to the conversation, not generic
+
+Video context: {videoAnalysis}
+Original video comment you posted: {yourComment}
+Comment to reply to: {commentText}
+
+YOUR REPLY (only the reply text, no quotes):`
         },
 
         // ===== EXTRACTORS =====
         extractors: {
             videos: {
-                selector: "div[data-e2e='search-card-video'], div[data-e2e='search_top-item'], div[data-e2e='recommendation-video-item']",
+                selector: "div[data-e2e='search_top-item'], div[id^='grid-item-container-']",
                 parseFunction: `(items) => {
                     const videos = [];
                     items.forEach((item, idx) => {
                         try {
-                            const captionEl = item.querySelector("[data-e2e='search-card-video-desc'], [data-e2e='video-desc'], [data-e2e='browse-desc']");
-                            const authorEl = item.querySelector("[data-e2e='search-card-user-unique-id'], [data-e2e='browse-username'], a[href*='/@']");
+                            const captionEl = item.querySelector("[data-e2e='search-card-video-caption'], [data-e2e='search-card-video-desc'], [data-e2e='video-desc'], [data-e2e='browse-desc']");
+                            const authorEl = item.querySelector("[data-e2e='search-card-user-unique-id'], [data-e2e='search-card-user-link'], a[href*='/@']");
+                            const linkEl = item.querySelector("a[href*='/photo/'], a[href*='/video/']");
+                            const viewsEl = item.querySelector("[data-e2e='video-views']");
 
                             videos.push({
                                 index: idx,
                                 caption: captionEl ? captionEl.textContent.trim() : '',
                                 author: authorEl ? authorEl.textContent.trim() : '',
+                                url: linkEl ? linkEl.href : '',
+                                views: viewsEl ? viewsEl.textContent.trim() : '',
                                 liked: item.querySelector("[aria-pressed='true'], [data-e2e='like-icon'][class*='active']") !== null
                             });
                         } catch (e) {
@@ -356,16 +402,21 @@ Respond with ONLY: like or skip`
             },
 
             comments: {
-                selector: "div[data-e2e='comment-item']",
+                selector: "div[class*='DivCommentItemContainer'], div[data-e2e='search-comment-container'] > div",
                 parseFunction: `(items) => {
                     const comments = [];
                     items.forEach((item, idx) => {
                         try {
-                            const textEl = item.querySelector("span[data-e2e='comment-level-1'], p[data-e2e='comment-level-1'], span[data-testid='comment-text']");
+                            const textEl = item.querySelector("p[data-e2e='comment-level-1'], span[data-e2e='comment-level-1'], span[data-testid='comment-text']");
+                            const userEl = item.querySelector("span[data-e2e='comment-username-1'], span[data-e2e^='comment-username-']");
+                            const likeCountEl = item.querySelector("span[data-e2e='comment-like-count']");
                             if (textEl) {
                                 comments.push({
                                     index: idx,
-                                    text: textEl.textContent.trim()
+                                    id: item.id || '',
+                                    text: textEl.textContent.trim(),
+                                    username: userEl ? userEl.textContent.trim() : '',
+                                    likeCount: likeCountEl ? likeCountEl.textContent.trim() : ''
                                 });
                             }
                         } catch (e) {

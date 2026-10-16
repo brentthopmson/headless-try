@@ -23,6 +23,7 @@ const { operationConsumes, baseActionsForOperation, actionsForExecutedKeys, toLi
 import { checkActionAllowed, getPlatformLimits } from '../_shared/limits.js';
 import { resolveAccountGate, accountGateError } from '../_shared/accountGate.js';
 import { getAccountUsage, updateAccountUsage, updateAccountStatus } from '../_shared/hubUpdater.js';
+import { runSearchInteractEngagement } from '../_shared/tiktokEngage.js';
 import { fetchTaskData, updateTaskRow } from './routeHelper.js';
 import { requireFeature } from '../../../utils/featureGate.js';
 
@@ -83,6 +84,7 @@ async function processTask(taskRow, columnIndexes) {
     let finalStatus = "FAILED";
     let results = [];
     let profileDir = null;
+    let engagementSummary = null;
 
     try {
         logger.info(`[processTask] Starting task: ${taskId}`);
@@ -95,12 +97,28 @@ async function processTask(taskRow, columnIndexes) {
         const profileId = get('profileId') || get('accountId') || null;
         const socialStrategyPrompt = get('socialStrategyPrompt') || null;
 
+        // Batch mode: searchQueries array carries ALL keywords for this profile.
+        // Falls back to the legacy single searchQuery.
+        let searchQueries = [];
+        const rawQueries = get('searchQueries');
+        if (Array.isArray(rawQueries) && rawQueries.length > 0) {
+            searchQueries = rawQueries.map(q => String(q || '').trim()).filter(Boolean);
+        } else if (keyword) {
+            searchQueries = [String(keyword).trim()].filter(Boolean);
+        }
+
         if (!platform) throw new Error("Platform not specified");
         if (!operation) throw new Error("Operation not specified");
         if (!cookieJSON) throw new Error("No cookies found. Must login first via social/cookie/cookie-api-login");
+        if (searchQueries.length === 0) throw new Error("No search queries provided");
 
         const engagementMode = get('engagementMode') === true || String(get('engagementMode') || '').toLowerCase() === 'true';
         const platformConfig = getPlatformConfig(platform);
+
+        // Batch settings (campaign settings JSON keys, with safe defaults).
+        const maxResultsPerKeyword = Math.max(1, parseInt(get('maxResultsPerKeyword'), 10) || 5);
+        const maxRepliesPerPost = Math.max(0, parseInt(get('interactionMaxReplies'), 10) || 3);
+        const interactionStopAfterHours = Math.max(0, parseFloat(get('interactionStopAfterHours')) || 0);
 
         // ACCOUNT-tier status gate — RATE_LIMITED blocks until windows roll
         // (auto-recover), CANCELLED always blocks. Runs before any launch.
@@ -109,8 +127,12 @@ async function processTask(taskRow, columnIndexes) {
 
         // PLATFORM×ACCOUNT quota gate — only when this task actually performs
         // consuming actions (read/scrape runs never touch quota).
+        // In batch/engagement mode the per-action gate lives INSIDE the runner
+        // (checked before every like/comment/reply), so a pre-flight block on
+        // 'like' alone would wrongly kill a run that could still comment.
         const consumes = operationConsumes(operationRaw, engagementMode);
-        if (consumes) {
+        const useEngagementRunner = consumes && engagementMode && (platform === 'tiktok');
+        if (consumes && !useEngagementRunner) {
             const baseActions = engagementMode
                 ? actionsForExecutedKeys([pickWorkflowKey(['interactWithVideo', 'interactWithPost'], platformConfig.workflows)].filter(Boolean), operationRaw)
                 : baseActionsForOperation(operationRaw);
@@ -149,63 +171,104 @@ async function processTask(taskRow, columnIndexes) {
             ({ browser, page } = await launchBrowserWithSession(cookieJSON));
         }
 
-        let workflowKeys;
-        if (engagementMode) {
-            const base = pickWorkflowKey(['search'], platformConfig.workflows);
-            const engage = pickWorkflowKey(['interactWithVideo', 'interactWithPost'], platformConfig.workflows);
-            workflowKeys = [base, engage].filter(Boolean);
-            logger.info(`[processTask] ${taskId}: engagement chain candidates resolved to [${workflowKeys.join(', ')}]`);
-        }
-        if (!workflowKeys || workflowKeys.length === 0) {
-            workflowKeys = resolveWorkflowOps(operationRaw, platformConfig.workflows);
-        }
-        if (workflowKeys.length === 0) throw new Error(`No workflow resolved for operation: ${operationRaw}`);
-        const workflows = workflowKeys.map(key => getWorkflow(platform, key));
+        // ---- Engagement runner path (TikTok consuming batch) ----
+        // Opens ONE session, loops ALL keywords × results with per-action
+        // quota checks, closes once in finally. Replaces the per-keyword
+        // task fan-out.
+        if (useEngagementRunner) {
+            logger.info(`[processTask] ${taskId}: engagement batch mode — ${searchQueries.length} keyword(s), cap=${maxResultsPerKeyword}/kw, maxReplies=${maxRepliesPerPost}`);
+            engagementSummary = await runSearchInteractEngagement(page, {
+                platform,
+                platformConfig,
+                ai: MultiProviderAI,
+                profileId,
+                keywords: searchQueries,
+                maxResultsPerKeyword,
+                maxRepliesPerPost,
+                stopAfterHours: interactionStopAfterHours,
+                socialStrategyPrompt,
+                taskId,
+            });
+            results = engagementSummary.results || [];
 
-        const context = {
-            platform,
-            operation,
-            keyword,
-            platformConfig,
-            socialStrategyPrompt,
-        };
+            // Rate-limited: account already marked RATE_LIMITED inside runner.
+            // Treat as COMPLETED-with-stop so the campaign moves to the next
+            // account (the hourly window rolls and the account auto-recovers).
+            if (engagementSummary.stopType === 'hourly') {
+                finalStatus = "COMPLETED";
+                results.push({ status: 'rate_limited', reason: engagementSummary.stopReason, resumedNextCycle: true });
+                logger.info(`[processTask] ${taskId}: hourly limit — stopping this run, account resumes next hour-cycle.`);
+            } else if (engagementSummary.stopType === 'daily' || engagementSummary.stopType === 'monthly' || engagementSummary.stopType === 'cap') {
+                finalStatus = "COMPLETED";
+                results.push({ status: 'limit_reached', reason: engagementSummary.stopReason });
+            } else if (engagementSummary.captchaFailed) {
+                finalStatus = "FAILED";
+                results.push({ status: 'captcha_failed' });
+            } else {
+                finalStatus = "COMPLETED";
+            }
 
-        let workflowResults = {};
-        for (const workflow of workflows) {
-            Object.assign(workflowResults, await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI));
-            if (workflow.extract) {
-                const extractor = getExtractor(platform, workflow.extract);
-                if (extractor && extractor.parseFunction) {
-                    try {
-                        // parseFunction is browser-context code (item.querySelector),
-                        // so it must run inside the page via $$eval — running it on
-                        // Node ElementHandles always threw and extraction returned [].
-                        const parseFunc = new Function('items', 'return (' + extractor.parseFunction + '\n)(items);');
-                        const extracted = await page.$$eval(extractor.selector, parseFunc);
-                        if (Array.isArray(extracted)) results.push(...extracted);
-                        logger.info(`[processTask] Extracted ${Array.isArray(extracted) ? extracted.length : 0} items after '${workflow.name}'`);
-                    } catch (e) {
-                        logger.error(`[processTask] Extraction failed: ${e.message}`);
+            logger.info(`[processTask] Task ${taskId} completed: engaged=${engagementSummary.engaged}, failed=${engagementSummary.failed}, stop=${engagementSummary.stopType || 'none'}`);
+        } else {
+            // ---- Legacy linear workflow path (non-consuming or non-TikTok) ----
+            // Still runs ALL keywords in ONE session (no browser reopen per keyword).
+            let workflowKeys;
+            if (engagementMode) {
+                const base = pickWorkflowKey(['search'], platformConfig.workflows);
+                const engage = pickWorkflowKey(['interactWithVideo', 'interactWithPost'], platformConfig.workflows);
+                workflowKeys = [base, engage].filter(Boolean);
+                logger.info(`[processTask] ${taskId}: engagement chain candidates resolved to [${workflowKeys.join(', ')}]`);
+            }
+            if (!workflowKeys || workflowKeys.length === 0) {
+                workflowKeys = resolveWorkflowOps(operationRaw, platformConfig.workflows);
+            }
+            if (workflowKeys.length === 0) throw new Error(`No workflow resolved for operation: ${operationRaw}`);
+            const workflows = workflowKeys.map(key => getWorkflow(platform, key));
+
+            for (const kw of searchQueries) {
+                const context = {
+                    platform,
+                    operation,
+                    keyword: kw,
+                    platformConfig,
+                    socialStrategyPrompt,
+                };
+
+                let workflowResults = {};
+                for (const workflow of workflows) {
+                    Object.assign(workflowResults, await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI));
+                    if (workflow.extract) {
+                        const extractor = getExtractor(platform, workflow.extract);
+                        if (extractor && extractor.parseFunction) {
+                            try {
+                                const parseFunc = new Function('items', 'return (' + extractor.parseFunction + '\n)(items);');
+                                const extracted = await page.$$eval(extractor.selector, parseFunc);
+                                if (Array.isArray(extracted)) results.push(...extracted.map(e => ({ ...e, keyword: kw })));
+                                logger.info(`[processTask] Extracted ${Array.isArray(extracted) ? extracted.length : 0} items after '${workflow.name}' for "${kw}"`);
+                            } catch (e) {
+                                logger.error(`[processTask] Extraction failed: ${e.message}`);
+                            }
+                        }
                     }
                 }
             }
-        }
 
-        finalStatus = "COMPLETED";
+            finalStatus = "COMPLETED";
 
-        // Update hub interaction usage if profileId is available — only the
-        // actions actually performed by the executed workflow keys, and only
-        // for consuming tasks (read-only runs must not burn quota).
-        if (profileId && finalStatus === "COMPLETED") {
-            const performedActions = consumes
-                ? toLimitActions(actionsForExecutedKeys(workflowKeys, operationRaw))
-                : [];
-            for (const action of performedActions) {
-                await updateAccountUsage(profileId, action);
+            // Update hub interaction usage if profileId is available — only the
+            // actions actually performed by the executed workflow keys, and only
+            // for consuming tasks (read-only runs must not burn quota).
+            if (profileId && finalStatus === "COMPLETED") {
+                const performedActions = consumes
+                    ? toLimitActions(actionsForExecutedKeys(workflowKeys, operationRaw))
+                    : [];
+                for (const action of performedActions) {
+                    await updateAccountUsage(profileId, action);
+                }
             }
-        }
 
-        logger.info(`[processTask] Task ${taskId} completed successfully`);
+            logger.info(`[processTask] Task ${taskId} completed successfully`);
+        }
 
     } catch (error) {
         logger.error(`[processTask] Task ${taskId} failed: ${error.message}`);
@@ -243,7 +306,7 @@ async function processTask(taskRow, columnIndexes) {
         activeTasks.delete(taskId);
     }
 
-    return { taskId, status: finalStatus, resultCount: results.length };
+    return { taskId, status: finalStatus, resultCount: results.length, results };
 }
 
 // ==================== API Handlers ====================

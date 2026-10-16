@@ -46,17 +46,25 @@ async function processTask(taskPayload) {
         const platform = (taskPayload.platform || "").toLowerCase();
         const operationRaw = String(taskPayload.operation || "scrapeProfile");
         const operation = operationRaw.toLowerCase();
-        // Strip leading @ so platform URL templates never double it
-        // (tiktok builds `${profileUrl}/@${keyword}` → /@@handle otherwise).
-        const keyword = String(taskPayload.searchQuery || taskPayload.targetUsername || "").trim().replace(/^@+/, "");
+        // Batch mode: searchQueries array carries ALL target handles for this
+        // profile. Falls back to the legacy single searchQuery/targetUsername.
+        let searchQueries = [];
+        if (Array.isArray(taskPayload.searchQueries) && taskPayload.searchQueries.length > 0) {
+            searchQueries = taskPayload.searchQueries.map(q => String(q || '').trim().replace(/^@+/, '')).filter(Boolean);
+        } else {
+            const single = String(taskPayload.searchQuery || taskPayload.targetUsername || "").trim().replace(/^@+/, "");
+            if (single) searchQueries = [single];
+        }
+        const keyword = searchQueries[0] || "";
         const cookieJSON = taskPayload.cookieJSON;
         const profileId = taskPayload.profileId || taskPayload.accountId || null;
         const socialStrategyPrompt = taskPayload.socialStrategyPrompt || null;
 
-        logger.info(`[processTask] ${taskId}: ${platform}/${operation} keyword=${keyword}`);
+        logger.info(`[processTask] ${taskId}: ${platform}/${operation} keywords=${searchQueries.length} [${searchQueries.slice(0, 3).join(', ')}${searchQueries.length > 3 ? '...' : ''}]`);
 
         if (!platform) throw new Error("Platform not specified");
         if (!cookieJSON) throw new Error("No cookies provided");
+        if (searchQueries.length === 0) throw new Error("No target handles provided");
 
         const engagementMode = taskPayload.engagementMode === true || String(taskPayload.engagementMode || "").toLowerCase() === "true";
         const platformConfig = getPlatformConfig(platform);
@@ -116,29 +124,29 @@ async function processTask(taskPayload) {
         if (workflowKeys.length === 0) throw new Error(`No workflow resolved for operation: ${operationRaw}`);
         const workflows = workflowKeys.map(key => getWorkflow(platform, key));
 
-        const context = {
-            platform,
-            operation,
-            keyword,
-            platformConfig,
-            socialStrategyPrompt,
-        };
+        // ---- Single-session batch: loop ALL target handles in ONE browser ----
+        for (const kw of searchQueries) {
+            const context = {
+                platform,
+                operation,
+                keyword: kw,
+                platformConfig,
+                socialStrategyPrompt,
+            };
 
-        let workflowResults = {};
-        for (const workflow of workflows) {
-            Object.assign(workflowResults, await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI));
-            if (workflow.extract) {
-                const extractor = getExtractor(platform, workflow.extract);
-                if (extractor && extractor.parseFunction) {
-                    try {
-                        // parseFunction is browser-context code (item.querySelector),
-                        // so it must run inside the page via $$eval — running it on
-                        // Node-side ElementHandles always yields garbage.
-                        const parseFunc = new Function('items', 'return (' + extractor.parseFunction + '\n)(items);');
-                        const extracted = await page.$$eval(extractor.selector, parseFunc);
-                        if (Array.isArray(extracted)) results.push(...extracted);
-                    } catch (e) {
-                        logger.error(`[processTask] Extraction failed: ${e.message}`);
+            let workflowResults = {};
+            for (const workflow of workflows) {
+                Object.assign(workflowResults, await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI));
+                if (workflow.extract) {
+                    const extractor = getExtractor(platform, workflow.extract);
+                    if (extractor && extractor.parseFunction) {
+                        try {
+                            const parseFunc = new Function('items', 'return (' + extractor.parseFunction + '\n)(items);');
+                            const extracted = await page.$$eval(extractor.selector, parseFunc);
+                            if (Array.isArray(extracted)) results.push(...extracted.map(e => ({ ...e, keyword: kw })));
+                        } catch (e) {
+                            logger.error(`[processTask] Extraction failed for "${kw}": ${e.message}`);
+                        }
                     }
                 }
             }
@@ -148,23 +156,26 @@ async function processTask(taskPayload) {
 
         // Update hub usage — count exactly the quota actions this run consumed
         // (same action family the gate above checked; [] for read-only scrapes).
+        // In batch mode: consumed once PER HANDLE the workflows ran for.
         if (profileId) {
             const quotaActions = consumes
                 ? toLimitActions(actionsForExecutedKeys(workflowKeys, operationRaw))
                 : [];
+            // One increment per action per handle actually processed.
             for (const action of quotaActions) {
-                await updateAccountUsage(profileId, action);
+                await updateAccountUsage(profileId, action, searchQueries.length);
             }
 
             await updateAccountInteractionData(profileId, {
                 lastOperation: operation,
                 lastTarget: keyword,
                 lastRun: new Date().toISOString(),
+                results: results.length,
                 status: "ACTIVE",
             });
         }
 
-        logger.info(`[processTask] ${taskId} completed: ${finalStatus}`);
+        logger.info(`[processTask] ${taskId} completed: ${finalStatus} (${searchQueries.length} handles)`);
 
     } catch (error) {
         logger.error(`[processTask] ${taskId} failed: ${error.message}`);

@@ -1111,15 +1111,27 @@ export async function POST(request) {
       const PRIORITY_MAP = { "inbox-interact": 0, "activities-interact": 1, "page-interact": 2, "search-interact": 3 };
       const pendingSocialTasks = [];
       const profilePlatforms = {};
+      // Batch engagement settings from campaign settings JSON (safe defaults).
+      const maxResultsPerKeyword = Math.max(1, parseInt(settings.maxResultsPerKeyword, 10) || 5);
+      const interactionMaxReplies = Math.max(0, parseInt(settings.interactionMaxReplies, 10) || 3);
 
-      const queueSocialTask = (operation, keyword, platform, profileData, profileId) => {
+      // Batch task: ONE task per profile per operation, carrying ALL target
+      // keywords/queries in searchQueries[]. The route opens the browser once
+      // and loops the queries inside the single session (no per-keyword
+      // browser reopen). searchQuery is kept as the first query for CSV
+      // flush compatibility.
+      const queueSocialTask = (operation, queries, platform, profileData, profileId) => {
+        const queryList = Array.isArray(queries) ? queries : [queries];
         pendingSocialTasks.push({
           taskId: "task-" + Math.random().toString(36).substring(2, 11),
           platform,
           operation,
           priority: PRIORITY_MAP[operation] !== undefined ? PRIORITY_MAP[operation] : 99,
           engagementMode,
-          searchQuery: keyword,
+          searchQuery: queryList[0] || "",
+          searchQueries: queryList,
+          maxResultsPerKeyword,
+          interactionMaxReplies,
           cookieJSON: typeof profileData.cookies === "string" ? profileData.cookies : JSON.stringify(profileData.cookies),
           browserIdentity: profileData.browserIdentity || null,
           driveUrl: profileData.driveUrl || "",
@@ -1176,26 +1188,30 @@ export async function POST(request) {
         // and needs no per-keyword fan-out (previously it was duplicated once
         // per keyword, and queued zero tasks when no keywords existed).
         if (inboxHookEnabled && pendingSocialTasks.length < interactionLimit) {
-          queueSocialTask("inbox-interact", "", platform, profileData, profileId);
+          queueSocialTask("inbox-interact", [""], platform, profileData, profileId);
         }
 
-        for (const keyword of profileKeywords) {
-          for (const op of interactionTypes) {
-            if (pendingSocialTasks.length >= interactionLimit) break;
-            if (op === "inbox") continue; // queued once per profile above
+        // ONE batch task per profile per operation — searchQueries carries
+        // ALL keywords. The route opens the browser once and loops inside a
+        // single session (no per-keyword browser reopen). interactionLimit
+        // now caps task count = profile×operation combos (not keyword count).
+        const filterPageKeywords = (kws) => kws.filter(kw =>
+          // page-interact opens /<handle> directly — hashtags, search phrases
+          // and URLs would produce broken profile URLs, so only handle-shaped
+          // targets are queued for it.
+          /^[A-Za-z0-9._-]+$/.test(kw.replace(/^@+/, ""))
+        );
 
-            const operation = op === "search" ? "search-interact"
-              : op === "activities" ? "activities-interact"
-              : "page-interact";
-            // page-interact opens /<handle> directly — hashtags, search phrases
-            // and URLs would produce broken profile URLs, so only handle-shaped
-            // targets are queued for it.
-            if (operation === "page-interact" && !/^[A-Za-z0-9._-]+$/.test(keyword.replace(/^@+/, ""))) {
-              continue;
-            }
-            queueSocialTask(operation, keyword, platform, profileData, profileId);
-          }
+        for (const op of interactionTypes) {
           if (pendingSocialTasks.length >= interactionLimit) break;
+          if (op === "inbox") continue; // queued once per profile above
+
+          const operation = op === "search" ? "search-interact"
+            : op === "activities" ? "activities-interact"
+            : "page-interact";
+          const opQueries = operation === "page-interact" ? filterPageKeywords(profileKeywords) : profileKeywords;
+          if (opQueries.length === 0) continue;
+          queueSocialTask(operation, opQueries, platform, profileData, profileId);
         }
         if (pendingSocialTasks.length >= interactionLimit) break;
       }
@@ -1242,7 +1258,13 @@ export async function POST(request) {
         for (let i = 1; i < socialCsvRows.length; i++) {
           const row = socialCsvRows[i];
           const username = row[nHeaders.indexOf("SOCIALUSERNAME")] || "";
-          const relatedResults = executionResults.filter(r => r.taskId && tasksToExecute.find(t => t.searchQuery === username && t.taskId === r.taskId));
+          // Batch tasks carry searchQueries[] — match when username is in the
+          // array OR equals the legacy single searchQuery field.
+          const relatedResults = executionResults.filter(r => r.taskId && tasksToExecute.find(t => {
+            if (t.taskId !== r.taskId) return false;
+            if (Array.isArray(t.searchQueries) && t.searchQueries.includes(username)) return true;
+            return t.searchQuery === username;
+          }));
           if (relatedResults.length > 0) {
             const searchKeysIdx = nHeaders.indexOf("searchKeys");
             const searchStatusIdx = nHeaders.indexOf("searchStatus");
