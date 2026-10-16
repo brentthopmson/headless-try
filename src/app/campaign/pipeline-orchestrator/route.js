@@ -194,18 +194,33 @@ async function triggerStage(campaignId, stage, settings, scope) {
       log.info(`${config.label} response: ${JSON.stringify(result).slice(0, 500)}`);
       return result;
     } catch (err) {
-      const isLastAttempt = attempt === maxRetries;
       const errName = err.name || "";
       const errMsg = err.message || "unknown error";
 
       if (errName === "AbortError") {
         log.error(`${config.label} timed out after ${timeoutMs}ms`);
         // Don't retry on timeout — the route may still be running; check status below
-      } else if (!isLastAttempt) {
-        log.warn(`${config.label} fetch failed (attempt ${attempt + 1}/${maxRetries + 1}): ${errMsg} — retrying in 30s`);
-        await new Promise(r => setTimeout(r, 30_000));
-        continue;
       } else {
+        // Long-running stage routes (execute) can exceed fetch/undici's socket
+        // timeout (~300s) while still executing server-side. The stage was
+        // already marked "processing" before the POST — if it still is, the
+        // route never died: DON'T retry (a retry re-triggers the whole stage
+        // and double-runs the batch).
+        if (config.statusField) {
+          try {
+            const currentSettings = await getCampaignSettings(campaignId);
+            if (currentSettings?.[config.statusField] === "processing") {
+              log.info(`${config.label} fetch dropped (${errMsg}) but stage is still processing — not retrying`);
+              return { success: false, skipped: true, message: `${config.label} still processing in background` };
+            }
+          } catch (_) { /* status check is best-effort; fall through to retry */ }
+        }
+
+        if (attempt < maxRetries) {
+          log.warn(`${config.label} fetch failed (attempt ${attempt + 1}/${maxRetries + 1}): ${errMsg} — retrying in 30s`);
+          await new Promise(r => setTimeout(r, 30_000));
+          continue;
+        }
         log.error(`${config.label} failed: ${errMsg}`);
       }
 
