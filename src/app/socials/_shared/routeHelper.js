@@ -56,6 +56,28 @@ function downloadFile(url, destPath) {
  * Downloads a browser profile ZIP from Drive and extracts it to a local directory.
  * Returns the local directory path, or null if download/extraction fails.
  */
+// Extracted Chrome profiles are cached for 60 minutes so a re-triggered
+// campaign run (or hourly-limit resume) reuses the already-downloaded
+// profile instead of re-fetching from Drive. Sits in os.tmpdir().
+const PROFILE_CACHE_TTL_MS = 60 * 60 * 1000;
+
+function profileCacheMarkerPath(destDir) {
+    return path.join(destDir, '.extracted_at');
+}
+
+async function readProfileCacheAge(destDir) {
+    try {
+        const marker = profileCacheMarkerPath(destDir);
+        if (!(await fs.pathExists(marker))) return Infinity;
+        const raw = (await fs.readFile(marker, 'utf8')).trim();
+        const extractedAt = Date.parse(raw);
+        if (Number.isNaN(extractedAt)) return Infinity;
+        return Date.now() - extractedAt;
+    } catch (_) {
+        return Infinity;
+    }
+}
+
 export async function downloadAndExtractProfile(driveUrl, browserId) {
     if (!driveUrl) return null;
     const directUrl = getDirectDownloadUrl(driveUrl);
@@ -64,9 +86,22 @@ export async function downloadAndExtractProfile(driveUrl, browserId) {
     const destDir = path.join(os.tmpdir(), 'webfixx_profiles', browserId);
     const zipPath = `${destDir}.zip`;
 
+    // Serve from cache when a fresh extracted profile already exists.
     try {
-        // Clean up any existing profile
-        await fs.remove(destDir);
+        const hasDefault = await fs.pathExists(path.join(destDir, 'Default'));
+        if (hasDefault) {
+            const ageMs = await readProfileCacheAge(destDir);
+            if (ageMs < PROFILE_CACHE_TTL_MS) {
+                logger.info(`[profileCache] Reusing fresh profile for ${browserId} (age ${Math.round(ageMs / 1000)}s < ${PROFILE_CACHE_TTL_MS / 1000}s TTL)`);
+                return destDir;
+            }
+            logger.info(`[profileCache] Cached profile for ${browserId} is stale (age ${Math.round(ageMs / 1000)}s) — re-downloading`);
+        }
+        // Stale or invalid cache: clear it before re-download.
+        await fs.remove(destDir).catch(() => {});
+    } catch (_) { /* fall through to download */ }
+
+    try {
         await fs.ensureDir(destDir);
 
         logger.info(`[profileDownload] Downloading profile from ${directUrl.substring(0, 80)}...`);
@@ -85,6 +120,9 @@ export async function downloadAndExtractProfile(driveUrl, browserId) {
             await fs.remove(destDir);
             return null;
         }
+
+        // Stamp the cache marker so future calls can reuse this profile.
+        await fs.writeFile(profileCacheMarkerPath(destDir), new Date().toISOString()).catch(() => {});
 
         logger.info(`[profileDownload] Profile extracted successfully to ${destDir}`);
         // DETAILED PROFILE INVENTORY: log every file in downloaded profile to compare

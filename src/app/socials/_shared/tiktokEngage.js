@@ -193,6 +193,72 @@ export async function solveTikTokAudioCaptcha(page, logPrefix = '[tiktokCaptcha]
     }
 }
 
+// ==================== Logged-out Detection ====================
+// TikTok renders a login modal when the session has no valid cookies. The
+// most stable signal is the h2[data-e2e="login-title"] ("Log in to TikTok").
+// Also checks the container class, the modal title id, and a /login URL.
+
+export async function isTikTokLoggedOut(page) {
+    try {
+        return await page.evaluate(() => {
+            const loginTitle = document.querySelector('h2[data-e2e="login-title"]');
+            if (loginTitle && loginTitle.textContent.includes('Log in')) return true;
+            if (document.querySelector('#login-modal-title')) return true;
+            if (document.querySelector("div[class*='DivLoginContainer']")) return true;
+            if (location.href.includes('/login')) return true;
+            return false;
+        });
+    } catch (e) {
+        return false;
+    }
+}
+
+// ==================== Comments Tab ====================
+// TikTok post pages open on the "You may like" tab. The comment composer and
+// comment list only render after switching to the Comments tab. Finds the
+// tabbar item whose inner text is "Comments" and clicks it, then waits for
+// the composer or a comment container to appear.
+
+export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]') {
+    try {
+        // Already showing comments? Composer or a comment item present.
+        const already = await page.evaluate(() => {
+            return !!(document.querySelector("div[data-e2e='comment-text'][contenteditable='true']")
+                || document.querySelector("div[class*='DivCommentItemContainer']"));
+        });
+        if (already) return true;
+
+        const clicked = await page.evaluate(() => {
+            const items = document.querySelectorAll("div[class*='tux-tabbar-item']");
+            for (const item of items) {
+                const label = item.querySelector("span[data-testid='tux-web-text']");
+                if (label && label.textContent.trim() === 'Comments') {
+                    label.click();
+                    return true;
+                }
+            }
+            return false;
+        });
+        if (!clicked) {
+            logger.warn(`${logPrefix} Comments tab not found.`);
+            return false;
+        }
+        logger.info(`${logPrefix} Clicked Comments tab. Waiting for composer...`);
+        await page.waitForSelector(
+            "div[data-e2e='comment-text'][contenteditable='true'], div[class*='DivCommentItemContainer']",
+            { timeout: 8000 }
+        ).catch(() => {});
+        // Confirm composer or comment list rendered.
+        return await page.evaluate(() => {
+            return !!(document.querySelector("div[data-e2e='comment-text'][contenteditable='true']")
+                || document.querySelector("div[class*='DivCommentItemContainer']"));
+        });
+    } catch (e) {
+        logger.warn(`${logPrefix} ensureCommentsVisible failed: ${e.message}`);
+        return false;
+    }
+}
+
 // ==================== Quota Gate Helper ====================
 // Per-action gate + usage increment. Returns { allowed, reason, stopType }.
 // stopType: 'hourly' | 'daily' | 'monthly' | 'cap' | null.
@@ -276,6 +342,18 @@ export async function runSearchInteractEngagement(page, opts) {
         return true;
     };
 
+    // Logged-out detection: when the login modal appears the session is dead.
+    // Skip the account immediately (no quota burn, no retries). Surfaced as
+    // stopType='logged_out' so the task result shows LOGGED_OUT, not 0-scraped.
+    const ensureLoggedIn = async (where) => {
+        if (!(await isTikTokLoggedOut(page))) return true;
+        logger.warn(`[engage:${taskId}] ACCOUNT_LOGGED_OUT: ${profileId || 'unknown'} at ${where} (${page.url()}) — skipping account.`);
+        if (profileId) await updateAccountStatus(profileId, 'LOGGED_OUT');
+        stopType = 'logged_out';
+        stopReason = `logged_out_at_${where}`;
+        return false;
+    };
+
     const pause = (min, max) => DOMHelpers.randomDelay(min, max);
 
     for (const keyword of keywords) {
@@ -288,11 +366,13 @@ export async function runSearchInteractEngagement(page, opts) {
             await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: platformConfig.timing?.navigationTimeout || 15000 }).catch(() => {});
             await pause(2000, 3500);
             if (!(await ensureCaptchaSolved('search page'))) break;
+            if (!(await ensureLoggedIn('search page'))) break;
 
             // Wait for results container then extract.
             await page.waitForSelector(s.searchResultsContainer || s.searchResultItem, { timeout: 8000 }).catch(() => {});
             await pause(1500, 2500);
             if (!(await ensureCaptchaSolved('search results'))) break;
+            if (!(await ensureLoggedIn('search results'))) break;
 
             const extractor = platformConfig.extractors?.videos;
             let scraped = [];
@@ -304,9 +384,11 @@ export async function runSearchInteractEngagement(page, opts) {
                     logger.warn(`[engage:${taskId}] Result extraction failed: ${e.message}`);
                 }
             }
-            // Prefer results with a URL; fall back to clicking grid items by index.
-            const resultsWithUrl = scraped.filter(v => v.url);
-            logger.info(`[engage:${taskId}] Keyword "${keyword}": ${scraped.length} scraped, ${resultsWithUrl.length} with URLs. Cap=${maxResultsPerKeyword}`);
+            // Prefer results with a URL; dedupe by URL so the same post is
+            // never engaged twice (TikTok search often repeats items).
+            const seenUrls = new Set();
+            const resultsWithUrl = scraped.filter(v => v.url && !seenUrls.has(v.url) && seenUrls.add(v.url));
+            logger.info(`[engage:${taskId}] Keyword "${keyword}": ${scraped.length} scraped, ${resultsWithUrl.length} unique with URLs. Cap=${maxResultsPerKeyword}`);
 
             const toProcess = resultsWithUrl.slice(0, maxResultsPerKeyword);
             for (let rIdx = 0; rIdx < toProcess.length; rIdx++) {
@@ -319,6 +401,7 @@ export async function runSearchInteractEngagement(page, opts) {
                     await page.goto(video.url, { waitUntil: 'domcontentloaded', timeout: platformConfig.timing?.navigationTimeout || 15000 }).catch(() => {});
                     await pause(2500, 4000);
                     if (!(await ensureCaptchaSolved('post page'))) break;
+                    if (!(await ensureLoggedIn('post page'))) break;
 
                     // ---- AI analysis of post content ----
                     let analyzedVideo = '';
@@ -346,6 +429,26 @@ export async function runSearchInteractEngagement(page, opts) {
                     const likeClicked = await DOMHelpers.clickElement(page, s.likeButton, { timeout: 5000, delay: 1000 }).catch(() => false);
                     logger.info(`[engage:${taskId}] Like ${likeClicked ? 'clicked' : 'NOT found'} (quota consumed anyway per policy).`);
                     await pause(1200, 2200);
+
+                    // ---- Switch to Comments tab (composer + list live here) ----
+                    // Post pages open on "You may like"; the comment box and
+                    // comment list only render after the Comments tab is active.
+                    if (!(await ensureCommentsVisible(page, `[engage:${taskId}]`))) {
+                        logger.warn(`[engage:${taskId}] Comments tab unavailable — skipping comment + per-comment phase.`);
+                        results.push({
+                            keyword,
+                            url: video.url,
+                            author: video.author,
+                            caption: (video.caption || '').substring(0, 120),
+                            comment: '',
+                            commentsProcessed: 0,
+                            status: 'engaged_no_comments_tab',
+                        });
+                        // Return to search results (no overlay close on direct URLs).
+                        await page.goto(`${platformConfig.searchUrl}?q=${encodeURIComponent(keyword)}`, { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
+                        await pause(1200, 2000);
+                        continue;
+                    }
 
                     // ---- Generate + post contextual comment ----
                     let generatedComment = '';
@@ -476,8 +579,13 @@ export async function runSearchInteractEngagement(page, opts) {
                     });
                     logger.info(`[engage:${taskId}] Post ${rIdx + 1} engaged successfully.`);
 
-                    // Close overlay / return to results.
-                    await DOMHelpers.clickElement(page, s.browseClose, { timeout: 3000, delay: 800 }).catch(() => {});
+                    // Close overlay / return to results. Direct /photo/ URLs
+                    // have no overlay close button — fall back to navigating
+                    // back to the search page instead of timing out.
+                    const closed = await DOMHelpers.clickElement(page, s.browseClose, { timeout: 3000, delay: 800 }).catch(() => false);
+                    if (!closed) {
+                        await page.goto(`${platformConfig.searchUrl}?q=${encodeURIComponent(keyword)}`, { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
+                    }
                     await pause(1200, 2000);
 
                 } catch (postErr) {
@@ -496,6 +604,8 @@ export async function runSearchInteractEngagement(page, opts) {
     if (stopType === 'hourly' && profileId) {
         await updateAccountStatus(profileId, 'RATE_LIMITED');
         logger.info(`[engage:${taskId}] Hourly limit hit — account ${profileId} marked RATE_LIMITED. Resume next hour-cycle.`);
+    } else if (stopType === 'logged_out') {
+        logger.warn(`[engage:${taskId}] Account ${profileId} was logged out — skipped immediately (${stopReason}).`);
     } else if ((stopType === 'daily' || stopType === 'monthly' || stopType === 'cap') && profileId) {
         logger.info(`[engage:${taskId}] Permanent limit hit (${stopType}: ${stopReason}) — stopping run for account ${profileId}.`);
     } else if (captchaFailed) {

@@ -205,11 +205,15 @@ Respond with ONLY: yes or no`
             videoCaption: "div[data-e2e='search-card-video-caption'], span[data-e2e='search-card-video-desc'], [data-e2e='browse-desc']",
             videoAuthor: "a[data-e2e='search-card-user-link'], span[data-e2e='search-card-user-unique-id'], a[data-e2e='browse-username']",
             videoViews: "strong[data-e2e='video-views']",
-            // Opened post overlay
-            likeButton: "div[data-e2e='browse-like-icon'], [data-e2e='like-icon']",
+            // Opened post overlay. HeartWrapper is the main-page modal like
+            // button; browse-like-icon is the direct /photo/ page action bar.
+            likeButton: "span[class*='HeartWrapper'], div[data-e2e='browse-like-icon'], [data-e2e='like-icon']",
             likeCount: "span[data-e2e='browse-like-count']",
             commentButton: "div[data-e2e='browse-comment-icon'], [data-e2e='comment-icon']",
             commentCount: "span[data-e2e='browse-comment-count']",
+            // Comments tab (tabbar item labelled "Comments" — post pages open
+            // on "You may like"; composer/list only render after this tab).
+            commentsTab: "div[class*='tux-tabbar-item'] span[data-testid='tux-web-text']",
             browseUsername: "[data-e2e='browse-username']",
             browseDesc: "[data-e2e='browse-desc']",
             browseClose: "button[data-e2e='browse-close']",

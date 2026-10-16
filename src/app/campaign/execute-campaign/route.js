@@ -27,6 +27,13 @@ import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
 import { calculateScheduleTimes } from "../../../utils/scheduleCalculator.js";
 import { detectEmailProvider } from "../../../utils/sendRateLimiter.js";
 
+// ── Re-entrancy guard ──────────────────────────────────────────────────
+// The orchestrator retries a timed-out execute POST (~300s undici
+// headersTimeout). Without this guard the retry re-runs the whole campaign
+// (duplicate queueSocialTask → duplicate profile downloads). A second POST
+// for a campaignId that is already executing short-circuits to skipped.
+const _executingCampaigns = new Set();
+
 function embedCampaignIdentifier(subject, body, campaignId) {
   const identifier = `[${campaignId}]`;
   const taggedSubject = subject.includes(identifier) ? subject : `${subject} ${identifier}`;
@@ -309,6 +316,9 @@ async function getSocialProfileCookies(profileId) {
 
 export async function POST(request) {
   let campaignId = null;
+  // True only when THIS invocation claimed the re-entrancy slot. A skipped
+  // duplicate request must NOT delete the other run's slot in finally.
+  let _isExecuting = false;
   try {
     await identifySelfFromHost(request.headers.get('host'));
     const gate = await requireFeature('allowShooting', 'campaign shooting');
@@ -321,6 +331,20 @@ export async function POST(request) {
     }
 
     const log = logger.child({ campaignId, stage: 'execute' });
+
+    // Re-entrancy guard: if this campaign is already executing in this
+    // process, the orchestrator's retry (after its fetch timeout) must NOT
+    // re-run the whole campaign — that caused duplicate profile downloads.
+    if (_executingCampaigns.has(campaignId)) {
+      log.info(`[reentrancy] Execute already in-flight for ${campaignId} — returning skipped`);
+      return NextResponse.json({
+        success: true,
+        skipped: true,
+        message: "Campaign execute already in-flight on this server",
+      });
+    }
+    _executingCampaigns.add(campaignId);
+    _isExecuting = true;
     log.info(`Received execution trigger`);
 
     // 1. Fetch Campaign Details
@@ -1140,6 +1164,10 @@ export async function POST(request) {
           targetLink: settings.targetLink || "",
           socialStrategyPrompt: settings.socialStrategyPrompt || "",
           campaignMode: settings.campaignMode || "",
+          // Campaign direct-execute tasks have no row in the social-tasks
+          // sheet — the route skips updateTaskRow for these (avoids
+          // "Unable to parse range: social-tasks!1:1" + GAS Invalid action).
+          directExecute: true,
           status: "PENDING",
           createdAt: new Date().toISOString()
         });
@@ -1482,6 +1510,10 @@ export async function POST(request) {
       details: { stack: error.stack },
     });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+  } finally {
+    // Only the run that claimed the slot releases it. A skipped duplicate
+    // returns before claiming, so it never touches the set here.
+    if (_isExecuting && campaignId) _executingCampaigns.delete(campaignId);
   }
 }
 

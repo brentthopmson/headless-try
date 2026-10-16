@@ -200,6 +200,13 @@ async function triggerStage(campaignId, stage, settings, scope) {
       if (errName === "AbortError") {
         log.error(`${config.label} timed out after ${timeoutMs}ms`);
         // Don't retry on timeout — the route may still be running; check status below
+        if (!config.statusField && stage === "execute") {
+          // Execute has no status field to verify against, but a timeout does
+          // NOT mean the route died — it keeps executing server-side. Don't
+          // mark failed or alert; the campaign run continues in the background.
+          log.info(`${config.label} timed out but execute has no status field — treating as still-running, not marking failed`);
+          return { success: false, skipped: true, message: `${config.label} still running in background (timed out waiting)` };
+        }
       } else {
         // Long-running stage routes (execute) can exceed fetch/undici's socket
         // timeout (~300s) while still executing server-side. The stage was
@@ -214,6 +221,16 @@ async function triggerStage(campaignId, stage, settings, scope) {
               return { success: false, skipped: true, message: `${config.label} still processing in background` };
             }
           } catch (_) { /* status check is best-effort; fall through to retry */ }
+        } else if (stage === "execute") {
+          // Execute has no statusField, but it is the longest-running stage.
+          // A non-abort fetch error here almost always means the socket
+          // dropped while the route was STILL executing. Retrying re-fires
+          // the whole campaign (duplicate profile downloads). The route now
+          // also has its own re-entrancy guard — treat like timeout: don't
+          // retry, don't mark failed, don't alert. The run continues
+          // server-side.
+          log.info(`${config.label} fetch dropped (${errMsg}) — execute has no status field; treating as still-running, not retrying`);
+          return { success: false, skipped: true, message: `${config.label} still running in background (fetch dropped)` };
         }
 
         if (attempt < maxRetries) {

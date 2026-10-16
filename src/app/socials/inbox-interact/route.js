@@ -166,7 +166,7 @@ async function processTask(taskPayload) {
     } finally {
         if (page) { try { await page.close(); } catch (e) {} }
         if (browser) { try { await browser.close(); } catch (e) {} }
-        if (profileDir) { const fs = await import('fs-extra'); await fs.remove(profileDir).catch(() => {}); }
+        // profileDir intentionally not deleted — downloadAndExtractProfile caches it for 60 min.
         activeTasks.delete(taskId);
     }
 

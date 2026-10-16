@@ -286,21 +286,26 @@ async function processTask(taskRow, columnIndexes) {
         if (browser) {
             try { await browser.close(); } catch (e) { logger.warn(`[processTask] Error closing browser: ${e.message}`); }
         }
-        if (profileDir) {
-            const fs = await import('fs-extra');
-            await fs.remove(profileDir).catch(() => {});
-        }
+        // profileDir is intentionally NOT deleted here — downloadAndExtractProfile
+        // caches it for 60 min so a re-triggered run reuses it (no re-download).
 
-        try {
-            await updateTaskRow(taskId, {
-                status: finalStatus,
-                resultCount: results.length,
-                lastResult: JSON.stringify(results[results.length - 1] || { status: finalStatus }),
-                completedAt: new Date().toISOString()
-            });
-            logger.info(`[processTask] Updated task: ${taskId} -> ${finalStatus}`);
-        } catch (updateError) {
-            logger.error(`[processTask] Error updating task row: ${updateError.message}`);
+        // Campaign direct-execute tasks have no social-tasks sheet row —
+        // updateTaskRow would fail with "Unable to parse range:
+        // social-tasks!1:1" and a GAS "Invalid action" fallback. Skip it.
+        if (get('directExecute')) {
+            logger.info(`[processTask] directExecute task ${taskId} — skipping social-tasks row update`);
+        } else {
+            try {
+                await updateTaskRow(taskId, {
+                    status: finalStatus,
+                    resultCount: results.length,
+                    lastResult: JSON.stringify(results[results.length - 1] || { status: finalStatus }),
+                    completedAt: new Date().toISOString()
+                });
+                logger.info(`[processTask] Updated task: ${taskId} -> ${finalStatus}`);
+            } catch (updateError) {
+                logger.error(`[processTask] Error updating task row: ${updateError.message}`);
+            }
         }
 
         activeTasks.delete(taskId);
