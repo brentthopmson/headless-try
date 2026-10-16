@@ -82,6 +82,7 @@ async function processTask(taskRow, columnIndexes) {
     let page = null;
     let finalStatus = "FAILED";
     let results = [];
+    let profileDir = null;
 
     try {
         logger.info(`[processTask] Starting task: ${taskId}`);
@@ -125,7 +126,6 @@ async function processTask(taskRow, columnIndexes) {
         }
 
         // Hybrid session: use Drive profile + identity if available
-        let profileDir = null;
         try {
             let browserIdentity = null;
             let driveUrl = '';

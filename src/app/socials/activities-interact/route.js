@@ -38,6 +38,7 @@ async function processTask(taskPayload) {
     let page = null;
     let finalStatus = "FAILED";
     let results = [];
+    let profileDir = null;
     const taskId = taskPayload.taskId || ("act-" + Math.random().toString(36).substring(2, 11));
 
     try {
@@ -83,7 +84,6 @@ async function processTask(taskPayload) {
         }
 
         // Hybrid session: use Drive profile + identity if available
-        let profileDir = null;
         try {
             const sessionResult = await resolveSocialSession({
                 cookies: cookieJSON,
