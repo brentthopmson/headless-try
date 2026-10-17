@@ -323,30 +323,26 @@ export async function runSearchInteractEngagement(page, opts) {
 
                     // ---- Wait for the post action bar to hydrate before engaging ----
                     // navigateAndWait can return 'post' from the URL alone, before the
-                    // action bar (Like/Comments) actually renders. Wait for it so the
-                    // like/comments clicks target a fully-rendered page (switching tabs
-                    // into a half-hydrated DOM was reverting the optimistic like).
+                    // action bar (Like/Comments) actually renders. Photo posts hydrate
+                    // slowly (~20-30s observed). If the bar never renders the page is
+                    // unusable — skip WITHOUT consuming like quota (a click against a
+                    // missing button used to burn quota for nothing).
                     try {
-                        await page.waitForSelector(s.likeButton, { visible: true, timeout: 10000 });
+                        await page.waitForSelector(s.likeButton, { visible: true, timeout: 30000 });
                         logger.info(`[engage:${taskId}] Post ${rIdx + 1}: action bar rendered.`);
                     } catch (e) {
-                        logger.warn(`[engage:${taskId}] Post ${rIdx + 1}: action bar not detected within 10s — continuing (like may fail).`);
+                        logger.warn(`[engage:${taskId}] Post ${rIdx + 1}: action bar not rendered within 30s — skipping post (no quota consumed).`);
+                        results.push({ keyword, url: video.url, status: 'failed', error: 'action_bar_missing' });
+                        await page.goto(`${platformConfig.searchUrl}?q=${encodeURIComponent(keyword)}`, { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
+                        await pause(1200, 2000);
+                        continue;
                     }
 
-                    // Action-bar comment count — drives ensureCommentsVisible:
-                    // count > 0 means an empty comment panel is a FAILURE state.
-                    let expectedComments = 0;
-                    try {
-                        const cntText = await page.evaluate((sel) => {
-                            const el = document.querySelector(sel);
-                            return el ? (el.textContent || '') : '';
-                        }, s.commentCount).catch(() => '');
-                        const m = String(cntText || '').replace(/,/g, '').match(/(\d+)/);
-                        expectedComments = m ? parseInt(m[1], 10) : 0;
-                        logger.info(`[engage:${taskId}] Post ${rIdx + 1}: action bar comment count = ${expectedComments}.`);
-                    } catch (e) { /* unknown → lenient mode */ }
-
                     // ---- Like the post ----
+                    // (Action-bar comment count is read AFTER the like settles —
+                    // see below. Reading it here raced slow photo-post hydration
+                    // and misread 0, flipping ensureCommentsVisible into lenient
+                    // mode and bypassing the comments_not_loaded guard.)
                     const likeGate = await gateAndConsume(platform, profileId, 'like');
                     if (!likeGate.allowed) {
                         stopType = likeGate.stopType;
@@ -360,14 +356,65 @@ export async function runSearchInteractEngagement(page, opts) {
                     if (preSig && preSig.state === true) {
                         logger.info(`[engage:${taskId}] Post already liked (${preSig.why}) — skipping like click.`);
                     } else {
-                        const likeClicked = await DOMHelpers.clickElement(page, s.likeButton, { timeout: 5000, delay: 1000 }).catch(() => false);
+                        const likeClicked = await DOMHelpers.humanClick(page, s.likeButton, { timeout: 5000 }).catch(() => false);
                         logger.info(`[engage:${taskId}] Like ${likeClicked ? 'clicked' : 'NOT found'} (quota consumed anyway per policy).`);
                     }
-                    // Patient settle: give TikTok time to commit the like server-side
-                    // BEFORE we switch tabs. Switching too early was reverting the
-                    // optimistic like (user-observed: "liked, then immediately
-                    // unliked when the comments tab was clicked").
-                    await pause(2500, 3500);
+                    // ---- Like-commit verification ----
+                    // Poll until the like PERSISTS (aria-pressed=true / red heart).
+                    // A click that never flips the button means TikTok rejected it
+                    // server-side (shadow flag) — the old blind pause let a
+                    // rejected like fall through as "clicked". Retry ONCE with a
+                    // human click, and only on a confident "not liked" signal
+                    // (never re-click a weak reading — that's how flaps start).
+                    let likeSig = await isPostLiked(page, s);
+                    if (!(likeSig && likeSig.state === true)) {
+                        const likeDeadline = Date.now() + 6000;
+                        while (!(likeSig && likeSig.state === true) && Date.now() < likeDeadline) {
+                            await pause(700, 1100);
+                            likeSig = await isPostLiked(page, s);
+                        }
+                    }
+                    if (!(likeSig && likeSig.state === true)) {
+                        if (isConfidentlyUnliked(likeSig)) {
+                            logger.warn(`[engage:${taskId}] Like not committed after click (why=${likeSig.why}) — human re-like once.`);
+                            await DOMHelpers.humanClick(page, s.likeButton, { timeout: 4000 }).catch(() => {});
+                            const retryDeadline = Date.now() + 4000;
+                            likeSig = await isPostLiked(page, s);
+                            while (!(likeSig && likeSig.state === true) && Date.now() < retryDeadline) {
+                                await pause(700, 1100);
+                                likeSig = await isPostLiked(page, s);
+                            }
+                        } else {
+                            logger.warn(`[engage:${taskId}] Like state unconfirmed (why=${likeSig?.why ?? 'missing'}) — not re-clicking (flap guard).`);
+                        }
+                    }
+                    if (likeSig && likeSig.state === true) {
+                        logger.info(`[engage:${taskId}] Post ${rIdx + 1}: like committed (aria-pressed=${likeSig.ariaPressed ?? 'none'}, why=${likeSig.why}).`);
+                    } else {
+                        logger.warn(`[engage:${taskId}] Post ${rIdx + 1}: like NOT committed (shadow-reject?) — continuing without retry loop.`);
+                    }
+                    // Short settle before switching tabs (commit already verified above).
+                    await pause(1500, 2200);
+
+                    // ---- Action-bar comment count (read AFTER the like settles) ----
+                    // Photo posts hydrate the count late; reading it with the
+                    // action bar raced to 0 and flipped ensureCommentsVisible into
+                    // lenient mode (composer accepted, empty panel treated as OK).
+                    // Retry briefly — the bar is guaranteed present (like click
+                    // just used it).
+                    let expectedComments = 0;
+                    for (let cntAttempt = 0; cntAttempt < 3 && !expectedComments; cntAttempt++) {
+                        try {
+                            const cntText = await page.evaluate((sel) => {
+                                const el = document.querySelector(sel);
+                                return el ? (el.textContent || '') : '';
+                            }, s.commentCount).catch(() => '');
+                            const m = String(cntText || '').replace(/,/g, '').match(/(\d+)/);
+                            if (m) expectedComments = parseInt(m[1], 10);
+                        } catch (e) { /* retry */ }
+                        if (!expectedComments) await pause(1200, 1800);
+                    }
+                    logger.info(`[engage:${taskId}] Post ${rIdx + 1}: action bar comment count = ${expectedComments}.`);
 
                     // ---- Switch to Comments tab (composer + list live here) ----
                     // Post pages open on "You may like"; the comment box and
@@ -405,7 +452,7 @@ export async function runSearchInteractEngagement(page, opts) {
                         const sig = await isPostLiked(page, s, `[engage:${taskId}] Post ${rIdx + 1}:`);
                         if (isConfidentlyUnliked(sig)) {
                             logger.warn(`[engage:${taskId}] Like reverted after Comments tab (why=${sig.why}) — re-liking once.`);
-                            await DOMHelpers.clickElement(page, s.likeButton, { timeout: 4000, delay: 800 }).catch(() => {});
+                            await DOMHelpers.humanClick(page, s.likeButton, { timeout: 4000 }).catch(() => {});
                             await pause(1200, 2000);
                             const after = await isPostLiked(page, s);
                             if (after && after.state === true) {
@@ -550,19 +597,26 @@ export async function runSearchInteractEngagement(page, opts) {
                             break;
                         }
                         // Click the like icon within this comment's container by index.
+                        // Real-mouse click: evaluate el.click() fired isTrusted=false
+                        // events which TikTok's anti-bot ignores.
                         try {
-                            const likedC = await page.evaluate((cIdx) => {
+                            const likeRect = await page.evaluate((cIdx) => {
                                 const containers = document.querySelectorAll("div[class*='DivCommentItemContainer']");
                                 const el = containers[cIdx];
-                                if (!el) return false;
+                                if (!el) return null;
                                 const likeIcon = el.querySelector("div[data-e2e='comment-like-icon'], [data-e2e='comment-like-icon']");
-                                if (!likeIcon) return false;
+                                if (!likeIcon) return null;
                                 // Don't double-like: parent aria-pressed or the icon's active state.
                                 const pressed = likeIcon.closest('[aria-pressed="true"]') || likeIcon.querySelector('[aria-pressed="true"]');
-                                if (pressed) return false;
-                                likeIcon.click();
-                                return true;
+                                if (pressed) return null;
+                                const r = likeIcon.getBoundingClientRect();
+                                if (r.width < 1 || r.height < 1) return null;
+                                return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
                             }, comment.index);
+                            let likedC = false;
+                            if (likeRect) {
+                                likedC = await DOMHelpers.humanClickAt(page, likeRect.x, likeRect.y, { hoverMs: [120, 300] }).catch(() => false);
+                            }
                             logger.info(`[engage:${taskId}] Comment like ${likedC ? 'clicked' : 'skipped (already liked or not found)'}.`);
                         } catch (e) {
                             logger.warn(`[engage:${taskId}] Comment like click failed: ${e.message}`);
@@ -578,16 +632,21 @@ export async function runSearchInteractEngagement(page, opts) {
                             break;
                         }
                         try {
-                            // Click the Reply button in this comment's container.
-                            const replyClicked = await page.evaluate((cIdx) => {
+                            // Click the Reply button in this comment's container
+                            // with the real mouse (isTrusted events).
+                            const replyRect = await page.evaluate((cIdx) => {
                                 const containers = document.querySelectorAll("div[class*='DivCommentItemContainer']");
                                 const el = containers[cIdx];
-                                if (!el) return false;
+                                if (!el) return null;
                                 const reply = el.querySelector("span[data-e2e='comment-reply-1'], span[data-e2e^='comment-reply-'], [aria-label='Reply']");
-                                if (!reply) return false;
-                                reply.click();
-                                return true;
+                                if (!reply) return null;
+                                const r = reply.getBoundingClientRect();
+                                if (r.width < 1 || r.height < 1) return null;
+                                return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
                             }, comment.index);
+                            const replyClicked = replyRect
+                                ? await DOMHelpers.humanClickAt(page, replyRect.x, replyRect.y, { hoverMs: [120, 300] }).catch(() => false)
+                                : false;
                             if (replyClicked) {
                                 await pause(800, 1500);
                                 let replyText = '';
@@ -631,7 +690,7 @@ export async function runSearchInteractEngagement(page, opts) {
                     // Close overlay / return to results. Direct /photo/ URLs
                     // have no overlay close button — fall back to navigating
                     // back to the search page instead of timing out.
-                    const closed = await DOMHelpers.clickElement(page, s.browseClose, { timeout: 3000, delay: 800 }).catch(() => false);
+                    const closed = await DOMHelpers.humanClick(page, s.browseClose, { timeout: 3000 }).catch(() => false);
                     if (!closed) {
                         await page.goto(`${platformConfig.searchUrl}?q=${encodeURIComponent(keyword)}`, { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
                     }

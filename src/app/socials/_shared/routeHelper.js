@@ -578,6 +578,39 @@ export async function appendSheetRow(sheetName, dataObject) {
 
 // ==================== DOM Interaction Helpers ====================
 
+// ==================== Human-like Mouse Primitives ====================
+// TikTok's anti-bot fingerprints synthetic clicks: el.click() in evaluate()
+// fires isTrusted=false events, and page.click() teleports the cursor with no
+// movement history. These helpers drive the real CDP mouse along a jittered
+// path with hover + press timing so engagement clicks look human.
+
+const _mousePos = new WeakMap();
+const _rand = (min, max) => Math.random() * (max - min) + min;
+const _sleep = (min, max) => new Promise(r => setTimeout(r, _rand(min, max)));
+
+// Move the cursor from its last known position to (x, y) along a jittered,
+// eased path. No button events — safe for hover/scroll targeting.
+async function _humanMoveTo(page, x, y, options = {}) {
+    const { steps = null, settleMs = [60, 160] } = options;
+    let last = _mousePos.get(page);
+    if (!last) {
+        const vp = page.viewport() || { width: 1280, height: 800 };
+        last = { x: vp.width * _rand(0.25, 0.75), y: vp.height * _rand(0.25, 0.75) };
+    }
+    const n = steps ?? Math.floor(_rand(8, 15));
+    for (let i = 1; i <= n; i++) {
+        const t = i / n;
+        const e = t * t * (3 - 2 * t); // smoothstep — fast start, soft landing
+        const jx = i === n ? 0 : _rand(-3, 3);
+        const jy = i === n ? 0 : _rand(-3, 3);
+        await page.mouse.move(last.x + (x - last.x) * e + jx, last.y + (y - last.y) * e + jy);
+        await _sleep(12, 35);
+    }
+    await page.mouse.move(x, y);
+    _mousePos.set(page, { x, y });
+    await _sleep(settleMs[0], settleMs[1]);
+}
+
 export const DOMHelpers = {
     waitForSelector: async (page, selector, options = {}) => {
         const { timeout = 10000, visible = false, retries = 3 } = options;
@@ -610,6 +643,81 @@ export const DOMHelpers = {
             return true;
         } catch (e) {
             logger.warn(`[clickElement] Failed to click ${selector}: ${e.message}`);
+            return false;
+        }
+    },
+
+    // Real-mouse click at viewport coordinates: jittered approach path →
+    // hover (with micro-jiggle) → down → 60-130ms press → up.
+    humanClickAt: async (page, x, y, options = {}) => {
+        const { hoverMs = [150, 400], pressMs = [60, 130], postMs = [80, 200] } = options;
+        try {
+            await _humanMoveTo(page, x, y);
+            if (Math.random() < 0.6) {
+                await page.mouse.move(x + _rand(-2, 2), y + _rand(-2, 2));
+                await _sleep(40, 90);
+            }
+            await page.mouse.down();
+            await _sleep(pressMs[0], pressMs[1]);
+            await page.mouse.up();
+            _mousePos.set(page, { x, y });
+            await _sleep(postMs[0], postMs[1]);
+            return true;
+        } catch (e) {
+            logger.warn(`[humanClickAt] (${Math.round(x)},${Math.round(y)}) failed: ${e.message}`);
+            return false;
+        }
+    },
+
+    // Real-mouse click on a selector. Same false-on-failure contract as
+    // clickElement. Jitters the click point inside the element's box.
+    humanClick: async (page, selector, options = {}) => {
+        const { timeout = 5000, inset = 0.35 } = options;
+        try {
+            const el = await page.waitForSelector(selector, { visible: true, timeout });
+            const box = await el.boundingBox();
+            if (!box || box.width < 1 || box.height < 1) return false;
+            const x = box.x + box.width * _rand(inset, 1 - inset);
+            const y = box.y + box.height * _rand(inset, 1 - inset);
+            return await DOMHelpers.humanClickAt(page, x, y, options);
+        } catch (e) {
+            logger.warn(`[humanClick] Failed to click ${selector}: ${e.message}`);
+            return false;
+        }
+    },
+
+    // Real wheel scrolling under the cursor: move to the target (or viewport
+    // center), then wheel in small steps with pauses. Wheel events only
+    // scroll the element under the mouse — no button events fire.
+    humanScroll: async (page, selector = null, options = {}) => {
+        const { totalPx = 600, stepRange = [80, 150], pauseRange = [150, 350] } = options;
+        try {
+            let cx, cy;
+            if (selector) {
+                const el = await page.$(selector);
+                const box = el ? await el.boundingBox() : null;
+                if (box && box.width > 0 && box.height > 0) {
+                    cx = box.x + box.width * _rand(0.3, 0.7);
+                    cy = box.y + box.height * _rand(0.3, 0.7);
+                }
+            }
+            if (cx === undefined) {
+                const vp = page.viewport() || { width: 1280, height: 800 };
+                cx = vp.width * 0.5;
+                cy = vp.height * 0.5;
+            }
+            await _humanMoveTo(page, cx, cy, { settleMs: [80, 200] });
+            let scrolled = 0;
+            while (scrolled < totalPx) {
+                const dy = Math.min(Math.round(_rand(stepRange[0], stepRange[1])), totalPx - scrolled);
+                await page.mouse.wheel({ deltaY: dy });
+                scrolled += dy;
+                await _sleep(pauseRange[0], pauseRange[1]);
+            }
+            _mousePos.set(page, { x: cx, y: cy });
+            return true;
+        } catch (e) {
+            logger.warn(`[humanScroll] failed: ${e.message}`);
             return false;
         }
     },
@@ -918,7 +1026,7 @@ export async function postCommentVerified(page, s, text, logPrefix = '') {
     }, s.commentSubmit).catch(() => 'missing');
     if (btnState !== 'enabled') return { posted: false, reason: `submit-${btnState}` };
 
-    const clicked = await DOMHelpers.clickElement(page, s.commentSubmit, { timeout: 5000, delay: 1500 }).catch(() => false);
+    const clicked = await DOMHelpers.humanClick(page, s.commentSubmit, { timeout: 5000 }).catch(() => false);
     if (!clicked) return { posted: false, reason: 'submit-click-failed' };
 
     // TikTok clears the composer once the post is accepted — poll briefly.

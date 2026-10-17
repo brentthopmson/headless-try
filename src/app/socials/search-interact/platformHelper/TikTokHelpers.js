@@ -374,19 +374,29 @@ export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]'
             return { ok: true, state: snap.state, items: snap.items };
         }
 
-        // Panel not shown yet → click the "Comments" tab.
-        if (snap.items === 0 && !snap.composer) {
-            const clicked = await page.evaluate(() => {
+        // Real-mouse tab click: the old el.click() in evaluate fired
+        // isTrusted=false events — the underline moved but the comment-list
+        // fetch often returned an empty body. Drive the actual cursor.
+        const clickTab = async (name) => {
+            const rect = await page.evaluate((tabName) => {
                 const items = document.querySelectorAll("div[class*='tux-tabbar-item']");
                 for (const item of items) {
                     const label = item.querySelector("span[data-testid='tux-web-text']");
-                    if (label && label.textContent.trim() === 'Comments') {
-                        label.click();
-                        return true;
+                    if (label && label.textContent.trim() === tabName) {
+                        const r = item.getBoundingClientRect();
+                        if (r.width < 1 || r.height < 1) return null;
+                        return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
                     }
                 }
-                return false;
-            });
+                return null;
+            }, name);
+            if (!rect) return false;
+            return DOMHelpers.humanClickAt(page, rect.x, rect.y, { hoverMs: [150, 350] }).catch(() => false);
+        };
+
+        // Panel not shown yet → click the "Comments" tab.
+        if (snap.items === 0 && !snap.composer) {
+            const clicked = await clickTab('Comments');
             if (!clicked) {
                 logger.warn(`${logPrefix} Comments tab not found.`);
                 return { ok: false, state: null, items: 0, reason: 'comments_tab_not_found' };
@@ -404,33 +414,40 @@ export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]'
         if (expectReal) {
             // Fallback A: click the action-bar comment icon to (re)focus the panel.
             logger.warn(`${logPrefix} 0 items after 15s (expected ${expectedCount}) — trying comment-icon click.`);
-            await DOMHelpers.clickElement(page, "div[data-e2e='browse-comment-icon'], [data-e2e='comment-icon']", { timeout: 3000, delay: 800 }).catch(() => false);
+            await DOMHelpers.humanClick(page, "div[data-e2e='browse-comment-icon'], [data-e2e='comment-icon']", { timeout: 3000 }).catch(() => false);
             snap = await poll(6000);
             if (snap.state) {
                 logger.info(`${logPrefix} Comments loaded after comment-icon click (${snap.items} items).`);
                 return { ok: true, state: snap.state, items: snap.items };
             }
 
-            // Fallback B: scroll the right panel — virtualized lists often fetch
-            // items only after the container scrolls.
+            // Fallback B: real wheel-scroll over the right panel — virtualized
+            // lists often fetch items only after the container scrolls, and
+            // wheel events under the cursor look human (scrollTop= jumps don't).
             logger.warn(`${logPrefix} Still 0 items — trying panel scroll.`);
             for (let i = 0; i < 3 && !snap.state; i++) {
-                await page.evaluate(() => {
-                    const cands = Array.from(document.querySelectorAll("div[class*='DivCommentMain'], div[class*='DivTabContainer'], div[class*='RightPanel']"));
-                    for (const el of cands) {
-                        if (el.scrollHeight > el.clientHeight + 10) {
-                            el.scrollTop = el.scrollTop + 600;
-                            return true;
-                        }
-                    }
-                    window.scrollBy(0, 600);
-                    return false;
-                }).catch(() => {});
+                await DOMHelpers.humanScroll(page, "div[class*='DivCommentMain'], div[class*='DivTabContainer'], div[class*='RightPanel']", { totalPx: 500 }).catch(() => false);
                 snap = await poll(3000);
             }
             if (snap.state) {
                 logger.info(`${logPrefix} Comments loaded after panel scroll (${snap.items} items).`);
                 return { ok: true, state: snap.state, items: snap.items };
+            }
+
+            // Fallback C: toggle tabs to re-fire /api/comment/list/. Under
+            // automation the first fetch sometimes returns an empty body
+            // (observed: HTTP 200, 0 bytes) — switching away and back with the
+            // real mouse re-issues it (D1 observer logs the 2nd response).
+            logger.warn(`${logPrefix} Still 0 items — trying tab toggle to re-fire comment list.`);
+            await clickTab('You may like');
+            await new Promise(r => setTimeout(r, 1300));
+            const reClicked = await clickTab('Comments');
+            if (reClicked) {
+                snap = await poll(6000);
+                if (snap.state) {
+                    logger.info(`${logPrefix} Comments loaded after tab toggle (${snap.items} items).`);
+                    return { ok: true, state: snap.state, items: snap.items };
+                }
             }
 
             // D2: one-line panel diagnostic for why nothing rendered.
