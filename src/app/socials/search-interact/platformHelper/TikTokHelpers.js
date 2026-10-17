@@ -365,7 +365,7 @@ export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]'
         // (inner DivCommentItemWrapper). DivCommentItemContainer no longer exists.
         const LIST = "div[class*='DivCommentObjectWrapper'], div[class*='DivCommentItemWrapper']";
         const EMPTY_TEXT = 'Start the conversation';
-        const expectReal = Number(expectedCount) > 0;
+        let expectReal = Number(expectedCount) > 0;
 
         const probe = () => page.evaluate((args) => {
             const items = document.querySelectorAll(args.list).length;
