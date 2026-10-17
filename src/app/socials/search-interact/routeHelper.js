@@ -1,8 +1,8 @@
 import axios from 'axios';
 import logger from "../../../utils/logger.js";
 import { getSheetDataApi, updateSheetRowApi, stripFormulaColumns } from '../../api/googlesheets.js';
-import { DOMHelpers, gateAndConsume, capturePostFrame, postCommentVerified } from '../../_shared/routeHelper.js';
-import { updateAccountStatus } from '../../_shared/hubUpdater.js';
+import { DOMHelpers, gateAndConsume, capturePostFrame, postCommentVerified } from '../_shared/routeHelper.js';
+import { updateAccountStatus } from '../_shared/hubUpdater.js';
 import { isTikTokCaptchaVisible, solveTikTokAudioCaptcha, isTikTokLoggedOut, navigateAndWait, ensureCommentsVisible, isPostLiked, isConfidentlyUnliked } from './platformHelper/TikTokHelpers.js';
 
 // ==================== Data Fetching & Caching ====================
