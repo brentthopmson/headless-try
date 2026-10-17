@@ -223,20 +223,6 @@ const SETTLE_POLL_MS = 400;           // poll interval while waiting
 const SETTLE_TIMEOUT_MS = 20000;      // ~20s to reach a settled state (user-confirmed)
 const NAV_RETRY_TIMEOUT_MS = 25000;   // retry timeout for a failed goto
 
-// Wait until document.readyState === 'complete' (all subresources + JS
-// bundle loaded). Bounded by settleTimeoutMs; returns true when complete.
-async function waitForReadyComplete(page, settleTimeoutMs = SETTLE_TIMEOUT_MS) {
-    const deadline = Date.now() + settleTimeoutMs;
-    while (Date.now() < deadline) {
-        try {
-            const state = await page.evaluate(() => document.readyState);
-            if (state === 'complete') return true;
-        } catch (e) { /* page may be mid-navigation; retry */ }
-        await new Promise(r => setTimeout(r, SETTLE_POLL_MS));
-    }
-    return false;
-}
-
 // Classify the current page state once the DOM is loaded. Returns one of:
 // 'results' | 'post' | 'logged_out' | 'captcha' | 'unknown'.
 async function classifyPageState(page, s) {
@@ -257,12 +243,15 @@ async function classifyPageState(page, s) {
             if (location.href.includes('/login')) return 'logged_out';
             // Search results rendered.
             if (document.querySelector(sel.results)) return 'results';
-            // Opened post page (desc or action bar present).
-            if (document.querySelector(sel.post)) return 'post';
+            // Opened post page. Image-text photo posts have NO browse-desc
+            // caption element (the text is baked into the photo), so don't
+            // rely on it alone. The URL never lies about what we loaded, and
+            // the post action-bar icons (Like/Comments) are always present.
+            if (/tiktok\.com\/@[^/]+\/(photo|video)\//.test(location.href)) return 'post';
+            if (document.querySelector("[data-e2e='browse-like-icon'], [data-e2e='browse-comment-icon'], [data-e2e='browse-desc'], [data-e2e='browse-username']")) return 'post';
             return 'unknown';
         }, {
             results: s.searchResultsContainer || s.searchResultItem || "#search_top-item-list",
-            post: s.browseDesc || "[data-e2e='browse-desc']",
         });
     } catch (e) {
         return 'unknown';
@@ -270,8 +259,8 @@ async function classifyPageState(page, s) {
 }
 
 // Navigate to url and wait for a settled page: goto (with one retry on
-// failure) → readyState complete → short hydration pause → poll for a
-// definitive signal (results / post / login modal / captcha) up to ~20s.
+// failure) → short hydration pause → poll for a definitive signal
+// (results / post / login modal / captcha) up to ~20s.
 // Returns { ok, state, url }. ok=false means navigation itself failed.
 async function navigateAndWait(page, url, s, opts = {}) {
     const {
@@ -301,11 +290,11 @@ async function navigateAndWait(page, url, s, opts = {}) {
         return { ok: false, state: 'nav_failed', url: page.url(), error: navError.message };
     }
 
-    // Wait for full load (readyState complete), then let React hydrate.
-    const loaded = await waitForReadyComplete(page, settleTimeoutMs);
-    if (!loaded) {
-        logger.warn(`${logPrefix} ${label} did not reach readyState=complete within ${settleTimeoutMs}ms (url=${page.url()}).`);
-    }
+    // Short hydration pause so React can start rendering, then poll for a
+    // definitive signal. We do NOT block on readyState=complete — TikTok
+    // keeps analytics/websocket connections open and never reaches it, which
+    // used to waste the full 20s budget per navigation. The signal appearing
+    // IS the "page loaded enough" proof.
     await new Promise(r => setTimeout(r, hydrationPauseMs));
 
     // Poll for a definitive settled signal.
