@@ -600,21 +600,6 @@ export async function runSearchInteractEngagement(page, opts) {
                         logger.warn(`[engage:${taskId}] Post ${rIdx + 1}: action bar not detected within 10s — continuing (like may fail).`);
                     }
 
-                    // ---- AI analysis of post content ----
-                    let analyzedVideo = '';
-                    try {
-                        const descText = await page.evaluate((sel) => {
-                            const el = document.querySelector(sel);
-                            return el ? el.textContent.trim() : '';
-                        }, s.browseDesc || '[data-e2e="browse-desc"]').catch(() => '');
-                        const postContext = `Caption: ${video.caption || descText}\nAuthor: ${video.author || 'unknown'}`;
-                        const analyzePrompt = `${platformConfig.aiPrompts?.analyzeVideo || 'Summarize this post.'}\n\nPost: ${postContext}`;
-                        analyzedVideo = ai ? await ai.generate(analyzePrompt) : postContext;
-                    } catch (e) {
-                        logger.warn(`[engage:${taskId}] AI analysis failed: ${e.message}`);
-                        analyzedVideo = video.caption || '';
-                    }
-
                     // ---- Like the post ----
                     const likeGate = await gateAndConsume(platform, profileId, 'like');
                     if (!likeGate.allowed) {
@@ -663,6 +648,48 @@ export async function runSearchInteractEngagement(page, opts) {
                         }
                     } catch (e) { /* non-fatal */ }
 
+                    // ---- AI understanding of the post (AFTER comments loaded) ----
+                    // Comments + caption are what actually explain a post (photo
+                    // posts have no readable caption element), so we analyze them
+                    // together AFTER the comments panel has hydrated. This single
+                    // analysis feeds both the comment we post and the replies.
+                    let analyzedVideo = '';
+                    let aiComments = [];   // pre-existing comments (AI context + tone fit)
+                    try {
+                        const descText = await page.evaluate((sel) => {
+                            const el = document.querySelector(sel);
+                            return el ? el.textContent.trim() : '';
+                        }, s.browseDesc || '[data-e2e="browse-desc"]').catch(() => '');
+                        const caption = video.caption || descText || '';
+
+                        // Let the comment list finish populating, then extract for AI.
+                        await pause(1500, 2500);
+                        const cExtractor = platformConfig.extractors?.comments;
+                        if (cExtractor) {
+                            const parseFunc = new Function('items', 'return (' + cExtractor.parseFunction + '\n)(items);');
+                            aiComments = await page.$$eval(cExtractor.selector, parseFunc).catch(() => []) || [];
+                        }
+                        const commentLines = aiComments
+                            .filter(c => c.text)
+                            .slice(0, 8)
+                            .map(c => `- ${c.username ? c.username + ': ' : ''}${c.text}`)
+                            .join('\n');
+
+                        const postContext = [
+                            `Caption: ${caption || 'n/a'}`,
+                            `Author: ${video.author || 'unknown'}`,
+                            commentLines
+                                ? `Existing comments (what people are saying):\n${commentLines}`
+                                : 'Existing comments: none yet',
+                        ].join('\n');
+                        const analyzePrompt = `${platformConfig.aiPrompts?.analyzeVideo || 'Summarize this post.'}\n\nUnderstand this post from its caption and the existing comments — the comments reveal what the post is about.\n\nPost:\n${postContext}`;
+                        analyzedVideo = ai ? await ai.generate(analyzePrompt) : postContext;
+                        logger.info(`[engage:${taskId}] AI analysis ready (caption ${caption ? 'yes' : 'no'}, ${aiComments.length} comments in context).`);
+                    } catch (e) {
+                        logger.warn(`[engage:${taskId}] AI analysis failed: ${e.message}`);
+                        analyzedVideo = video.caption || '';
+                    }
+
                     // ---- Generate + post contextual comment ----
                     let generatedComment = '';
                     const commentGate = await gateAndConsume(platform, profileId, 'comment');
@@ -673,7 +700,8 @@ export async function runSearchInteractEngagement(page, opts) {
                         break;
                     }
                     try {
-                        const genPrompt = `${platformConfig.aiPrompts?.generateComment || 'Write a natural comment.'}\n\n${socialStrategyPrompt ? 'Strategy: ' + socialStrategyPrompt + '\n' : ''}Video analysis: ${analyzedVideo}`;
+                        const recentLines = aiComments.filter(c => c.text).slice(0, 5).map(c => `- ${c.text}`).join('\n');
+                        const genPrompt = `${platformConfig.aiPrompts?.generateComment || 'Write a natural comment.'}\n\n${socialStrategyPrompt ? 'Strategy: ' + socialStrategyPrompt + '\n' : ''}Post analysis: ${analyzedVideo}${recentLines ? `\nExisting comments (so yours fits the conversation):\n${recentLines}` : ''}`;
                         generatedComment = ai ? await ai.generate(genPrompt) : 'Great post!';
                         generatedComment = String(generatedComment).replace(/^["']|["']$/g, '').trim().slice(0, 150);
                     } catch (e) {
