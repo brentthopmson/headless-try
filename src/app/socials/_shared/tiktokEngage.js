@@ -213,6 +213,122 @@ export async function isTikTokLoggedOut(page) {
     }
 }
 
+// ==================== Page Load / Settle ====================
+// TikTok is a React SPA: domcontentloaded fires long before the search
+// results / post DOM hydrates. Racing past it caused 0-scraped keywords and
+// "next search while previous page still loading". These helpers wait for
+// a definitive settled state instead.
+
+const SETTLE_POLL_MS = 400;           // poll interval while waiting
+const SETTLE_TIMEOUT_MS = 20000;      // ~20s to reach a settled state (user-confirmed)
+const NAV_RETRY_TIMEOUT_MS = 25000;   // retry timeout for a failed goto
+
+// Wait until document.readyState === 'complete' (all subresources + JS
+// bundle loaded). Bounded by settleTimeoutMs; returns true when complete.
+async function waitForReadyComplete(page, settleTimeoutMs = SETTLE_TIMEOUT_MS) {
+    const deadline = Date.now() + settleTimeoutMs;
+    while (Date.now() < deadline) {
+        try {
+            const state = await page.evaluate(() => document.readyState);
+            if (state === 'complete') return true;
+        } catch (e) { /* page may be mid-navigation; retry */ }
+        await new Promise(r => setTimeout(r, SETTLE_POLL_MS));
+    }
+    return false;
+}
+
+// Classify the current page state once the DOM is loaded. Returns one of:
+// 'results' | 'post' | 'logged_out' | 'captcha' | 'unknown'.
+async function classifyPageState(page, s) {
+    try {
+        return await page.evaluate((sel) => {
+            const visible = (el) => {
+                if (!el) return false;
+                const rect = el.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+            };
+            // Captcha first — it overlays everything.
+            if (visible(document.querySelector('#captcha-verify-container-main-page'))) return 'captcha';
+            // Logged-out login modal.
+            const loginTitle = document.querySelector('h2[data-e2e="login-title"]');
+            if (loginTitle && loginTitle.textContent.includes('Log in')) return 'logged_out';
+            if (visible(document.querySelector('#login-modal-title'))) return 'logged_out';
+            if (visible(document.querySelector("div[class*='DivLoginContainer']"))) return 'logged_out';
+            if (location.href.includes('/login')) return 'logged_out';
+            // Search results rendered.
+            if (document.querySelector(sel.results)) return 'results';
+            // Opened post page (desc or action bar present).
+            if (document.querySelector(sel.post)) return 'post';
+            return 'unknown';
+        }, {
+            results: s.searchResultsContainer || s.searchResultItem || "#search_top-item-list",
+            post: s.browseDesc || "[data-e2e='browse-desc']",
+        });
+    } catch (e) {
+        return 'unknown';
+    }
+}
+
+// Navigate to url and wait for a settled page: goto (with one retry on
+// failure) → readyState complete → short hydration pause → poll for a
+// definitive signal (results / post / login modal / captcha) up to ~20s.
+// Returns { ok, state, url }. ok=false means navigation itself failed.
+async function navigateAndWait(page, url, s, opts = {}) {
+    const {
+        settleTimeoutMs = SETTLE_TIMEOUT_MS,
+        hydrationPauseMs = 1800,
+        label = 'page',
+        logPrefix = '[engage]',
+    } = opts;
+
+    // Goto with one retry — do NOT swallow errors silently.
+    let navError = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+            await page.goto(url, {
+                waitUntil: 'domcontentloaded',
+                timeout: NAV_RETRY_TIMEOUT_MS,
+            });
+            navError = null;
+            break;
+        } catch (e) {
+            navError = e;
+            logger.warn(`${logPrefix} Navigation to ${label} failed (attempt ${attempt}/2): ${e.message}`);
+            if (attempt < 2) await new Promise(r => setTimeout(r, 1500));
+        }
+    }
+    if (navError) {
+        return { ok: false, state: 'nav_failed', url: page.url(), error: navError.message };
+    }
+
+    // Wait for full load (readyState complete), then let React hydrate.
+    const loaded = await waitForReadyComplete(page, settleTimeoutMs);
+    if (!loaded) {
+        logger.warn(`${logPrefix} ${label} did not reach readyState=complete within ${settleTimeoutMs}ms (url=${page.url()}).`);
+    }
+    await new Promise(r => setTimeout(r, hydrationPauseMs));
+
+    // Poll for a definitive settled signal.
+    const deadline = Date.now() + settleTimeoutMs;
+    let state = 'unknown';
+    while (Date.now() < deadline) {
+        state = await classifyPageState(page, s);
+        if (state !== 'unknown') break;
+        await new Promise(r => setTimeout(r, SETTLE_POLL_MS));
+    }
+
+    const finalUrl = page.url();
+    if (state === 'unknown') {
+        // Log what the page actually shows so ambiguity is never silent.
+        let snippet = '';
+        try {
+            snippet = await page.evaluate(() => (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 200));
+        } catch (e) { /* ignore */ }
+        logger.warn(`${logPrefix} ${label} UNRESOLVED after ${settleTimeoutMs}ms: url=${finalUrl} readyState=${await page.evaluate(() => document.readyState).catch(() => '?')} body="${snippet}"`);
+    }
+    return { ok: true, state, url: finalUrl };
+}
+
 // ==================== Comments Tab ====================
 // TikTok post pages open on the "You may like" tab. The comment composer and
 // comment list only render after switching to the Comments tab. Finds the
@@ -363,16 +479,25 @@ export async function runSearchInteractEngagement(page, opts) {
             // ---- Search ----
             logger.info(`[engage:${taskId}] Searching: "${keyword}"`);
             const searchUrl = `${platformConfig.searchUrl}?q=${encodeURIComponent(keyword)}`;
-            await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: platformConfig.timing?.navigationTimeout || 15000 }).catch(() => {});
-            await pause(2000, 3500);
-            if (!(await ensureCaptchaSolved('search page'))) break;
-            if (!(await ensureLoggedIn('search page'))) break;
-
-            // Wait for results container then extract.
-            await page.waitForSelector(s.searchResultsContainer || s.searchResultItem, { timeout: 8000 }).catch(() => {});
-            await pause(1500, 2500);
+            // Wait for a settled page (readyState complete + results/login/captcha
+            // signal) instead of racing past domcontentloaded. ~20s budget.
+            const nav = await navigateAndWait(page, searchUrl, s, {
+                label: `search "${keyword}"`,
+                logPrefix: `[engage:${taskId}]`,
+            });
+            if (!nav.ok) {
+                logger.warn(`[engage:${taskId}] Keyword "${keyword}": navigation failed (${nav.error}) — skipping keyword.`);
+                continue;
+            }
+            if (nav.state === 'captcha' && !(await ensureCaptchaSolved('search page'))) break;
+            if (nav.state === 'logged_out' && !(await ensureLoggedIn('search page'))) break;
+            // Re-verify (modal/captcha can render between poll and now).
             if (!(await ensureCaptchaSolved('search results'))) break;
             if (!(await ensureLoggedIn('search results'))) break;
+            if (nav.state === 'unknown') {
+                logger.warn(`[engage:${taskId}] Keyword "${keyword}": page never reached a settled state — skipping keyword (no silent 0-scrape).`);
+                continue;
+            }
 
             const extractor = platformConfig.extractors?.videos;
             let scraped = [];
@@ -398,10 +523,25 @@ export async function runSearchInteractEngagement(page, opts) {
                 try {
                     // ---- Open post ----
                     logger.info(`[engage:${taskId}] Opening post ${rIdx + 1}/${toProcess.length}: ${video.url}`);
-                    await page.goto(video.url, { waitUntil: 'domcontentloaded', timeout: platformConfig.timing?.navigationTimeout || 15000 }).catch(() => {});
-                    await pause(2500, 4000);
+                    // Wait for the post page to fully load + settle before engaging.
+                    const postNav = await navigateAndWait(page, video.url, s, {
+                        label: `post ${video.url}`,
+                        logPrefix: `[engage:${taskId}]`,
+                    });
+                    if (!postNav.ok) {
+                        logger.warn(`[engage:${taskId}] Post ${rIdx + 1}: navigation failed (${postNav.error}) — skipping post.`);
+                        results.push({ keyword, url: video.url, status: 'failed', error: `nav_failed: ${postNav.error}` });
+                        continue;
+                    }
+                    if (postNav.state === 'captcha' && !(await ensureCaptchaSolved('post page'))) break;
+                    if (postNav.state === 'logged_out' && !(await ensureLoggedIn('post page'))) break;
                     if (!(await ensureCaptchaSolved('post page'))) break;
                     if (!(await ensureLoggedIn('post page'))) break;
+                    if (postNav.state === 'unknown') {
+                        logger.warn(`[engage:${taskId}] Post ${rIdx + 1}: page never reached a settled state — skipping post.`);
+                        results.push({ keyword, url: video.url, status: 'failed', error: 'page_unsettled' });
+                        continue;
+                    }
 
                     // ---- AI analysis of post content ----
                     let analyzedVideo = '';
