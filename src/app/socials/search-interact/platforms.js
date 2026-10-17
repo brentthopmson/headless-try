@@ -229,7 +229,11 @@ Respond with ONLY: yes or no`
             viewMoreReplies: "p[data-e2e='view-more-1'], p[data-e2e^='view-more-']",
             // Comment composer (bottom bar)
             commentInputContainer: "div[data-e2e='comment-input']",
-            commentBox: "div[data-e2e='comment-text'][contenteditable='true'], div[data-key-interaction='comment_input']",
+            // TUX v1_8_0: the editable contenteditable lives on a DESCENDANT
+            // .public-DraftEditor-content, never on the comment-text /
+            // comment_input containers themselves — targeting the container
+            // silently no-ops typing.
+            commentBox: "div[data-e2e='comment-text'] div[contenteditable='true'], div[data-key-interaction='comment_input'] div[contenteditable='true'], div[data-e2e='comment-text'][contenteditable='true'], .public-DraftEditor-content[contenteditable='true']",
             commentSubmit: "button[data-e2e='comment-post'], button[data-key-interaction='comment_submit']",
             // TikTok TUX audio captcha (main page, not iframe)
             captchaContainer: "#captcha-verify-container-main-page",

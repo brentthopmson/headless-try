@@ -322,102 +322,205 @@ async function navigateAndWait(page, url, s, opts = {}) {
 // TikTok post pages open on the "You may like" tab. The comment composer and
 // comment list only render after switching to the Comments tab. Finds the
 // tabbar item whose inner text is "Comments" and clicks it, then waits for
-// the composer or a comment container to appear.
-
-export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]') {
+// actual comment ITEMS to render when the action bar says comments exist.
+//
+// expectedCount: comment count read from the action bar (0 or null = unknown).
+// When expectedCount > 0 a visible composer or the "Start the conversation"
+// empty state is NOT proof of success — under automation the comment-list API
+// sometimes returns nothing and the panel renders empty (user-observed:
+// "comment count shows 33 but list is empty; manually it loads").
+// Returns { ok, state, items, reason }:
+//   state: 'list' | 'composer' | 'empty'
+//   reason on !ok: 'comments_tab_not_found' | 'panel_not_hydrated' | 'comments_not_loaded'
+export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]', expectedCount = null) {
     try {
         const COMPOSER = "div[data-e2e='comment-text'][contenteditable='true'], div[data-key-interaction='comment_input']";
         const LIST = "div[class*='DivCommentItemContainer']";
+        const EMPTY_TEXT = 'Start the conversation';
+        const expectReal = Number(expectedCount) > 0;
 
-        // Already showing comments? Composer or a comment item present.
-        const already = await page.evaluate((args) => {
-            return !!(document.querySelector(args.composer) || document.querySelector(args.list));
-        }, { composer: COMPOSER, list: LIST });
-        if (already) return true;
+        const probe = () => page.evaluate((args) => {
+            const items = document.querySelectorAll(args.list).length;
+            const composer = !!document.querySelector(args.composer);
+            const empty = (document.body?.innerText || '').includes(args.emptyText);
+            let state = null;
+            if (items > 0) state = 'list';
+            else if (args.expectReal) state = null; // count>0 → composer/empty prove nothing
+            else if (composer) state = 'composer';
+            else if (empty) state = 'empty';
+            return { items, composer, empty, state };
+        }, { composer: COMPOSER, list: LIST, emptyText: EMPTY_TEXT, expectReal });
 
-        const clicked = await page.evaluate(() => {
-            const items = document.querySelectorAll("div[class*='tux-tabbar-item']");
-            for (const item of items) {
-                const label = item.querySelector("span[data-testid='tux-web-text']");
-                if (label && label.textContent.trim() === 'Comments') {
-                    label.click();
-                    return true;
-                }
+        const poll = async (ms) => {
+            const deadline = Date.now() + ms;
+            let snap = await probe();
+            while (Date.now() < deadline && !snap.state) {
+                await new Promise(r => setTimeout(r, 400));
+                snap = await probe();
             }
-            return false;
-        });
-        if (!clicked) {
-            logger.warn(`${logPrefix} Comments tab not found.`);
-            return false;
-        }
-        logger.info(`${logPrefix} Clicked Comments tab. Waiting for panel (patient ~15s)...`);
+            return snap;
+        };
 
-        // Patient poll for the comments panel to hydrate. Composer OR comment
-        // list OR the empty "Start the conversation" state all prove the panel
-        // loaded — photo posts with 0 comments show the empty state but still
-        // allow posting, so don't reject on the composer selector alone.
-        const deadline = Date.now() + 15000;
-        let panelState = null;
-        while (Date.now() < deadline) {
-            panelState = await page.evaluate((args) => {
-                if (document.querySelector(args.composer)) return 'composer';
-                if (document.querySelector(args.list)) return 'list';
-                const body = document.body?.innerText || '';
-                if (body.includes('Start the conversation')) return 'empty';
-                return null;
-            }, { composer: COMPOSER, list: LIST });
-            if (panelState) break;
-            await new Promise(r => setTimeout(r, 400));
+        // Already showing real comments? Nothing to do.
+        let snap = await probe();
+        if (snap.state === 'list') {
+            logger.info(`${logPrefix} Comments panel ready (list, ${snap.items} items).`);
+            return { ok: true, state: 'list', items: snap.items };
+        }
+        if (!expectReal && snap.state) {
+            logger.info(`${logPrefix} Comments panel ready (${snap.state}).`);
+            return { ok: true, state: snap.state, items: snap.items };
         }
 
-        if (panelState) {
-            logger.info(`${logPrefix} Comments panel ready (${panelState}).`);
-            return true;
+        // Panel not shown yet → click the "Comments" tab.
+        if (snap.items === 0 && !snap.composer) {
+            const clicked = await page.evaluate(() => {
+                const items = document.querySelectorAll("div[class*='tux-tabbar-item']");
+                for (const item of items) {
+                    const label = item.querySelector("span[data-testid='tux-web-text']");
+                    if (label && label.textContent.trim() === 'Comments') {
+                        label.click();
+                        return true;
+                    }
+                }
+                return false;
+            });
+            if (!clicked) {
+                logger.warn(`${logPrefix} Comments tab not found.`);
+                return { ok: false, state: null, items: 0, reason: 'comments_tab_not_found' };
+            }
+            logger.info(`${logPrefix} Clicked Comments tab. Expected ${expectReal ? expectedCount : '?'} comments.`);
         }
+
+        // Patient wait for real comment items (or a valid non-real state).
+        snap = await poll(15000);
+        if (snap.state) {
+            logger.info(`${logPrefix} Comments panel ready (${snap.state}${snap.items ? `, ${snap.items} items` : ''}).`);
+            return { ok: true, state: snap.state, items: snap.items };
+        }
+
+        if (expectReal) {
+            // Fallback A: click the action-bar comment icon to (re)focus the panel.
+            logger.warn(`${logPrefix} 0 items after 15s (expected ${expectedCount}) — trying comment-icon click.`);
+            await DOMHelpers.clickElement(page, "div[data-e2e='browse-comment-icon'], [data-e2e='comment-icon']", { timeout: 3000, delay: 800 }).catch(() => false);
+            snap = await poll(6000);
+            if (snap.state) {
+                logger.info(`${logPrefix} Comments loaded after comment-icon click (${snap.items} items).`);
+                return { ok: true, state: snap.state, items: snap.items };
+            }
+
+            // Fallback B: scroll the right panel — virtualized lists often fetch
+            // items only after the container scrolls.
+            logger.warn(`${logPrefix} Still 0 items — trying panel scroll.`);
+            for (let i = 0; i < 3 && !snap.state; i++) {
+                await page.evaluate(() => {
+                    const cands = Array.from(document.querySelectorAll("div[class*='DivCommentMain'], div[class*='DivTabContainer'], div[class*='RightPanel']"));
+                    for (const el of cands) {
+                        if (el.scrollHeight > el.clientHeight + 10) {
+                            el.scrollTop = el.scrollTop + 600;
+                            return true;
+                        }
+                    }
+                    window.scrollBy(0, 600);
+                    return false;
+                }).catch(() => {});
+                snap = await poll(3000);
+            }
+            if (snap.state) {
+                logger.info(`${logPrefix} Comments loaded after panel scroll (${snap.items} items).`);
+                return { ok: true, state: snap.state, items: snap.items };
+            }
+
+            // D2: one-line panel diagnostic for why nothing rendered.
+            const diag = await page.evaluate(() => {
+                const tabs = Array.from(document.querySelectorAll("div[class*='tux-tabbar-item']"))
+                    .map(t => (t.textContent || '').trim()).filter(Boolean).slice(0, 4);
+                const panel = document.querySelector("div[class*='DivCommentMain'], div[class*='DivTabContainer']");
+                const text = (panel ? panel.innerText : document.body?.innerText || '').replace(/\s+/g, ' ').trim();
+                return { tabs: tabs.join('|'), snippet: text.substring(0, 160) };
+            }).catch(() => ({ tabs: '?', snippet: '?' }));
+            logger.warn(`${logPrefix} comments_not_loaded: expected=${expectedCount}, items=0, composer=${snap.composer}, empty=${snap.empty}, tabs=[${diag.tabs}], panel: "${diag.snippet}"`);
+            return { ok: false, state: null, items: 0, reason: 'comments_not_loaded' };
+        }
+
         logger.warn(`${logPrefix} Comments panel did not hydrate within 15s.`);
-        return false;
+        return { ok: false, state: null, items: 0, reason: 'panel_not_hydrated' };
     } catch (e) {
         logger.warn(`${logPrefix} ensureCommentsVisible failed: ${e.message}`);
-        return false;
+        return { ok: false, state: null, items: 0, reason: 'exception' };
     }
 }
 
 // ==================== Like-state Verification ====================
-// Best-effort detection of whether the post is currently liked. Returns
-// true (liked), false (not liked / no strong signal), or null (like button
-// missing / eval error). Used defensively: switching to the Comments tab can
-// re-render the action bar and reset an optimistic like before the server
-// confirms it. Only trusts strong signals (aria-pressed, TikTok-red fill) to
-// avoid a false "not liked" that would trigger a harmful re-like.
-async function isPostLiked(page, s) {
+// Reads the like button's real state: returns { state, why, ariaPressed,
+// colorAttr, computedFill, computedColor } or null (button missing / eval
+// error). `state` true = liked, false = not liked OR no strong signal — check
+// `why` (or use isConfidentlyUnliked) before acting on a false. Used
+// defensively: switching to the Comments tab can re-render the action bar and
+// reset an optimistic like before the server confirms it.
+async function isPostLiked(page, s, logPrefix = '') {
     try {
-        return await page.evaluate((sel) => {
+        const signals = await page.evaluate((sel) => {
             const icon = document.querySelector(sel);
-            if (!icon) return null;
-            // Strong signal 1: aria-pressed on the icon or a clickable ancestor.
-            if (icon.closest('[aria-pressed="true"]')) return true;
-            if (icon.querySelector('[aria-pressed="true"]')) return true;
-            // Strong signal 2: TikTok-red filled heart (#FE2C55).
+            if (!icon) return { state: null, why: 'like-button-missing' };
+            // Signal 1: aria-pressed on the icon itself or a clickable ancestor.
+            // TikTok sets aria-pressed="true" only when liked; "false" is a
+            // confident NOT-liked signal (the outer div[data-e2e='like-icon']
+            // carries it), so trust it both ways.
+            const apEl = icon.closest('[aria-pressed]') || icon.querySelector('[aria-pressed]');
+            const ariaPressed = apEl ? apEl.getAttribute('aria-pressed') : null;
+            if (ariaPressed === 'true') return { state: true, why: 'aria-pressed=true', ariaPressed };
+            // Signal 2: TikTok-red filled heart. #FE2C55 → rgb(254, 44, 85) —
+            // note 254, NOT 255. An rgb() string never contains the hex, so
+            // match both forms.
             const red = (v) => {
                 if (!v) return false;
                 v = String(v).toLowerCase();
-                return v.includes('fe2c55') || v.includes('2c55') || v.includes('255, 44, 85') || v.includes('255,44,85');
+                return v.includes('fe2c55') || v.includes('2c55')
+                    || v.includes('254, 44, 85') || v.includes('254,44,85')
+                    || v.includes('255, 44, 85') || v.includes('255,44,85');
+            };
+            const white = (v) => {
+                if (!v) return false;
+                v = String(v).toLowerCase();
+                return v.includes('255, 255, 255') || v.includes('255,255,255');
             };
             const svg = icon.matches('svg') ? icon : icon.querySelector('svg');
+            let colorAttr = null, computedFill = null, computedColor = null;
             if (svg) {
-                if (red(svg.getAttribute('fill'))) return true;
-                try { if (red(getComputedStyle(svg).fill)) return true; } catch (e) { /* ignore */ }
+                colorAttr = svg.getAttribute('color') || svg.getAttribute('fill');
+                try { computedFill = getComputedStyle(svg).fill; } catch (e) { /* ignore */ }
+                try { computedColor = getComputedStyle(svg).color; } catch (e) { /* ignore */ }
                 const path = svg.querySelector('path');
                 if (path) {
-                    if (red(path.getAttribute('fill'))) return true;
-                    try { if (red(getComputedStyle(path).fill)) return true; } catch (e) { /* ignore */ }
+                    if (!colorAttr) colorAttr = path.getAttribute('color') || path.getAttribute('fill');
+                    if (!computedFill) { try { computedFill = getComputedStyle(path).fill; } catch (e) { /* ignore */ } }
+                }
+                if (red(colorAttr) || red(computedFill) || red(computedColor)) {
+                    return { state: true, why: 'red-fill', ariaPressed, colorAttr, computedFill, computedColor };
+                }
+                if (white(colorAttr) || white(computedFill) || white(computedColor)) {
+                    return { state: false, why: 'white-fill', ariaPressed, colorAttr, computedFill, computedColor };
                 }
             }
-            return false;
+            if (ariaPressed === 'false') return { state: false, why: 'aria-pressed=false', ariaPressed, colorAttr, computedFill, computedColor };
+            return { state: false, why: 'no-strong-signal', ariaPressed, colorAttr, computedFill, computedColor };
         }, s.likeButton);
+        if (logPrefix) {
+            logger.info(`${logPrefix} likeState=${signals.state} (${signals.why}, aria-pressed=${signals.ariaPressed ?? 'none'}, color=${signals.colorAttr ?? 'none'}, fill=${signals.computedFill ?? 'none'})`);
+        }
+        return signals;
     } catch (e) {
         return null;
     }
+}
+
+// Confident "not liked" = the page explicitly says so (aria-pressed=false) or
+// the heart renders white (TikTok's unliked state). Anything weaker (null
+// button, unrecognized colors) must NOT trigger a re-like — clicking a
+// heart that is actually liked would UNLIKE it (observed like/unlike flap).
+function isConfidentlyUnliked(sig) {
+    return !!sig && sig.state === false && (sig.why === 'aria-pressed=false' || sig.why === 'white-fill');
 }
 
 // ==================== Post Frame Capture (vision fallback) ====================
@@ -460,6 +563,48 @@ async function capturePostFrame(page) {
     } catch (e) {
         return null;
     }
+}
+
+// ==================== Verified Comment Submission ====================
+// Types into the comment composer and only reports success when the text
+// actually landed AND the submit button was enabled AND the composer clears
+// after clicking (TikTok clears it on a successful post). Prevents the
+// untruthful "Comment posted" logs seen when typing silently no-ops or the
+// Post button stays disabled.
+async function postCommentVerified(page, s, text, logPrefix = '') {
+    const typed = await DOMHelpers.typeText(page, s.commentBox, text, { delay: 40 }).catch(() => false);
+    if (!typed) return { posted: false, reason: 'composer-not-found' };
+    await DOMHelpers.randomDelay(600, 1200);
+
+    const composerText = await page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        return el ? (el.textContent || '').trim() : null;
+    }, s.commentBox).catch(() => null);
+    if (composerText === null) return { posted: false, reason: 'composer-missing-after-type' };
+    if (!composerText) return { posted: false, reason: 'text-not-entered' };
+
+    const btnState = await page.evaluate((sel) => {
+        const b = document.querySelector(sel);
+        if (!b) return 'missing';
+        return (b.disabled || b.getAttribute('aria-disabled') === 'true') ? 'disabled' : 'enabled';
+    }, s.commentSubmit).catch(() => 'missing');
+    if (btnState !== 'enabled') return { posted: false, reason: `submit-${btnState}` };
+
+    const clicked = await DOMHelpers.clickElement(page, s.commentSubmit, { timeout: 5000, delay: 1500 }).catch(() => false);
+    if (!clicked) return { posted: false, reason: 'submit-click-failed' };
+
+    // TikTok clears the composer once the post is accepted — poll briefly.
+    const deadline = Date.now() + 4000;
+    while (Date.now() < deadline) {
+        const remaining = await page.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            return el ? (el.textContent || '').trim() : '';
+        }, s.commentBox).catch(() => '');
+        if (!remaining) return { posted: true };
+        await DOMHelpers.randomDelay(400, 700);
+    }
+    if (logPrefix) logger.warn(`${logPrefix} composer still has text 4s after submit.`);
+    return { posted: false, reason: 'composer-not-cleared' };
 }
 
 // ==================== Quota Gate Helper ====================
@@ -557,6 +702,31 @@ export async function runSearchInteractEngagement(page, opts) {
         return false;
     };
 
+    // ---- D1: comment-list API observer (diagnostics) ----
+    // Under automation the comment list sometimes never renders even though the
+    // action bar shows a comment count. Log the raw comment API responses
+    // (HTTP status + TikTok status_code + item count) so we can see whether the
+    // request fired and what TikTok answered. Removed at run end.
+    const onCommentApiResponse = (res) => {
+        try {
+            const u = res.url();
+            if (!/comment/i.test(u)) return;
+            if (!/list|feed|reply|detail/i.test(u)) return;
+            logger.info(`[engage:${taskId}] comment-api: HTTP ${res.status()} ${u.substring(0, 140)}`);
+            res.text().then((t) => {
+                try {
+                    const j = JSON.parse(t);
+                    const list = j.comments || j?.data?.comments || j?.data?.comment_list || j?.data?.list || [];
+                    const status = j.status_code ?? j?.status?.status_code ?? j?.statusMsg ?? 'n/a';
+                    logger.info(`[engage:${taskId}] comment-api body: status_code=${status}, items=${Array.isArray(list) ? list.length : 'n/a'}, bytes=${t.length}`);
+                } catch (e) {
+                    logger.info(`[engage:${taskId}] comment-api body: non-JSON (${t.length} bytes)`);
+                }
+            }).catch(() => {});
+        } catch (e) { /* ignore */ }
+    };
+    page.on('response', onCommentApiResponse);
+
     const pause = (min, max) => DOMHelpers.randomDelay(min, max);
 
     for (const keyword of keywords) {
@@ -642,6 +812,19 @@ export async function runSearchInteractEngagement(page, opts) {
                         logger.warn(`[engage:${taskId}] Post ${rIdx + 1}: action bar not detected within 10s — continuing (like may fail).`);
                     }
 
+                    // Action-bar comment count — drives ensureCommentsVisible:
+                    // count > 0 means an empty comment panel is a FAILURE state.
+                    let expectedComments = 0;
+                    try {
+                        const cntText = await page.evaluate((sel) => {
+                            const el = document.querySelector(sel);
+                            return el ? (el.textContent || '') : '';
+                        }, s.commentCount).catch(() => '');
+                        const m = String(cntText || '').replace(/,/g, '').match(/(\d+)/);
+                        expectedComments = m ? parseInt(m[1], 10) : 0;
+                        logger.info(`[engage:${taskId}] Post ${rIdx + 1}: action bar comment count = ${expectedComments}.`);
+                    } catch (e) { /* unknown → lenient mode */ }
+
                     // ---- Like the post ----
                     const likeGate = await gateAndConsume(platform, profileId, 'like');
                     if (!likeGate.allowed) {
@@ -650,8 +833,15 @@ export async function runSearchInteractEngagement(page, opts) {
                         logger.info(`[engage:${taskId}] Like blocked (${stopReason}) — stopping run.`);
                         break;
                     }
-                    const likeClicked = await DOMHelpers.clickElement(page, s.likeButton, { timeout: 5000, delay: 1000 }).catch(() => false);
-                    logger.info(`[engage:${taskId}] Like ${likeClicked ? 'clicked' : 'NOT found'} (quota consumed anyway per policy).`);
+                    // Pre-check: clicking a heart that is ALREADY liked would
+                    // unlike it (cross-run re-engagement of the same post).
+                    const preSig = await isPostLiked(page, s);
+                    if (preSig && preSig.state === true) {
+                        logger.info(`[engage:${taskId}] Post already liked (${preSig.why}) — skipping like click.`);
+                    } else {
+                        const likeClicked = await DOMHelpers.clickElement(page, s.likeButton, { timeout: 5000, delay: 1000 }).catch(() => false);
+                        logger.info(`[engage:${taskId}] Like ${likeClicked ? 'clicked' : 'NOT found'} (quota consumed anyway per policy).`);
+                    }
                     // Patient settle: give TikTok time to commit the like server-side
                     // BEFORE we switch tabs. Switching too early was reverting the
                     // optimistic like (user-observed: "liked, then immediately
@@ -661,8 +851,13 @@ export async function runSearchInteractEngagement(page, opts) {
                     // ---- Switch to Comments tab (composer + list live here) ----
                     // Post pages open on "You may like"; the comment box and
                     // comment list only render after the Comments tab is active.
-                    if (!(await ensureCommentsVisible(page, `[engage:${taskId}]`))) {
-                        logger.warn(`[engage:${taskId}] Comments tab unavailable — skipping comment + per-comment phase.`);
+                    // When count > 0 but the list never renders, the comment
+                    // phase is skipped entirely (user decision: no comment
+                    // without seeing the thread first).
+                    const ccRes = await ensureCommentsVisible(page, `[engage:${taskId}]`, expectedComments);
+                    if (!ccRes.ok) {
+                        const skipStatus = ccRes.reason === 'comments_not_loaded' ? 'comments_not_loaded' : 'engaged_no_comments_tab';
+                        logger.warn(`[engage:${taskId}] Comments unavailable (${ccRes.reason}) — skipping comment + per-comment phase.`);
                         results.push({
                             keyword,
                             url: video.url,
@@ -670,7 +865,8 @@ export async function runSearchInteractEngagement(page, opts) {
                             caption: (video.caption || '').substring(0, 120),
                             comment: '',
                             commentsProcessed: 0,
-                            status: 'engaged_no_comments_tab',
+                            status: skipStatus,
+                            expectedComments,
                         });
                         // Return to search results (no overlay close on direct URLs).
                         await page.goto(`${platformConfig.searchUrl}?q=${encodeURIComponent(keyword)}`, { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
@@ -679,14 +875,23 @@ export async function runSearchInteractEngagement(page, opts) {
                     }
 
                     // Defensive: the Comments-tab switch can re-render the action bar
-                    // and reset an optimistic like. Re-check and re-like once if it
-                    // reverted (only on a confident "not liked" signal).
+                    // and reset an optimistic like. Re-like ONLY on a confident
+                    // "not liked" signal (aria-pressed=false or white heart) —
+                    // a false negative here would click a liked post and UNLIKE
+                    // it (the observed like/unlike flap). Verify after; never
+                    // toggle more than once.
                     try {
-                        const likeState = await isPostLiked(page, s);
-                        if (likeState === false) {
-                            logger.warn(`[engage:${taskId}] Like reverted after Comments tab — re-liking once.`);
+                        const sig = await isPostLiked(page, s, `[engage:${taskId}] Post ${rIdx + 1}:`);
+                        if (isConfidentlyUnliked(sig)) {
+                            logger.warn(`[engage:${taskId}] Like reverted after Comments tab (why=${sig.why}) — re-liking once.`);
                             await DOMHelpers.clickElement(page, s.likeButton, { timeout: 4000, delay: 800 }).catch(() => {});
                             await pause(1200, 2000);
+                            const after = await isPostLiked(page, s);
+                            if (after && after.state === true) {
+                                logger.info(`[engage:${taskId}] Re-like confirmed (aria-pressed=${after.ariaPressed ?? 'none'}).`);
+                            } else {
+                                logger.warn(`[engage:${taskId}] Re-like NOT confirmed (why=${after?.why ?? 'missing'}) — moving on (no retry).`);
+                            }
                         }
                     } catch (e) { /* non-fatal */ }
 
@@ -788,13 +993,12 @@ export async function runSearchInteractEngagement(page, opts) {
                         generatedComment = 'Nice share!';
                     }
                     if (generatedComment) {
-                        const typed = await DOMHelpers.typeText(page, s.commentBox, generatedComment, { delay: 40 }).catch(() => false);
-                        if (typed) {
-                            await pause(600, 1200);
-                            await DOMHelpers.clickElement(page, s.commentSubmit, { timeout: 5000, delay: 1500 }).catch(() => false);
+                        const postRes = await postCommentVerified(page, s, generatedComment, `[engage:${taskId}]`).catch(err => ({ posted: false, reason: err.message }));
+                        if (postRes.posted) {
                             logger.info(`[engage:${taskId}] Comment posted: "${generatedComment.substring(0, 60)}..."`);
                         } else {
-                            logger.warn(`[engage:${taskId}] Comment box not found — skipping comment.`);
+                            logger.warn(`[engage:${taskId}] Comment NOT posted (${postRes.reason}) — skipping comment.`);
+                            generatedComment = '';
                         }
                     }
                     await pause(1500, 2500);
@@ -876,10 +1080,12 @@ export async function runSearchInteractEngagement(page, opts) {
                                     replyText = '🙌';
                                 }
                                 if (replyText) {
-                                    await DOMHelpers.typeText(page, s.commentBox, replyText, { delay: 40 }).catch(() => false);
-                                    await pause(500, 1000);
-                                    await DOMHelpers.clickElement(page, s.commentSubmit, { timeout: 5000, delay: 1200 }).catch(() => false);
-                                    logger.info(`[engage:${taskId}] Replied to comment ${comment.index}: "${replyText.substring(0, 50)}..."`);
+                                    const replyRes = await postCommentVerified(page, s, replyText, `[engage:${taskId}]`).catch(err => ({ posted: false, reason: err.message }));
+                                    if (replyRes.posted) {
+                                        logger.info(`[engage:${taskId}] Replied to comment ${comment.index}: "${replyText.substring(0, 50)}..."`);
+                                    } else {
+                                        logger.warn(`[engage:${taskId}] Reply NOT posted for comment ${comment.index} (${replyRes.reason}).`);
+                                    }
                                 }
                             } else {
                                 logger.warn(`[engage:${taskId}] Reply button not found for comment ${comment.index}.`);
@@ -922,6 +1128,8 @@ export async function runSearchInteractEngagement(page, opts) {
             logger.warn(`[engage:${taskId}] Keyword "${keyword}" failed: ${kwErr.message}`);
         }
     }
+
+    page.off('response', onCommentApiResponse);
 
     if (stopType === 'hourly' && profileId) {
         await updateAccountStatus(profileId, 'RATE_LIMITED');
