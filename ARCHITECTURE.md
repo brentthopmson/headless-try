@@ -970,6 +970,61 @@ Per-route gate order (before browser launch):
 Read/scrape runs therefore never touch quota — both for the check and for the
 increment.
 
+#### Engagement batch runner (TikTok consuming path)
+
+`search-interact` engagement mode runs `runSearchInteractEngagement`
+(`socials/search-interact/routeHelper.js`) — a batch loop over keywords that
+performs the quota-consuming actions inline (not via `executeWorkflow`):
+
+```
+keyword → navigateAndWait (settle: results | post | logged_out | captcha | unknown)
+  → scrape + dedupe by URL (cap maxResultsPerKeyword)
+  → per post: navigateAndWait → wait action-bar hydrate → read comment count
+    → gateAndConsume('like') → pre-check isPostLiked → click heart → settle
+    → ensureCommentsVisible(expectedCount)   ← list items = only real proof
+        !ok → status comments_not_loaded | engaged_no_comments_tab (skip comment phase)
+    → defensive re-like (confident false signals only, verify once, no retry)
+    → AI analysis (caption + comments; weak → vision frame fallback)
+    → gateAndConsume('comment') → generate → postCommentVerified
+    → per comment: gate(likeComment) → like → gate(commentComment) → postCommentVerified reply
+```
+
+Stop types (`stopType`): `hourly` (account → RATE_LIMITED, resume next
+hour-cycle), `daily` | `monthly` | `cap` (permanent for this run),
+`logged_out` (account → LOGGED_OUT, skip immediately), `captcha` (account →
+WAITING), `time` (`stopAfterHours` budget). Result statuses: `engaged`,
+`engaged_no_comments_tab`, `comments_not_loaded`, `failed`.
+
+**File layout** (feature ↔ engine separation):
+
+```
+socials/
+├── _shared/
+│   └── routeHelper.js      ← cross-platform primitives:
+│                              gateAndConsume / classifyStop (quota),
+│                              postCommentVerified (verified composer submit),
+│                              capturePostFrame (vision fallback)
+├── search-interact/
+│   ├── route.js            ← imports runner from ./routeHelper.js
+│   ├── routeHelper.js      ← data fetch (sheets) + runSearchInteractEngagement
+│   ├── platforms.js        ← config only (selectors, prompts, workflows, extractors)
+│   └── platformHelper/
+│       └── TikTokHelpers.js ← TikTok DOM/behavior (captcha, settle, comments
+│                               tab, like-state, logged-out, Gemini audio)
+├── page-interact/platformHelper/       ← twitter|tiktok|facebook|instagram|youtube stubs
+├── activities-interact/platformHelper/ ← same five stubs
+└── inbox-interact/platformHelper/      ← twitter|tiktok|facebook|instagram|whatsapp stubs
+```
+
+Separation convention (mirrors `cookie/cookie-api-login/platformHelper/`):
+**config** (selectors/prompts/workflows/extractors) stays in the feature's
+`platforms.js`; **platform DOM/behavior** goes in `platformHelper/<Platform>.js`;
+**cross-platform primitives** (quota gate, verified comment submit, frame
+capture) live in `socials/_shared/routeHelper.js`; the **feature runner** stays
+in the feature's `routeHelper.js`. Other interact features currently have no
+inline DOM code (they drive `executeWorkflow` from config) — their
+platformHelper files are empty stubs reserved for future extraction.
+
 #### Extractor execution (all four routes + social-extract)
 
 Extractor `parseFunction` strings are **browser-context** code
@@ -984,6 +1039,8 @@ extractors in `social-extract` (profile + followers). Guarded by
 - `campaign/execute-campaign/route.js` — 7A + 7B engine (gates, loops, CSV flush, analytics)
 - `campaign/pipeline-orchestrator/route.js` — Flow 6 stage machine
 - `socials/search-interact/route.js` — `processSearchInteractTask` (+ POST handler)
+- `socials/search-interact/routeHelper.js` — social-tasks data fetch + `runSearchInteractEngagement` batch runner
+- `socials/search-interact/platformHelper/TikTokHelpers.js` — TikTok DOM/behavior (captcha audio, settle, comments tab, like-state)
 - `socials/page-interact/route.js` — `processPageInteractTask`
 - `socials/inbox-interact/route.js` — `processInboxInteractTask`
 - `socials/activities-interact/route.js` — `processActivitiesInteractTask`
@@ -1347,6 +1404,19 @@ browser launch → execute → usage increments → cleanup (profileDir removed 
 - `resolveSocialSession(profile)` — Full hybrid session for social/campaign (accepts profile object)
 - `executeWorkflow(page, workflow, context, config)` — Generic workflow executor for social DMs
 - `DOMHelpers` — `randomDelay`, `clickElement`, `typeText`, `scrollDown`
+- `gateAndConsume(platform, profileId, baseAction)` — per-action quota gate + usage increment → `{allowed, reason, stopType}`
+- `classifyStop(reason)` — limit-reason → `'hourly'|'daily'|'monthly'|'cap'|null`
+- `postCommentVerified(page, selectors, text, logPrefix)` — composer type → verify text → submit enabled → click → composer clears → `{posted, reason}`
+- `capturePostFrame(page)` — base64 PNG of largest video frame / photo (vision fallback; null = keep text)
+
+### TikTok Engagement Helpers (`socials/search-interact/platformHelper/TikTokHelpers.js`)
+- `isTikTokCaptchaVisible(page)` — main-page `#captcha-verify-container-main-page` visibility
+- `solveTikTokAudioCaptcha(page, logPrefix)` — audio challenge → Gemini transcribe → type → Verify (3 attempts + refresh)
+- `isTikTokLoggedOut(page)` — login-modal detection (`h2[data-e2e="login-title"]` etc.)
+- `navigateAndWait(page, url, selectors, opts)` — goto (1 retry) + settle poll → `{ok, state: results|post|logged_out|captcha|unknown|nav_failed, url}`
+- `ensureCommentsVisible(page, logPrefix, expectedCount)` — Comments-tab click + item poll → `{ok, state: list|composer|empty, items, reason}`; count>0 requires real list items
+- `isPostLiked(page, selectors, logPrefix)` — like-state signals `{state, why, ariaPressed, colorAttr, computedFill, computedColor}` (red `rgb(254, 44, 85)` = liked)
+- `isConfidentlyUnliked(sig)` — confident-false classifier (`aria-pressed=false` / white heart) gating re-like clicks
 
 ### Engine Rate Limiter (`utils/sendRateLimiter.js`)
 - `checkSendAllowed(platform, accountId)` — sliding hourly/daily/monthly windows; restore-once per account; effective limits = `interactionUsage._limits` override when present, else platform policy

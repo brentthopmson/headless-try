@@ -23,8 +23,7 @@ const { operationConsumes, baseActionsForOperation, actionsForExecutedKeys, toLi
 import { checkActionAllowed, getPlatformLimits } from '../_shared/limits.js';
 import { resolveAccountGate, accountGateError } from '../_shared/accountGate.js';
 import { getAccountUsage, updateAccountUsage, updateAccountStatus } from '../_shared/hubUpdater.js';
-import { runSearchInteractEngagement } from '../_shared/tiktokEngage.js';
-import { fetchTaskData, updateTaskRow } from './routeHelper.js';
+import { fetchTaskData, updateTaskRow, runSearchInteractEngagement } from './routeHelper.js';
 import { requireFeature } from '../../../utils/featureGate.js';
 
 export const maxDuration = 60;

@@ -10,6 +10,11 @@ import { getSheetDataApi, updateSheetRowApi, appendSheetRowApi, stripFormulaColu
 import { localExecutablePath, isDev, fullChromiumExecutablePath, launchBrowser } from "../../../utils/utils.js";
 import { applyIdentityToPage } from "../../../utils/identity.js";
 import { detectEmailPlatform } from "../../emails/_shared/platforms.js";
+import limitsCore from './limitsCore.js';
+import { checkActionAllowed } from './limits.js';
+import { getAccountUsage, updateAccountUsage } from './hubUpdater.js';
+
+const { toLimitActions } = limitsCore;
 
 // ==================== Profile Download ====================
 
@@ -845,3 +850,114 @@ export const corsHeaders = {
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
 };
+
+// ==================== Post Frame Capture (vision fallback) ====================
+// Captures a PNG (base64) of the post's video frame or photo for the vision
+// fallback analysis. Prefers the largest playing <video>; falls back to the
+// largest visible photo <img>. Returns null when nothing capturable exists —
+// the caller then keeps its text result (never throws, never blocks a run).
+export async function capturePostFrame(page) {
+    try {
+        // Make sure the main video is playing so a frame is actually rendered.
+        await page.evaluate(() => {
+            const vids = Array.from(document.querySelectorAll('video'));
+            vids.sort((a, b) => (b.videoWidth * b.videoHeight) - (a.videoWidth * a.videoHeight));
+            const v = vids[0];
+            if (v) { v.muted = true; if (v.paused) v.play().catch(() => {}); }
+        }).catch(() => {});
+        await new Promise(r => setTimeout(r, 1500));
+
+        const handle = await page.evaluateHandle(() => {
+            // Largest video that has real dimensions.
+            const vids = Array.from(document.querySelectorAll('video'))
+                .filter(v => v.videoWidth > 0 && v.getBoundingClientRect().width > 100);
+            vids.sort((a, b) => (b.videoWidth * b.videoHeight) - (a.videoWidth * a.videoHeight));
+            if (vids[0]) return vids[0];
+            // Else largest visible photo image (photo posts / image-text).
+            const imgs = Array.from(document.querySelectorAll('img')).filter(i => {
+                const r = i.getBoundingClientRect();
+                return r.width > 200 && r.height > 200 && r.top < window.innerHeight && r.bottom > 0;
+            });
+            imgs.sort((a, b) => {
+                const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+                return (rb.width * rb.height) - (ra.width * ra.height);
+            });
+            return imgs[0] || null;
+        });
+        const el = handle?.asElement?.();
+        if (!el) return null;
+        const buf = await el.screenshot({ type: 'png' });
+        return Buffer.from(buf).toString('base64');
+    } catch (e) {
+        return null;
+    }
+}
+
+// ==================== Verified Comment Submission ====================
+// Types into the comment composer and only reports success when the text
+// actually landed AND the submit button was enabled AND the composer clears
+// after clicking (TikTok clears it on a successful post). Prevents the
+// untruthful "Comment posted" logs seen when typing silently no-ops or the
+// Post button stays disabled.
+export async function postCommentVerified(page, s, text, logPrefix = '') {
+    const typed = await DOMHelpers.typeText(page, s.commentBox, text, { delay: 40 }).catch(() => false);
+    if (!typed) return { posted: false, reason: 'composer-not-found' };
+    await DOMHelpers.randomDelay(600, 1200);
+
+    const composerText = await page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        return el ? (el.textContent || '').trim() : null;
+    }, s.commentBox).catch(() => null);
+    if (composerText === null) return { posted: false, reason: 'composer-missing-after-type' };
+    if (!composerText) return { posted: false, reason: 'text-not-entered' };
+
+    const btnState = await page.evaluate((sel) => {
+        const b = document.querySelector(sel);
+        if (!b) return 'missing';
+        return (b.disabled || b.getAttribute('aria-disabled') === 'true') ? 'disabled' : 'enabled';
+    }, s.commentSubmit).catch(() => 'missing');
+    if (btnState !== 'enabled') return { posted: false, reason: `submit-${btnState}` };
+
+    const clicked = await DOMHelpers.clickElement(page, s.commentSubmit, { timeout: 5000, delay: 1500 }).catch(() => false);
+    if (!clicked) return { posted: false, reason: 'submit-click-failed' };
+
+    // TikTok clears the composer once the post is accepted — poll briefly.
+    const deadline = Date.now() + 4000;
+    while (Date.now() < deadline) {
+        const remaining = await page.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            return el ? (el.textContent || '').trim() : '';
+        }, s.commentBox).catch(() => '');
+        if (!remaining) return { posted: true };
+        await DOMHelpers.randomDelay(400, 700);
+    }
+    if (logPrefix) logger.warn(`${logPrefix} composer still has text 4s after submit.`);
+    return { posted: false, reason: 'composer-not-cleared' };
+}
+
+// ==================== Quota Gate Helper ====================
+// Per-action gate + usage increment. Returns { allowed, reason, stopType }.
+// stopType: 'hourly' | 'daily' | 'monthly' | 'cap' | null.
+
+export function classifyStop(reason) {
+    if (!reason) return null;
+    if (reason.startsWith('hourly_limit')) return 'hourly';
+    if (reason.startsWith('daily_limit')) return 'daily';
+    if (reason.startsWith('monthly_limit')) return 'monthly';
+    if (reason.startsWith('cap_reached')) return 'cap';
+    return null;
+}
+
+export async function gateAndConsume(platform, profileId, baseAction) {
+    const limitAction = toLimitActions([baseAction])[0] || baseAction;
+    const usageData = profileId ? await getAccountUsage(profileId) : null;
+    const usage = usageData?.interactionUsage || {};
+    const limit = await checkActionAllowed(platform, limitAction, usage);
+    if (!limit.allowed) {
+        return { allowed: false, reason: limit.reason, stopType: classifyStop(limit.reason) };
+    }
+    if (profileId) {
+        await updateAccountUsage(profileId, baseAction);
+    }
+    return { allowed: true, reason: limit.reason, stopType: null };
+}
