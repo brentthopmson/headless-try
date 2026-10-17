@@ -420,6 +420,48 @@ async function isPostLiked(page, s) {
     }
 }
 
+// ==================== Post Frame Capture (vision fallback) ====================
+// Captures a PNG (base64) of the post's video frame or photo for the vision
+// fallback analysis. Prefers the largest playing <video>; falls back to the
+// largest visible photo <img>. Returns null when nothing capturable exists —
+// the caller then keeps its text result (never throws, never blocks a run).
+async function capturePostFrame(page) {
+    try {
+        // Make sure the main video is playing so a frame is actually rendered.
+        await page.evaluate(() => {
+            const vids = Array.from(document.querySelectorAll('video'));
+            vids.sort((a, b) => (b.videoWidth * b.videoHeight) - (a.videoWidth * a.videoHeight));
+            const v = vids[0];
+            if (v) { v.muted = true; if (v.paused) v.play().catch(() => {}); }
+        }).catch(() => {});
+        await new Promise(r => setTimeout(r, 1500));
+
+        const handle = await page.evaluateHandle(() => {
+            // Largest video that has real dimensions.
+            const vids = Array.from(document.querySelectorAll('video'))
+                .filter(v => v.videoWidth > 0 && v.getBoundingClientRect().width > 100);
+            vids.sort((a, b) => (b.videoWidth * b.videoHeight) - (a.videoWidth * a.videoHeight));
+            if (vids[0]) return vids[0];
+            // Else largest visible photo image (photo posts / image-text).
+            const imgs = Array.from(document.querySelectorAll('img')).filter(i => {
+                const r = i.getBoundingClientRect();
+                return r.width > 200 && r.height > 200 && r.top < window.innerHeight && r.bottom > 0;
+            });
+            imgs.sort((a, b) => {
+                const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+                return (rb.width * rb.height) - (ra.width * ra.height);
+            });
+            return imgs[0] || null;
+        });
+        const el = handle?.asElement?.();
+        if (!el) return null;
+        const buf = await el.screenshot({ type: 'png' });
+        return Buffer.from(buf).toString('base64');
+    } catch (e) {
+        return null;
+    }
+}
+
 // ==================== Quota Gate Helper ====================
 // Per-action gate + usage increment. Returns { allowed, reason, stopType }.
 // stopType: 'hourly' | 'daily' | 'monthly' | 'cap' | null.
@@ -651,16 +693,22 @@ export async function runSearchInteractEngagement(page, opts) {
                     // ---- AI understanding of the post (AFTER comments loaded) ----
                     // Comments + caption are what actually explain a post (photo
                     // posts have no readable caption element), so we analyze them
-                    // together AFTER the comments panel has hydrated. This single
-                    // analysis feeds both the comment we post and the replies.
+                    // together AFTER the comments panel has hydrated. This analysis
+                    // feeds both the comment we post and the replies.
+                    // Pass 1 (primary): text — caption + author + top-10 comments.
+                    // Fallback: only if Pass 1 gives a bad result → vision on a
+                    // post frame (video/photo) + caption. Replies reuse whichever
+                    // result landed — no second vision pass.
                     let analyzedVideo = '';
                     let aiComments = [];   // pre-existing comments (AI context + tone fit)
+                    let analysisMode = 'text';
+                    let caption = '';
                     try {
                         const descText = await page.evaluate((sel) => {
                             const el = document.querySelector(sel);
                             return el ? el.textContent.trim() : '';
                         }, s.browseDesc || '[data-e2e="browse-desc"]').catch(() => '');
-                        const caption = video.caption || descText || '';
+                        caption = video.caption || descText || '';
 
                         // Let the comment list finish populating, then extract for AI.
                         await pause(1500, 2500);
@@ -671,7 +719,7 @@ export async function runSearchInteractEngagement(page, opts) {
                         }
                         const commentLines = aiComments
                             .filter(c => c.text)
-                            .slice(0, 8)
+                            .slice(0, 10)
                             .map(c => `- ${c.username ? c.username + ': ' : ''}${c.text}`)
                             .join('\n');
 
@@ -684,11 +732,42 @@ export async function runSearchInteractEngagement(page, opts) {
                         ].join('\n');
                         const analyzePrompt = `${platformConfig.aiPrompts?.analyzeVideo || 'Summarize this post.'}\n\nUnderstand this post from its caption and the existing comments — the comments reveal what the post is about.\n\nPost:\n${postContext}`;
                         analyzedVideo = ai ? await ai.generate(analyzePrompt) : postContext;
-                        logger.info(`[engage:${taskId}] AI analysis ready (caption ${caption ? 'yes' : 'no'}, ${aiComments.length} comments in context).`);
                     } catch (e) {
-                        logger.warn(`[engage:${taskId}] AI analysis failed: ${e.message}`);
+                        logger.warn(`[engage:${taskId}] AI text analysis failed: ${e.message}`);
+                        analyzedVideo = video.caption || '';
+                        analysisMode = 'text_failed';
+                    }
+
+                    // Quality gate: Pass 1 must return a usable description. Weak
+                    // or failed text → single vision fallback (frame + caption).
+                    const textResult = String(analyzedVideo || '').trim();
+                    const weakResult = (v) => v.length < 40
+                        || /^(could not analyze|ai not available|no ai providers)/i.test(v);
+                    const textGood = analysisMode !== 'text_failed' && !weakResult(textResult);
+                    if (!textGood) {
+                        logger.info(`[engage:${taskId}] Text analysis weak (${textResult.length} chars, ${analysisMode}) — trying vision fallback (frame + caption).`);
+                        try {
+                            const frame = await capturePostFrame(page);
+                            if (frame && ai) {
+                                const visionPrompt = `${platformConfig.aiPrompts?.analyzeVideo || 'Summarize this post.'}\n\nThis is a screenshot of the post itself (a video frame or a photo). Describe what is actually shown in it. Use the caption for context.\n\nCaption: ${caption || 'n/a'}\nAuthor: ${video.author || 'unknown'}`;
+                                const visionResult = String(await ai.generate(visionPrompt, { imageBase64: frame }) || '').trim();
+                                if (!weakResult(visionResult)) {
+                                    analyzedVideo = visionResult;
+                                    analysisMode = 'vision';
+                                } else {
+                                    logger.warn(`[engage:${taskId}] Vision result weak — keeping text/caption fallback.`);
+                                }
+                            } else if (!frame) {
+                                logger.warn(`[engage:${taskId}] No post frame captured — keeping text/caption fallback.`);
+                            }
+                        } catch (ve) {
+                            logger.warn(`[engage:${taskId}] Vision fallback failed: ${ve.message}`);
+                        }
+                    }
+                    if (!String(analyzedVideo || '').trim()) {
                         analyzedVideo = video.caption || '';
                     }
+                    logger.info(`[engage:${taskId}] AI analysis ready (mode=${analysisMode}, caption ${caption ? 'yes' : 'no'}, ${aiComments.length} comments in context).`);
 
                     // ---- Generate + post contextual comment ----
                     let generatedComment = '';
@@ -788,6 +867,8 @@ export async function runSearchInteractEngagement(page, opts) {
                                 await pause(800, 1500);
                                 let replyText = '';
                                 try {
+                                    // Reply reuses the already-loaded analysis — no new
+                                    // video/vision capture here (post knowledge is in analyzedVideo).
                                     const replyPrompt = `${platformConfig.aiPrompts?.replyToComment || 'Reply briefly.'}\n\nVideo analysis: ${analyzedVideo}\nYour comment: ${generatedComment}\nComment to reply to: ${comment.text}`;
                                     replyText = ai ? await ai.generate(replyPrompt) : '🙏';
                                     replyText = String(replyText).replace(/^["']|["']$/g, '').trim().slice(0, 120);
