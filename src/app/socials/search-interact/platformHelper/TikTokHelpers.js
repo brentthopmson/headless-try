@@ -334,10 +334,36 @@ export async function navigateAndWait(page, url, s, opts = {}) {
 // Returns { ok, state, items, reason }:
 //   state: 'list' | 'composer' | 'empty'
 //   reason on !ok: 'comments_tab_not_found' | 'panel_not_hydrated' | 'comments_not_loaded'
+// Reads the comments-panel header count ("23.1K comments" → 23100). The
+// action-bar browse-comment-count reads 0 on photo posts; the panel header
+// is the reliable source once the Comments tab is active.
+export async function readCommentsPanelCount(page) {
+    try {
+        const text = await page.evaluate(() => {
+            const el = document.querySelector("div[class*='DivCommentCountContainer'] span, div[class*='DivCommentCountContainer']");
+            return el ? (el.textContent || '').trim() : '';
+        }).catch(() => '');
+        if (!text) return 0;
+        const m = text.replace(/,/g, '').match(/([\d.]+)\s*([KMB])?/i);
+        if (!m) return 0;
+        let n = parseFloat(m[1]);
+        if (!isFinite(n)) return 0;
+        const suffix = (m[2] || '').toUpperCase();
+        if (suffix === 'K') n *= 1000;
+        else if (suffix === 'M') n *= 1000000;
+        else if (suffix === 'B') n *= 1000000000;
+        return Math.round(n);
+    } catch (e) {
+        return 0;
+    }
+}
+
 export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]', expectedCount = null) {
     try {
         const COMPOSER = "div[data-e2e='comment-text'][contenteditable='true'], div[data-key-interaction='comment_input']";
-        const LIST = "div[class*='DivCommentItemContainer']";
+        // Live DOM (Oct 2026): DivCommentObjectWrapper is the item wrapper
+        // (inner DivCommentItemWrapper). DivCommentItemContainer no longer exists.
+        const LIST = "div[class*='DivCommentObjectWrapper'], div[class*='DivCommentItemWrapper']";
         const EMPTY_TEXT = 'Start the conversation';
         const expectReal = Number(expectedCount) > 0;
 
@@ -402,6 +428,17 @@ export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]'
                 return { ok: false, state: null, items: 0, reason: 'comments_tab_not_found' };
             }
             logger.info(`${logPrefix} Clicked Comments tab. Expected ${expectReal ? expectedCount : '?'} comments.`);
+            // Action-bar count was 0 (common on photo posts) → read the panel
+            // header ("23.1K comments") once the tab is active. Real count
+            // flips expectReal so the poll requires actual list items.
+            if (!expectReal) {
+                const panelCount = await readCommentsPanelCount(page);
+                if (panelCount > 0) {
+                    expectedCount = panelCount;
+                    expectReal = true;
+                    logger.info(`${logPrefix} Panel header count = ${panelCount} (action-bar was 0) — requiring real list items.`);
+                }
+            }
         }
 
         // Patient wait for real comment items (or a valid non-real state).

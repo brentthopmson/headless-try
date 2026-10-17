@@ -3,7 +3,7 @@ import logger from "../../../utils/logger.js";
 import { getSheetDataApi, updateSheetRowApi, stripFormulaColumns } from '../../api/googlesheets.js';
 import { DOMHelpers, gateAndConsume, capturePostFrame, postCommentVerified } from '../_shared/routeHelper.js';
 import { updateAccountStatus } from '../_shared/hubUpdater.js';
-import { isTikTokCaptchaVisible, solveTikTokAudioCaptcha, isTikTokLoggedOut, navigateAndWait, ensureCommentsVisible, isPostLiked, isConfidentlyUnliked } from './platformHelper/TikTokHelpers.js';
+import { isTikTokCaptchaVisible, solveTikTokAudioCaptcha, isTikTokLoggedOut, navigateAndWait, ensureCommentsVisible, isPostLiked, isConfidentlyUnliked, readCommentsPanelCount } from './platformHelper/TikTokHelpers.js';
 
 // ==================== Data Fetching & Caching ====================
 
@@ -248,6 +248,37 @@ export async function runSearchInteractEngagement(page, opts) {
     };
     page.on('response', onCommentApiResponse);
 
+    // ---- D1b: digg API observer (like-commit ground truth) ----
+    // The like button's digg endpoint (/api/commit/item/digg/) is a TOGGLE —
+    // a second call UNLIKES. Optimistic UI flips aria-pressed instantly, and
+    // the Comments-tab re-render resets it to false ~150ms later even though
+    // the server already committed. Track the API response so we never
+    // re-click an API-confirmed like (that's the observed flap).
+    let diggConfirmedLike = false;   // set true when OUR digg returns status_code=0
+    let diggPending = false;         // set true just before we click the heart
+    const onDiggApiResponse = (res) => {
+        try {
+            const u = res.url();
+            if (!/digg/i.test(u)) return;
+            if (!diggPending) {
+                logger.info(`[engage:${taskId}] digg-api (external): HTTP ${res.status()} ${u.substring(0, 140)}`);
+                return;
+            }
+            res.text().then((t) => {
+                try {
+                    const j = JSON.parse(t);
+                    const status = j.status_code ?? j?.status?.status_code ?? 'n/a';
+                    logger.info(`[engage:${taskId}] digg-api: HTTP ${res.status()}, status_code=${status}, bytes=${t.length} ${u.substring(0, 120)}`);
+                    if (String(status) === '0') diggConfirmedLike = true;
+                } catch (e) {
+                    logger.info(`[engage:${taskId}] digg-api body: non-JSON (${t.length} bytes)`);
+                }
+                diggPending = false;
+            }).catch(() => { diggPending = false; });
+        } catch (e) { /* ignore */ }
+    };
+    page.on('response', onDiggApiResponse);
+
     const pause = (min, max) => DOMHelpers.randomDelay(min, max);
 
     for (const keyword of keywords) {
@@ -352,10 +383,14 @@ export async function runSearchInteractEngagement(page, opts) {
                     }
                     // Pre-check: clicking a heart that is ALREADY liked would
                     // unlike it (cross-run re-engagement of the same post).
+                    diggConfirmedLike = false; // reset per post
+                    diggPending = false;
                     const preSig = await isPostLiked(page, s);
                     if (preSig && preSig.state === true) {
                         logger.info(`[engage:${taskId}] Post already liked (${preSig.why}) — skipping like click.`);
+                        diggConfirmedLike = true; // already liked server-side; never toggle it off
                     } else {
+                        diggPending = true; // next digg response is OUR click
                         const likeClicked = await DOMHelpers.humanClick(page, s.likeButton, { timeout: 5000 }).catch(() => false);
                         logger.info(`[engage:${taskId}] Like ${likeClicked ? 'clicked' : 'NOT found'} (quota consumed anyway per policy).`);
                     }
@@ -366,21 +401,25 @@ export async function runSearchInteractEngagement(page, opts) {
                     // rejected like fall through as "clicked". Retry ONCE with a
                     // human click, and only on a confident "not liked" signal
                     // (never re-click a weak reading — that's how flaps start).
+                    // If the digg API confirmed (status_code=0), the like is
+                    // committed server-side even if the DOM hasn't caught up —
+                    // skip the retry entirely (retrying a committed like UNLIKES it).
                     let likeSig = await isPostLiked(page, s);
                     if (!(likeSig && likeSig.state === true)) {
                         const likeDeadline = Date.now() + 6000;
-                        while (!(likeSig && likeSig.state === true) && Date.now() < likeDeadline) {
+                        while (!(likeSig && likeSig.state === true) && !diggConfirmedLike && Date.now() < likeDeadline) {
                             await pause(700, 1100);
                             likeSig = await isPostLiked(page, s);
                         }
                     }
-                    if (!(likeSig && likeSig.state === true)) {
+                    if (!(likeSig && likeSig.state === true) && !diggConfirmedLike) {
                         if (isConfidentlyUnliked(likeSig)) {
                             logger.warn(`[engage:${taskId}] Like not committed after click (why=${likeSig.why}) — human re-like once.`);
+                            diggPending = true;
                             await DOMHelpers.humanClick(page, s.likeButton, { timeout: 4000 }).catch(() => {});
                             const retryDeadline = Date.now() + 4000;
                             likeSig = await isPostLiked(page, s);
-                            while (!(likeSig && likeSig.state === true) && Date.now() < retryDeadline) {
+                            while (!(likeSig && likeSig.state === true) && !diggConfirmedLike && Date.now() < retryDeadline) {
                                 await pause(700, 1100);
                                 likeSig = await isPostLiked(page, s);
                             }
@@ -390,6 +429,8 @@ export async function runSearchInteractEngagement(page, opts) {
                     }
                     if (likeSig && likeSig.state === true) {
                         logger.info(`[engage:${taskId}] Post ${rIdx + 1}: like committed (aria-pressed=${likeSig.ariaPressed ?? 'none'}, why=${likeSig.why}).`);
+                    } else if (diggConfirmedLike) {
+                        logger.info(`[engage:${taskId}] Post ${rIdx + 1}: like committed (digg-api status_code=0; DOM why=${likeSig?.why ?? 'unconfirmed'}).`);
                     } else {
                         logger.warn(`[engage:${taskId}] Post ${rIdx + 1}: like NOT committed (shadow-reject?) — continuing without retry loop.`);
                     }
@@ -423,6 +464,14 @@ export async function runSearchInteractEngagement(page, opts) {
                     // phase is skipped entirely (user decision: no comment
                     // without seeing the thread first).
                     const ccRes = await ensureCommentsVisible(page, `[engage:${taskId}]`, expectedComments);
+                    // Panel header is the reliable count once the tab is active
+                    // (action-bar reads 0 on photo posts). Refill for logging/results.
+                    if (ccRes.ok && !expectedComments) {
+                        try {
+                            expectedComments = await readCommentsPanelCount(page) || 0;
+                            if (expectedComments) logger.info(`[engage:${taskId}] Panel header count = ${expectedComments} (action-bar was 0).`);
+                        } catch (e) { /* non-fatal */ }
+                    }
                     if (!ccRes.ok) {
                         const skipStatus = ccRes.reason === 'comments_not_loaded' ? 'comments_not_loaded' : 'engaged_no_comments_tab';
                         logger.warn(`[engage:${taskId}] Comments unavailable (${ccRes.reason}) — skipping comment + per-comment phase.`);
@@ -442,21 +491,33 @@ export async function runSearchInteractEngagement(page, opts) {
                         continue;
                     }
 
-                    // Defensive: the Comments-tab switch can re-render the action bar
-                    // and reset an optimistic like. Re-like ONLY on a confident
-                    // "not liked" signal (aria-pressed=false or white heart) —
-                    // a false negative here would click a liked post and UNLIKE
-                    // it (the observed like/unlike flap). Verify after; never
-                    // toggle more than once.
+                    // Defensive: the Comments-tab switch re-renders the action
+                    // bar and briefly resets the optimistic like to false
+                    // (~150ms transient). NEVER re-click when the digg API
+                    // already confirmed (digg is a toggle — re-click UNLIKES).
+                    // When digg didn't confirm, wait for the remount to settle
+                    // (2.5–3.5s) and re-poll before judging; re-like ONLY on a
+                    // confident "not liked" signal after settle — never more
+                    // than once.
                     try {
-                        const sig = await isPostLiked(page, s, `[engage:${taskId}] Post ${rIdx + 1}:`);
-                        if (isConfidentlyUnliked(sig)) {
-                            logger.warn(`[engage:${taskId}] Like reverted after Comments tab (why=${sig.why}) — re-liking once.`);
+                        await pause(2500, 3500); // let the action bar finish re-hydrating
+                        const sig = await isPostLiked(page, s, `[engage:${taskId}] Post ${rIdx + 1} (post-tab settle):`);
+                        if (diggConfirmedLike) {
+                            if (sig && sig.state === true) {
+                                logger.info(`[engage:${taskId}] Like still committed after Comments tab (digg-api + DOM agree).`);
+                            } else {
+                                logger.info(`[engage:${taskId}] DOM shows like=false after Comments tab but digg-api confirmed — trusting API (no re-click, flap guard).`);
+                            }
+                        } else if (isConfidentlyUnliked(sig)) {
+                            logger.warn(`[engage:${taskId}] Like reverted after Comments tab (why=${sig.why}, no digg confirm) — re-liking once.`);
+                            diggPending = true;
                             await DOMHelpers.humanClick(page, s.likeButton, { timeout: 4000 }).catch(() => {});
                             await pause(1200, 2000);
                             const after = await isPostLiked(page, s);
                             if (after && after.state === true) {
                                 logger.info(`[engage:${taskId}] Re-like confirmed (aria-pressed=${after.ariaPressed ?? 'none'}).`);
+                            } else if (diggConfirmedLike) {
+                                logger.info(`[engage:${taskId}] Re-like confirmed via digg-api (DOM why=${after?.why ?? 'unconfirmed'}).`);
                             } else {
                                 logger.warn(`[engage:${taskId}] Re-like NOT confirmed (why=${after?.why ?? 'missing'}) — moving on (no retry).`);
                             }
@@ -553,7 +614,10 @@ export async function runSearchInteractEngagement(page, opts) {
                     }
                     try {
                         const recentLines = aiComments.filter(c => c.text).slice(0, 5).map(c => `- ${c.text}`).join('\n');
-                        const genPrompt = `${platformConfig.aiPrompts?.generateComment || 'Write a natural comment.'}\n\n${socialStrategyPrompt ? 'Strategy: ' + socialStrategyPrompt + '\n' : ''}Post analysis: ${analyzedVideo}${recentLines ? `\nExisting comments (so yours fits the conversation):\n${recentLines}` : ''}`;
+                        // Keyword must appear in the comment (user directive: like
+                        // competing comments "Teamwork ifb" — carry the topic).
+                        // AI weaves it in naturally; do not copy raw + random letters.
+                        const genPrompt = `${platformConfig.aiPrompts?.generateComment || 'Write a natural comment.'}\n\n${socialStrategyPrompt ? 'Strategy: ' + socialStrategyPrompt + '\n' : ''}Topic/keyword that brought us here: "${keyword}" — work it into the comment naturally (related wording like teamwork, the product, etc. is fine); do NOT copy the raw string with random letters appended.\nPost analysis: ${analyzedVideo}${recentLines ? `\nExisting comments (so yours fits the conversation):\n${recentLines}` : ''}`;
                         generatedComment = ai ? await ai.generate(genPrompt) : 'Great post!';
                         generatedComment = String(generatedComment).replace(/^["']|["']$/g, '').trim().slice(0, 150);
                     } catch (e) {
@@ -601,13 +665,20 @@ export async function runSearchInteractEngagement(page, opts) {
                         // events which TikTok's anti-bot ignores.
                         try {
                             const likeRect = await page.evaluate((cIdx) => {
-                                const containers = document.querySelectorAll("div[class*='DivCommentItemContainer']");
+                                // Must match the extractor selector exactly so
+                                // comment.index aligns with the DOM order.
+                                const containers = document.querySelectorAll("div[class*='DivCommentObjectWrapper'], div[class*='DivCommentItemWrapper']");
                                 const el = containers[cIdx];
                                 if (!el) return null;
-                                const likeIcon = el.querySelector("div[data-e2e='comment-like-icon'], [data-e2e='comment-like-icon']");
+                                // Live DOM: like is div[data-key-interaction='comment_like'][aria-pressed]
+                                // (old data-e2e='comment-like-icon' no longer exists).
+                                const likeIcon = el.querySelector("div[data-key-interaction='comment_like'], [data-key-interaction='comment_like'], [data-e2e='comment-like-icon']");
                                 if (!likeIcon) return null;
-                                // Don't double-like: parent aria-pressed or the icon's active state.
-                                const pressed = likeIcon.closest('[aria-pressed="true"]') || likeIcon.querySelector('[aria-pressed="true"]');
+                                // Don't double-like: the icon itself or an ancestor/descendant
+                                // may carry aria-pressed="true".
+                                const pressed = (likeIcon.getAttribute('aria-pressed') === 'true' ? likeIcon : null)
+                                    || likeIcon.closest('[aria-pressed="true"]')
+                                    || likeIcon.querySelector('[aria-pressed="true"]');
                                 if (pressed) return null;
                                 const r = likeIcon.getBoundingClientRect();
                                 if (r.width < 1 || r.height < 1) return null;
@@ -635,10 +706,12 @@ export async function runSearchInteractEngagement(page, opts) {
                             // Click the Reply button in this comment's container
                             // with the real mouse (isTrusted events).
                             const replyRect = await page.evaluate((cIdx) => {
-                                const containers = document.querySelectorAll("div[class*='DivCommentItemContainer']");
+                                // Same container selector as the extractor (index alignment).
+                                const containers = document.querySelectorAll("div[class*='DivCommentObjectWrapper'], div[class*='DivCommentItemWrapper']");
                                 const el = containers[cIdx];
                                 if (!el) return null;
-                                const reply = el.querySelector("span[data-e2e='comment-reply-1'], span[data-e2e^='comment-reply-'], [aria-label='Reply']");
+                                // Live DOM: Reply is p[aria-label='Reply'][data-e2e='comment-reply-1']
+                                const reply = el.querySelector("p[aria-label='Reply'][data-e2e^='comment-reply-'], [data-e2e^='comment-reply-'], [aria-label='Reply']");
                                 if (!reply) return null;
                                 const r = reply.getBoundingClientRect();
                                 if (r.width < 1 || r.height < 1) return null;
@@ -710,6 +783,7 @@ export async function runSearchInteractEngagement(page, opts) {
     }
 
     page.off('response', onCommentApiResponse);
+    page.off('response', onDiggApiResponse);
 
     if (stopType === 'hourly' && profileId) {
         await updateAccountStatus(profileId, 'RATE_LIMITED');

@@ -218,14 +218,15 @@ Respond with ONLY: yes or no`
             browseDesc: "[data-e2e='browse-desc']",
             browseClose: "button[data-e2e='browse-close']",
             followButton: "[data-e2e='browse-follow']",
-            // Comment list
-            commentContainer: "div[data-e2e='search-comment-container'], div[class*='DivCommentItemContainer']",
-            commentItem: "div[class*='DivCommentItemContainer']",
+            // Comment list (live DOM: DivCommentObjectWrapper / DivCommentItemWrapper;
+            // like icon is div[data-key-interaction='comment_like'][aria-pressed])
+            commentContainer: "div[class*='DivCommentObjectWrapper'], div[class*='DivCommentItemWrapper']",
+            commentItem: "div[class*='DivCommentObjectWrapper'], div[class*='DivCommentItemWrapper']",
             commentLevel1: "p[data-e2e='comment-level-1'], span[data-e2e='comment-level-1']",
-            commentUsername: "span[data-e2e='comment-username-1'], span[data-e2e^='comment-username-']",
-            commentLikeButton: "div[data-e2e='comment-like-icon']",
+            commentUsername: "[data-e2e^='comment-username-']",
+            commentLikeButton: "div[data-key-interaction='comment_like'], [data-key-interaction='comment_like']",
             commentLikeCount: "span[data-e2e='comment-like-count']",
-            commentReplyButton: "span[data-e2e='comment-reply-1'], span[data-e2e^='comment-reply-']",
+            commentReplyButton: "p[aria-label='Reply'][data-e2e^='comment-reply-'], [data-e2e^='comment-reply-'], [aria-label='Reply']",
             viewMoreReplies: "p[data-e2e='view-more-1'], p[data-e2e^='view-more-']",
             // Comment composer (bottom bar)
             commentInputContainer: "div[data-e2e='comment-input']",
@@ -410,13 +411,18 @@ YOUR REPLY (only the reply text, no quotes):`
             },
 
             comments: {
-                selector: "div[class*='DivCommentItemContainer'], div[data-e2e='search-comment-container'] > div",
+                // Live TikTok DOM (Oct 2026): item wrapper is
+                // DivCommentObjectWrapper (inner DivCommentItemWrapper) —
+                // the old DivCommentItemContainer no longer exists (extraction
+                // returned 0). Username is a div[data-e2e^='comment-username-N'],
+                // not a span.
+                selector: "div[class*='DivCommentObjectWrapper'], div[class*='DivCommentItemWrapper']",
                 parseFunction: `(items) => {
                     const comments = [];
                     items.forEach((item, idx) => {
                         try {
                             const textEl = item.querySelector("p[data-e2e='comment-level-1'], span[data-e2e='comment-level-1'], span[data-testid='comment-text']");
-                            const userEl = item.querySelector("span[data-e2e='comment-username-1'], span[data-e2e^='comment-username-']");
+                            const userEl = item.querySelector("[data-e2e^='comment-username-']");
                             const likeCountEl = item.querySelector("span[data-e2e='comment-like-count']");
                             if (textEl) {
                                 comments.push({
