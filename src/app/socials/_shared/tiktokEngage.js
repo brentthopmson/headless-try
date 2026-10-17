@@ -326,11 +326,13 @@ async function navigateAndWait(page, url, s, opts = {}) {
 
 export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]') {
     try {
+        const COMPOSER = "div[data-e2e='comment-text'][contenteditable='true'], div[data-key-interaction='comment_input']";
+        const LIST = "div[class*='DivCommentItemContainer']";
+
         // Already showing comments? Composer or a comment item present.
-        const already = await page.evaluate(() => {
-            return !!(document.querySelector("div[data-e2e='comment-text'][contenteditable='true']")
-                || document.querySelector("div[class*='DivCommentItemContainer']"));
-        });
+        const already = await page.evaluate((args) => {
+            return !!(document.querySelector(args.composer) || document.querySelector(args.list));
+        }, { composer: COMPOSER, list: LIST });
         if (already) return true;
 
         const clicked = await page.evaluate(() => {
@@ -348,19 +350,73 @@ export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]'
             logger.warn(`${logPrefix} Comments tab not found.`);
             return false;
         }
-        logger.info(`${logPrefix} Clicked Comments tab. Waiting for composer...`);
-        await page.waitForSelector(
-            "div[data-e2e='comment-text'][contenteditable='true'], div[class*='DivCommentItemContainer']",
-            { timeout: 8000 }
-        ).catch(() => {});
-        // Confirm composer or comment list rendered.
-        return await page.evaluate(() => {
-            return !!(document.querySelector("div[data-e2e='comment-text'][contenteditable='true']")
-                || document.querySelector("div[class*='DivCommentItemContainer']"));
-        });
+        logger.info(`${logPrefix} Clicked Comments tab. Waiting for panel (patient ~15s)...`);
+
+        // Patient poll for the comments panel to hydrate. Composer OR comment
+        // list OR the empty "Start the conversation" state all prove the panel
+        // loaded — photo posts with 0 comments show the empty state but still
+        // allow posting, so don't reject on the composer selector alone.
+        const deadline = Date.now() + 15000;
+        let panelState = null;
+        while (Date.now() < deadline) {
+            panelState = await page.evaluate((args) => {
+                if (document.querySelector(args.composer)) return 'composer';
+                if (document.querySelector(args.list)) return 'list';
+                const body = document.body?.innerText || '';
+                if (body.includes('Start the conversation')) return 'empty';
+                return null;
+            }, { composer: COMPOSER, list: LIST });
+            if (panelState) break;
+            await new Promise(r => setTimeout(r, 400));
+        }
+
+        if (panelState) {
+            logger.info(`${logPrefix} Comments panel ready (${panelState}).`);
+            return true;
+        }
+        logger.warn(`${logPrefix} Comments panel did not hydrate within 15s.`);
+        return false;
     } catch (e) {
         logger.warn(`${logPrefix} ensureCommentsVisible failed: ${e.message}`);
         return false;
+    }
+}
+
+// ==================== Like-state Verification ====================
+// Best-effort detection of whether the post is currently liked. Returns
+// true (liked), false (not liked / no strong signal), or null (like button
+// missing / eval error). Used defensively: switching to the Comments tab can
+// re-render the action bar and reset an optimistic like before the server
+// confirms it. Only trusts strong signals (aria-pressed, TikTok-red fill) to
+// avoid a false "not liked" that would trigger a harmful re-like.
+async function isPostLiked(page, s) {
+    try {
+        return await page.evaluate((sel) => {
+            const icon = document.querySelector(sel);
+            if (!icon) return null;
+            // Strong signal 1: aria-pressed on the icon or a clickable ancestor.
+            if (icon.closest('[aria-pressed="true"]')) return true;
+            if (icon.querySelector('[aria-pressed="true"]')) return true;
+            // Strong signal 2: TikTok-red filled heart (#FE2C55).
+            const red = (v) => {
+                if (!v) return false;
+                v = String(v).toLowerCase();
+                return v.includes('fe2c55') || v.includes('2c55') || v.includes('255, 44, 85') || v.includes('255,44,85');
+            };
+            const svg = icon.matches('svg') ? icon : icon.querySelector('svg');
+            if (svg) {
+                if (red(svg.getAttribute('fill'))) return true;
+                try { if (red(getComputedStyle(svg).fill)) return true; } catch (e) { /* ignore */ }
+                const path = svg.querySelector('path');
+                if (path) {
+                    if (red(path.getAttribute('fill'))) return true;
+                    try { if (red(getComputedStyle(path).fill)) return true; } catch (e) { /* ignore */ }
+                }
+            }
+            return false;
+        }, s.likeButton);
+    } catch (e) {
+        return null;
     }
 }
 
@@ -532,6 +588,18 @@ export async function runSearchInteractEngagement(page, opts) {
                         continue;
                     }
 
+                    // ---- Wait for the post action bar to hydrate before engaging ----
+                    // navigateAndWait can return 'post' from the URL alone, before the
+                    // action bar (Like/Comments) actually renders. Wait for it so the
+                    // like/comments clicks target a fully-rendered page (switching tabs
+                    // into a half-hydrated DOM was reverting the optimistic like).
+                    try {
+                        await page.waitForSelector(s.likeButton, { visible: true, timeout: 10000 });
+                        logger.info(`[engage:${taskId}] Post ${rIdx + 1}: action bar rendered.`);
+                    } catch (e) {
+                        logger.warn(`[engage:${taskId}] Post ${rIdx + 1}: action bar not detected within 10s — continuing (like may fail).`);
+                    }
+
                     // ---- AI analysis of post content ----
                     let analyzedVideo = '';
                     try {
@@ -557,7 +625,11 @@ export async function runSearchInteractEngagement(page, opts) {
                     }
                     const likeClicked = await DOMHelpers.clickElement(page, s.likeButton, { timeout: 5000, delay: 1000 }).catch(() => false);
                     logger.info(`[engage:${taskId}] Like ${likeClicked ? 'clicked' : 'NOT found'} (quota consumed anyway per policy).`);
-                    await pause(1200, 2200);
+                    // Patient settle: give TikTok time to commit the like server-side
+                    // BEFORE we switch tabs. Switching too early was reverting the
+                    // optimistic like (user-observed: "liked, then immediately
+                    // unliked when the comments tab was clicked").
+                    await pause(2500, 3500);
 
                     // ---- Switch to Comments tab (composer + list live here) ----
                     // Post pages open on "You may like"; the comment box and
@@ -578,6 +650,18 @@ export async function runSearchInteractEngagement(page, opts) {
                         await pause(1200, 2000);
                         continue;
                     }
+
+                    // Defensive: the Comments-tab switch can re-render the action bar
+                    // and reset an optimistic like. Re-check and re-like once if it
+                    // reverted (only on a confident "not liked" signal).
+                    try {
+                        const likeState = await isPostLiked(page, s);
+                        if (likeState === false) {
+                            logger.warn(`[engage:${taskId}] Like reverted after Comments tab — re-liking once.`);
+                            await DOMHelpers.clickElement(page, s.likeButton, { timeout: 4000, delay: 800 }).catch(() => {});
+                            await pause(1200, 2000);
+                        }
+                    } catch (e) { /* non-fatal */ }
 
                     // ---- Generate + post contextual comment ----
                     let generatedComment = '';
