@@ -618,11 +618,25 @@ export async function runSearchInteractEngagement(page, opts) {
                         // competing comments "Teamwork ifb" — carry the topic).
                         // AI weaves it in naturally; do not copy raw + random letters.
                         const genPrompt = `${platformConfig.aiPrompts?.generateComment || 'Write a natural comment.'}\n\n${socialStrategyPrompt ? 'Strategy: ' + socialStrategyPrompt + '\n' : ''}Topic/keyword that brought us here: "${keyword}" — work it into the comment naturally (related wording like teamwork, the product, etc. is fine); do NOT copy the raw string with random letters appended.\nPost analysis: ${analyzedVideo}${recentLines ? `\nExisting comments (so yours fits the conversation):\n${recentLines}` : ''}`;
-                        generatedComment = ai ? await ai.generate(genPrompt) : 'Great post!';
-                        generatedComment = String(generatedComment).replace(/^["']|["']$/g, '').trim().slice(0, 150);
+                        generatedComment = ai ? await ai.generate(genPrompt) : '';
+                        generatedComment = String(generatedComment || '').replace(/^["']|["']$/g, '').trim().slice(0, 150);
                     } catch (e) {
                         logger.warn(`[engage:${taskId}] AI comment generation failed: ${e.message}`);
-                        generatedComment = 'Nice share!';
+                        generatedComment = '';
+                    }
+                    // AI-off fallback (user directive): copy an existing comment
+                    // verbatim instead of a generic "Nice share!". Pick the longest
+                    // substantive comment already on the post.
+                    if (!generatedComment) {
+                        const seed = aiComments
+                            .filter(c => c.text && c.text.length >= 8 && c.text.length <= 150)
+                            .sort((a, b) => b.text.length - a.text.length)[0];
+                        if (seed) {
+                            generatedComment = String(seed.text).trim().slice(0, 150);
+                            logger.info(`[engage:${taskId}] AI-off: seeding post comment from existing comment: "${generatedComment.substring(0, 60)}..."`);
+                        } else {
+                            generatedComment = 'Nice share!';
+                        }
                     }
                     if (generatedComment) {
                         const postRes = await postCommentVerified(page, s, generatedComment, `[engage:${taskId}]`).catch(err => ({ posted: false, reason: err.message }));
@@ -635,24 +649,76 @@ export async function runSearchInteractEngagement(page, opts) {
                     }
                     await pause(1500, 2500);
 
-                    // ---- Per-comment like + reply ----
-                    let comments = [];
-                    try {
-                        const cExtractor = platformConfig.extractors?.comments;
-                        if (cExtractor) {
-                            const parseFunc = new Function('items', 'return (' + cExtractor.parseFunction + '\n)(items);');
-                            comments = await page.$$eval(cExtractor.selector, parseFunc) || [];
-                        }
-                    } catch (e) {
-                        logger.warn(`[engage:${taskId}] Comment extraction failed: ${e.message}`);
-                    }
-                    // Exclude our own just-posted comment if identifiable; bound by maxRepliesPerPost.
-                    const targetComments = comments.filter(c => c.text && c.text !== generatedComment).slice(0, maxRepliesPerPost);
-                    logger.info(`[engage:${taskId}] ${comments.length} comments extracted, processing ${targetComments.length}.`);
+                    // ---- Per-comment like + reply (sequential, text-located) ----
+                    // User directive: like comment → reply → close reply box →
+                    // NEXT comment. Never re-extract mid-loop (virtualized list
+                    // unmounts); use aiComments already scraped. Locate each
+                    // container by TEXT match — indices go stale the moment a
+                    // reply is inserted into the DOM (observed double-🙌).
+                    const targetComments = aiComments
+                        .filter(c => c.text && c.text !== generatedComment && c.text.trim().length >= 2)
+                        .slice(0, maxRepliesPerPost);
+                    let processedCount = 0;
+                    const repliedTexts = new Set(); // dedupe: never reply same text twice
+                    logger.info(`[engage:${taskId}] Per-comment phase: ${targetComments.length} targets from AI-context list (no re-extract).`);
+
+                    const CONTAINER_SEL = "div[class*='DivCommentObjectWrapper'], div[class*='DivCommentItemWrapper']";
+
+                    // Locate a comment's live container by its text. Virtualized
+                    // lists unmount off-screen items — scroll the panel once and
+                    // retry. Returns an index into the CURRENT container list, or -1.
+                    const locateByText = async (wantText) => {
+                        const needle = String(wantText || '').trim().substring(0, 80);
+                        if (!needle) return -1;
+                        const findIdx = async () => page.evaluate(({ sel, text }) => {
+                            const items = document.querySelectorAll(sel);
+                            for (let i = 0; i < items.length; i++) {
+                                const t = items[i].querySelector("span[data-e2e='comment-level-1'], p[data-e2e='comment-level-1']");
+                                if (t && (t.textContent || '').trim().substring(0, 80) === text) return i;
+                            }
+                            return -1;
+                        }, { sel: CONTAINER_SEL, text: needle });
+                        let idx = await findIdx();
+                        if (idx >= 0) return idx;
+                        // Scroll the comments panel to load more (virtualization).
+                        await DOMHelpers.humanScroll(page, "div[class*='DivCommentMain'], div[class*='DivTabContainer'], div[class*='RightPanel']", { totalPx: 400 }).catch(() => false);
+                        await pause(600, 1000);
+                        return findIdx();
+                    };
+
+                    // Close the inline reply composer if it's open (X button or
+                    // Escape). Without this, the next reply types into the SAME
+                    // open box → replies stack on one parent (observed bug).
+                    const closeReplyBox = async () => {
+                        const closed = await page.evaluate(() => {
+                            // Reply composer close: the X next to the pink submit arrow.
+                            const x = document.querySelector("div[data-e2e='comment-text'] ~ div svg, [data-key-interaction='comment_input'] + div button[aria-label='Close'], div[role='dialog'] button[aria-label='Close']");
+                            if (x) {
+                                const btn = x.closest("button, div[role='button'], span");
+                                if (btn) btn.click();
+                                return 'clicked';
+                            }
+                            return null;
+                        }).catch(() => null);
+                        if (closed) { await pause(300, 600); return true; }
+                        // Fallback: Escape key closes the inline reply on TikTok web.
+                        await page.keyboard.press('Escape').catch(() => {});
+                        await pause(300, 600);
+                        return true;
+                    };
 
                     for (const comment of targetComments) {
                         if (stopType) break;
-                        // Like the comment
+                        if (repliedTexts.has(comment.text)) continue; // dedupe
+
+                        // ---- Locate the comment in the live DOM by text ----
+                        const cIdx = await locateByText(comment.text);
+                        if (cIdx < 0) {
+                            logger.info(`[engage:${taskId}] Comment not found in DOM (virtualized?): "${comment.text.substring(0, 40)}..." — skipping.`);
+                            continue;
+                        }
+
+                        // ---- 1. LIKE the comment ----
                         const likeCGate = await gateAndConsume(platform, profileId, 'likeComment');
                         if (!likeCGate.allowed) {
                             stopType = likeCGate.stopType;
@@ -660,41 +726,32 @@ export async function runSearchInteractEngagement(page, opts) {
                             logger.info(`[engage:${taskId}] Comment-like blocked (${stopReason}) — stopping run.`);
                             break;
                         }
-                        // Click the like icon within this comment's container by index.
-                        // Real-mouse click: evaluate el.click() fired isTrusted=false
-                        // events which TikTok's anti-bot ignores.
                         try {
-                            const likeRect = await page.evaluate((cIdx) => {
-                                // Must match the extractor selector exactly so
-                                // comment.index aligns with the DOM order.
-                                const containers = document.querySelectorAll("div[class*='DivCommentObjectWrapper'], div[class*='DivCommentItemWrapper']");
-                                const el = containers[cIdx];
+                            const likeRect = await page.evaluate(({ sel, idx }) => {
+                                const el = document.querySelectorAll(sel)[idx];
                                 if (!el) return null;
                                 // Live DOM: like is div[data-key-interaction='comment_like'][aria-pressed]
-                                // (old data-e2e='comment-like-icon' no longer exists).
                                 const likeIcon = el.querySelector("div[data-key-interaction='comment_like'], [data-key-interaction='comment_like'], [data-e2e='comment-like-icon']");
                                 if (!likeIcon) return null;
-                                // Don't double-like: the icon itself or an ancestor/descendant
-                                // may carry aria-pressed="true".
                                 const pressed = (likeIcon.getAttribute('aria-pressed') === 'true' ? likeIcon : null)
                                     || likeIcon.closest('[aria-pressed="true"]')
                                     || likeIcon.querySelector('[aria-pressed="true"]');
-                                if (pressed) return null;
+                                if (pressed) return null; // already liked
                                 const r = likeIcon.getBoundingClientRect();
                                 if (r.width < 1 || r.height < 1) return null;
                                 return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-                            }, comment.index);
+                            }, { sel: CONTAINER_SEL, idx: cIdx });
                             let likedC = false;
                             if (likeRect) {
                                 likedC = await DOMHelpers.humanClickAt(page, likeRect.x, likeRect.y, { hoverMs: [120, 300] }).catch(() => false);
                             }
-                            logger.info(`[engage:${taskId}] Comment like ${likedC ? 'clicked' : 'skipped (already liked or not found)'}.`);
+                            logger.info(`[engage:${taskId}] Comment like ${likedC ? 'clicked' : 'skipped (already liked or not found)'}: "${comment.text.substring(0, 40)}..."`);
                         } catch (e) {
                             logger.warn(`[engage:${taskId}] Comment like click failed: ${e.message}`);
                         }
                         await pause(800, 1500);
 
-                        // Reply to the comment via commentComment
+                        // ---- 2. REPLY to the comment ----
                         const replyGate = await gateAndConsume(platform, profileId, 'commentComment');
                         if (!replyGate.allowed) {
                             stopType = replyGate.stopType;
@@ -703,20 +760,15 @@ export async function runSearchInteractEngagement(page, opts) {
                             break;
                         }
                         try {
-                            // Click the Reply button in this comment's container
-                            // with the real mouse (isTrusted events).
-                            const replyRect = await page.evaluate((cIdx) => {
-                                // Same container selector as the extractor (index alignment).
-                                const containers = document.querySelectorAll("div[class*='DivCommentObjectWrapper'], div[class*='DivCommentItemWrapper']");
-                                const el = containers[cIdx];
+                            const replyRect = await page.evaluate(({ sel, idx }) => {
+                                const el = document.querySelectorAll(sel)[idx];
                                 if (!el) return null;
-                                // Live DOM: Reply is p[aria-label='Reply'][data-e2e='comment-reply-1']
                                 const reply = el.querySelector("p[aria-label='Reply'][data-e2e^='comment-reply-'], [data-e2e^='comment-reply-'], [aria-label='Reply']");
                                 if (!reply) return null;
                                 const r = reply.getBoundingClientRect();
                                 if (r.width < 1 || r.height < 1) return null;
                                 return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-                            }, comment.index);
+                            }, { sel: CONTAINER_SEL, idx: cIdx });
                             const replyClicked = replyRect
                                 ? await DOMHelpers.humanClickAt(page, replyRect.x, replyRect.y, { hoverMs: [120, 300] }).catch(() => false)
                                 : false;
@@ -724,30 +776,71 @@ export async function runSearchInteractEngagement(page, opts) {
                                 await pause(800, 1500);
                                 let replyText = '';
                                 try {
-                                    // Reply reuses the already-loaded analysis — no new
-                                    // video/vision capture here (post knowledge is in analyzedVideo).
                                     const replyPrompt = `${platformConfig.aiPrompts?.replyToComment || 'Reply briefly.'}\n\nVideo analysis: ${analyzedVideo}\nYour comment: ${generatedComment}\nComment to reply to: ${comment.text}`;
-                                    replyText = ai ? await ai.generate(replyPrompt) : '🙏';
-                                    replyText = String(replyText).replace(/^["']|["']$/g, '').trim().slice(0, 120);
+                                    replyText = ai ? await ai.generate(replyPrompt) : '';
+                                    replyText = String(replyText || '').replace(/^["']|["']$/g, '').trim().slice(0, 120);
                                 } catch (e) {
-                                    replyText = '🙌';
+                                    replyText = '';
+                                }
+                                // AI-off fallback (user directive): seeded template from
+                                // the parent comment — never a bare constant 🙌.
+                                if (!replyText) {
+                                    const parentWords = String(comment.text || '').trim().split(/\s+/).slice(0, 4).join(' ');
+                                    const templates = [
+                                        parentWords ? `So true — "${parentWords}..." 💯` : 'So true 💯',
+                                        'Facts',
+                                        "Right?!",
+                                        'Couldn\'t agree more',
+                                        parentWords ? `${parentWords}... this! 🙌` : 'This! 🙌',
+                                    ];
+                                    replyText = templates[Math.floor(Math.random() * templates.length)];
+                                    logger.info(`[engage:${taskId}] AI-off: seeded reply template: "${replyText}"`);
                                 }
                                 if (replyText) {
                                     const replyRes = await postCommentVerified(page, s, replyText, `[engage:${taskId}]`).catch(err => ({ posted: false, reason: err.message }));
                                     if (replyRes.posted) {
-                                        logger.info(`[engage:${taskId}] Replied to comment ${comment.index}: "${replyText.substring(0, 50)}..."`);
+                                        repliedTexts.add(comment.text);
+                                        processedCount++;
+                                        logger.info(`[engage:${taskId}] Replied to comment: "${comment.text.substring(0, 40)}..." → "${replyText.substring(0, 50)}"`);
                                     } else {
-                                        logger.warn(`[engage:${taskId}] Reply NOT posted for comment ${comment.index} (${replyRes.reason}).`);
+                                        logger.warn(`[engage:${taskId}] Reply NOT posted for "${comment.text.substring(0, 40)}..." (${replyRes.reason}).`);
                                     }
                                 }
+                                // ---- 3. CLOSE the reply box before next comment ----
+                                await closeReplyBox();
                             } else {
-                                logger.warn(`[engage:${taskId}] Reply button not found for comment ${comment.index}.`);
+                                logger.warn(`[engage:${taskId}] Reply button not found for "${comment.text.substring(0, 40)}..."`);
                             }
                         } catch (e) {
                             logger.warn(`[engage:${taskId}] Comment reply failed: ${e.message}`);
+                            await closeReplyBox().catch(() => {});
                         }
                         await pause(1000, 2000);
                     }
+
+                    // ---- Final like reconcile (before leaving the post) ----
+                    // Comments-tab re-render can leave the UI stuck unliked even
+                    // when digg-api confirmed. One careful re-like if confidently
+                    // unliked — no loop, no flap.
+                    try {
+                        const finalSig = await isPostLiked(page, s);
+                        if (isConfidentlyUnliked(finalSig) && !diggConfirmedLike) {
+                            logger.warn(`[engage:${taskId}] Like not set at post exit (why=${finalSig.why}) — one reconcile re-like.`);
+                            diggPending = true;
+                            await DOMHelpers.humanClick(page, s.likeButton, { timeout: 4000 }).catch(() => {});
+                            await pause(1500, 2500);
+                            const afterRec = await isPostLiked(page, s);
+                            if ((afterRec && afterRec.state === true) || diggConfirmedLike) {
+                                logger.info(`[engage:${taskId}] Like reconcile confirmed.`);
+                            } else {
+                                logger.warn(`[engage:${taskId}] Like reconcile NOT confirmed — moving on.`);
+                            }
+                        } else if (finalSig && finalSig.state === true) {
+                            logger.info(`[engage:${taskId}] Like confirmed at post exit.`);
+                        } else {
+                            logger.info(`[engage:${taskId}] Like state at post exit: trusting digg-api (no reconcile).`);
+                        }
+                    } catch (e) { /* non-fatal */ }
 
                     results.push({
                         keyword,
@@ -755,7 +848,7 @@ export async function runSearchInteractEngagement(page, opts) {
                         author: video.author,
                         caption: (video.caption || '').substring(0, 120),
                         comment: generatedComment,
-                        commentsProcessed: targetComments.length,
+                        commentsProcessed: processedCount,
                         status: 'engaged',
                     });
                     logger.info(`[engage:${taskId}] Post ${rIdx + 1} engaged successfully.`);

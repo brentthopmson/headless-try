@@ -205,9 +205,10 @@ Respond with ONLY: yes or no`
             videoCaption: "div[data-e2e='search-card-video-caption'], span[data-e2e='search-card-video-desc'], [data-e2e='browse-desc']",
             videoAuthor: "a[data-e2e='search-card-user-link'], span[data-e2e='search-card-user-unique-id'], a[data-e2e='browse-username']",
             videoViews: "strong[data-e2e='video-views']",
-            // Opened post overlay. HeartWrapper is the main-page modal like
-            // button; browse-like-icon is the direct /photo/ page action bar.
-            likeButton: "span[class*='HeartWrapper'], div[data-e2e='browse-like-icon'], [data-e2e='like-icon']",
+            // Opened post overlay. browse-like-icon is the VISIBLE action-bar
+            // heart on direct /photo/ pages (prefer it); HeartWrapper is the
+            // modal like button (may be hidden/stale on photo posts).
+            likeButton: "div[data-e2e='browse-like-icon'], span[class*='HeartWrapper'], [data-e2e='like-icon']",
             likeCount: "span[data-e2e='browse-like-count']",
             commentButton: "div[data-e2e='browse-comment-icon'], [data-e2e='comment-icon']",
             commentCount: "span[data-e2e='browse-comment-count']",

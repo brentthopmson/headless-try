@@ -1008,7 +1008,16 @@ export async function capturePostFrame(page) {
 // untruthful "Comment posted" logs seen when typing silently no-ops or the
 // Post button stays disabled.
 export async function postCommentVerified(page, s, text, logPrefix = '') {
-    const typed = await DOMHelpers.typeText(page, s.commentBox, text, { delay: 40 }).catch(() => false);
+    let typed = await DOMHelpers.typeText(page, s.commentBox, text, { delay: 40 }).catch(() => false);
+    // Photo posts: comments list renders but the DraftEditor isn't focused /
+    // mounted until the input container is clicked. One focus+retry before
+    // giving up (fixes composer-not-found on photo posts).
+    if (!typed) {
+        if (logPrefix) logger.warn(`${logPrefix} composer not found — clicking comment input and retrying once.`);
+        await DOMHelpers.humanClick(page, s.commentInputContainer || "div[data-e2e='comment-input']", { timeout: 3000 }).catch(() => false);
+        await DOMHelpers.randomDelay(700, 1200);
+        typed = await DOMHelpers.typeText(page, s.commentBox, text, { delay: 40 }).catch(() => false);
+    }
     if (!typed) return { posted: false, reason: 'composer-not-found' };
     await DOMHelpers.randomDelay(600, 1200);
 

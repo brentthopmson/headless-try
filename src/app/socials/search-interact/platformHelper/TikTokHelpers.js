@@ -389,15 +389,32 @@ export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]'
             return snap;
         };
 
+        // Photo posts: the list renders but the DraftEditor isn't mounted/
+        // focused until the input container is clicked. Click it once so the
+        // composer is live before we hand control back to the runner.
+        const ensureComposer = async () => {
+            const has = async () => page.evaluate((args) => !!document.querySelector(args.composer), { composer: COMPOSER }).catch(() => false);
+            if (await has()) return true;
+            await DOMHelpers.humanClick(page, "div[data-e2e='comment-input'], div[data-key-interaction='comment_input']", { timeout: 3000 }).catch(() => false);
+            await new Promise(r => setTimeout(r, 800));
+            if (await has()) return true;
+            // Last resort: scroll the panel bottom (composer is sticky-bottom).
+            await DOMHelpers.humanScroll(page, "div[class*='DivCommentMain'], div[class*='DivTabContainer'], div[class*='RightPanel']", { totalPx: 300 }).catch(() => false);
+            await new Promise(r => setTimeout(r, 500));
+            return has();
+        };
+
         // Already showing real comments? Nothing to do.
         let snap = await probe();
         if (snap.state === 'list') {
-            logger.info(`${logPrefix} Comments panel ready (list, ${snap.items} items).`);
-            return { ok: true, state: 'list', items: snap.items };
+            const composerOk = await ensureComposer();
+            logger.info(`${logPrefix} Comments panel ready (list, ${snap.items} items, composer=${composerOk}).`);
+            return { ok: true, state: 'list', items: snap.items, composer: composerOk };
         }
         if (!expectReal && snap.state) {
-            logger.info(`${logPrefix} Comments panel ready (${snap.state}).`);
-            return { ok: true, state: snap.state, items: snap.items };
+            const composerOk = snap.state === 'composer' ? true : await ensureComposer();
+            logger.info(`${logPrefix} Comments panel ready (${snap.state}, composer=${composerOk}).`);
+            return { ok: true, state: snap.state, items: snap.items, composer: composerOk };
         }
 
         // Real-mouse tab click: the old el.click() in evaluate fired
@@ -444,8 +461,9 @@ export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]'
         // Patient wait for real comment items (or a valid non-real state).
         snap = await poll(15000);
         if (snap.state) {
-            logger.info(`${logPrefix} Comments panel ready (${snap.state}${snap.items ? `, ${snap.items} items` : ''}).`);
-            return { ok: true, state: snap.state, items: snap.items };
+            const composerOk = snap.state === 'composer' ? true : await ensureComposer();
+            logger.info(`${logPrefix} Comments panel ready (${snap.state}${snap.items ? `, ${snap.items} items` : ''}, composer=${composerOk}).`);
+            return { ok: true, state: snap.state, items: snap.items, composer: composerOk };
         }
 
         if (expectReal) {
