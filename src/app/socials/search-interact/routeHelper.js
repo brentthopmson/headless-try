@@ -559,7 +559,7 @@ export async function runSearchInteractEngagement(page, opts) {
                     const weakResult = (v) => v.length < 40
                         || /^(could not analyze|ai not available|no ai providers)/i.test(v);
                     const textGood = analysisMode !== 'text_failed' && !weakResult(textResult);
-                    if (!textGood) {
+                    if (!textGood && ai) {
                         logger.info(`[engage:${taskId}] Text analysis weak (${textResult.length} chars, ${analysisMode}) — trying vision fallback (frame + caption).`);
                         try {
                             const frame = await capturePostFrame(page);
@@ -578,6 +578,11 @@ export async function runSearchInteractEngagement(page, opts) {
                         } catch (ve) {
                             logger.warn(`[engage:${taskId}] Vision fallback failed: ${ve.message}`);
                         }
+                    } else if (!textGood) {
+                        // No AI provider: capturing a frame would be discarded —
+                        // and capturePostFrame used to force-play videos, which
+                        // navigated photo posts away. Skip entirely.
+                        logger.info(`[engage:${taskId}] Text analysis weak (${textResult.length} chars) — skipping vision fallback (no AI providers).`);
                     }
                     if (!String(analyzedVideo || '').trim()) {
                         analyzedVideo = video.caption || '';

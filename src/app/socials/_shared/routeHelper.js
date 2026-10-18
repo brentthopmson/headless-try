@@ -975,31 +975,35 @@ export const corsHeaders = {
 // the caller then keeps its text result (never throws, never blocks a run).
 export async function capturePostFrame(page) {
     try {
-        // Make sure the main video is playing so a frame is actually rendered.
-        await page.evaluate(() => {
-            const vids = Array.from(document.querySelectorAll('video'));
-            vids.sort((a, b) => (b.videoWidth * b.videoHeight) - (a.videoWidth * a.videoHeight));
-            const v = vids[0];
-            if (v) { v.muted = true; if (v.paused) v.play().catch(() => {}); }
-        }).catch(() => {});
-        await new Promise(r => setTimeout(r, 1500));
+        // DO NOT force-play videos: on TikTok photo-post pages the largest
+        // <video> is the carousel/overlay player — play() advances it and the
+        // SPA navigates to a different post (observed: photo → video drift,
+        // image_index=5). A paused video still renders a valid frame.
+        await new Promise(r => setTimeout(r, 800));
 
         const handle = await page.evaluateHandle(() => {
-            // Largest video that has real dimensions.
-            const vids = Array.from(document.querySelectorAll('video'))
-                .filter(v => v.videoWidth > 0 && v.getBoundingClientRect().width > 100);
-            vids.sort((a, b) => (b.videoWidth * b.videoHeight) - (a.videoWidth * a.videoHeight));
-            if (vids[0]) return vids[0];
-            // Else largest visible photo image (photo posts / image-text).
-            const imgs = Array.from(document.querySelectorAll('img')).filter(i => {
-                const r = i.getBoundingClientRect();
-                return r.width > 200 && r.height > 200 && r.top < window.innerHeight && r.bottom > 0;
-            });
-            imgs.sort((a, b) => {
-                const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
-                return (rb.width * rb.height) - (ra.width * ra.height);
-            });
-            return imgs[0] || null;
+            // On /photo/ posts prefer the visible image — the main content is
+            // an <img>, not a video; video elements there belong to the
+            // carousel machinery and screenshotting them is unreliable.
+            const isPhoto = /\/photo\//.test(location.pathname);
+            const pickVideo = () => {
+                const vids = Array.from(document.querySelectorAll('video'))
+                    .filter(v => v.videoWidth > 0 && v.getBoundingClientRect().width > 100);
+                vids.sort((a, b) => (b.videoWidth * b.videoHeight) - (a.videoWidth * a.videoHeight));
+                return vids[0] || null;
+            };
+            const pickImage = () => {
+                const imgs = Array.from(document.querySelectorAll('img')).filter(i => {
+                    const r = i.getBoundingClientRect();
+                    return r.width > 200 && r.height > 200 && r.top < window.innerHeight && r.bottom > 0;
+                });
+                imgs.sort((a, b) => {
+                    const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+                    return (rb.width * rb.height) - (ra.width * ra.height);
+                });
+                return imgs[0] || null;
+            };
+            return isPhoto ? (pickImage() || pickVideo()) : (pickVideo() || pickImage());
         });
         const el = handle?.asElement?.();
         if (!el) return null;
