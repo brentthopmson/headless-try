@@ -3,7 +3,7 @@ import logger from "../../../utils/logger.js";
 import { getSheetDataApi, updateSheetRowApi, stripFormulaColumns } from '../../api/googlesheets.js';
 import { DOMHelpers, gateAndConsume, capturePostFrame, postCommentVerified } from '../_shared/routeHelper.js';
 import { updateAccountStatus } from '../_shared/hubUpdater.js';
-import { isTikTokCaptchaVisible, solveTikTokAudioCaptcha, isTikTokLoggedOut, navigateAndWait, ensureCommentsVisible, isPostLiked, isConfidentlyUnliked, readCommentsPanelCount } from './platformHelper/TikTokHelpers.js';
+import { isTikTokCaptchaVisible, solveTikTokAudioCaptcha, isTikTokLoggedOut, navigateAndWait, ensureCommentsVisible, isPostLiked, readCommentsPanelCount } from './platformHelper/TikTokHelpers.js';
 
 // Strip @handle mention tokens from typed text — an "@" opens TikTok's
 // mention-autocomplete popup mid-type, which hijacks input (observed "@@"
@@ -260,13 +260,15 @@ export async function runSearchInteractEngagement(page, opts) {
     };
     page.on('response', onCommentApiResponse);
 
-    // ---- D1b: digg API observer (like-commit ground truth) ----
+    // ---- D1b: digg API observer (like-commit ground truth, LOG-ONLY) ----
     // The like button's digg endpoint (/api/commit/item/digg/) is a TOGGLE —
-    // a second call UNLIKES. Optimistic UI flips aria-pressed instantly, and
-    // the Comments-tab re-render resets it to false ~150ms later even though
-    // the server already committed. Track the API response so we never
-    // re-click an API-confirmed like (that's the observed flap).
-    let diggConfirmedLike = false;   // set true when OUR digg returns status_code=0
+    // a second call UNLIKES. The body carries is_digg (the resulting state).
+    // USER DIRECTIVE: like is fire-and-forget. If TikTok toggles it back off
+    // (is_digg=0), LEAVE IT ALONE and move on to commenting — never re-click
+    // the heart (re-clicking a toggle is what caused the like/unlike flaps).
+    // diggConfirmedLike is now informational only (logging); no code path
+    // re-likes based on it.
+    let diggConfirmedLike = false;   // informational: OUR digg ended in is_digg=1
     let diggPending = false;         // set true just before we click the heart
     const onDiggApiResponse = (res) => {
         try {
@@ -280,8 +282,15 @@ export async function runSearchInteractEngagement(page, opts) {
                 try {
                     const j = JSON.parse(t);
                     const status = j.status_code ?? j?.status?.status_code ?? 'n/a';
-                    logger.info(`[engage:${taskId}] digg-api: HTTP ${res.status()}, status_code=${status}, bytes=${t.length} ${u.substring(0, 120)}`);
-                    if (String(status) === '0') diggConfirmedLike = true;
+                    const isDigg = j.is_digg ?? j?.data?.is_digg; // resulting state after the toggle
+                    logger.info(`[engage:${taskId}] digg-api: HTTP ${res.status()}, status_code=${status}, is_digg=${isDigg}, bytes=${t.length} ${u.substring(0, 120)}`);
+                    if (String(status) === '0' && (isDigg === 1 || isDigg === true)) {
+                        diggConfirmedLike = true;
+                    } else if (String(status) === '0') {
+                        // Toggle succeeded but ended UNLIKED — TikTok refused/undid it.
+                        // Per directive: leave it alone, proceed to commenting.
+                        logger.info(`[engage:${taskId}] digg toggled off by TikTok (is_digg=${isDigg}) — leaving it (fire-and-forget per directive).`);
+                    }
                 } catch (e) {
                     logger.info(`[engage:${taskId}] digg-api body: non-JSON (${t.length} bytes)`);
                 }
@@ -406,48 +415,21 @@ export async function runSearchInteractEngagement(page, opts) {
                         const likeClicked = await DOMHelpers.humanClick(page, s.likeButton, { timeout: 5000 }).catch(() => false);
                         logger.info(`[engage:${taskId}] Like ${likeClicked ? 'clicked' : 'NOT found'} (quota consumed anyway per policy).`);
                     }
-                    // ---- Like-commit verification ----
-                    // Poll until the like PERSISTS (aria-pressed=true / red heart).
-                    // A click that never flips the button means TikTok rejected it
-                    // server-side (shadow flag) — the old blind pause let a
-                    // rejected like fall through as "clicked". Retry ONCE with a
-                    // human click, and only on a confident "not liked" signal
-                    // (never re-click a weak reading — that's how flaps start).
-                    // If the digg API confirmed (status_code=0), the like is
-                    // committed server-side even if the DOM hasn't caught up —
-                    // skip the retry entirely (retrying a committed like UNLIKES it).
-                    let likeSig = await isPostLiked(page, s);
-                    if (!(likeSig && likeSig.state === true)) {
-                        const likeDeadline = Date.now() + 6000;
-                        while (!(likeSig && likeSig.state === true) && !diggConfirmedLike && Date.now() < likeDeadline) {
-                            await pause(700, 1100);
-                            likeSig = await isPostLiked(page, s);
-                        }
-                    }
-                    if (!(likeSig && likeSig.state === true) && !diggConfirmedLike) {
-                        if (isConfidentlyUnliked(likeSig)) {
-                            logger.warn(`[engage:${taskId}] Like not committed after click (why=${likeSig.why}) — human re-like once.`);
-                            diggPending = true;
-                            await DOMHelpers.humanClick(page, s.likeButton, { timeout: 4000 }).catch(() => {});
-                            const retryDeadline = Date.now() + 4000;
-                            likeSig = await isPostLiked(page, s);
-                            while (!(likeSig && likeSig.state === true) && !diggConfirmedLike && Date.now() < retryDeadline) {
-                                await pause(700, 1100);
-                                likeSig = await isPostLiked(page, s);
-                            }
-                        } else {
-                            logger.warn(`[engage:${taskId}] Like state unconfirmed (why=${likeSig?.why ?? 'missing'}) — not re-clicking (flap guard).`);
-                        }
-                    }
+                    // ---- Like settle (fire-and-forget per user directive) ----
+                    // USER DIRECTIVE: like once, wait briefly for the digg
+                    // response, log the outcome, and MOVE ON — even if TikTok
+                    // toggled it back off. Never re-click the heart (re-clicking
+                    // a toggle is what caused the like/unlike flaps). The digg
+                    // observer above logs is_digg as ground truth.
+                    await pause(2000, 3000); // let the digg response land in the observer
+                    const likeSig = await isPostLiked(page, s);
                     if (likeSig && likeSig.state === true) {
-                        logger.info(`[engage:${taskId}] Post ${rIdx + 1}: like committed (aria-pressed=${likeSig.ariaPressed ?? 'none'}, why=${likeSig.why}).`);
+                        logger.info(`[engage:${taskId}] Post ${rIdx + 1}: like settled (aria-pressed=true, why=${likeSig.why}).`);
                     } else if (diggConfirmedLike) {
-                        logger.info(`[engage:${taskId}] Post ${rIdx + 1}: like committed (digg-api status_code=0; DOM why=${likeSig?.why ?? 'unconfirmed'}).`);
+                        logger.info(`[engage:${taskId}] Post ${rIdx + 1}: digg-api confirmed like (DOM why=${likeSig?.why ?? 'unconfirmed'}) — proceeding.`);
                     } else {
-                        logger.warn(`[engage:${taskId}] Post ${rIdx + 1}: like NOT committed (shadow-reject?) — continuing without retry loop.`);
+                        logger.info(`[engage:${taskId}] Post ${rIdx + 1}: like state after settle: DOM=${likeSig?.why ?? 'missing'}, digg=${diggConfirmedLike} — fire-and-forget, proceeding to comments.`);
                     }
-                    // Short settle before switching tabs (commit already verified above).
-                    await pause(1500, 2200);
 
                     // ---- Action-bar comment count (read AFTER the like settles) ----
                     // Photo posts hydrate the count late; reading it with the
@@ -503,36 +485,16 @@ export async function runSearchInteractEngagement(page, opts) {
                         continue;
                     }
 
-                    // Defensive: the Comments-tab switch re-renders the action
-                    // bar and briefly resets the optimistic like to false
-                    // (~150ms transient). NEVER re-click when the digg API
-                    // already confirmed (digg is a toggle — re-click UNLIKES).
-                    // When digg didn't confirm, wait for the remount to settle
-                    // (2.5–3.5s) and re-poll before judging; re-like ONLY on a
-                    // confident "not liked" signal after settle — never more
-                    // than once.
+                    // Comments-tab switch re-renders the action bar and can
+                    // reset the optimistic like to false. Fire-and-forget per
+                    // directive: log only, NEVER re-click (digg is a toggle).
                     try {
                         await pause(2500, 3500); // let the action bar finish re-hydrating
                         const sig = await isPostLiked(page, s, `[engage:${taskId}] Post ${rIdx + 1} (post-tab settle):`);
-                        if (diggConfirmedLike) {
-                            if (sig && sig.state === true) {
-                                logger.info(`[engage:${taskId}] Like still committed after Comments tab (digg-api + DOM agree).`);
-                            } else {
-                                logger.info(`[engage:${taskId}] DOM shows like=false after Comments tab but digg-api confirmed — trusting API (no re-click, flap guard).`);
-                            }
-                        } else if (isConfidentlyUnliked(sig)) {
-                            logger.warn(`[engage:${taskId}] Like reverted after Comments tab (why=${sig.why}, no digg confirm) — re-liking once.`);
-                            diggPending = true;
-                            await DOMHelpers.humanClick(page, s.likeButton, { timeout: 4000 }).catch(() => {});
-                            await pause(1200, 2000);
-                            const after = await isPostLiked(page, s);
-                            if (after && after.state === true) {
-                                logger.info(`[engage:${taskId}] Re-like confirmed (aria-pressed=${after.ariaPressed ?? 'none'}).`);
-                            } else if (diggConfirmedLike) {
-                                logger.info(`[engage:${taskId}] Re-like confirmed via digg-api (DOM why=${after?.why ?? 'unconfirmed'}).`);
-                            } else {
-                                logger.warn(`[engage:${taskId}] Re-like NOT confirmed (why=${after?.why ?? 'missing'}) — moving on (no retry).`);
-                            }
+                        if (sig && sig.state === true) {
+                            logger.info(`[engage:${taskId}] Like still shown after Comments tab.`);
+                        } else {
+                            logger.info(`[engage:${taskId}] Like shown=false after Comments tab (digg=${diggConfirmedLike}) — leaving it (fire-and-forget).`);
                         }
                     } catch (e) { /* non-fatal */ }
 
@@ -750,21 +712,21 @@ export async function runSearchInteractEngagement(page, opts) {
                     }, CONTAINER_SEL).catch(() => 0);
 
                     // Close the inline reply composer if it's open. Escape first
-                    // (kills mention/emoji popups AND the box), then the X inside
-                    // the inline composer if still open. VERIFY closure by polling
-                    // for zero inline composers — an unverified close was the
-                    // multi-reply-on-one-comment bug (next reply typed into the
-                    // leftover box). Returns true only when zero remain.
+                    // (kills mention/emoji popups AND sometimes the box). The X
+                    // is a PLAIN DIV (css-8blle4) containing an X svg — NOT a
+                    // button — which is why the old button heuristic never found
+                    // it. Target: inside the open reply editor's wrapper, click
+                    // the div containing svg path d^='M38.7 12.12' (the X glyph),
+                    // excluding the panel-level comment_close. VERIFY closure by
+                    // polling for zero inline composers. Returns true only when
+                    // zero remain.
                     const closeReplyBox = async () => {
                         for (let attempt = 0; attempt < 3; attempt++) {
                             if ((await countInlineComposers()) === 0) return true;
                             await page.keyboard.press('Escape').catch(() => {});
                             await pause(400, 650);
                             if ((await countInlineComposers()) === 0) return true;
-                            // X button: inside the same comment container as the
-                            // open composer. Row layout: [@] [emoji] [submit ↑] [X]
-                            // — click the LAST button, and NEVER a submit button
-                            // (clicking submit would post the leftover text).
+                            // Click the reply X (plain div wrapping the X svg).
                             await page.evaluate((sel) => {
                                 const items = document.querySelectorAll(sel);
                                 for (const item of items) {
@@ -772,23 +734,30 @@ export async function runSearchInteractEngagement(page, opts) {
                                     if (!ed) continue;
                                     const r = ed.getBoundingClientRect();
                                     if (r.width < 1 || r.height < 1) continue;
-                                    const row = ed.closest("div[class*='DivCommentItem'], div[class*='DivReplyInput'], div[class*='DivCommentInput']") || ed.parentElement;
-                                    if (!row) continue;
-                                    const btns = Array.from(row.querySelectorAll("button, [role='button']"))
-                                        .filter(b => !b.contains(ed))
-                                        .filter(b => !b.matches("[data-e2e='comment-post'], [data-key-interaction='comment_submit']"))
-                                        .filter(b => {
-                                            const br = b.getBoundingClientRect();
-                                            return br.width >= 1 && br.height >= 1;
-                                        });
-                                    // X is the rightmost remaining control.
-                                    if (btns.length) btns[btns.length - 1].click();
+                                    // The X div lives inside the reply editor wrapper
+                                    // (DivReplyCommentEditorContainer > DivTextInputWithPostContainer);
+                                    // it is a sibling AFTER the submit button.
+                                    const wrapper = ed.closest("div[class*='DivTextInputWithPostContainer'], div[class*='DivReplyCommentEditorContainer']") || ed.parentElement;
+                                    if (!wrapper) continue;
+                                    // Find elements containing the X svg path (shared
+                                    // glyph with the panel close — exclude that one).
+                                    const svgs = wrapper.querySelectorAll("svg path[d^='M38.7 12.12']");
+                                    for (const p of svgs) {
+                                        const host = p.closest("div[class*='DivClose'], button, [role='button']") || p.closest("div");
+                                        if (!host) continue;
+                                        if (host.closest("[data-key-interaction='comment_close']")) continue; // panel close, not ours
+                                        const hr = host.getBoundingClientRect();
+                                        if (hr.width < 1 || hr.height < 1) continue;
+                                        host.click();
+                                    }
                                 }
                             }, CONTAINER_SEL).catch(() => {});
                             await pause(400, 650);
                         }
                         return (await countInlineComposers()) === 0;
                     };
+
+                    let consecutiveVerifyFailures = 0; // break loop only after 3 in a row
 
                     for (const comment of targetComments) {
                         if (stopType) break;
@@ -843,20 +812,20 @@ export async function runSearchInteractEngagement(page, opts) {
                             break;
                         }
                         try {
-                            // PRE-REPLY GUARD: never click Reply while another
-                            // inline reply box is still open — the new text would
-                            // land in the OLD box (multi-reply-on-one-comment).
+                            // BEST-EFFORT close of any leftover reply box.
+                            // Container-verified retarget below guarantees the
+                            // next reply lands in the right box even if this fails
+                            // (TikTok re-targets the open box on a new Reply click).
                             if ((await countInlineComposers()) > 0) {
-                                logger.info(`[engage:${taskId}] Inline reply box still open before Reply — closing first.`);
-                                if (!(await closeReplyBox())) {
-                                    logger.warn(`[engage:${taskId}] Could not close leftover reply box — stopping per-comment loop to avoid stacking.`);
-                                    break;
-                                }
+                                logger.info(`[engage:${taskId}] Inline reply box still open before Reply — closing best-effort.`);
+                                await closeReplyBox().catch(() => false);
                             }
+                            // Reply trigger (real DOM): p[data-key-interaction='comment_reply']
+                            // (aria-label='Reply', data-e2e='comment-reply-1').
                             const replyRect = await page.evaluate(({ sel, idx }) => {
                                 const el = document.querySelectorAll(sel)[idx];
                                 if (!el) return null;
-                                const reply = el.querySelector("p[aria-label='Reply'][data-e2e^='comment-reply-'], [data-e2e^='comment-reply-'], [aria-label='Reply']");
+                                const reply = el.querySelector("p[data-key-interaction='comment_reply'], p[aria-label='Reply'][data-e2e^='comment-reply-'], [data-e2e^='comment-reply-'], [aria-label='Reply']");
                                 if (!reply) return null;
                                 const r = reply.getBoundingClientRect();
                                 if (r.width < 1 || r.height < 1) return null;
@@ -865,81 +834,109 @@ export async function runSearchInteractEngagement(page, opts) {
                             const replyClicked = replyRect
                                 ? await DOMHelpers.humanClickAt(page, replyRect.x, replyRect.y, { hoverMs: [120, 300] }).catch(() => false)
                                 : false;
-                            if (replyClicked) {
-                                await pause(800, 1500);
-                                let replyText = '';
-                                try {
-                                    const replyPrompt = `${platformConfig.aiPrompts?.replyToComment || 'Reply briefly.'}\n\nVideo analysis: ${analyzedVideo}\nYour comment: ${generatedComment}\nComment to reply to: ${comment.text}`;
-                                    replyText = ai ? await ai.generate(replyPrompt) : '';
-                                    replyText = stripMentions(String(replyText || '').replace(/^["']|["']$/g, '').trim()).slice(0, 120);
-                                } catch (e) {
-                                    replyText = '';
+                            if (!replyClicked) {
+                                logger.warn(`[engage:${taskId}] Reply button not found for "${comment.text.substring(0, 40)}..." — skipping.`);
+                                continue;
+                            }
+                            await pause(800, 1500);
+                            // ---- CONTAINER-VERIFIED RETARGET ----
+                            // Verify the visible reply editor belongs to THIS
+                            // container before typing — the leftover-box bug was
+                            // typing into a stuck box from the previous comment.
+                            const editorInTarget = async () => page.evaluate(({ sel, idx }) => {
+                                const el = document.querySelectorAll(sel)[idx];
+                                if (!el) return false;
+                                const ed = el.querySelector("div[contenteditable='true']");
+                                if (!ed) return false;
+                                const r = ed.getBoundingClientRect();
+                                return r.width >= 1 && r.height >= 1;
+                            }, { sel: CONTAINER_SEL, idx: cIdx });
+                            let verified = await editorInTarget();
+                            if (!verified) {
+                                // Scroll the container into view and re-click Reply once.
+                                await page.evaluate(({ sel, idx }) => {
+                                    const el = document.querySelectorAll(sel)[idx];
+                                    if (el) el.scrollIntoView({ block: 'center' });
+                                }, { sel: CONTAINER_SEL, idx: cIdx }).catch(() => {});
+                                await pause(600, 1000);
+                                const retryRect = await page.evaluate(({ sel, idx }) => {
+                                    const el = document.querySelectorAll(sel)[idx];
+                                    if (!el) return null;
+                                    const reply = el.querySelector("p[data-key-interaction='comment_reply'], p[aria-label='Reply'][data-e2e^='comment-reply-'], [data-e2e^='comment-reply-'], [aria-label='Reply']");
+                                    if (!reply) return null;
+                                    const r = reply.getBoundingClientRect();
+                                    if (r.width < 1 || r.height < 1) return null;
+                                    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+                                }, { sel: CONTAINER_SEL, idx: cIdx });
+                                if (retryRect) {
+                                    await DOMHelpers.humanClickAt(page, retryRect.x, retryRect.y, { hoverMs: [120, 300] }).catch(() => false);
+                                    await pause(800, 1500);
+                                    verified = await editorInTarget();
                                 }
-                                // AI-off fallback (user directive): seeded template from
-                                // the parent comment — never a bare constant 🙌.
-                                if (!replyText) {
-                                    const parentWords = stripMentions(String(comment.text || '')).split(/\s+/).slice(0, 4).join(' ');
-                                    const templates = [
-                                        parentWords ? `So true — "${parentWords}..." 💯` : 'So true 💯',
-                                        'Facts',
-                                        "Right?!",
-                                        'Couldn\'t agree more',
-                                        parentWords ? `${parentWords}... this! 🙌` : 'This! 🙌',
-                                    ];
-                                    replyText = templates[Math.floor(Math.random() * templates.length)];
-                                    logger.info(`[engage:${taskId}] AI-off: seeded reply template: "${replyText}"`);
-                                }
-                                if (replyText) {
-                                    const replyRes = await postCommentVerified(page, s, replyText, `[engage:${taskId}]`).catch(err => ({ posted: false, reason: err.message }));
-                                    if (replyRes.posted) {
-                                        repliedTexts.add(comment.text);
-                                        processedCount++;
-                                        logger.info(`[engage:${taskId}] Replied to comment: "${comment.text.substring(0, 40)}..." → "${replyText.substring(0, 50)}"`);
-                                    } else {
-                                        logger.warn(`[engage:${taskId}] Reply NOT posted for "${comment.text.substring(0, 40)}..." (${replyRes.reason}).`);
-                                    }
-                                }
-                                // ---- 3. CLOSE the reply box before next comment ----
-                                // VERIFIED close — if the box won't close, stop the
-                                // loop rather than stack the next reply on it.
-                                if (!(await closeReplyBox())) {
-                                    logger.warn(`[engage:${taskId}] Reply box stuck open after close attempts — stopping per-comment loop to avoid stacking.`);
+                            }
+                            if (!verified) {
+                                consecutiveVerifyFailures++;
+                                logger.warn(`[engage:${taskId}] Reply editor not verified in target container (${consecutiveVerifyFailures}/3) for "${comment.text.substring(0, 40)}..." — skipping comment.`);
+                                if (consecutiveVerifyFailures >= 3) {
+                                    logger.warn(`[engage:${taskId}] 3 consecutive container-verify failures — comment list state broken, stopping per-comment loop.`);
                                     break;
                                 }
-                            } else {
-                                logger.warn(`[engage:${taskId}] Reply button not found for "${comment.text.substring(0, 40)}..."`);
+                                continue;
+                            }
+                            consecutiveVerifyFailures = 0;
+                            let replyText = '';
+                            try {
+                                const replyPrompt = `${platformConfig.aiPrompts?.replyToComment || 'Reply briefly.'}\n\nVideo analysis: ${analyzedVideo}\nYour comment: ${generatedComment}\nComment to reply to: ${comment.text}`;
+                                replyText = ai ? await ai.generate(replyPrompt) : '';
+                                replyText = stripMentions(String(replyText || '').replace(/^["']|["']$/g, '').trim()).slice(0, 120);
+                            } catch (e) {
+                                replyText = '';
+                            }
+                            // AI-off fallback (user directive): seeded template from
+                            // the parent comment — never a bare constant 🙌.
+                            if (!replyText) {
+                                const parentWords = stripMentions(String(comment.text || '')).split(/\s+/).slice(0, 4).join(' ');
+                                const templates = [
+                                    parentWords ? `So true — "${parentWords}..." 💯` : 'So true 💯',
+                                    'Facts',
+                                    "Right?!",
+                                    'Couldn\'t agree more',
+                                    parentWords ? `${parentWords}... this! 🙌` : 'This! 🙌',
+                                ];
+                                replyText = templates[Math.floor(Math.random() * templates.length)];
+                                logger.info(`[engage:${taskId}] AI-off: seeded reply template: "${replyText}"`);
+                            }
+                            if (replyText) {
+                                const replyRes = await postCommentVerified(page, s, replyText, `[engage:${taskId}]`, { mode: 'reply', containerIndex: cIdx, containerSel: CONTAINER_SEL }).catch(err => ({ posted: false, reason: err.message }));
+                                if (replyRes.posted) {
+                                    repliedTexts.add(comment.text);
+                                    processedCount++;
+                                    logger.info(`[engage:${taskId}] Replied to comment: "${comment.text.substring(0, 40)}..." → "${replyText.substring(0, 50)}"`);
+                                } else {
+                                    logger.warn(`[engage:${taskId}] Reply NOT posted for "${comment.text.substring(0, 40)}..." (${replyRes.reason}).`);
+                                }
+                            }
+                            // ---- 3. CLOSE the reply box before next comment ----
+                            // Best-effort — the container-verified retarget above
+                            // makes a stuck box safe (next Reply re-targets it).
+                            if (!(await closeReplyBox())) {
+                                logger.warn(`[engage:${taskId}] Reply box still open after close attempts — will re-target on next Reply click (safe).`);
                             }
                         } catch (e) {
                             logger.warn(`[engage:${taskId}] Comment reply failed: ${e.message}`);
-                            if (!(await closeReplyBox().catch(() => false))) {
-                                logger.warn(`[engage:${taskId}] Reply box stuck open after error — stopping per-comment loop to avoid stacking.`);
-                                break;
-                            }
+                            await closeReplyBox().catch(() => false);
                         }
                         await pause(1000, 2000);
                     }
 
-                    // ---- Final like reconcile (before leaving the post) ----
-                    // Comments-tab re-render can leave the UI stuck unliked even
-                    // when digg-api confirmed. One careful re-like if confidently
-                    // unliked — no loop, no flap.
+                    // ---- Final like log (before leaving the post) ----
+                    // Fire-and-forget per directive: log only, never re-like.
                     try {
                         const finalSig = await isPostLiked(page, s);
-                        if (isConfidentlyUnliked(finalSig) && !diggConfirmedLike) {
-                            logger.warn(`[engage:${taskId}] Like not set at post exit (why=${finalSig.why}) — one reconcile re-like.`);
-                            diggPending = true;
-                            await DOMHelpers.humanClick(page, s.likeButton, { timeout: 4000 }).catch(() => {});
-                            await pause(1500, 2500);
-                            const afterRec = await isPostLiked(page, s);
-                            if ((afterRec && afterRec.state === true) || diggConfirmedLike) {
-                                logger.info(`[engage:${taskId}] Like reconcile confirmed.`);
-                            } else {
-                                logger.warn(`[engage:${taskId}] Like reconcile NOT confirmed — moving on.`);
-                            }
-                        } else if (finalSig && finalSig.state === true) {
+                        if (finalSig && finalSig.state === true) {
                             logger.info(`[engage:${taskId}] Like confirmed at post exit.`);
                         } else {
-                            logger.info(`[engage:${taskId}] Like state at post exit: trusting digg-api (no reconcile).`);
+                            logger.info(`[engage:${taskId}] Like state at post exit: DOM=${finalSig?.why ?? 'missing'}, digg=${diggConfirmedLike} — leaving it (fire-and-forget).`);
                         }
                     } catch (e) { /* non-fatal */ }
 

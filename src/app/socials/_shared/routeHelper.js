@@ -1016,51 +1016,122 @@ export async function capturePostFrame(page) {
 // after clicking (TikTok clears it on a successful post). Prevents the
 // untruthful "Comment posted" logs seen when typing silently no-ops or the
 // Post button stays disabled.
-export async function postCommentVerified(page, s, text, logPrefix = '') {
+//
+// opts.mode: 'post' (default) = the sticky MAIN composer in the panel footer
+// (data-e2e='comment-text' / 'comment-post'). 'reply' = an INLINE reply
+// composer inside a specific comment container (data-e2e='comment-reply-text'
+// / 'comment-reply-post'), located via opts.containerSel + opts.containerIndex.
+// Submit is always scoped to the SAME DivTextInputWithPostContainer as the
+// active editor — document.querySelector(s.commentSubmit) could hit the other
+// composer's submit (both carry data-key-interaction='comment_submit').
+export async function postCommentVerified(page, s, text, logPrefix = '', opts = {}) {
+    const mode = opts.mode === 'reply' ? 'reply' : 'post';
     const normText = (t) => String(t || '').replace(/\s+/g, ' ').trim().toLowerCase();
-    // Focus the composer first so Ctrl+A/Delete below can't leak into the page.
-    const focusComposer = () => page.evaluate((sel) => {
-        const el = document.querySelector(sel);
-        if (!el) return false;
-        el.focus();
+    const containerSel = opts.containerSel || "div[class*='DivCommentObjectWrapper']";
+    const containerIndex = typeof opts.containerIndex === 'number' ? opts.containerIndex : -1;
+
+    // Resolve the ACTIVE contenteditable + its scoped submit button in one
+    // evaluate. mode 'post': footer composer. mode 'reply': composer inside
+    // CONTAINER_SEL[containerIndex]. Submit is found inside the same
+    // DivTextInputWithPostContainer wrapper as the editor.
+    const resolveTargets = () => page.evaluate(({ mode, containerSel, containerIndex }) => {
+        let ed = null;
+        if (mode === 'reply') {
+            const el = document.querySelectorAll(containerSel)[containerIndex];
+            if (el) ed = el.querySelector("div[data-e2e='comment-reply-text'] div[contenteditable='true'], div[data-e2e='comment-reply-input'] div[contenteditable='true']");
+        } else {
+            ed = document.querySelector("div[data-e2e='comment-text'] div[contenteditable='true'], div[data-e2e='comment-input'] div[contenteditable='true']");
+        }
+        if (!ed) return { ed: null, submit: null };
+        const r = ed.getBoundingClientRect();
+        if (r.width < 1 || r.height < 1) return { ed: null, submit: null };
+        // Scoped submit: same DivTextInputWithPostContainer as the editor.
+        const wrapper = ed.closest("div[class*='DivTextInputWithPostContainer']") || ed.parentElement;
+        const submitSel = mode === 'reply'
+            ? "button[data-e2e='comment-reply-post'], button[data-key-interaction='comment_submit']"
+            : "button[data-e2e='comment-post'], button[data-key-interaction='comment_submit']";
+        const submit = wrapper ? wrapper.querySelector(submitSel) : null;
+        // Report positions for Puppeteer-side clicks (handles can't cross the
+        // evaluate boundary — return rects and re-resolve by position).
+        const sr = submit ? submit.getBoundingClientRect() : null;
+        return {
+            edRect: { x: r.x + r.width / 2, y: r.y + r.height / 2 },
+            submitRect: sr ? { x: sr.x + sr.width / 2, y: sr.y + sr.height / 2, w: sr.width, h: sr.height } : null,
+            submitDisabled: submit ? (submit.disabled || submit.getAttribute('aria-disabled') === 'true') : null,
+            edText: (ed.textContent || '').trim(),
+        };
+    }, { mode, containerSel, containerIndex }).catch(() => null);
+
+    const readComposerText = () => page.evaluate(({ mode, containerSel, containerIndex }) => {
+        let ed = null;
+        if (mode === 'reply') {
+            const el = document.querySelectorAll(containerSel)[containerIndex];
+            if (el) ed = el.querySelector("div[data-e2e='comment-reply-text'] div[contenteditable='true'], div[data-e2e='comment-reply-input'] div[contenteditable='true']");
+        } else {
+            ed = document.querySelector("div[data-e2e='comment-text'] div[contenteditable='true'], div[data-e2e='comment-input'] div[contenteditable='true']");
+        }
+        return ed ? (ed.textContent || '').trim() : null;
+    }, { mode, containerSel, containerIndex }).catch(() => null);
+
+    // Focus + select-all on the active editor (so Backspace clears it).
+    const focusComposer = () => page.evaluate(({ mode, containerSel, containerIndex }) => {
+        let ed = null;
+        if (mode === 'reply') {
+            const el = document.querySelectorAll(containerSel)[containerIndex];
+            if (el) ed = el.querySelector("div[data-e2e='comment-reply-text'] div[contenteditable='true'], div[data-e2e='comment-reply-input'] div[contenteditable='true']");
+        } else {
+            ed = document.querySelector("div[data-e2e='comment-text'] div[contenteditable='true'], div[data-e2e='comment-input'] div[contenteditable='true']");
+        }
+        if (!ed) return false;
+        ed.focus();
         const range = document.createRange();
-        range.selectNodeContents(el);
+        range.selectNodeContents(ed);
         const selObj = window.getSelection();
         selObj.removeAllRanges();
         selObj.addRange(range);
         return true;
-    }, s.commentBox).catch(() => false);
+    }, { mode, containerSel, containerIndex }).catch(() => false);
 
-    // PRE-TYPE RESET: leftover text (leaked @@ from a previous attempt,
-    // mention tokens) stacks onto the new message. Select-all + delete first.
-    const preText = await page.evaluate((sel) => {
-        const el = document.querySelector(sel);
-        return el ? (el.textContent || '').trim() : null;
-    }, s.commentBox).catch(() => null);
-    if (preText) {
-        if (logPrefix) logger.warn(`${logPrefix} composer had leftover text ("${preText.substring(0, 30)}") — clearing before type.`);
+    // Type into the active editor: click it to focus, then page.type on a
+    // selector that resolves ONLY that editor.
+    const typeSelector = mode === 'reply'
+        ? `${containerSel.split(',')[0]}:nth-child(${containerIndex + 1}) div[data-e2e='comment-reply-text'] div[contenteditable='true']`
+        : "div[data-e2e='comment-text'] div[contenteditable='true']";
+    // nth-child indexing is fragile — fall back to a simpler approach: focus
+    // via evaluate, then type via keyboard (the editor keeps focus).
+    const typeIntoEditor = async (value) => {
+        const focused = await focusComposer();
+        if (!focused) return false;
+        await page.keyboard.press('Backspace').catch(() => {}); // clear selection
+        await DOMHelpers.randomDelay(150, 300);
+        await page.keyboard.type(value, { delay: 40 }).catch(() => false);
+        return true;
+    };
+
+    // PRE-TYPE RESET: leftover text stacks onto the new message.
+    const pre = await resolveTargets();
+    if (pre && pre.edText) {
+        if (logPrefix) logger.warn(`${logPrefix} [${mode}] composer had leftover text ("${pre.edText.substring(0, 30)}") — clearing before type.`);
         await focusComposer();
         await page.keyboard.press('Backspace').catch(() => {});
         await DOMHelpers.randomDelay(200, 400);
     }
 
-    let typed = await DOMHelpers.typeText(page, s.commentBox, text, { delay: 40 }).catch(() => false);
-    // Photo posts: comments list renders but the DraftEditor isn't focused /
-    // mounted until the input container is clicked. One focus+retry before
-    // giving up (fixes composer-not-found on photo posts).
+    let typed = await typeIntoEditor(text);
+    // Photo posts: composer may not be focused until its container is clicked.
     if (!typed) {
-        if (logPrefix) logger.warn(`${logPrefix} composer not found — clicking comment input and retrying once.`);
-        await DOMHelpers.humanClick(page, s.commentInputContainer || "div[data-e2e='comment-input']", { timeout: 3000 }).catch(() => false);
-        await DOMHelpers.randomDelay(700, 1200);
-        typed = await DOMHelpers.typeText(page, s.commentBox, text, { delay: 40 }).catch(() => false);
+        if (logPrefix) logger.warn(`${logPrefix} [${mode}] composer not found — clicking input container and retrying once.`);
+        const containerSelClick = mode === 'reply' ? null : (s.commentInputContainer || "div[data-e2e='comment-input']");
+        if (containerSelClick) {
+            await DOMHelpers.humanClick(page, containerSelClick, { timeout: 3000 }).catch(() => false);
+            await DOMHelpers.randomDelay(700, 1200);
+        }
+        typed = await typeIntoEditor(text);
     }
     if (!typed) return { posted: false, reason: 'composer-not-found' };
     await DOMHelpers.randomDelay(600, 1200);
 
-    let composerText = await page.evaluate((sel) => {
-        const el = document.querySelector(sel);
-        return el ? (el.textContent || '').trim() : null;
-    }, s.commentBox).catch(() => null);
+    let composerText = await readComposerText();
     if (composerText === null) return { posted: false, reason: 'composer-missing-after-type' };
     if (!composerText) return { posted: false, reason: 'text-not-entered' };
 
@@ -1068,17 +1139,13 @@ export async function postCommentVerified(page, s, text, logPrefix = '') {
     // input. Composer must match the intended text; on mismatch, clear and
     // retype once.
     if (normText(composerText) !== normText(text)) {
-        if (logPrefix) logger.warn(`${logPrefix} composer text mismatch after type ("${composerText.substring(0, 40)}" ≠ intended) — clearing and retyping once.`);
+        if (logPrefix) logger.warn(`${logPrefix} [${mode}] composer text mismatch after type ("${composerText.substring(0, 40)}" ≠ intended) — clearing and retyping once.`);
         await focusComposer();
         await page.keyboard.press('Backspace').catch(() => {});
         await DOMHelpers.randomDelay(300, 500);
-        const retyped = await DOMHelpers.typeText(page, s.commentBox, text, { delay: 40 }).catch(() => false);
-        if (!retyped) return { posted: false, reason: 'retype-failed' };
+        await page.keyboard.type(text, { delay: 40 }).catch(() => false);
         await DOMHelpers.randomDelay(600, 1200);
-        composerText = await page.evaluate((sel) => {
-            const el = document.querySelector(sel);
-            return el ? (el.textContent || '').trim() : null;
-        }, s.commentBox).catch(() => null);
+        composerText = await readComposerText();
         if (composerText === null || normText(composerText) !== normText(text)) {
             return { posted: false, reason: 'text-mismatch' };
         }
@@ -1097,44 +1164,93 @@ export async function postCommentVerified(page, s, text, logPrefix = '') {
         return false;
     }).catch(() => false);
     if (popupOpen) {
-        if (logPrefix) logger.warn(`${logPrefix} mention/emoji popup open after type — closing with Escape.`);
+        if (logPrefix) logger.warn(`${logPrefix} [${mode}] mention/emoji popup open after type — closing with Escape.`);
         await page.keyboard.press('Escape').catch(() => {});
         await DOMHelpers.randomDelay(300, 500);
-        const afterPopup = await page.evaluate((sel) => {
-            const el = document.querySelector(sel);
-            return el ? (el.textContent || '').trim() : '';
-        }, s.commentBox).catch(() => '');
+        const afterPopup = await readComposerText();
         if (normText(afterPopup) !== normText(text)) {
             await focusComposer();
             await page.keyboard.press('Backspace').catch(() => {});
             await DOMHelpers.randomDelay(300, 500);
-            const retyped2 = await DOMHelpers.typeText(page, s.commentBox, text, { delay: 40 }).catch(() => false);
-            if (!retyped2) return { posted: false, reason: 'retype-after-popup-failed' };
+            await page.keyboard.type(text, { delay: 40 }).catch(() => false);
             await DOMHelpers.randomDelay(600, 1200);
         }
     }
 
-    const btnState = await page.evaluate((sel) => {
-        const b = document.querySelector(sel);
-        if (!b) return 'missing';
-        return (b.disabled || b.getAttribute('aria-disabled') === 'true') ? 'disabled' : 'enabled';
-    }, s.commentSubmit).catch(() => 'missing');
-    if (btnState !== 'enabled') return { posted: false, reason: `submit-${btnState}` };
+    // ---- SUBMIT: scoped to the active composer's wrapper ----
+    let targets = await resolveTargets();
+    if (!targets || !targets.submitRect) return { posted: false, reason: 'submit-missing' };
+    if (targets.submitDisabled) return { posted: false, reason: 'submit-disabled' };
 
-    const clicked = await DOMHelpers.humanClick(page, s.commentSubmit, { timeout: 5000 }).catch(() => false);
+    // elementFromPoint diagnostic: if something covers the submit center,
+    // scroll into view + Escape popups + retry once.
+    const coveredCheck = await page.evaluate(({ mode, containerSel, containerIndex }) => {
+        let ed = null;
+        if (mode === 'reply') {
+            const el = document.querySelectorAll(containerSel)[containerIndex];
+            if (el) ed = el.querySelector("div[data-e2e='comment-reply-text'] div[contenteditable='true'], div[data-e2e='comment-reply-input'] div[contenteditable='true']");
+        } else {
+            ed = document.querySelector("div[data-e2e='comment-text'] div[contenteditable='true'], div[data-e2e='comment-input'] div[contenteditable='true']");
+        }
+        if (!ed) return null;
+        const wrapper = ed.closest("div[class*='DivTextInputWithPostContainer']") || ed.parentElement;
+        const submitSel = containerSel && mode === 'reply'
+            ? "button[data-e2e='comment-reply-post'], button[data-key-interaction='comment_submit']"
+            : "button[data-e2e='comment-post'], button[data-key-interaction='comment_submit']";
+        const submit = wrapper ? wrapper.querySelector(submitSel) : null;
+        if (!submit) return null;
+        const sr = submit.getBoundingClientRect();
+        const cx = sr.x + sr.width / 2, cy = sr.y + sr.height / 2;
+        const top = document.elementFromPoint(cx, cy);
+        const covered = top && !submit.contains(top) && top !== submit;
+        return { cx, cy, covered, topTag: top ? top.tagName + '.' + (top.className || '').toString().substring(0, 40) : 'none' };
+    }, { mode, containerSel, containerIndex }).catch(() => null);
+
+    if (coveredCheck && coveredCheck.covered) {
+        if (logPrefix) logger.warn(`${logPrefix} [${mode}] submit covered by ${coveredCheck.topTag} — scrolling into view + Escape + retry.`);
+        await page.keyboard.press('Escape').catch(() => {});
+        await page.evaluate(({ mode, containerSel, containerIndex }) => {
+            let ed = null;
+            if (mode === 'reply') {
+                const el = document.querySelectorAll(containerSel)[containerIndex];
+                if (el) ed = el.querySelector("div[data-e2e='comment-reply-text'] div[contenteditable='true'], div[data-e2e='comment-reply-input'] div[contenteditable='true']");
+            } else {
+                ed = document.querySelector("div[data-e2e='comment-text'] div[contenteditable='true'], div[data-e2e='comment-input'] div[contenteditable='true']");
+            }
+            if (ed) {
+                const wrapper = ed.closest("div[class*='DivTextInputWithPostContainer']") || ed.parentElement;
+                const submit = wrapper ? wrapper.querySelector("button[data-e2e='comment-post'], button[data-e2e='comment-reply-post'], button[data-key-interaction='comment_submit']") : null;
+                if (submit) submit.scrollIntoView({ block: 'center' });
+            }
+        }, { mode, containerSel, containerIndex }).catch(() => {});
+        await DOMHelpers.randomDelay(500, 800);
+        targets = await resolveTargets();
+        if (!targets || !targets.submitRect) return { posted: false, reason: 'submit-missing-after-scroll' };
+    }
+
+    const clicked = await DOMHelpers.humanClickAt(page, targets.submitRect.x, targets.submitRect.y, { hoverMs: [120, 300] }).catch(() => false);
     if (!clicked) return { posted: false, reason: 'submit-click-failed' };
 
-    // TikTok clears the composer once the post is accepted — poll briefly.
-    const deadline = Date.now() + 4000;
+    // TikTok clears the composer once the post is accepted — poll 6s with
+    // ONE re-click at ~2.5s if text remains (missed first click / swallowed
+    // coordinates).
+    const deadline = Date.now() + 6000;
+    let reClicked = false;
     while (Date.now() < deadline) {
-        const remaining = await page.evaluate((sel) => {
-            const el = document.querySelector(sel);
-            return el ? (el.textContent || '').trim() : '';
-        }, s.commentBox).catch(() => '');
-        if (!remaining) return { posted: true };
+        const remaining = await readComposerText();
+        if (remaining === null || !remaining) return { posted: true };
+        if (!reClicked && Date.now() > deadline - 3500) {
+            // ~2.5s elapsed with text still present — re-click submit once.
+            const again = await resolveTargets();
+            if (again && again.submitRect) {
+                if (logPrefix) logger.warn(`${logPrefix} [${mode}] composer still has text ~2.5s after submit — re-clicking submit once.`);
+                await DOMHelpers.humanClickAt(page, again.submitRect.x, again.submitRect.y, { hoverMs: [100, 200] }).catch(() => false);
+                reClicked = true;
+            }
+        }
         await DOMHelpers.randomDelay(400, 700);
     }
-    if (logPrefix) logger.warn(`${logPrefix} composer still has text 4s after submit.`);
+    if (logPrefix) logger.warn(`${logPrefix} [${mode}] composer still has text 6s after submit.`);
     return { posted: false, reason: 'composer-not-cleared' };
 }
 

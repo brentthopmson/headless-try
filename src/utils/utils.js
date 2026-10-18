@@ -263,7 +263,14 @@ export async function launchBrowser(customOptions = {}) {
       };
       identity.windowSize = `${real.width},${real.height - 40}`;
       identity.windowPosition = '0,0';
-      logger.info(`[launchBrowser] fullPage: real screen ${real.width}x${real.height} → viewport ${identity.viewport.width}x${identity.viewport.height}, --start-maximized`);
+      // Viewport emulation would make the emulated viewport (real-40) TALLER
+      // than the actual maximized client area (~736 on a 864 screen) — the
+      // fixed bottom comment composer then sits BELOW the real window and
+      // submit clicks are swallowed (main-comment-never-posts bug). Disable
+      // emulation: identity.viewport is kept only for the window.screen JS
+      // spoof + --force-device-scale-factor; Puppeteer uses the real window.
+      identity.skipViewportEmulation = true;
+      logger.info(`[launchBrowser] fullPage: real screen ${real.width}x${real.height} → viewport ${identity.viewport.width}x${identity.viewport.height}, --start-maximized, viewport emulation DISABLED`);
     } else {
       logger.warn(`[launchBrowser] fullPage requested but screen query failed — keeping preset viewport`);
     }
@@ -360,6 +367,13 @@ export async function launchBrowser(customOptions = {}) {
       ...(customOptions.defaultViewport || {})
     }
   };
+  // fullPage: force null AFTER the merge — the spread above would turn a
+  // null defaultViewport into {} (= Puppeteer's 800x600 default). null tells
+  // Puppeteer to NOT emulate a viewport: page size = the real maximized
+  // window, so the fixed bottom composer + its submit are always clickable.
+  if (fullPage) {
+    mergedOptions.defaultViewport = null;
+  }
 
   const pptrExtra = await getPuppeteerExtra();
   const browser = await pptrExtra.launch(mergedOptions);

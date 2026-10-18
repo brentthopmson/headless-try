@@ -332,7 +332,13 @@ function injectionSource(spo) {
 
 export async function applyIdentityToPage(page, id) {
   if (!page || !id) return;
-  try { await page.setViewport(id.viewport); } catch (e) {}
+  // fullPage launches set skipViewportEmulation: page.setViewport would force
+  // an emulated viewport taller than the real maximized client area, pushing
+  // the fixed bottom composer below the window (clicks swallowed). The
+  // window.screen JS spoof below still uses id.viewport.
+  if (!id.skipViewportEmulation && id.viewport) {
+    try { await page.setViewport(id.viewport); } catch (e) {}
+  }
   try {
     const cdp = await page.createCDPSession();
     // Use CDP directly instead of page.setUserAgent() to avoid Puppeteer 22+
