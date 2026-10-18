@@ -350,6 +350,13 @@ export async function runSearchInteractEngagement(page, opts) {
                 if (stopType) break;
                 if (checkTimeStop()) break;
                 const video = toProcess[rIdx];
+                // Aweme id for URL-drift guard: if TikTok SPA-navigates to a
+                // different post mid-processing, skip the comment/loop entirely.
+                const awemeId = (String(video.url || '').match(/\/(\d{15,})/) || [])[1] || null;
+                const stillOnTarget = () => {
+                    if (!awemeId) return true; // can't verify — assume on-target
+                    return String(page.url() || '').includes(awemeId);
+                };
                 try {
                     // ---- Open post ----
                     logger.info(`[engage:${taskId}] Opening post ${rIdx + 1}/${toProcess.length}: ${video.url}`);
@@ -614,9 +621,51 @@ export async function runSearchInteractEngagement(page, opts) {
                         } else {
                             generatedComment = 'Nice share!';
                         }
+                        // User directive: AI-off comment must carry an emoji.
+                        const EMOJIS = ['🔥', '💯', '🙌', '😂', '👏', '😊', '😍', '🤯'];
+                        generatedComment = `${generatedComment} ${EMOJIS[Math.floor(Math.random() * EMOJIS.length)]}`.slice(0, 160);
+                        logger.info(`[engage:${taskId}] AI-off: final comment with emoji: "${generatedComment.substring(0, 60)}..."`);
                     }
                     if (generatedComment) {
-                        const postRes = await postCommentVerified(page, s, generatedComment, `[engage:${taskId}]`).catch(err => ({ posted: false, reason: err.message }));
+                        // URL-drift guard: never comment on a post the SPA
+                        // silently navigated away from.
+                        if (!stillOnTarget()) {
+                            logger.warn(`[engage:${taskId}] Page drifted to a different post (${page.url()}) — skipping comment + per-comment phase.`);
+                            results.push({
+                                keyword,
+                                url: video.url,
+                                author: video.author,
+                                caption: (video.caption || '').substring(0, 120),
+                                comment: '',
+                                commentsProcessed: 0,
+                                status: 'page_navigated_away',
+                            });
+                            await page.goto(`${platformConfig.searchUrl}?q=${encodeURIComponent(keyword)}`, { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
+                            await pause(1200, 2000);
+                            continue;
+                        }
+                        let postRes = await postCommentVerified(page, s, generatedComment, `[engage:${taskId}]`).catch(err => ({ posted: false, reason: err.message }));
+                        // Composer-missing recovery (user directive): the panel
+                        // can close between ensureCommentsVisible and the post
+                        // (SPA re-render). Re-enter ensureCommentsVisible — its
+                        // re-entry path clicks the Comments tab / action-rail
+                        // comment icon to reopen, or the input container to
+                        // mount the DraftEditor — then retry ONCE.
+                        if (!postRes.posted && (postRes.reason === 'composer-not-found' || postRes.reason === 'composer-missing-after-type')) {
+                            logger.warn(`[engage:${taskId}] Main composer missing (${postRes.reason}) — reopening comments panel and retrying once.`);
+                            if (!stillOnTarget()) {
+                                logger.warn(`[engage:${taskId}] Page drifted during retry — abandoning post.`);
+                                postRes = { posted: false, reason: 'page_navigated_away' };
+                            } else {
+                                const reopen = await ensureCommentsVisible(page, `[engage:${taskId}] (re-open)`, null).catch(() => ({ ok: false }));
+                                if (reopen.ok) {
+                                    await pause(1500, 2500);
+                                    postRes = await postCommentVerified(page, s, generatedComment, `[engage:${taskId}] (retry)`).catch(err => ({ posted: false, reason: err.message }));
+                                } else {
+                                    logger.warn(`[engage:${taskId}] Could not reopen comments panel (${reopen.reason}) — skipping comment.`);
+                                }
+                            }
+                        }
                         if (postRes.posted) {
                             logger.info(`[engage:${taskId}] Comment posted: "${generatedComment.substring(0, 60)}..."`);
                         } else {
@@ -691,7 +740,9 @@ export async function runSearchInteractEngagement(page, opts) {
                         let idx = await findIdx();
                         if (idx >= 0) return idx;
                         // Scroll the comments panel to load more (virtualization).
-                        await DOMHelpers.humanScroll(page, "div[class*='DivCommentMain'], div[class*='DivTabContainer'], div[class*='RightPanel']", { totalPx: 400 }).catch(() => false);
+                        // Deliberately NOT div[class*='RightPanel'] — that can match
+                        // the feed rail and scroll/advance to another post.
+                        await DOMHelpers.humanScroll(page, "div[class*='DivCommentMain'], div[class*='DivTabContainer']", { totalPx: 400 }).catch(() => false);
                         await pause(600, 1000);
                         return findIdx();
                     };
@@ -762,6 +813,12 @@ export async function runSearchInteractEngagement(page, opts) {
                     for (const comment of targetComments) {
                         if (stopType) break;
                         if (repliedTexts.has(comment.text)) continue; // dedupe
+                        // URL-drift guard: if the SPA navigated to another post,
+                        // every subsequent locate/type would hit the wrong page.
+                        if (!stillOnTarget()) {
+                            logger.warn(`[engage:${taskId}] Page drifted mid-loop (${page.url()}) — stopping per-comment loop.`);
+                            break;
+                        }
 
                         // ---- Locate the comment in the live DOM by text ----
                         const cIdx = await locateByText(comment.text);
@@ -892,19 +949,33 @@ export async function runSearchInteractEngagement(page, opts) {
                             } catch (e) {
                                 replyText = '';
                             }
-                            // AI-off fallback (user directive): seeded template from
-                            // the parent comment — never a bare constant 🙌.
+                            // AI-off fallback (user directive): seed from a
+                            // DIFFERENT existing comment + emoji — never a bare
+                            // constant. Pick the longest comment that is not the
+                            // parent and not the seed we already posted as our
+                            // main comment. Templates only if no seed exists.
                             if (!replyText) {
-                                const parentWords = stripMentions(String(comment.text || '')).split(/\s+/).slice(0, 4).join(' ');
-                                const templates = [
-                                    parentWords ? `So true — "${parentWords}..." 💯` : 'So true 💯',
-                                    'Facts',
-                                    "Right?!",
-                                    'Couldn\'t agree more',
-                                    parentWords ? `${parentWords}... this! 🙌` : 'This! 🙌',
-                                ];
-                                replyText = templates[Math.floor(Math.random() * templates.length)];
-                                logger.info(`[engage:${taskId}] AI-off: seeded reply template: "${replyText}"`);
+                                const parent = stripMentions(String(comment.text || '')).trim().substring(0, 150);
+                                const EMOJIS = ['🔥', '💯', '🙌', '😂', '👏', '😊', '😍', '🤯'];
+                                const seedReply = aiComments
+                                    .map(c => stripMentions(String(c.text || '').trim()).slice(0, 150))
+                                    .filter(t => t.length >= 8 && t.length <= 150 && t !== parent && t !== generatedComment)
+                                    .sort((a, b) => b.length - a.length)[0];
+                                if (seedReply) {
+                                    replyText = `${seedReply} ${EMOJIS[Math.floor(Math.random() * EMOJIS.length)]}`.slice(0, 160);
+                                    logger.info(`[engage:${taskId}] AI-off: seeded reply from existing comment: "${replyText.substring(0, 60)}..."`);
+                                } else {
+                                    const parentWords = parent.split(/\s+/).slice(0, 4).join(' ');
+                                    const templates = [
+                                        parentWords ? `So true — "${parentWords}..." 💯` : 'So true 💯',
+                                        'Facts 🔥',
+                                        "Right?! 😂",
+                                        'Couldn\'t agree more 👏',
+                                        parentWords ? `${parentWords}... this! 🙌` : 'This! 🙌',
+                                    ];
+                                    replyText = templates[Math.floor(Math.random() * templates.length)];
+                                    logger.info(`[engage:${taskId}] AI-off: no seed available, fallback template: "${replyText}"`);
+                                }
                             }
                             if (replyText) {
                                 const replyRes = await postCommentVerified(page, s, replyText, `[engage:${taskId}]`, { mode: 'reply', containerIndex: cIdx, containerSel: CONTAINER_SEL }).catch(err => ({ posted: false, reason: err.message }));
