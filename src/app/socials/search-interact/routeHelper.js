@@ -655,26 +655,45 @@ export async function runSearchInteractEngagement(page, opts) {
                     // unmounts); use aiComments already scraped. Locate each
                     // container by TEXT match — indices go stale the moment a
                     // reply is inserted into the DOM (observed double-🙌).
+                    // Dedupe by text first (extractor previously matched nested
+                    // ObjectWrapper+ItemWrapper → every comment appeared twice).
+                    const seenTexts = new Set();
                     const targetComments = aiComments
-                        .filter(c => c.text && c.text !== generatedComment && c.text.trim().length >= 2)
+                        .filter(c => {
+                            const t = String(c.text || '').trim();
+                            if (!t || t.length < 2 || t === generatedComment) return false;
+                            const key = t.substring(0, 60); // dedupe key
+                            if (seenTexts.has(key)) return false;
+                            seenTexts.add(key);
+                            return true;
+                        })
                         .slice(0, maxRepliesPerPost);
                     let processedCount = 0;
                     const repliedTexts = new Set(); // dedupe: never reply same text twice
-                    logger.info(`[engage:${taskId}] Per-comment phase: ${targetComments.length} targets from AI-context list (no re-extract).`);
+                    logger.info(`[engage:${taskId}] Per-comment phase: ${targetComments.length} unique targets from AI-context list (no re-extract).`);
 
-                    const CONTAINER_SEL = "div[class*='DivCommentObjectWrapper'], div[class*='DivCommentItemWrapper']";
+                    // ObjectWrapper ONLY — DivCommentItemWrapper is nested INSIDE
+                    // it; matching both gave double indices + double extraction.
+                    const CONTAINER_SEL = "div[class*='DivCommentObjectWrapper']";
 
-                    // Locate a comment's live container by its text. Virtualized
-                    // lists unmount off-screen items — scroll the panel once and
-                    // retry. Returns an index into the CURRENT container list, or -1.
+                    // Locate a comment's live container by its text. Fuzzy: the
+                    // extracted text can differ from the live DOM by whitespace /
+                    // emoji rendering — compare the first 30 normalized chars.
+                    // Virtualized lists unmount off-screen items — scroll the
+                    // panel once and retry. Returns index into CURRENT container
+                    // list, or -1.
                     const locateByText = async (wantText) => {
-                        const needle = String(wantText || '').trim().substring(0, 80);
+                        const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+                        const needle = norm(wantText).substring(0, 30);
                         if (!needle) return -1;
                         const findIdx = async () => page.evaluate(({ sel, text }) => {
+                            const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
                             const items = document.querySelectorAll(sel);
                             for (let i = 0; i < items.length; i++) {
                                 const t = items[i].querySelector("span[data-e2e='comment-level-1'], p[data-e2e='comment-level-1']");
-                                if (t && (t.textContent || '').trim().substring(0, 80) === text) return i;
+                                if (!t) continue;
+                                const live = norm(t.textContent).substring(0, 30);
+                                if (live === text || live.startsWith(text) || text.startsWith(live)) return i;
                             }
                             return -1;
                         }, { sel: CONTAINER_SEL, text: needle });

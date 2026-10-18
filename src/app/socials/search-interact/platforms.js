@@ -219,10 +219,10 @@ Respond with ONLY: yes or no`
             browseDesc: "[data-e2e='browse-desc']",
             browseClose: "button[data-e2e='browse-close']",
             followButton: "[data-e2e='browse-follow']",
-            // Comment list (live DOM: DivCommentObjectWrapper / DivCommentItemWrapper;
-            // like icon is div[data-key-interaction='comment_like'][aria-pressed])
-            commentContainer: "div[class*='DivCommentObjectWrapper'], div[class*='DivCommentItemWrapper']",
-            commentItem: "div[class*='DivCommentObjectWrapper'], div[class*='DivCommentItemWrapper']",
+            // Comment list (live DOM: DivCommentObjectWrapper only — ItemWrapper
+            // is nested inside it; matching both double-counts/double-extracts)
+            commentContainer: "div[class*='DivCommentObjectWrapper']",
+            commentItem: "div[class*='DivCommentObjectWrapper']",
             commentLevel1: "p[data-e2e='comment-level-1'], span[data-e2e='comment-level-1']",
             commentUsername: "[data-e2e^='comment-username-']",
             commentLikeButton: "div[data-key-interaction='comment_like'], [data-key-interaction='comment_like']",
@@ -412,12 +412,12 @@ YOUR REPLY (only the reply text, no quotes):`
             },
 
             comments: {
-                // Live TikTok DOM (Oct 2026): item wrapper is
-                // DivCommentObjectWrapper (inner DivCommentItemWrapper) —
-                // the old DivCommentItemContainer no longer exists (extraction
-                // returned 0). Username is a div[data-e2e^='comment-username-N'],
-                // not a span.
-                selector: "div[class*='DivCommentObjectWrapper'], div[class*='DivCommentItemWrapper']",
+                // Live TikTok DOM (Oct 2026): item wrapper is DivCommentObjectWrapper
+                // (inner DivCommentItemWrapper is NESTED inside it). Match ONLY
+                // ObjectWrapper — matching both extracted every comment TWICE
+                // (observed: 32 comments → 64, all locateByText misses).
+                // Username is a div[data-e2e^='comment-username-N'], not a span.
+                selector: "div[class*='DivCommentObjectWrapper']",
                 parseFunction: `(items) => {
                     const comments = [];
                     items.forEach((item, idx) => {

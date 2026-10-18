@@ -362,8 +362,9 @@ export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]'
     try {
         const COMPOSER = "div[data-e2e='comment-text'][contenteditable='true'], div[data-key-interaction='comment_input']";
         // Live DOM (Oct 2026): DivCommentObjectWrapper is the item wrapper
-        // (inner DivCommentItemWrapper). DivCommentItemContainer no longer exists.
-        const LIST = "div[class*='DivCommentObjectWrapper'], div[class*='DivCommentItemWrapper']";
+        // (inner DivCommentItemWrapper is NESTED inside it). Match ONLY
+        // ObjectWrapper — matching both double-counted items (20 real → 40).
+        const LIST = "div[class*='DivCommentObjectWrapper']";
         const EMPTY_TEXT = 'Start the conversation';
         let expectReal = Number(expectedCount) > 0;
 
@@ -390,18 +391,36 @@ export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]'
         };
 
         // Photo posts: the list renders but the DraftEditor isn't mounted/
-        // focused until the input container is clicked. Click it once so the
-        // composer is live before we hand control back to the runner.
+        // focused until the input container is clicked. The OLD check only
+        // looked for the container (div[data-key-interaction='comment_input'])
+        // — that's a false-positive: the contenteditable DESCENDANT inside it
+        // isn't rendered until you click. Require the actual editable element.
         const ensureComposer = async () => {
-            const has = async () => page.evaluate((args) => !!document.querySelector(args.composer), { composer: COMPOSER }).catch(() => false);
+            // True only when a contenteditable DraftEditor is live (visible,
+            // non-zero box) — this is what typeText actually targets.
+            const has = async () => page.evaluate(() => {
+                const eds = document.querySelectorAll("div[data-e2e='comment-text'] div[contenteditable='true'], div[data-key-interaction='comment_input'] div[contenteditable='true'], div[data-e2e='comment-text'][contenteditable='true'], .public-DraftEditor-content[contenteditable='true']");
+                for (const ed of eds) {
+                    const r = ed.getBoundingClientRect();
+                    if (r.width >= 1 && r.height >= 1) return true;
+                }
+                return false;
+            }).catch(() => false);
             if (await has()) return true;
-            await DOMHelpers.humanClick(page, "div[data-e2e='comment-input'], div[data-key-interaction='comment_input']", { timeout: 3000 }).catch(() => false);
-            await new Promise(r => setTimeout(r, 800));
-            if (await has()) return true;
+            // Click the input container / placeholder to mount the DraftEditor.
+            await DOMHelpers.humanClick(page, "div[data-e2e='comment-input'], div[data-key-interaction='comment_input'], div[data-e2e='comment-text']", { timeout: 3000 }).catch(() => false);
+            // DraftEditor mounts async — poll up to 4s.
+            for (let i = 0; i < 8; i++) {
+                await new Promise(r => setTimeout(r, 500));
+                if (await has()) return true;
+            }
             // Last resort: scroll the panel bottom (composer is sticky-bottom).
             await DOMHelpers.humanScroll(page, "div[class*='DivCommentMain'], div[class*='DivTabContainer'], div[class*='RightPanel']", { totalPx: 300 }).catch(() => false);
-            await new Promise(r => setTimeout(r, 500));
-            return has();
+            for (let i = 0; i < 6; i++) {
+                await new Promise(r => setTimeout(r, 500));
+                if (await has()) return true;
+            }
+            return false;
         };
 
         // Already showing real comments? Nothing to do.
