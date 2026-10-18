@@ -161,13 +161,13 @@ async function processTask(taskRow, columnIndexes) {
                 driveUrl,
                 profileId: resolvedProfileId,
                 platform,
-            });
+            }, undefined, { fullPage: true });
             browser = sessionResult.browser;
             page = sessionResult.page;
             profileDir = sessionResult.profileDir;
         } catch (e) {
             // Fallback to cookie-only if resolveSocialSession fails
-            ({ browser, page } = await launchBrowserWithSession(cookieJSON));
+            ({ browser, page } = await launchBrowserWithSession(cookieJSON, undefined, { fullPage: true }));
         }
 
         // ---- Engagement runner path (TikTok consuming batch) ----

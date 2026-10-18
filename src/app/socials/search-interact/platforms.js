@@ -210,7 +210,10 @@ Respond with ONLY: yes or no`
             // modal like button (may be hidden/stale on photo posts).
             likeButton: "div[data-e2e='browse-like-icon'], span[class*='HeartWrapper'], [data-e2e='like-icon']",
             likeCount: "span[data-e2e='browse-like-count']",
-            commentButton: "div[data-e2e='browse-comment-icon'], [data-e2e='comment-icon']",
+            // Action-rail comment icon. Legacy data-e2e attrs first; fallback
+            // = the tux icon-button SVG path signature of the comment bubble
+            // ("M2 21.5c0-10.22 9.88-18..." — unique vs heart/bookmark/share).
+            commentButton: "div[data-e2e='browse-comment-icon'], [data-e2e='comment-icon'], button[data-testid='tux-web-icon-button'] svg path[d*='9.88-18']",
             commentCount: "span[data-e2e='browse-comment-count']",
             // Comments tab (tabbar item labelled "Comments" — post pages open
             // on "You may like"; composer/list only render after this tab).

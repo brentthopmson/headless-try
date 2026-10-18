@@ -5,6 +5,18 @@ import { DOMHelpers, gateAndConsume, capturePostFrame, postCommentVerified } fro
 import { updateAccountStatus } from '../_shared/hubUpdater.js';
 import { isTikTokCaptchaVisible, solveTikTokAudioCaptcha, isTikTokLoggedOut, navigateAndWait, ensureCommentsVisible, isPostLiked, isConfidentlyUnliked, readCommentsPanelCount } from './platformHelper/TikTokHelpers.js';
 
+// Strip @handle mention tokens from typed text — an "@" opens TikTok's
+// mention-autocomplete popup mid-type, which hijacks input (observed "@@"
+// leak into the main composer) and its popup blocks all subsequent clicks.
+// Also strips bare "@" runs left after token removal.
+export function stripMentions(text) {
+    return String(text || '')
+        .replace(/@[A-Za-z0-9._-]+/g, ' ')
+        .replace(/@+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
 // ==================== Data Fetching & Caching ====================
 
 let appScriptDataCache = null;
@@ -619,20 +631,23 @@ export async function runSearchInteractEngagement(page, opts) {
                         // AI weaves it in naturally; do not copy raw + random letters.
                         const genPrompt = `${platformConfig.aiPrompts?.generateComment || 'Write a natural comment.'}\n\n${socialStrategyPrompt ? 'Strategy: ' + socialStrategyPrompt + '\n' : ''}Topic/keyword that brought us here: "${keyword}" — work it into the comment naturally (related wording like teamwork, the product, etc. is fine); do NOT copy the raw string with random letters appended.\nPost analysis: ${analyzedVideo}${recentLines ? `\nExisting comments (so yours fits the conversation):\n${recentLines}` : ''}`;
                         generatedComment = ai ? await ai.generate(genPrompt) : '';
-                        generatedComment = String(generatedComment || '').replace(/^["']|["']$/g, '').trim().slice(0, 150);
+                        generatedComment = stripMentions(String(generatedComment || '').replace(/^["']|["']$/g, '').trim()).slice(0, 150);
                     } catch (e) {
                         logger.warn(`[engage:${taskId}] AI comment generation failed: ${e.message}`);
                         generatedComment = '';
                     }
                     // AI-off fallback (user directive): copy an existing comment
                     // verbatim instead of a generic "Nice share!". Pick the longest
-                    // substantive comment already on the post.
+                    // substantive comment already on the post. Strip @mentions —
+                    // typing them opens the mention popup and hijacks input.
                     if (!generatedComment) {
                         const seed = aiComments
                             .filter(c => c.text && c.text.length >= 8 && c.text.length <= 150)
-                            .sort((a, b) => b.text.length - a.text.length)[0];
+                            .map(c => stripMentions(String(c.text).trim()).slice(0, 150))
+                            .filter(t => t.length >= 8)
+                            .sort((a, b) => b.length - a.length)[0];
                         if (seed) {
-                            generatedComment = String(seed.text).trim().slice(0, 150);
+                            generatedComment = seed;
                             logger.info(`[engage:${taskId}] AI-off: seeding post comment from existing comment: "${generatedComment.substring(0, 60)}..."`);
                         } else {
                             generatedComment = 'Nice share!';
@@ -679,9 +694,11 @@ export async function runSearchInteractEngagement(page, opts) {
                     // Locate a comment's live container by its text. Fuzzy: the
                     // extracted text can differ from the live DOM by whitespace /
                     // emoji rendering — compare the first 30 normalized chars.
-                    // Virtualized lists unmount off-screen items — scroll the
-                    // panel once and retry. Returns index into CURRENT container
-                    // list, or -1.
+                    // UNIQUE-MATCH: if several containers share the same 30-char
+                    // prefix, return -1 rather than a possibly-wrong index (that
+                    // was the multi-reply-on-one-comment bug). Virtualized lists
+                    // unmount off-screen items — scroll once and retry. Returns
+                    // index into CURRENT container list, or -1.
                     const locateByText = async (wantText) => {
                         const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
                         const needle = norm(wantText).substring(0, 30);
@@ -689,11 +706,23 @@ export async function runSearchInteractEngagement(page, opts) {
                         const findIdx = async () => page.evaluate(({ sel, text }) => {
                             const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
                             const items = document.querySelectorAll(sel);
+                            const matches = [];
                             for (let i = 0; i < items.length; i++) {
                                 const t = items[i].querySelector("span[data-e2e='comment-level-1'], p[data-e2e='comment-level-1']");
                                 if (!t) continue;
                                 const live = norm(t.textContent).substring(0, 30);
-                                if (live === text || live.startsWith(text) || text.startsWith(live)) return i;
+                                if (live === text || live.startsWith(text) || text.startsWith(live)) matches.push(i);
+                            }
+                            // Prefer a full-text (non-prefix) unique match; else
+                            // require exactly one prefix match.
+                            if (matches.length === 1) return matches[0];
+                            if (matches.length > 1) {
+                                const exact = matches.filter(i => {
+                                    const t = items[i].querySelector("span[data-e2e='comment-level-1'], p[data-e2e='comment-level-1']");
+                                    return t && norm(t.textContent) === text;
+                                });
+                                if (exact.length === 1) return exact[0];
+                                return -1; // ambiguous — do not guess
                             }
                             return -1;
                         }, { sel: CONTAINER_SEL, text: needle });
@@ -705,25 +734,60 @@ export async function runSearchInteractEngagement(page, opts) {
                         return findIdx();
                     };
 
-                    // Close the inline reply composer if it's open (X button or
-                    // Escape). Without this, the next reply types into the SAME
-                    // open box → replies stack on one parent (observed bug).
+                    // Count visible INLINE reply composers (contenteditable inside
+                    // a comment container). The sticky bottom main composer is NOT
+                    // inside a container, so it never counts.
+                    const countInlineComposers = async () => page.evaluate((sel) => {
+                        const items = document.querySelectorAll(sel);
+                        let n = 0;
+                        for (const item of items) {
+                            const ed = item.querySelector("div[contenteditable='true']");
+                            if (!ed) continue;
+                            const r = ed.getBoundingClientRect();
+                            if (r.width >= 1 && r.height >= 1) n++;
+                        }
+                        return n;
+                    }, CONTAINER_SEL).catch(() => 0);
+
+                    // Close the inline reply composer if it's open. Escape first
+                    // (kills mention/emoji popups AND the box), then the X inside
+                    // the inline composer if still open. VERIFY closure by polling
+                    // for zero inline composers — an unverified close was the
+                    // multi-reply-on-one-comment bug (next reply typed into the
+                    // leftover box). Returns true only when zero remain.
                     const closeReplyBox = async () => {
-                        const closed = await page.evaluate(() => {
-                            // Reply composer close: the X next to the pink submit arrow.
-                            const x = document.querySelector("div[data-e2e='comment-text'] ~ div svg, [data-key-interaction='comment_input'] + div button[aria-label='Close'], div[role='dialog'] button[aria-label='Close']");
-                            if (x) {
-                                const btn = x.closest("button, div[role='button'], span");
-                                if (btn) btn.click();
-                                return 'clicked';
-                            }
-                            return null;
-                        }).catch(() => null);
-                        if (closed) { await pause(300, 600); return true; }
-                        // Fallback: Escape key closes the inline reply on TikTok web.
-                        await page.keyboard.press('Escape').catch(() => {});
-                        await pause(300, 600);
-                        return true;
+                        for (let attempt = 0; attempt < 3; attempt++) {
+                            if ((await countInlineComposers()) === 0) return true;
+                            await page.keyboard.press('Escape').catch(() => {});
+                            await pause(400, 650);
+                            if ((await countInlineComposers()) === 0) return true;
+                            // X button: inside the same comment container as the
+                            // open composer. Row layout: [@] [emoji] [submit ↑] [X]
+                            // — click the LAST button, and NEVER a submit button
+                            // (clicking submit would post the leftover text).
+                            await page.evaluate((sel) => {
+                                const items = document.querySelectorAll(sel);
+                                for (const item of items) {
+                                    const ed = item.querySelector("div[contenteditable='true']");
+                                    if (!ed) continue;
+                                    const r = ed.getBoundingClientRect();
+                                    if (r.width < 1 || r.height < 1) continue;
+                                    const row = ed.closest("div[class*='DivCommentItem'], div[class*='DivReplyInput'], div[class*='DivCommentInput']") || ed.parentElement;
+                                    if (!row) continue;
+                                    const btns = Array.from(row.querySelectorAll("button, [role='button']"))
+                                        .filter(b => !b.contains(ed))
+                                        .filter(b => !b.matches("[data-e2e='comment-post'], [data-key-interaction='comment_submit']"))
+                                        .filter(b => {
+                                            const br = b.getBoundingClientRect();
+                                            return br.width >= 1 && br.height >= 1;
+                                        });
+                                    // X is the rightmost remaining control.
+                                    if (btns.length) btns[btns.length - 1].click();
+                                }
+                            }, CONTAINER_SEL).catch(() => {});
+                            await pause(400, 650);
+                        }
+                        return (await countInlineComposers()) === 0;
                     };
 
                     for (const comment of targetComments) {
@@ -733,7 +797,7 @@ export async function runSearchInteractEngagement(page, opts) {
                         // ---- Locate the comment in the live DOM by text ----
                         const cIdx = await locateByText(comment.text);
                         if (cIdx < 0) {
-                            logger.info(`[engage:${taskId}] Comment not found in DOM (virtualized?): "${comment.text.substring(0, 40)}..." — skipping.`);
+                            logger.info(`[engage:${taskId}] Comment not found or ambiguous in DOM: "${comment.text.substring(0, 40)}..." — skipping.`);
                             continue;
                         }
 
@@ -779,6 +843,16 @@ export async function runSearchInteractEngagement(page, opts) {
                             break;
                         }
                         try {
+                            // PRE-REPLY GUARD: never click Reply while another
+                            // inline reply box is still open — the new text would
+                            // land in the OLD box (multi-reply-on-one-comment).
+                            if ((await countInlineComposers()) > 0) {
+                                logger.info(`[engage:${taskId}] Inline reply box still open before Reply — closing first.`);
+                                if (!(await closeReplyBox())) {
+                                    logger.warn(`[engage:${taskId}] Could not close leftover reply box — stopping per-comment loop to avoid stacking.`);
+                                    break;
+                                }
+                            }
                             const replyRect = await page.evaluate(({ sel, idx }) => {
                                 const el = document.querySelectorAll(sel)[idx];
                                 if (!el) return null;
@@ -797,14 +871,14 @@ export async function runSearchInteractEngagement(page, opts) {
                                 try {
                                     const replyPrompt = `${platformConfig.aiPrompts?.replyToComment || 'Reply briefly.'}\n\nVideo analysis: ${analyzedVideo}\nYour comment: ${generatedComment}\nComment to reply to: ${comment.text}`;
                                     replyText = ai ? await ai.generate(replyPrompt) : '';
-                                    replyText = String(replyText || '').replace(/^["']|["']$/g, '').trim().slice(0, 120);
+                                    replyText = stripMentions(String(replyText || '').replace(/^["']|["']$/g, '').trim()).slice(0, 120);
                                 } catch (e) {
                                     replyText = '';
                                 }
                                 // AI-off fallback (user directive): seeded template from
                                 // the parent comment — never a bare constant 🙌.
                                 if (!replyText) {
-                                    const parentWords = String(comment.text || '').trim().split(/\s+/).slice(0, 4).join(' ');
+                                    const parentWords = stripMentions(String(comment.text || '')).split(/\s+/).slice(0, 4).join(' ');
                                     const templates = [
                                         parentWords ? `So true — "${parentWords}..." 💯` : 'So true 💯',
                                         'Facts',
@@ -826,13 +900,21 @@ export async function runSearchInteractEngagement(page, opts) {
                                     }
                                 }
                                 // ---- 3. CLOSE the reply box before next comment ----
-                                await closeReplyBox();
+                                // VERIFIED close — if the box won't close, stop the
+                                // loop rather than stack the next reply on it.
+                                if (!(await closeReplyBox())) {
+                                    logger.warn(`[engage:${taskId}] Reply box stuck open after close attempts — stopping per-comment loop to avoid stacking.`);
+                                    break;
+                                }
                             } else {
                                 logger.warn(`[engage:${taskId}] Reply button not found for "${comment.text.substring(0, 40)}..."`);
                             }
                         } catch (e) {
                             logger.warn(`[engage:${taskId}] Comment reply failed: ${e.message}`);
-                            await closeReplyBox().catch(() => {});
+                            if (!(await closeReplyBox().catch(() => false))) {
+                                logger.warn(`[engage:${taskId}] Reply box stuck open after error — stopping per-comment loop to avoid stacking.`);
+                                break;
+                            }
                         }
                         await pause(1000, 2000);
                     }

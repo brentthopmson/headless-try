@@ -1,6 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 
 export const localExecutablePath =
   process.platform === "win32"
@@ -88,6 +89,27 @@ export function getBrowserSemaphoreStats() {
 import logger from "./logger.js";
 import { generateIdentity, launchArgsForIdentity, detectChromeMajorVersion, getDetectedMajor, getDetectedFullVersion, buildUserAgent, healUserAgent } from "./identity.js";
 import { resolveProxyForRun, maskProxy } from "./proxy.js";
+
+// Real screen dimensions (Windows) — used by fullPage launches so the
+// fingerprint's screen/viewport spoof matches the maximized window (a spoofed
+// screen size that disagrees with window.outerWidth/Height is a bot signal).
+// Returns { width, height } or null (non-Windows / query failed).
+let _cachedRealScreen = null;
+function getRealScreenSize() {
+  if (_cachedRealScreen !== null) return _cachedRealScreen;
+  try {
+    if (process.platform !== 'win32') { _cachedRealScreen = null; return null; }
+    const script = `Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern int GetSystemMetrics(int nIndex);' -Name G -Namespace S | Out-Null
+Write-Output ("{0} {1}" -f [S.G]::GetSystemMetrics(0), [S.G]::GetSystemMetrics(1))`;
+    const out = execFileSync('powershell.exe', ['-NoProfile', '-Command', script], { encoding: 'utf8', timeout: 8000 });
+    const m = String(out).trim().match(/(\d+)\s+(\d+)/);
+    if (m) _cachedRealScreen = { width: parseInt(m[1], 10), height: parseInt(m[2], 10) };
+  } catch (e) {
+    logger.warn(`[getRealScreenSize] Failed: ${e.message}`);
+    _cachedRealScreen = null;
+  }
+  return _cachedRealScreen;
+}
 
 // Detect the REAL installed browser major version once at startup. The spoofed
 // UA must never claim an outdated Chrome — accounts.google.com hard-rejects
@@ -224,7 +246,33 @@ export async function launchBrowser(customOptions = {}) {
     const proxy = await resolveProxyForRun();
 
   // 3. Build launch args: identity + proxy args override the fixed defaults.
-  const identityArgs = launchArgsForIdentity(identity);
+  // fullPage (headed only): maximize the window instead of a fixed size so
+  // TikTok's comment panel / reply boxes render completely. The fingerprint's
+  // screen/viewport spoof must follow the REAL screen or outerWidth/Height
+  // disagree with window.screen — a bot signal.
+  const fullPage = !!customOptions.fullPage && (customOptions.headless ?? 'new') === false;
+  if (fullPage) {
+    const real = getRealScreenSize();
+    if (real) {
+      identity.viewport = {
+        ...identity.viewport,
+        width: real.width,
+        height: real.height - 40, // taskbar
+        screenAvailWidth: real.width,
+        screenAvailHeight: real.height - 40,
+      };
+      identity.windowSize = `${real.width},${real.height - 40}`;
+      identity.windowPosition = '0,0';
+      logger.info(`[launchBrowser] fullPage: real screen ${real.width}x${real.height} → viewport ${identity.viewport.width}x${identity.viewport.height}, --start-maximized`);
+    } else {
+      logger.warn(`[launchBrowser] fullPage requested but screen query failed — keeping preset viewport`);
+    }
+  }
+  let identityArgs = launchArgsForIdentity(identity);
+  if (fullPage) {
+    identityArgs = identityArgs.filter(a => !a.startsWith('--window-size=') && !a.startsWith('--window-position='));
+    identityArgs.push('--start-maximized');
+  }
   const proxyArgs = proxy ? [`--proxy-server=${proxy.url}`] : [];
 
   const defaultViewport = identity.viewport;

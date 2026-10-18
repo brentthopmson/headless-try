@@ -229,6 +229,13 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
             executablePath: isDev ? localExecutablePath : fullChromiumExecutablePath,
         };
 
+        // fullPage: launch maximized (headed runs only — inert in headless).
+        // Used by search-interact so TikTok's comment panel/reply boxes are
+        // fully visible instead of clipped by a small fixed window.
+        if (options.fullPage) {
+            launchOptions.fullPage = true;
+        }
+
         // If a userDataDir is provided (from Drive profile), use it instead of random temp dir
         if (options.userDataDir) {
             launchOptions.userDataDir = options.userDataDir;
@@ -415,7 +422,7 @@ export async function resolveShootSession(browserId, headless = isDev ? false : 
  * @param {boolean} headless - Headless mode (default: "new")
  * @returns {Promise<{ browser, page, profileDir?: string }>}
  */
-export async function resolveSocialSession(profile, headless = isDev ? false : "new") {
+export async function resolveSocialSession(profile, headless = isDev ? false : "new", options = {}) {
     const cookieJSON = profile.cookies || '';
     const browserIdentity = profile.browserIdentity || null;
     const driveUrl = profile.driveUrl || '';
@@ -437,6 +444,7 @@ export async function resolveSocialSession(profile, headless = isDev ? false : "
                     userDataDir: profileDir,
                     identity: browserIdentity,
                     platform,
+                    fullPage: !!options.fullPage,
                 });
                 return { browser, page, profileDir };
             }
@@ -450,6 +458,7 @@ export async function resolveSocialSession(profile, headless = isDev ? false : "
     const { browser, page } = await launchBrowserWithSession(cookieJSON, headless, {
         identity: browserIdentity,
         platform,
+        fullPage: !!options.fullPage,
     });
     return { browser, page, profileDir: null };
 }
@@ -1008,6 +1017,33 @@ export async function capturePostFrame(page) {
 // untruthful "Comment posted" logs seen when typing silently no-ops or the
 // Post button stays disabled.
 export async function postCommentVerified(page, s, text, logPrefix = '') {
+    const normText = (t) => String(t || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    // Focus the composer first so Ctrl+A/Delete below can't leak into the page.
+    const focusComposer = () => page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return false;
+        el.focus();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const selObj = window.getSelection();
+        selObj.removeAllRanges();
+        selObj.addRange(range);
+        return true;
+    }, s.commentBox).catch(() => false);
+
+    // PRE-TYPE RESET: leftover text (leaked @@ from a previous attempt,
+    // mention tokens) stacks onto the new message. Select-all + delete first.
+    const preText = await page.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        return el ? (el.textContent || '').trim() : null;
+    }, s.commentBox).catch(() => null);
+    if (preText) {
+        if (logPrefix) logger.warn(`${logPrefix} composer had leftover text ("${preText.substring(0, 30)}") — clearing before type.`);
+        await focusComposer();
+        await page.keyboard.press('Backspace').catch(() => {});
+        await DOMHelpers.randomDelay(200, 400);
+    }
+
     let typed = await DOMHelpers.typeText(page, s.commentBox, text, { delay: 40 }).catch(() => false);
     // Photo posts: comments list renders but the DraftEditor isn't focused /
     // mounted until the input container is clicked. One focus+retry before
@@ -1021,12 +1057,62 @@ export async function postCommentVerified(page, s, text, logPrefix = '') {
     if (!typed) return { posted: false, reason: 'composer-not-found' };
     await DOMHelpers.randomDelay(600, 1200);
 
-    const composerText = await page.evaluate((sel) => {
+    let composerText = await page.evaluate((sel) => {
         const el = document.querySelector(sel);
         return el ? (el.textContent || '').trim() : null;
     }, s.commentBox).catch(() => null);
     if (composerText === null) return { posted: false, reason: 'composer-missing-after-type' };
     if (!composerText) return { posted: false, reason: 'text-not-entered' };
+
+    // POST-TYPE EQUALITY: a mention/emoji popup or stale text can mangle the
+    // input. Composer must match the intended text; on mismatch, clear and
+    // retype once.
+    if (normText(composerText) !== normText(text)) {
+        if (logPrefix) logger.warn(`${logPrefix} composer text mismatch after type ("${composerText.substring(0, 40)}" ≠ intended) — clearing and retyping once.`);
+        await focusComposer();
+        await page.keyboard.press('Backspace').catch(() => {});
+        await DOMHelpers.randomDelay(300, 500);
+        const retyped = await DOMHelpers.typeText(page, s.commentBox, text, { delay: 40 }).catch(() => false);
+        if (!retyped) return { posted: false, reason: 'retype-failed' };
+        await DOMHelpers.randomDelay(600, 1200);
+        composerText = await page.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            return el ? (el.textContent || '').trim() : null;
+        }, s.commentBox).catch(() => null);
+        if (composerText === null || normText(composerText) !== normText(text)) {
+            return { posted: false, reason: 'text-mismatch' };
+        }
+    }
+
+    // POPUP CHECK: mention/emoji panels block the submit click and swallow
+    // input. If one is open, Escape it — then verify the text survived.
+    const popupOpen = await page.evaluate(() => {
+        const sels = ["[class*='MentionPanel']", "[class*='MentionList']", "[class*='EmojiPanel']", "[role='listbox']"];
+        for (const sel of sels) {
+            const el = document.querySelector(sel);
+            if (!el) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width >= 1 && r.height >= 1) return true;
+        }
+        return false;
+    }).catch(() => false);
+    if (popupOpen) {
+        if (logPrefix) logger.warn(`${logPrefix} mention/emoji popup open after type — closing with Escape.`);
+        await page.keyboard.press('Escape').catch(() => {});
+        await DOMHelpers.randomDelay(300, 500);
+        const afterPopup = await page.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            return el ? (el.textContent || '').trim() : '';
+        }, s.commentBox).catch(() => '');
+        if (normText(afterPopup) !== normText(text)) {
+            await focusComposer();
+            await page.keyboard.press('Backspace').catch(() => {});
+            await DOMHelpers.randomDelay(300, 500);
+            const retyped2 = await DOMHelpers.typeText(page, s.commentBox, text, { delay: 40 }).catch(() => false);
+            if (!retyped2) return { posted: false, reason: 'retype-after-popup-failed' };
+            await DOMHelpers.randomDelay(600, 1200);
+        }
+    }
 
     const btnState = await page.evaluate((sel) => {
         const b = document.querySelector(sel);

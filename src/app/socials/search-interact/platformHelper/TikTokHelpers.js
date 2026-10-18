@@ -456,14 +456,53 @@ export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]'
             return DOMHelpers.humanClickAt(page, rect.x, rect.y, { hoverMs: [150, 350] }).catch(() => false);
         };
 
-        // Panel not shown yet → click the "Comments" tab.
+        // Click the action-rail comment icon (speech bubble under the heart).
+        // Video posts have NO Comments tab until this opens the panel. Selector
+        // chain: 1) legacy data-e2e attrs, 2) tux icon-button whose SVG path
+        // matches the comment-bubble signature (d starts "M2 21.5c0-10.22 9.88-18"
+        // — unique to the comment icon; heart/bookmark/share differ).
+        const clickCommentIcon = async () => {
+            const rect = await page.evaluate(() => {
+                const pick = (el) => {
+                    if (!el) return null;
+                    const r = el.getBoundingClientRect();
+                    if (r.width < 1 || r.height < 1) return null;
+                    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+                };
+                const legacy = document.querySelector("div[data-e2e='browse-comment-icon'], [data-e2e='comment-icon']");
+                const lp = pick(legacy);
+                if (lp) return lp;
+                const path = document.querySelector("svg path[d^='M2 21.5c0-10.22'], svg path[d*='9.88-18']");
+                if (path) {
+                    const btn = path.closest("button") || path.closest("[role='button']") || path.parentElement;
+                    const bp = pick(btn);
+                    if (bp) return bp;
+                }
+                return null;
+            }).catch(() => null);
+            if (!rect) return false;
+            return DOMHelpers.humanClickAt(page, rect.x, rect.y, { hoverMs: [150, 350] }).catch(() => false);
+        };
+
+        // Panel not shown yet → open it. Photo posts have a visible "Comments"
+        // tab; video posts don't (open via the rail icon). USER RULE: the
+        // FIRST click may land on the "You may like" tab — always click
+        // "Comments" a second time to guarantee the right tab is active.
         if (snap.items === 0 && !snap.composer) {
-            const clicked = await clickTab('Comments');
+            let clicked = await clickTab('Comments');
             if (!clicked) {
-                logger.warn(`${logPrefix} Comments tab not found.`);
+                clicked = await clickCommentIcon();
+                if (clicked) logger.info(`${logPrefix} Opened comments via action-rail icon (no Comments tab).`);
+            }
+            if (!clicked) {
+                logger.warn(`${logPrefix} Comments tab and comment icon both not found.`);
                 return { ok: false, state: null, items: 0, reason: 'comments_tab_not_found' };
             }
-            logger.info(`${logPrefix} Clicked Comments tab. Expected ${expectReal ? expectedCount : '?'} comments.`);
+            logger.info(`${logPrefix} Opened comments. Expected ${expectReal ? expectedCount : '?'} comments.`);
+            // First click may have activated "You may like" — click Comments again.
+            await new Promise(r => setTimeout(r, 1400));
+            const reClicked = await clickTab('Comments');
+            if (reClicked) logger.info(`${logPrefix} Second Comments-tab click (first may have opened "You may like").`);
             // Action-bar count was 0 (common on photo posts) → read the panel
             // header ("23.1K comments") once the tab is active. Real count
             // flips expectReal so the poll requires actual list items.
@@ -488,7 +527,7 @@ export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]'
         if (expectReal) {
             // Fallback A: click the action-bar comment icon to (re)focus the panel.
             logger.warn(`${logPrefix} 0 items after 15s (expected ${expectedCount}) — trying comment-icon click.`);
-            await DOMHelpers.humanClick(page, "div[data-e2e='browse-comment-icon'], [data-e2e='comment-icon']", { timeout: 3000 }).catch(() => false);
+            await clickCommentIcon();
             snap = await poll(6000);
             if (snap.state) {
                 logger.info(`${logPrefix} Comments loaded after comment-icon click (${snap.items} items).`);
@@ -534,6 +573,20 @@ export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]'
             }).catch(() => ({ tabs: '?', snippet: '?' }));
             logger.warn(`${logPrefix} comments_not_loaded: expected=${expectedCount}, items=0, composer=${snap.composer}, empty=${snap.empty}, tabs=[${diag.tabs}], panel: "${diag.snippet}"`);
             return { ok: false, state: null, items: 0, reason: 'comments_not_loaded' };
+        }
+
+        // !expectReal and still nothing: the first open click may have landed
+        // on "You may like" — toggle to Comments once before giving up (same
+        // re-fire trick as Fallback C above).
+        logger.warn(`${logPrefix} Panel not hydrated — toggling "You may like" → "Comments".`);
+        await clickTab('You may like');
+        await new Promise(r => setTimeout(r, 1300));
+        await clickTab('Comments');
+        snap = await poll(6000);
+        if (snap.state) {
+            const composerOk = snap.state === 'composer' ? true : await ensureComposer();
+            logger.info(`${logPrefix} Comments panel ready after tab toggle (${snap.state}${snap.items ? `, ${snap.items} items` : ''}, composer=${composerOk}).`);
+            return { ok: true, state: snap.state, items: snap.items, composer: composerOk };
         }
 
         logger.warn(`${logPrefix} Comments panel did not hydrate within 15s.`);
