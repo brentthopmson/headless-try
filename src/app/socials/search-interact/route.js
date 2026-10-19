@@ -116,7 +116,6 @@ async function processTask(taskRow, columnIndexes) {
 
         // Batch settings (campaign settings JSON keys, with safe defaults).
         const maxResultsPerKeyword = Math.max(1, parseInt(get('maxResultsPerKeyword'), 10) || 5);
-        const maxRepliesPerPost = Math.max(0, parseInt(get('interactionMaxReplies'), 10) || 3);
         const interactionStopAfterHours = Math.max(0, parseFloat(get('interactionStopAfterHours')) || 0);
 
         // ACCOUNT-tier status gate — RATE_LIMITED blocks until windows roll
@@ -175,7 +174,7 @@ async function processTask(taskRow, columnIndexes) {
         // quota checks, closes once in finally. Replaces the per-keyword
         // task fan-out.
         if (useEngagementRunner) {
-            logger.info(`[processTask] ${taskId}: engagement batch mode — ${searchQueries.length} keyword(s), cap=${maxResultsPerKeyword}/kw, maxReplies=${maxRepliesPerPost}`);
+            logger.info(`[processTask] ${taskId}: engagement batch mode — ${searchQueries.length} keyword(s), cap=${maxResultsPerKeyword}/kw`);
             engagementSummary = await runSearchInteractEngagement(page, {
                 platform,
                 platformConfig,
@@ -183,7 +182,6 @@ async function processTask(taskRow, columnIndexes) {
                 profileId,
                 keywords: searchQueries,
                 maxResultsPerKeyword,
-                maxRepliesPerPost,
                 stopAfterHours: interactionStopAfterHours,
                 socialStrategyPrompt,
                 taskId,

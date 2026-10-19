@@ -260,6 +260,61 @@ async function classifyPageState(page, s) {
     }
 }
 
+// Dismiss TikTok's cookie-consent banner ("Allow all") if present.
+// The banner (div.tiktok-cookie-banner) overlays the comment composer/submit
+// button and silently swallows the post: logs showed
+// "[post] submit covered by TIKTOK-COOKIE-BANNER" followed by
+// "composer-not-cleared". Click "Allow all" with a REAL mouse (synthetic
+// .click() is ignored by TikTok) and poll until the banner is gone.
+export async function dismissCookieBanner(page, logPrefix = '[cookie]') {
+    try {
+        const present = async () => page.evaluate(() => {
+            const b = document.querySelector("div[class*='tiktok-cookie-banner'], .tiktok-cookie-banner");
+            if (!b) return false;
+            const r = b.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+        }).catch(() => false);
+
+        if (!(await present())) return false;
+
+        const rect = await page.evaluate(() => {
+            const b = document.querySelector("div[class*='tiktok-cookie-banner'], .tiktok-cookie-banner");
+            if (!b) return null;
+            const btns = Array.from(b.querySelectorAll('button'));
+            // Prefer the "Allow all" button by text; fallback to the last button.
+            const allow = btns.find(x => /allow all/i.test(x.textContent || '')) || btns[btns.length - 1];
+            if (!allow) return null;
+            const r = allow.getBoundingClientRect();
+            if (r.width < 1 || r.height < 1) return null;
+            return { x: r.x + r.width / 2, y: r.y + r.height / 2, label: (allow.textContent || '').trim() };
+        }).catch(() => null);
+
+        if (!rect) return false;
+        const clicked = await DOMHelpers.humanClickAt(page, rect.x, rect.y, { hoverMs: [120, 300] }).catch(() => false);
+        logger.info(`${logPrefix} Cookie banner present — clicked "${rect.label}" (${clicked ? 'ok' : 'click-failed'}).`);
+
+        // Poll until gone (~3s).
+        const deadline = Date.now() + 3000;
+        while (Date.now() < deadline) {
+            if (!(await present())) return true;
+            await new Promise(r => setTimeout(r, 300));
+        }
+        // Fallback: real-mouse didn't close it — try a synthetic click.
+        await page.evaluate(() => {
+            const b = document.querySelector("div[class*='tiktok-cookie-banner'], .tiktok-cookie-banner");
+            if (!b) return;
+            const btns = Array.from(b.querySelectorAll('button'));
+            const allow = btns.find(x => /allow all/i.test(x.textContent || '')) || btns[btns.length - 1];
+            if (allow) allow.click();
+        }).catch(() => {});
+        await new Promise(r => setTimeout(r, 500));
+        return !(await present());
+    } catch (e) {
+        logger.warn(`${logPrefix} dismissCookieBanner failed: ${e.message}`);
+        return false;
+    }
+}
+
 // Navigate to url and wait for a settled page: goto (with one retry on
 // failure) → short hydration pause → poll for a definitive signal
 // (results / post / login modal / captcha) up to ~20s.
@@ -298,6 +353,10 @@ export async function navigateAndWait(page, url, s, opts = {}) {
     // used to waste the full 20s budget per navigation. The signal appearing
     // IS the "page loaded enough" proof.
     await new Promise(r => setTimeout(r, hydrationPauseMs));
+
+    // Cookie banner (if any) overlays the composer/submit — clear it first so
+    // it can't swallow the post later.
+    await dismissCookieBanner(page, logPrefix);
 
     // Poll for a definitive settled signal.
     const deadline = Date.now() + settleTimeoutMs;
@@ -360,6 +419,8 @@ export async function readCommentsPanelCount(page) {
 
 export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]', expectedCount = null) {
     try {
+        // Clear any cookie banner first — it overlays the composer/submit.
+        await dismissCookieBanner(page, logPrefix);
         const COMPOSER = "div[data-e2e='comment-text'][contenteditable='true'], div[data-key-interaction='comment_input']";
         // Live DOM (Oct 2026): DivCommentObjectWrapper is the item wrapper
         // (inner DivCommentItemWrapper is NESTED inside it). Match ONLY

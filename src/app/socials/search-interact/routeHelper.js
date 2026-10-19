@@ -182,7 +182,6 @@ export async function runSearchInteractEngagement(page, opts) {
         profileId,
         keywords,
         maxResultsPerKeyword = 5,
-        maxRepliesPerPost = 3,
         stopAfterHours = 0,
         socialStrategyPrompt,
         taskId = 'session',
@@ -680,28 +679,33 @@ export async function runSearchInteractEngagement(page, opts) {
                     }
                     await pause(1500, 2500);
 
-                    // ---- Per-comment like + reply (sequential, text-located) ----
+                    // ---- Per-comment like + reply (WAVE-based, text-located) ----
                     // User directive: like comment → reply → close reply box →
-                    // NEXT comment. Never re-extract mid-loop (virtualized list
-                    // unmounts); use aiComments already scraped. Locate each
+                    // NEXT comment. Instead of a single static snapshot (which
+                    // capped the post at the ~first 20 scraped comments), we
+                    // process the comments currently rendered, then SCROLL the
+                    // panel to load the next page and repeat — so one post can
+                    // consume its full platform quota (likeOnComment /
+                    // commentOnComment) before the next post opens. STOP only on
+                    // a platform-gate denial (quota exhausted), comment-list
+                    // exhaustion, time/captcha, or SPA drift. Locate each
                     // container by TEXT match — indices go stale the moment a
                     // reply is inserted into the DOM (observed double-🙌).
-                    // Dedupe by text first (extractor previously matched nested
-                    // ObjectWrapper+ItemWrapper → every comment appeared twice).
-                    const seenTexts = new Set();
-                    const targetComments = aiComments
-                        .filter(c => {
-                            const t = String(c.text || '').trim();
-                            if (!t || t.length < 2 || t === generatedComment) return false;
-                            const key = t.substring(0, 60); // dedupe key
-                            if (seenTexts.has(key)) return false;
-                            seenTexts.add(key);
-                            return true;
-                        })
-                        .slice(0, maxRepliesPerPost);
                     let processedCount = 0;
-                    const repliedTexts = new Set(); // dedupe: never reply same text twice
-                    logger.info(`[engage:${taskId}] Per-comment phase: ${targetComments.length} unique targets from AI-context list (no re-extract).`);
+                    const repliedTexts = new Set();  // dedupe: never reply same text twice
+                    const seenTextKeys = new Set();  // unique keys across ALL waves
+
+                    // Build THIS wave's target list from the current aiComments
+                    // snapshot: unique, non-empty, not our own main comment, and
+                    // not seen in any earlier wave.
+                    const buildTargets = () => (aiComments || []).filter(c => {
+                        const t = String(c.text || '').trim();
+                        if (!t || t.length < 2 || t === generatedComment) return false;
+                        const key = t.substring(0, 60); // dedupe key
+                        if (seenTextKeys.has(key)) return false;
+                        seenTextKeys.add(key);
+                        return true;
+                    });
 
                     // ObjectWrapper ONLY — DivCommentItemWrapper is nested INSIDE
                     // it; matching both gave double indices + double extraction.
@@ -715,18 +719,26 @@ export async function runSearchInteractEngagement(page, opts) {
                     // was the multi-reply-on-one-comment bug). Virtualized lists
                     // unmount off-screen items — scroll once and retry. Returns
                     // index into CURRENT container list, or -1.
-                    const locateByText = async (wantText) => {
+                    const locateByText = async (wantText, wantUser = '') => {
                         const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
-                        const needle = norm(wantText).substring(0, 30);
+                        // Match on the first 60 normalized chars of the text;
+                        // include the username (when available) so identical-text
+                        // comments ("teamwork", "teamwork 👍") disambiguate.
+                        const needle = norm(wantText).substring(0, 60);
+                        const user = norm(wantUser);
                         if (!needle) return -1;
-                        const findIdx = async () => page.evaluate(({ sel, text }) => {
+                        const findIdx = async () => page.evaluate(({ sel, text, user }) => {
                             const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
                             const items = document.querySelectorAll(sel);
                             const matches = [];
                             for (let i = 0; i < items.length; i++) {
                                 const t = items[i].querySelector("span[data-e2e='comment-level-1'], p[data-e2e='comment-level-1']");
                                 if (!t) continue;
-                                const live = norm(t.textContent).substring(0, 30);
+                                if (user) {
+                                    const uEl = items[i].querySelector("[data-e2e^='comment-username-']");
+                                    if (norm(uEl ? uEl.textContent : '') !== user) continue;
+                                }
+                                const live = norm(t.textContent).substring(0, 60);
                                 if (live === text || live.startsWith(text) || text.startsWith(live)) matches.push(i);
                             }
                             // Prefer a full-text (non-prefix) unique match; else
@@ -741,7 +753,7 @@ export async function runSearchInteractEngagement(page, opts) {
                                 return -1; // ambiguous — do not guess
                             }
                             return -1;
-                        }, { sel: CONTAINER_SEL, text: needle });
+                        }, { sel: CONTAINER_SEL, text: needle, user });
                         let idx = await findIdx();
                         if (idx >= 0) return idx;
                         // Scroll the comments panel to load more (virtualization).
@@ -813,9 +825,51 @@ export async function runSearchInteractEngagement(page, opts) {
                         return (await countInlineComposers()) === 0;
                     };
 
-                    let consecutiveVerifyFailures = 0; // break loop only after 3 in a row
+                    let consecutiveVerifyFailures = 0; // reset on any successful reply/verify
 
-                    for (const comment of targetComments) {
+                    // Wave loop: process the current page of comments, then
+                    // scroll to load the next page and repeat. Queue-based so the
+                    // per-comment body below stays unchanged.
+                    let wave = 0;
+                    let staleWaves = 0;
+                    let knownUnique = 0;
+                    let queue = buildTargets();
+                    knownUnique += queue.length;
+                    wave++;
+                    logger.info(`[engage:${taskId}] Wave ${wave}: ${queue.length} new target(s) (${knownUnique} unique so far, ${processedCount} engaged).`);
+                    let qi = 0;
+
+                    while (true) {
+                        if (qi >= queue.length) {
+                            // Wave fully consumed → try to load more comments.
+                            if (stopType) break;
+                            if (checkTimeStop()) break;
+                            if (!stillOnTarget()) {
+                                logger.warn(`[engage:${taskId}] Page drifted (${page.url()}) while reloading comments — stopping per-comment loop.`);
+                                break;
+                            }
+                            if (queue.length === 0) staleWaves++; else staleWaves = 0;
+                            if (staleWaves >= 3) {
+                                logger.info(`[engage:${taskId}] Comment list exhausted after ${wave} wave(s) (${knownUnique} unique, ${processedCount} engaged).`);
+                                break;
+                            }
+                            await DOMHelpers.humanScroll(page, "div[class*='DivCommentMain'], div[class*='DivTabContainer']", { totalPx: 900 }).catch(() => false);
+                            await pause(1200, 2200);
+                            try {
+                                const cEx = platformConfig.extractors?.comments;
+                                if (cEx) {
+                                    const pf = new Function('items', 'return (' + cEx.parseFunction + '\n)(items);');
+                                    aiComments = await page.$$eval(cEx.selector, pf).catch(() => []) || [];
+                                }
+                            } catch (e) { /* keep previous aiComments on failure */ }
+                            queue = buildTargets();
+                            knownUnique += queue.length;
+                            wave++;
+                            qi = 0;
+                            logger.info(`[engage:${taskId}] Wave ${wave}: ${queue.length} new target(s) (${knownUnique} unique so far, ${processedCount} engaged).`);
+                            continue;
+                        }
+                        const comment = queue[qi++];
                         if (stopType) break;
                         if (repliedTexts.has(comment.text)) continue; // dedupe
                         // URL-drift guard: if the SPA navigated to another post,
@@ -828,7 +882,7 @@ export async function runSearchInteractEngagement(page, opts) {
                         // ---- Locate the comment in the live DOM by text ----
                         // mutable: the like poll may scroll/re-render the list, so
                         // refresh before the reply so it targets the right box.
-                        let cIdx = await locateByText(comment.text);
+                        let cIdx = await locateByText(comment.text, comment.username);
                         if (cIdx < 0) {
                             logger.info(`[engage:${taskId}] Comment not found or ambiguous in DOM: "${comment.text.substring(0, 40)}..." — skipping.`);
                             continue;
@@ -871,7 +925,7 @@ export async function runSearchInteractEngagement(page, opts) {
                             let likeVerified = false;
                             let likeAlready = false;
                             for (let attempt = 0; attempt < 2 && !likeVerified; attempt++) {
-                                let idx = await locateByText(comment.text);
+                                let idx = await locateByText(comment.text, comment.username);
                                 if (idx < 0) break;
                                 let res = await resolveLike(idx);
                                 if (res.state === 'liked') { likeVerified = true; likeAlready = true; break; }
@@ -882,7 +936,7 @@ export async function runSearchInteractEngagement(page, opts) {
                                         if (el) el.scrollIntoView({ block: 'center' });
                                     }, { sel: CONTAINER_SEL, idx }).catch(() => {});
                                     await pause(400, 700);
-                                    const idx2 = await locateByText(comment.text);
+                                    const idx2 = await locateByText(comment.text, comment.username);
                                     if (idx2 < 0) continue;
                                     idx = idx2;
                                     res = await resolveLike(idx);
@@ -896,7 +950,7 @@ export async function runSearchInteractEngagement(page, opts) {
                                     let chk = await resolveLike(idx);
                                     if (chk.state === 'liked') { likeVerified = true; break; }
                                     if (chk.state === 'no-container' || chk.state === 'no-icon') {
-                                        const reIdx = await locateByText(comment.text);
+                                        const reIdx = await locateByText(comment.text, comment.username);
                                         if (reIdx >= 0) {
                                             idx = reIdx;
                                             chk = await resolveLike(idx);
@@ -914,7 +968,7 @@ export async function runSearchInteractEngagement(page, opts) {
                         // scrolled/re-rendered the virtualized list) so the reply
                         // targets the correct box. Keep the old index if not found.
                         {
-                            const freshIdx = await locateByText(comment.text).catch(() => -1);
+                            const freshIdx = await locateByText(comment.text, comment.username).catch(() => -1);
                             if (freshIdx >= 0) cIdx = freshIdx;
                         }
 
@@ -1039,7 +1093,7 @@ export async function runSearchInteractEngagement(page, opts) {
                             await closeReplyBox().catch(() => false);
                         }
                         await pause(1000, 2000);
-                    }
+                    }  // end while (wave loop)
 
                     // ---- Final like log (before leaving the post) ----
                     // Fire-and-forget per directive: log only, never re-like.

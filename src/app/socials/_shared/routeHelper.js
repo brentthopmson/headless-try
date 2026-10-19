@@ -1212,6 +1212,25 @@ export async function postCommentVerified(page, s, text, logPrefix = '', opts = 
 
     if (coveredCheck && coveredCheck.covered) {
         if (logPrefix) logger.warn(`${logPrefix} [${mode}] submit covered by ${coveredCheck.topTag} — scrolling into view + Escape + retry.`);
+        // Cookie banner overlay: click "Allow all" with a REAL mouse before the
+        // Escape/scroll retry — the banner is what swallowed the submit.
+        if (/cookie/i.test(coveredCheck.topTag || '')) {
+            const cookieRect = await page.evaluate(() => {
+                const b = document.querySelector("div[class*='tiktok-cookie-banner'], .tiktok-cookie-banner");
+                if (!b) return null;
+                const btns = Array.from(b.querySelectorAll('button'));
+                const allow = btns.find(x => /allow all/i.test(x.textContent || '')) || btns[btns.length - 1];
+                if (!allow) return null;
+                const r = allow.getBoundingClientRect();
+                if (r.width < 1 || r.height < 1) return null;
+                return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+            }).catch(() => null);
+            if (cookieRect) {
+                await DOMHelpers.humanClickAt(page, cookieRect.x, cookieRect.y, { hoverMs: [120, 300] }).catch(() => false);
+                if (logPrefix) logger.info(`${logPrefix} [${mode}] clicked cookie banner "Allow all" (real mouse) before retry.`);
+                await DOMHelpers.randomDelay(400, 700);
+            }
+        }
         await page.keyboard.press('Escape').catch(() => {});
         await page.evaluate(({ mode, containerSel, containerIndex }) => {
             let ed = null;

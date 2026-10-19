@@ -1137,7 +1137,6 @@ export async function POST(request) {
       const profilePlatforms = {};
       // Batch engagement settings from campaign settings JSON (safe defaults).
       const maxResultsPerKeyword = Math.max(1, parseInt(settings.maxResultsPerKeyword, 10) || 5);
-      const interactionMaxReplies = Math.max(0, parseInt(settings.interactionMaxReplies, 10) || 3);
 
       // Batch task: ONE task per profile per operation, carrying ALL target
       // keywords/queries in searchQueries[]. The route opens the browser once
@@ -1155,7 +1154,6 @@ export async function POST(request) {
           searchQuery: queryList[0] || "",
           searchQueries: queryList,
           maxResultsPerKeyword,
-          interactionMaxReplies,
           cookieJSON: typeof profileData.cookies === "string" ? profileData.cookies : JSON.stringify(profileData.cookies),
           browserIdentity: profileData.browserIdentity || null,
           driveUrl: profileData.driveUrl || "",

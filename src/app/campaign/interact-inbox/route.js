@@ -298,7 +298,8 @@ export async function POST(request) {
     const stopAfterHours = settings.interactionStopAfterHours || 72;
     const hoursElapsed = (Date.now() - startedAt.getTime()) / 3600000;
     let replyCount = settings.interactionRepliesCount || 0;
-    const maxReplies = settings.interactionMaxReplies || 100;
+    // No per-campaign reply cap: the platform gates (hourly/daily/monthly)
+    // are the ceiling and renew on their own windows.
     // Strict per-run interaction cap: unset/empty/0 in the SETTINGS sheet
     // (interactionBatchLimit) blocks the watcher entirely — no Infinity
     // fallback (was the last fail-open path for interactionLimit).
@@ -348,6 +349,7 @@ export async function POST(request) {
 
     let newReplies = 0;
     let scannedAccounts = 0;
+    let blockedByPlatform = 0;
 
     await updateCampaignSettings(campaignId, {
       interactionStatus: "monitoring",
@@ -356,7 +358,6 @@ export async function POST(request) {
 
     for (const account of accounts) {
       if (await isCampaignPaused(campaignId)) break;
-      if (replyCount >= maxReplies) break;
 
       // Monthly quota re-check per account (spend can move between passes)
       const accountQuota = await checkUserQuota(userId, { keys: ["interactionUsage"] });
@@ -395,6 +396,7 @@ export async function POST(request) {
       const platformCheck = await checkActionAllowed(account.platform || "", "inboxReply", accountUsage);
       if (!platformCheck.allowed) {
         log.warn(` [${account.identifier}] blocked by platform limits: ${platformCheck.reason}`);
+        blockedByPlatform++;
         continue;
       }
 
@@ -439,7 +441,6 @@ export async function POST(request) {
           }
 
           for (const item of candidates) {
-            if (replyCount >= maxReplies) break;
             const key = ledgerKey(item);
             if (repliedThreads.has(key)) continue;
 
@@ -493,9 +494,11 @@ export async function POST(request) {
       }
     }
 
-    const done = replyCount >= maxReplies;
+    // "Done" only when the platform gates blocked EVERY eligible account
+    // (hourly/daily exhausted). Usage renews on the next window.
+    const done = accounts.length > 0 && blockedByPlatform >= accounts.length;
     if (done) {
-      await updateCampaignSettings(campaignId, { interactionStatus: "completed", interactionStoppedReason: "reply_limit_reached" });
+      await updateCampaignSettings(campaignId, { interactionStatus: "completed", interactionStoppedReason: "platform_limit_reached" });
     }
 
     log.info(` Inbox watcher done: scanned=${scannedAccounts} accounts, replies=${newReplies}, total=${replyCount}`);

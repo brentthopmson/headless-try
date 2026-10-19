@@ -204,7 +204,6 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log) {
   }
 
   const stopAfterHours = settings.interactionStopAfterHours || 72;
-  const maxReplies = settings.interactionMaxReplies || 100;
   const interactionStartedAt = settings.interactionStartedAt || new Date().toISOString();
 
   const batchCount = Math.ceil(sentRows.length / BATCH_SIZE);
@@ -226,20 +225,6 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log) {
         success: true,
         message: `Interaction stopped: time limit reached (${stopAfterHours}h)`,
         stats: { monitored: sentRows.length, replies: replyCount, autoReplied: autoReplyCount, stoppedReason: "time_limit_reached" }
-      });
-    }
-
-    // Stop guard: check reply limit
-    if (replyCount >= maxReplies) {
-      log.info(` Stop guard: reply limit reached (${replyCount} >= ${maxReplies})`);
-      await updateCampaignSettings(campaignId, {
-        interactionStatus: "completed",
-        interactionStoppedReason: "reply_limit_reached"
-      });
-      return NextResponse.json({
-        success: true,
-        message: `Interaction stopped: reply limit reached (${maxReplies})`,
-        stats: { monitored: sentRows.length, replies: replyCount, autoReplied: autoReplyCount, stoppedReason: "reply_limit_reached" }
       });
     }
 
@@ -378,7 +363,6 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
   }
 
   const stopAfterHours = settings.interactionStopAfterHours || 72;
-  const maxReplies = settings.interactionMaxReplies || 100;
   const interactionStartedAt = settings.interactionStartedAt || new Date().toISOString();
 
   let wasPaused = false;
@@ -393,16 +377,6 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
       await updateCampaignSettings(campaignId, {
         interactionStatus: "completed",
         interactionStoppedReason: "time_limit_reached"
-      });
-      break;
-    }
-
-    // Stop guard: check reply limit
-    if (replyCount >= maxReplies) {
-      log.info(`[Worker] Stop guard: reply limit reached`);
-      await updateCampaignSettings(campaignId, {
-        interactionStatus: "completed",
-        interactionStoppedReason: "reply_limit_reached"
       });
       break;
     }
