@@ -954,33 +954,16 @@ export async function runSearchInteractEngagement(page, opts) {
                             } catch (e) {
                                 replyText = '';
                             }
-                            // AI-off fallback (user directive): seed from a
-                            // DIFFERENT existing comment + emoji — never a bare
-                            // constant. Pick the longest comment that is not the
-                            // parent and not the seed we already posted as our
-                            // main comment. Templates only if no seed exists.
+                            // AI-off fallback (user directive): reply is a SINGLE
+                            // random emoji. Nothing else — no seeded text, no
+                            // templates. The previous seed-based fallback duplicated
+                            // the main comment into the reply box (exclusion of
+                            // generatedComment failed because it had an emoji
+                            // appended). One emoji is guaranteed unique-safe.
                             if (!replyText) {
-                                const parent = stripMentions(String(comment.text || '')).trim().substring(0, 150);
                                 const EMOJIS = ['🔥', '💯', '🙌', '😂', '👏', '😊', '😍', '🤯'];
-                                const seedReply = aiComments
-                                    .map(c => stripMentions(String(c.text || '').trim()).slice(0, 150))
-                                    .filter(t => t.length >= 8 && t.length <= 150 && t !== parent && t !== generatedComment)
-                                    .sort((a, b) => b.length - a.length)[0];
-                                if (seedReply) {
-                                    replyText = `${seedReply} ${EMOJIS[Math.floor(Math.random() * EMOJIS.length)]}`.slice(0, 160);
-                                    logger.info(`[engage:${taskId}] AI-off: seeded reply from existing comment: "${replyText.substring(0, 60)}..."`);
-                                } else {
-                                    const parentWords = parent.split(/\s+/).slice(0, 4).join(' ');
-                                    const templates = [
-                                        parentWords ? `So true — "${parentWords}..." 💯` : 'So true 💯',
-                                        'Facts 🔥',
-                                        "Right?! 😂",
-                                        'Couldn\'t agree more 👏',
-                                        parentWords ? `${parentWords}... this! 🙌` : 'This! 🙌',
-                                    ];
-                                    replyText = templates[Math.floor(Math.random() * templates.length)];
-                                    logger.info(`[engage:${taskId}] AI-off: no seed available, fallback template: "${replyText}"`);
-                                }
+                                replyText = EMOJIS[Math.floor(Math.random() * EMOJIS.length)];
+                                logger.info(`[engage:${taskId}] AI-off: reply = single emoji "${replyText}"`);
                             }
                             if (replyText) {
                                 const replyRes = await postCommentVerified(page, s, replyText, `[engage:${taskId}]`, { mode: 'reply', containerIndex: cIdx, containerSel: CONTAINER_SEL }).catch(err => ({ posted: false, reason: err.message }));
