@@ -106,7 +106,10 @@ async function findLoginErrorText(page, platformConfig, deadlineMs = 0) {
     }
 }
 
-const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
+import { getMaxConcurrentTasks } from '../../../../utils/campaignConcurrency.js';
+
+// Live ceiling is SETTINGS MAX_CONCURRENT_TASKS — refreshed each interval tick.
+let MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
 const DRIVE_FINALIZER_AWAIT_MS = parseInt(process.env.DRIVE_FINALIZER_AWAIT_MS || '120000', 10);
 // Dedicated staging root for COMPLETED-finalizer uploads. Lives OUTSIDE the profile tree so
 // segment scans, cleanup paths, and the external stale-segment cleaner never touch a profile
@@ -3578,6 +3581,7 @@ async function processWaitingRows() {
         return;
     }
     G.running = true;
+    MAX_CONCURRENT_BROWSERS = await getMaxConcurrentTasks();
     logger.info(`Interval check running. Active processes: ${activeProcesses.size}/${MAX_CONCURRENT_BROWSERS}`);
 
     try {

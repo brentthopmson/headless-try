@@ -24,8 +24,10 @@ import {
     checkVerification,
     setCorsHeaders
 } from './routeHelper.js'; 
+import { getMaxConcurrentTasks } from "../../../../utils/campaignConcurrency.js";
 
-const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
+// Live ceiling is SETTINGS MAX_CONCURRENT_TASKS — refreshed each interval tick.
+let MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
 const activeProcesses = new Set();
 const activeBrowserSessions = new Map(); 
 logger.info(`Concurrency limit set to ${MAX_CONCURRENT_BROWSERS}`);
@@ -1228,6 +1230,7 @@ async function processWaitingRows() {
     return;
   }
   isProcessingInterval = true;
+  MAX_CONCURRENT_BROWSERS = await getMaxConcurrentTasks();
   logger.info(`Interval check running. Active processes: ${activeProcesses.size}/${MAX_CONCURRENT_BROWSERS}`);
 
   try {

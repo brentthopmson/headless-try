@@ -18,6 +18,7 @@ import workflowOps from '../_shared/workflowOps.js';
 const { normalizeWorkflowOp, resolveWorkflowOps } = workflowOps;
 import { checkActionAllowed, getPlatformLimits } from '../_shared/limits.js';
 import { requireFeature } from '../../../utils/featureGate.js';
+import { getMaxConcurrentTasks, getMaxConcurrentTasksSync } from '../../../utils/campaignConcurrency.js';
 import { resolveAccountGate, accountGateError } from '../_shared/accountGate.js';
 import { getAccountUsage, updateAccountUsage, updateAccountStatus, updateAccountInteractionData } from '../_shared/hubUpdater.js';
 
@@ -27,9 +28,10 @@ export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 export const runtime = 'nodejs';
 
-const MAX_CONCURRENT_TASKS = parseInt(process.env.MAX_CONCURRENT_TASKS || '1', 10);
+// Fallback only — live ceiling is SETTINGS MAX_CONCURRENT_TASKS (campaignConcurrency.js).
+const MAX_CONCURRENT_TASKS = getMaxConcurrentTasksSync();
 const activeTasks = new Map();
-logger.info(`[Inbox Interact] Concurrency limit: ${MAX_CONCURRENT_TASKS}`);
+logger.info(`[Inbox Interact] Concurrency limit: ${MAX_CONCURRENT_TASKS} (settings-driven)`);
 
 async function processTask(taskPayload) {
     let browser = null;
@@ -179,6 +181,7 @@ export async function POST(request) {
         if (gate) return gate;
         const body = await request.json();
         const { action, task } = body;
+        const maxConcurrent = await getMaxConcurrentTasks();
 
         logger.info(`[POST] action=${action}`);
 
@@ -187,7 +190,7 @@ export async function POST(request) {
                 return setCorsHeaders(NextResponse.json({ error: "Missing task payload" }, { status: 400 }));
             }
 
-            if (activeTasks.size >= MAX_CONCURRENT_TASKS) {
+            if (activeTasks.size >= maxConcurrent) {
                 return setCorsHeaders(NextResponse.json({ error: "Concurrency limit reached" }, { status: 429 }));
             }
 

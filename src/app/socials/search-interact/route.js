@@ -25,14 +25,18 @@ import { resolveAccountGate, accountGateError } from '../_shared/accountGate.js'
 import { getAccountUsage, updateAccountUsage, updateAccountStatus } from '../_shared/hubUpdater.js';
 import { fetchTaskData, updateTaskRow, runSearchInteractEngagement } from './routeHelper.js';
 import { requireFeature } from '../../../utils/featureGate.js';
+import { markTagsDone } from '../../campaign/_shared/pipelineUtils.js';
+import { getMaxConcurrentTasks, getMaxConcurrentTasksSync } from '../../../utils/campaignConcurrency.js';
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 export const runtime = 'nodejs';
 
-const MAX_CONCURRENT_TASKS = parseInt(process.env.MAX_CONCURRENT_TASKS || '2', 10);
+// Fallback only — the live ceiling is the SETTINGS key MAX_CONCURRENT_TASKS
+// (see campaignConcurrency.js). The gate reads the settings value per request.
+const MAX_CONCURRENT_TASKS = getMaxConcurrentTasksSync();
 const activeTasks = new Map();
-logger.info(`[Search Interact] Concurrency limit: ${MAX_CONCURRENT_TASKS}`);
+logger.info(`[Search Interact] Concurrency limit: ${MAX_CONCURRENT_TASKS} (settings-driven)`);
 
 export { processTask as processSearchInteractTask };
 
@@ -77,8 +81,9 @@ async function processTask(taskRow, columnIndexes) {
     const get = (columnIndexes && typeof columnIndexes === 'object')
         ? (key => taskRow[columnIndexes[key]])
         : (key => (taskRow ? taskRow[key] : undefined));
-    const taskId = get('taskId');
-    let browser = null;
+        const taskId = get('taskId');
+        const campaignId = get('campaignId') || null;
+        let browser = null;
     let page = null;
     let finalStatus = "FAILED";
     let results = [];
@@ -187,6 +192,14 @@ async function processTask(taskRow, columnIndexes) {
                 taskId,
             });
             results = engagementSummary.results || [];
+
+            // Persist per-account tag progress so a resumed run (next hourly
+            // cycle) only processes tags that are still pending.
+            try {
+                await markTagsDone(campaignId, profileId, engagementSummary.completedKeywords || []);
+            } catch (tagErr) {
+                logger.warn(`[processTask] ${taskId}: tag status persist failed: ${tagErr.message}`);
+            }
 
             // Rate-limited: account already marked RATE_LIMITED inside runner.
             // Treat as COMPLETED-with-stop so the campaign moves to the next
@@ -319,6 +332,7 @@ export async function POST(request) {
         if (gate) return gate;
         const body = await request.json();
         const { action, taskId } = body;
+        const maxConcurrent = await getMaxConcurrentTasks();
 
         logger.info(`[POST] Received: action=${action}`);
 
@@ -352,7 +366,7 @@ export async function POST(request) {
 
             const results = [];
             for (const taskRow of pendingTasks) {
-                if (activeTasks.size >= MAX_CONCURRENT_TASKS) {
+                if (activeTasks.size >= maxConcurrent) {
                     logger.warn(`[POST] Reached concurrency limit`);
                     break;
                 }
@@ -392,7 +406,7 @@ export async function POST(request) {
                 enrichedTaskRow[columnIndexes[h]] = task[h];
             }
 
-            if (activeTasks.size >= MAX_CONCURRENT_TASKS) {
+            if (activeTasks.size >= maxConcurrent) {
                 return setCorsHeaders(NextResponse.json({ error: "Concurrency limit reached" }, { status: 429 }));
             }
 

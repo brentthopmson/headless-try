@@ -20,9 +20,10 @@ import workflowOps from "../../socials/_shared/workflowOps.js";
 const { resolveSocialMessage } = workflowOps;
 import { requireFeature } from "../../../utils/featureGate.js";
 import { getSetting } from "../../../utils/settingsCache.js";
+import { getMaxConcurrentTasks } from "../../../utils/campaignConcurrency.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { dispatchToServers } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getFirestickEmails, getPerformancePresets, updateCampaignSettings, getCampaignSettings } from "../_shared/pipelineUtils.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getFirestickEmails, getPerformancePresets, updateCampaignSettings, getCampaignSettings, getAccountTagStatuses } from "../_shared/pipelineUtils.js";
 import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
 import { calculateScheduleTimes } from "../../../utils/scheduleCalculator.js";
 import { detectEmailProvider } from "../../../utils/sendRateLimiter.js";
@@ -1147,6 +1148,7 @@ export async function POST(request) {
         const queryList = Array.isArray(queries) ? queries : [queries];
         pendingSocialTasks.push({
           taskId: "task-" + Math.random().toString(36).substring(2, 11),
+          campaignId,
           platform,
           operation,
           priority: PRIORITY_MAP[operation] !== undefined ? PRIORITY_MAP[operation] : 99,
@@ -1235,7 +1237,17 @@ export async function POST(request) {
           const operation = op === "search" ? "search-interact"
             : op === "activities" ? "activities-interact"
             : "page-interact";
-          const opQueries = operation === "page-interact" ? filterPageKeywords(profileKeywords) : profileKeywords;
+          let opQueries = operation === "page-interact" ? filterPageKeywords(profileKeywords) : profileKeywords;
+          // Tag resume: skip tags already marked done for this account (set
+          // after an hourly-limit stop) so a resumed run only processes the
+          // still-pending tags.
+          if (operation === "search-interact") {
+            const doneTags = getAccountTagStatuses(settings, profileId);
+            opQueries = opQueries.filter(k => doneTags[String(k).trim()] !== "done");
+            if (opQueries.length === 0) {
+              log.info(` [tag-resume] profile ${profileId}: all search tags already done — skipping search-interact`);
+            }
+          }
           if (opQueries.length === 0) continue;
           queueSocialTask(operation, opQueries, platform, profileData, profileId);
         }
@@ -1317,25 +1329,51 @@ export async function POST(request) {
 
       let pausedByAdmin = false;
       let skippedLimitCount = 0;
-      for (const task of tasksToExecute) {
+      let quotaStopped = false;
+
+      // Concurrency governor: run up to MAX_CONCURRENT_TASKS social tasks in
+      // parallel (SETTINGS key, read via campaignConcurrency). Previously this
+      // loop was serial, so N accounts never overlapped.
+      const maxConcurrentSocial = Math.max(1, await getMaxConcurrentTasks());
+
+      // updateUserUsage is an unguarded read-modify-write and flushSocialCsv
+      // rewrites the whole Drive CSV — serialize both so parallel tasks can't
+      // clobber each other.
+      let usageChain = Promise.resolve();
+      const incrementInteractionUsage = (uid) => {
+        usageChain = usageChain
+          .then(() => updateUserUsage(uid, "interactionUsage"))
+          .catch((uErr) => { log.warn(` [user-limit] usage increment failed: ${uErr.message}`); });
+        return usageChain;
+      };
+      let flushChain = Promise.resolve();
+      const flushSocialCsvSafe = (label) => {
+        flushChain = flushChain
+          .then(() => flushSocialCsv())
+          .catch((flushErr) => { log.warn(` Social CSV flush failed after ${label}: ${flushErr.message}`); });
+        return flushChain;
+      };
+
+      const runSocialTask = async (task) => {
         if (await isCampaignPaused(campaignId)) {
           pausedByAdmin = true;
           log.info(` Campaign ${campaignId} was paused during social run. Stopping.`);
-          break;
+          return;
         }
         // USER tier — daily action quota re-checked before every task
         if (userId) {
           const uq = await checkUserQuota(userId, { keys: ["interactionUsage"] });
           if (!uq.allowed) {
             log.info(` [user-limit] ${uq.reason} — stopping social run.`);
-            break;
+            quotaStopped = true;
+            return;
           }
         }
         const handler = ROUTE_MAP[task.operation];
         if (!handler) {
           log.warn(` No handler for operation: ${task.operation}`);
           failedCount++;
-          continue;
+          return;
         }
 
         try {
@@ -1354,21 +1392,11 @@ export async function POST(request) {
           const result = await handler(taskPayload);
           executionResults.push(result);
           executedCount++;
-          if (userId) {
-            try {
-              await updateUserUsage(userId, "interactionUsage");
-            } catch (uErr) {
-              log.warn(` [user-limit] usage increment failed: ${uErr.message}`);
-            }
-          }
+          if (userId) await incrementInteractionUsage(userId);
           log.info(` Task ${task.taskId} completed: ${result.status}`);
 
           // Live-progress CSV flush after each task so the file view advances mid-run
-          try {
-            await flushSocialCsv();
-          } catch (flushErr) {
-            log.warn(` Social CSV flush failed after task ${task.taskId}: ${flushErr.message}`);
-          }
+          await flushSocialCsvSafe(`task ${task.taskId}`);
         } catch (taskError) {
           // Limit-type errors are SKIPS (account over quota / account blocked),
           // not failures — the campaign moves on to the next account/task.
@@ -1383,16 +1411,26 @@ export async function POST(request) {
           }
 
           // Live-progress CSV flush after a failure so the row is marked failed
-          try {
-            await flushSocialCsv();
-          } catch (flushErr) {
-            log.warn(` Social CSV flush failed after failed task ${task.taskId}: ${flushErr.message}`);
-          }
+          await flushSocialCsvSafe(`failed task ${task.taskId}`);
         }
 
         // Inter-task delay for rate limiting
         await new Promise(res => setTimeout(res, 500));
-      }
+      };
+
+      const socialQueue = tasksToExecute.slice();
+      log.info(` Social dispatch: ${socialQueue.length} task(s), concurrency ${maxConcurrentSocial}`);
+      const socialRunners = Array.from(
+        { length: Math.min(maxConcurrentSocial, socialQueue.length) },
+        async () => {
+          while (!pausedByAdmin && !quotaStopped) {
+            const task = socialQueue.shift();
+            if (!task) break;
+            await runSocialTask(task);
+          }
+        }
+      );
+      await Promise.all(socialRunners);
 
       // Step 4f: Send direct messages to all social profiles in CSV if enabled
       const shouldSendMessage = settings.shouldSendMessage === true || settings.shouldSendMessage === "true" || settings.sendToAll === true;

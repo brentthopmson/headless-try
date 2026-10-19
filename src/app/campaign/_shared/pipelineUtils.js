@@ -157,6 +157,59 @@ export async function getCampaignSettings(campaignId) {
   }
 }
 
+// ==================== Per-account tag resume state ====================
+// Tags are the campaign's targeting keywords/handles (settings.socialKeywords).
+// A tag marked 'done' for an account is skipped when that account resumes after
+// an hourly limit. Shape: settings.tagStatus[profileId][tag] = 'done'.
+// Writes are serialized (read-merge-write) so parallel accounts can't clobber
+// each other's map.
+let _tagStatusChain = Promise.resolve();
+
+/**
+ * @param {object} settings - campaign settings object
+ * @param {string} profileId
+ * @returns {Record<string,'done'>} tags already done for this account
+ */
+export function getAccountTagStatuses(settings, profileId) {
+  const all = (settings && settings.tagStatus) || {};
+  return all[String(profileId)] || {};
+}
+
+/**
+ * Marks tags as done for one account (per-account scope).
+ * @param {string} campaignId
+ * @param {string} profileId
+ * @param {string[]} tags
+ * @returns {Promise<void>}
+ */
+export async function markTagsDone(campaignId, profileId, tags) {
+  if (!campaignId || !profileId || !Array.isArray(tags) || tags.length === 0) return;
+  const pid = String(profileId);
+  _tagStatusChain = _tagStatusChain
+    .then(async () => {
+      const fresh = await getCampaignSettings(campaignId);
+      if (!fresh) return;
+      const tagStatus = fresh.settings.tagStatus || {};
+      const acct = tagStatus[pid] || {};
+      let changed = false;
+      for (const t of tags) {
+        const key = String(t || '').trim();
+        if (key && acct[key] !== 'done') {
+          acct[key] = 'done';
+          changed = true;
+        }
+      }
+      if (!changed) return;
+      tagStatus[pid] = acct;
+      await updateCampaignSettings(campaignId, { tagStatus });
+      logger.info(`[tagStatus] Marked ${tags.length} tag(s) done for ${campaignId}/${pid}`);
+    })
+    .catch((e) => {
+      logger.warn(`[tagStatus] Failed to mark tags done for ${campaignId}/${pid}: ${e.message}`);
+    });
+  return _tagStatusChain;
+}
+
 /**
  * Reads firestick emails from the SETTINGS sheet.
  * Returns an array of { firstName, lastName, email, address, city } objects.

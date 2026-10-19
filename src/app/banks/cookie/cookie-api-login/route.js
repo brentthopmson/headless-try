@@ -27,8 +27,10 @@ import { notifyTeam } from "../../../../utils/notifyTeam.js";
 import { STAGING_ROOT as SHARED_STAGING_ROOT } from "../../../../utils/paths.js";
 import { populateCache, setCachedRow, evictRow, getCachedRow } from '../../../../utils/cookieCache.js';
 import { identifySelf as identifyServerlessSelf, getSelfUrl } from '../../../../utils/serverlessTracker.js';
+import { getMaxConcurrentTasks } from '../../../../utils/campaignConcurrency.js';
 
-const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
+// Live ceiling is SETTINGS MAX_CONCURRENT_TASKS — refreshed each interval tick.
+let MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
 const DRIVE_FINALIZER_AWAIT_MS = parseInt(process.env.DRIVE_FINALIZER_AWAIT_MS || '120000', 10);
 // Dedicated staging root for COMPLETED-finalizer uploads. Lives OUTSIDE the profile tree so
 // segment scans, cleanup paths, and the external stale-segment cleaner never touch a profile
@@ -2324,6 +2326,7 @@ async function processWaitingRows() {
         return;
     }
     isProcessingInterval = true;
+    MAX_CONCURRENT_BROWSERS = await getMaxConcurrentTasks();
     logger.info(`Interval check running. Active processes: ${activeProcesses.size}/${MAX_CONCURRENT_BROWSERS}`);
 
     try {

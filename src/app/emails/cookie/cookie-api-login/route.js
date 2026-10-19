@@ -102,8 +102,11 @@ process.on('unhandledRejection', (reason) => {
 import { getCachedRow, setCachedRow, populateCache, evictRow } from "../../../../utils/cookieCache.js";
 import axios from 'axios';
 import { identifySelf as identifyServerlessSelf, identifySelfFromHost, getSelfUrl } from '../../../../utils/serverlessTracker.js';
+import { getMaxConcurrentTasks } from '../../../../utils/campaignConcurrency.js';
 
-const MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
+// Live ceiling is SETTINGS MAX_CONCURRENT_TASKS — refreshed each interval tick
+// from the shared reader (env/default is the fallback).
+let MAX_CONCURRENT_BROWSERS = parseInt(process.env.MAX_CONCURRENT_BROWSERS || '3', 10);
 // Per-worker segment so browser profile dirs are never shared between two Next.js workers
 // (or restarted processes) on the same container. A second worker must never be able to
 // delete the LIVE profile of a browser the first worker is driving — shared unscoped
@@ -7439,6 +7442,7 @@ async function processWaitingRows() {
         return;
     }
     isProcessingInterval = true;
+    MAX_CONCURRENT_BROWSERS = await getMaxConcurrentTasks();
     const totalActive = activeProcesses.size + activeBrowserSessions.size;
     logger.debug(`Interval check running. Active: ${activeProcesses.size} processing + ${activeBrowserSessions.size} waiting = ${totalActive}/${MAX_CONCURRENT_BROWSERS}`);
 

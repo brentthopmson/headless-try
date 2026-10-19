@@ -6,6 +6,8 @@ import {
     getSelfId,
     getSelfUrl,
 } from "../../../utils/serverlessTracker.js";
+import { getMaxConcurrentTasks } from "../../../utils/campaignConcurrency.js";
+import { getBrowserSemaphoreStats } from "../../../utils/utils.js";
 
 export const dynamic = "force-dynamic";
 export const runtime = 'nodejs';
@@ -76,6 +78,24 @@ export async function GET(request) {
         && checks.envMatchesResolved !== false
         && checks.rowUrlHostMatchesRequest !== false;
 
+    // Capacity snapshot so GAS getBestServerlessEndpoint can pick the
+    // least-loaded engine (e.g. for notify-form-submission dispatch) — the same
+    // MAX_CONCURRENT_TASKS ceiling that gates local browser work.
+    let capacity = null;
+    try {
+        const maxConcurrent = await getMaxConcurrentTasks();
+        const browserStats = getBrowserSemaphoreStats();
+        const activeBrowsers = browserStats.active || 0;
+        capacity = {
+            maxConcurrent,
+            activeBrowsers,
+            waitingBrowsers: browserStats.waiting || 0,
+            load: maxConcurrent > 0 ? Number((activeBrowsers / maxConcurrent).toFixed(3)) : 0,
+        };
+    } catch (e) {
+        logger.warn(`[ServerlessSelf] capacity snapshot failed: ${e.message}`);
+    }
+
     const payload = {
         pass,
         severlessId: resolvedId || envId,
@@ -87,6 +107,7 @@ export async function GET(request) {
         forwardedHost,
         rowUrlHost,
         checks,
+        capacity,
         rowError,
         timestamp: new Date().toISOString(),
     };

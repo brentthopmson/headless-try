@@ -193,6 +193,9 @@ export async function runSearchInteractEngagement(page, opts) {
     let stopReason = null;
     let captchaFailed = false;
     const startedAt = Date.now();
+    // Tags fully iterated this run (no stop hit mid-keyword). The caller marks
+    // these 'done' so a resumed run only processes still-pending tags.
+    const completedKeywords = [];
 
     const checkTimeStop = () => {
         if (stopAfterHours > 0) {
@@ -1137,6 +1140,9 @@ export async function runSearchInteractEngagement(page, opts) {
         } catch (kwErr) {
             logger.warn(`[engage:${taskId}] Keyword "${keyword}" failed: ${kwErr.message}`);
         }
+
+        // Fully processed (no stop mid-keyword) — eligible to be marked done.
+        if (!stopType) completedKeywords.push(keyword);
     }
 
     page.off('response', onCommentApiResponse);
@@ -1155,6 +1161,7 @@ export async function runSearchInteractEngagement(page, opts) {
 
     return {
         results,
+        completedKeywords,
         stopType,
         stopReason,
         captchaFailed,

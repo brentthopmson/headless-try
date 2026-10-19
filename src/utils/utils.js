@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { getMaxConcurrentTasks, getMaxConcurrentTasksSync } from './campaignConcurrency.js';
 
 export const localExecutablePath =
   process.platform === "win32"
@@ -25,8 +26,21 @@ export const isDev = process.env.NODE_ENV === "development";
 
 // ==================== Global Browser Semaphore ====================
 // Limits total concurrent Chromium instances across all routes/campaigns to prevent OOM.
-const MAX_GLOBAL_BROWSERS = parseInt(process.env.MAX_GLOBAL_BROWSERS || '4', 10);
+// The ceiling is driven by the SETTINGS key MAX_CONCURRENT_TASKS (see
+// campaignConcurrency.js) so social interact + cookie/email account-opening
+// logins share ONE gate. Falls back to env MAX_CONCURRENT_TASKS ->
+// env MAX_GLOBAL_BROWSERS -> 4.
+let _maxGlobalBrowsers = getMaxConcurrentTasksSync();
 const BROWSER_LAUNCH_TIMEOUT_MS = 30000; // 30s wait for a slot
+
+// Refresh the cached ceiling from SETTINGS (TTL-guarded inside the reader).
+async function refreshMaxGlobalBrowsers() {
+  try {
+    _maxGlobalBrowsers = await getMaxConcurrentTasks();
+  } catch (e) {
+    // keep the last-known value
+  }
+}
 
 if (!globalThis.__browserSemaphore) {
   globalThis.__browserSemaphore = {
@@ -41,8 +55,10 @@ const sem = globalThis.__browserSemaphore;
  * Returns a release function that MUST be called when the browser is closed.
  */
 async function acquireBrowserSlot() {
+  await refreshMaxGlobalBrowsers();
+
   // Fast path: slot available
-  if (sem.active.size < MAX_GLOBAL_BROWSERS) {
+  if (sem.active.size < _maxGlobalBrowsers) {
     const slotId = `browser-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     sem.active.add(slotId);
     return slotId;
@@ -53,7 +69,7 @@ async function acquireBrowserSlot() {
     const timeout = setTimeout(() => {
       const idx = sem.waitQueue.findIndex(w => w.resolve === resolve);
       if (idx !== -1) sem.waitQueue.splice(idx, 1);
-      reject(new Error(`Browser semaphore timeout: ${sem.active.size}/${MAX_GLOBAL_BROWSERS} slots in use after ${BROWSER_LAUNCH_TIMEOUT_MS}ms`));
+      reject(new Error(`Browser semaphore timeout: ${sem.active.size}/${_maxGlobalBrowsers} slots in use after ${BROWSER_LAUNCH_TIMEOUT_MS}ms`));
     }, BROWSER_LAUNCH_TIMEOUT_MS);
 
     sem.waitQueue.push({ resolve, timeout });
@@ -66,7 +82,7 @@ async function acquireBrowserSlot() {
 function releaseBrowserSlot(slotId) {
   sem.active.delete(slotId);
   // Wake up next waiter if any
-  if (sem.waitQueue.length > 0 && sem.active.size < MAX_GLOBAL_BROWSERS) {
+  if (sem.waitQueue.length > 0 && sem.active.size < _maxGlobalBrowsers) {
     const next = sem.waitQueue.shift();
     clearTimeout(next.timeout);
     const newSlotId = `browser-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -81,7 +97,7 @@ function releaseBrowserSlot(slotId) {
 export function getBrowserSemaphoreStats() {
   return {
     active: sem.active.size,
-    max: MAX_GLOBAL_BROWSERS,
+    max: _maxGlobalBrowsers,
     waiting: sem.waitQueue.length,
   };
 }
