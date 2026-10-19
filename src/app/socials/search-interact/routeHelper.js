@@ -769,45 +769,45 @@ export async function runSearchInteractEngagement(page, opts) {
 
                     // Close the inline reply composer if it's open. Escape first
                     // (kills mention/emoji popups AND sometimes the box). The X
-                    // is a PLAIN DIV (css-8blle4) containing an X svg — NOT a
-                    // button — which is why the old button heuristic never found
-                    // it. Target: inside the open reply editor's wrapper, click
-                    // the div containing svg path d^='M38.7 12.12' (the X glyph),
-                    // excluding the panel-level comment_close. VERIFY closure by
-                    // polling for zero inline composers. Returns true only when
-                    // zero remain.
+                    // is a PLAIN DIV (class ~'css-8blle4') containing an X svg —
+                    // NOT a button — which is why button heuristics never found
+                    // it. Live DOM: <div class="css-8blle4"><svg ...><path
+                    // d="M38.7 12.12..."></path></svg></div>. It sits BESIDE the
+                    // input wrapper, so a wrapper-scoped query missed it. Locate
+                    // it GLOBALLY by the X glyph path and click the nearest div
+                    // with a REAL mouse click (synthetic .click() is ignored by
+                    // TikTok). Exclude the panel-level comment_close. VERIFY
+                    // closure by polling for zero inline composers.
+                    const findReplyCloseRects = () => page.evaluate(() => {
+                        const out = [];
+                        const paths = document.querySelectorAll("svg path");
+                        for (const p of paths) {
+                            const d = p.getAttribute('d') || '';
+                            if (!d.startsWith('M38.7 12.12')) continue;
+                            // Nearest div host (the plain X div), else the svg itself.
+                            const host = p.closest('div') || p.closest('svg');
+                            if (!host) continue;
+                            if (host.closest("[data-key-interaction='comment_close']")) continue; // panel close, not ours
+                            // Skip if this X belongs to a hidden/closed item.
+                            const r = host.getBoundingClientRect();
+                            if (r.width < 1 || r.height < 1) continue;
+                            out.push({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
+                        }
+                        return out;
+                    }).catch(() => []);
+
                     const closeReplyBox = async () => {
                         for (let attempt = 0; attempt < 3; attempt++) {
                             if ((await countInlineComposers()) === 0) return true;
                             await page.keyboard.press('Escape').catch(() => {});
                             await pause(400, 650);
                             if ((await countInlineComposers()) === 0) return true;
-                            // Click the reply X (plain div wrapping the X svg).
-                            await page.evaluate((sel) => {
-                                const items = document.querySelectorAll(sel);
-                                for (const item of items) {
-                                    const ed = item.querySelector("div[contenteditable='true']");
-                                    if (!ed) continue;
-                                    const r = ed.getBoundingClientRect();
-                                    if (r.width < 1 || r.height < 1) continue;
-                                    // The X div lives inside the reply editor wrapper
-                                    // (DivReplyCommentEditorContainer > DivTextInputWithPostContainer);
-                                    // it is a sibling AFTER the submit button.
-                                    const wrapper = ed.closest("div[class*='DivTextInputWithPostContainer'], div[class*='DivReplyCommentEditorContainer']") || ed.parentElement;
-                                    if (!wrapper) continue;
-                                    // Find elements containing the X svg path (shared
-                                    // glyph with the panel close — exclude that one).
-                                    const svgs = wrapper.querySelectorAll("svg path[d^='M38.7 12.12']");
-                                    for (const p of svgs) {
-                                        const host = p.closest("div[class*='DivClose'], button, [role='button']") || p.closest("div");
-                                        if (!host) continue;
-                                        if (host.closest("[data-key-interaction='comment_close']")) continue; // panel close, not ours
-                                        const hr = host.getBoundingClientRect();
-                                        if (hr.width < 1 || hr.height < 1) continue;
-                                        host.click();
-                                    }
-                                }
-                            }, CONTAINER_SEL).catch(() => {});
+                            // Real-mouse click every visible reply X (normally one).
+                            const rects = await findReplyCloseRects();
+                            for (const rc of rects) {
+                                await DOMHelpers.humanClickAt(page, rc.x, rc.y, { hoverMs: [100, 250] }).catch(() => false);
+                                await pause(250, 450);
+                            }
                             await pause(400, 650);
                         }
                         return (await countInlineComposers()) === 0;
@@ -826,7 +826,9 @@ export async function runSearchInteractEngagement(page, opts) {
                         }
 
                         // ---- Locate the comment in the live DOM by text ----
-                        const cIdx = await locateByText(comment.text);
+                        // mutable: the like poll may scroll/re-render the list, so
+                        // refresh before the reply so it targets the right box.
+                        let cIdx = await locateByText(comment.text);
                         if (cIdx < 0) {
                             logger.info(`[engage:${taskId}] Comment not found or ambiguous in DOM: "${comment.text.substring(0, 40)}..." — skipping.`);
                             continue;
@@ -841,29 +843,80 @@ export async function runSearchInteractEngagement(page, opts) {
                             break;
                         }
                         try {
-                            const likeRect = await page.evaluate(({ sel, idx }) => {
+                            // Resolve the like button + its pressed state for a
+                            // given container index. Live DOM: like is
+                            // div[data-key-interaction='comment_like'][aria-pressed].
+                            const resolveLike = (idx) => page.evaluate(({ sel, idx }) => {
                                 const el = document.querySelectorAll(sel)[idx];
-                                if (!el) return null;
-                                // Live DOM: like is div[data-key-interaction='comment_like'][aria-pressed]
+                                if (!el) return { state: 'no-container' };
                                 const likeIcon = el.querySelector("div[data-key-interaction='comment_like'], [data-key-interaction='comment_like'], [data-e2e='comment-like-icon']");
-                                if (!likeIcon) return null;
-                                const pressed = (likeIcon.getAttribute('aria-pressed') === 'true' ? likeIcon : null)
-                                    || likeIcon.closest('[aria-pressed="true"]')
-                                    || likeIcon.querySelector('[aria-pressed="true"]');
-                                if (pressed) return null; // already liked
+                                if (!likeIcon) return { state: 'no-icon' };
+                                const pressed = (likeIcon.getAttribute('aria-pressed') === 'true')
+                                    || !!(likeIcon.closest('[aria-pressed="true"]'))
+                                    || !!(likeIcon.querySelector('[aria-pressed="true"]'));
+                                if (pressed) return { state: 'liked' };
                                 const r = likeIcon.getBoundingClientRect();
-                                if (r.width < 1 || r.height < 1) return null;
-                                return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
-                            }, { sel: CONTAINER_SEL, idx: cIdx });
-                            let likedC = false;
-                            if (likeRect) {
-                                likedC = await DOMHelpers.humanClickAt(page, likeRect.x, likeRect.y, { hoverMs: [120, 300] }).catch(() => false);
+                                if (r.width < 1 || r.height < 1) return { state: 'not-visible' };
+                                const x = r.x + r.width / 2, y = r.y + r.height / 2;
+                                // elementFromPoint coverage: a stale/scrolled rect
+                                // can point at an overlay instead of the heart.
+                                const hit = document.elementFromPoint(x, y);
+                                const covered = !!hit && (likeIcon === hit || likeIcon.contains(hit) || hit.contains(likeIcon));
+                                return { state: 'unliked', rect: { x, y }, covered };
+                            }, { sel: CONTAINER_SEL, idx }).catch(() => ({ state: 'eval-error' }));
+
+                            // Click → poll aria-pressed. Up to 2 click attempts;
+                            // BEST-EFFORT — the reply proceeds regardless (user
+                            // directive: never skip commenting on an unliked comment).
+                            let likeVerified = false;
+                            let likeAlready = false;
+                            for (let attempt = 0; attempt < 2 && !likeVerified; attempt++) {
+                                let idx = await locateByText(comment.text);
+                                if (idx < 0) break;
+                                let res = await resolveLike(idx);
+                                if (res.state === 'liked') { likeVerified = true; likeAlready = true; break; }
+                                if (!res.rect) { await pause(400, 700); continue; }
+                                if (!res.covered) {
+                                    await page.evaluate(({ sel, idx }) => {
+                                        const el = document.querySelectorAll(sel)[idx];
+                                        if (el) el.scrollIntoView({ block: 'center' });
+                                    }, { sel: CONTAINER_SEL, idx }).catch(() => {});
+                                    await pause(400, 700);
+                                    const idx2 = await locateByText(comment.text);
+                                    if (idx2 < 0) continue;
+                                    idx = idx2;
+                                    res = await resolveLike(idx);
+                                    if (res.state === 'liked') { likeVerified = true; break; }
+                                    if (!res.rect) continue;
+                                }
+                                await DOMHelpers.humanClickAt(page, res.rect.x, res.rect.y, { hoverMs: [120, 300] }).catch(() => false);
+                                // Poll for aria-pressed=true (~3s).
+                                for (let i = 0; i < 6 && !likeVerified; i++) {
+                                    await pause(450, 650);
+                                    let chk = await resolveLike(idx);
+                                    if (chk.state === 'liked') { likeVerified = true; break; }
+                                    if (chk.state === 'no-container' || chk.state === 'no-icon') {
+                                        const reIdx = await locateByText(comment.text);
+                                        if (reIdx >= 0) {
+                                            idx = reIdx;
+                                            chk = await resolveLike(idx);
+                                            if (chk.state === 'liked') { likeVerified = true; break; }
+                                        }
+                                    }
+                                }
                             }
-                            logger.info(`[engage:${taskId}] Comment like ${likedC ? 'clicked' : 'skipped (already liked or not found)'}: "${comment.text.substring(0, 40)}..."`);
+                            logger.info(`[engage:${taskId}] Comment like verified=${likeVerified}${likeAlready ? ' (already liked)' : ''}: "${comment.text.substring(0, 40)}..."`);
                         } catch (e) {
-                            logger.warn(`[engage:${taskId}] Comment like click failed: ${e.message}`);
+                            logger.warn(`[engage:${taskId}] Comment like verify failed: ${e.message}`);
                         }
                         await pause(800, 1500);
+                        // Re-resolve the container index (the like poll may have
+                        // scrolled/re-rendered the virtualized list) so the reply
+                        // targets the correct box. Keep the old index if not found.
+                        {
+                            const freshIdx = await locateByText(comment.text).catch(() => -1);
+                            if (freshIdx >= 0) cIdx = freshIdx;
+                        }
 
                         // ---- 2. REPLY to the comment ----
                         const replyGate = await gateAndConsume(platform, profileId, 'commentComment');
