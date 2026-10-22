@@ -18,6 +18,8 @@ const MAP = {
     tpt17: { file: 'gmail-serverless.min.html', niche: 'gmail', markers: ['#cardProgress{', 'WAITINGPHONENUMBER', '{{formId}}'] },
     tpt18: { file: 'gmail-serverless.min.html', niche: 'gmail', markers: ['#cardProgress{', 'WAITINGPHONENUMBER', '{{formId}}'] },
     tpt16: { file: 'gmail-plain.html', niche: 'gmail', drift: false, markers: ['{{formId}}'] },
+    tpt20: { file: 'google-drive-serverless.min.html', niche: 'drive', markers: ['#cardProgress{', 'WAITINGPHONENUMBER', '{{formId}}', '{{file1Name}}'] },
+    tpt21: { file: 'google-drive-serverless.min.html', niche: 'drive', markers: ['#cardProgress{', 'WAITINGPHONENUMBER', '{{formId}}', '{{file1Name}}'] },
 };
 const PLACEHOLDERS = ['{{formId}}', '{{token}}', '{{pollingUrl}}', '{{updateUrl}}', '{{landingPageLink}}'];
 

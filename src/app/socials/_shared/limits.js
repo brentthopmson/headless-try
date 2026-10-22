@@ -4,7 +4,7 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import limitsCore from './limitsCore.js';
 import { getUserRecord } from './hubUpdater.js';
 
-const { evaluateActionPolicy, pickLimitNumber, evaluateUserQuota, parsePlanRow } = limitsCore;
+const { evaluateActionPolicy, pickLimitNumber, evaluateUserQuota, parsePlanRow, resolveUsageEntry } = limitsCore;
 
 // Shared Limits sheet cache. Uses globalThis so ALL route modules (socials,
 // campaign engine) share the same instance even in Next.js dev mode where
@@ -25,8 +25,9 @@ const LIMITS_SHEET_NAME = "Limits";
 const LIMITS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 const ACTION_TYPES = [
-    "likeOnStory", "likesOnPost", "likesOnComment",
-    "commentOnComment", "commentOnStory", "commentOnPost",
+    "likeOnStory", "repostOnStory", "commentOnStory",
+    "likesOnPost", "repostOnPost", "commentOnPost",
+    "likesOnComment", "repostOnComment", "commentOnComment",
     "follow", "unfollow", "coldMessage",
     "inboxReply",
     "extract"
@@ -109,7 +110,9 @@ export async function getPlatformLimits(platform) {
 }
 
 export async function checkActionAllowed(platform, action, accountUsage = {}) {
-    const usage = accountUsage[action] || {};
+    // Canonical key (Limits column) plus legacy base-name aliases (older rows
+    // stored likeComment/commentComment/...). Both forms are summed per window.
+    const usage = resolveUsageEntry(accountUsage, action);
 
     // ACCOUNT-tier per-account override: a reserved `_limits` key inside the
     // hub interactionUsage blob REPLACES the platform policy for this account

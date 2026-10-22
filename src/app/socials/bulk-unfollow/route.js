@@ -14,7 +14,7 @@ import fs from 'fs';
 import qs from 'qs';
 import { getSheetDataApi, updateSheetRowApi } from "../../api/googlesheets.js";
 import { checkActionAllowed } from "../_shared/limits.js";
-import { getAccountUsage, updateAccountUsage, updateAccountInteractionData } from "../_shared/hubUpdater.js";
+import { getAccountUsage, consumeAccountActions, updateAccountInteractionData } from "../_shared/hubUpdater.js";
 import { resolveAccountGate } from "../_shared/accountGate.js";
 
 
@@ -226,9 +226,22 @@ async function handlePlatformLogic(platformData, platformName, content, browser,
         const followButton = await user.$('.follow-button-selector');
         if (followButton) {
           await followButton.click();
-          unfollowCount++;
-          await updateAccountUsage(rowId, "unfollow");
-          usage = (await getAccountUsage(rowId)).interactionUsage || usage;
+          // Success-only: count the unfollow only when the button returned to
+          // the follow state (or when the platform exposes no state at all).
+          const state = await followButton.evaluate(el => {
+            const label = `${el.textContent || ''} ${el.getAttribute('aria-label') || ''}`.toLowerCase();
+            if (/following|unfollow/.test(label)) return 'still-following';
+            if (/follow/.test(label)) return 'unfollowed';
+            return null;
+          }).catch(() => null);
+          if (state !== 'still-following') {
+            unfollowCount++;
+            if (state === null) console.log(`Unfollow state unverified for ${rowId} — counted as verified-by-click.`);
+            await consumeAccountActions(rowId, { unfollow: 1 });
+            usage = (await getAccountUsage(rowId)).interactionUsage || usage;
+          } else {
+            console.log(`Unfollow not confirmed for ${rowId} — not counted.`);
+          }
         }
       }
 

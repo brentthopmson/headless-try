@@ -22,7 +22,7 @@ import limitsCore from '../_shared/limitsCore.js';
 const { operationConsumes, baseActionsForOperation, actionsForExecutedKeys, toLimitActions } = limitsCore;
 import { checkActionAllowed, getPlatformLimits } from '../_shared/limits.js';
 import { resolveAccountGate, accountGateError } from '../_shared/accountGate.js';
-import { getAccountUsage, updateAccountUsage, updateAccountStatus } from '../_shared/hubUpdater.js';
+import { getAccountUsage, consumeAccountActions, updateAccountStatus } from '../_shared/hubUpdater.js';
 import { fetchTaskData, updateTaskRow, runSearchInteractEngagement } from './routeHelper.js';
 import { requireFeature } from '../../../utils/featureGate.js';
 import { markTagsDone } from '../../campaign/_shared/pipelineUtils.js';
@@ -89,6 +89,11 @@ async function processTask(taskRow, columnIndexes) {
     let results = [];
     let profileDir = null;
     let engagementSummary = null;
+    // Success-only quota tally for this task ({ canonicalKey: count, total }).
+    let quotaSummary = {};
+    // Whether the TikTok engagement runner handled accounting (declared here so
+    // the catch block can avoid double-consuming).
+    let useEngagementRunner = false;
 
     try {
         logger.info(`[processTask] Starting task: ${taskId}`);
@@ -134,7 +139,7 @@ async function processTask(taskRow, columnIndexes) {
         // (checked before every like/comment/reply), so a pre-flight block on
         // 'like' alone would wrongly kill a run that could still comment.
         const consumes = operationConsumes(operationRaw, engagementMode);
-        const useEngagementRunner = consumes && engagementMode && (platform === 'tiktok');
+        useEngagementRunner = consumes && engagementMode && (platform === 'tiktok');
         if (consumes && !useEngagementRunner) {
             const baseActions = engagementMode
                 ? actionsForExecutedKeys([pickWorkflowKey(['interactWithVideo', 'interactWithPost'], platformConfig.workflows)].filter(Boolean), operationRaw)
@@ -192,6 +197,7 @@ async function processTask(taskRow, columnIndexes) {
                 taskId,
             });
             results = engagementSummary.results || [];
+            quotaSummary = engagementSummary.quota || {};
 
             // Persist per-account tag progress so a resumed run (next hourly
             // cycle) only processes tags that are still pending.
@@ -246,7 +252,11 @@ async function processTask(taskRow, columnIndexes) {
 
                 let workflowResults = {};
                 for (const workflow of workflows) {
-                    Object.assign(workflowResults, await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI));
+                    const wfResult = await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI);
+                    for (const [k, v] of Object.entries(wfResult.__quota || {})) {
+                        quotaSummary[k] = (quotaSummary[k] || 0) + (Number(v) || 0);
+                    }
+                    Object.assign(workflowResults, wfResult);
                     if (workflow.extract) {
                         const extractor = getExtractor(platform, workflow.extract);
                         if (extractor && extractor.parseFunction) {
@@ -265,15 +275,12 @@ async function processTask(taskRow, columnIndexes) {
 
             finalStatus = "COMPLETED";
 
-            // Update hub interaction usage if profileId is available — only the
-            // actions actually performed by the executed workflow keys, and only
-            // for consuming tasks (read-only runs must not burn quota).
-            if (profileId && finalStatus === "COMPLETED") {
-                const performedActions = consumes
-                    ? toLimitActions(actionsForExecutedKeys(workflowKeys, operationRaw))
-                    : [];
-                for (const action of performedActions) {
-                    await updateAccountUsage(profileId, action);
+            // The engagement runner does its own success-only accounting; the
+            // generic path consumes only actions VERIFIED by executeWorkflow.
+            if (profileId && finalStatus === "COMPLETED" && !useEngagementRunner) {
+                const counted = consumes ? await consumeAccountActions(profileId, quotaSummary) : {};
+                if (Object.keys(counted).length) {
+                    logger.info(`[processTask] ${taskId}: counted verified actions ${JSON.stringify(counted)}`);
                 }
             }
 
@@ -284,6 +291,17 @@ async function processTask(taskRow, columnIndexes) {
         logger.error(`[processTask] Task ${taskId} failed: ${error.message}`);
         finalStatus = "FAILED";
         results = [{ error: error.message, timestamp: new Date().toISOString() }];
+        // Partial-failure tasks still performed real actions before the error —
+        // count and consume them (the runner already counted its own).
+        for (const [k, v] of Object.entries(error.quota || {})) {
+            quotaSummary[k] = (quotaSummary[k] || 0) + (Number(v) || 0);
+        }
+        const failedPid = get('profileId') || get('accountId');
+        if (!useEngagementRunner && failedPid && Object.keys(quotaSummary).length) {
+            await consumeAccountActions(failedPid, quotaSummary).catch((qErr) => {
+                logger.warn(`[processTask] ${taskId}: partial quota write failed: ${qErr.message}`);
+            });
+        }
 
         // Mark account as rate limited if limits were hit
         if (error.message.includes("blocked by platform limits") && get('profileId')) {
@@ -321,7 +339,16 @@ async function processTask(taskRow, columnIndexes) {
         activeTasks.delete(taskId);
     }
 
-    return { taskId, status: finalStatus, resultCount: results.length, results };
+    const quotaTotal = Object.entries(quotaSummary)
+        .filter(([k]) => k !== 'total')
+        .reduce((a, [, v]) => a + (Number(v) || 0), 0);
+    return {
+        taskId,
+        status: finalStatus,
+        resultCount: results.length,
+        results,
+        quota: { ...quotaSummary, total: quotaTotal },
+    };
 }
 
 // ==================== API Handlers ====================

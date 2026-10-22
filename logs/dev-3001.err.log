@@ -1,0 +1,87 @@
+ ⨯ TypeError: Response body object should not be disturbed or locked
+    at extractBody (node:internal/deps/undici/undici:5089:17)
+    at new Request (node:internal/deps/undici/undici:6070:48)
+    at new NextRequest (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\web\spec-extension\request.js:33:14)
+    at NextRequestAdapter.fromNodeNextRequest (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\web\spec-extension\adapters\next-request.js:94:16)
+    at NextRequestAdapter.fromBaseNextRequest (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\web\spec-extension\adapters\next-request.js:70:35)
+    at doRender (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:1329:73)
+    at cacheEntry.responseCache.get.routeKind (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:1552:34)
+    at ResponseCache.get (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\response-cache\index.js:49:26)
+    at DevServer.renderToResponseWithComponentsImpl (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:1460:53)
+    at C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:990:121
+    at NextTracerImpl.trace (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\lib\trace\tracer.js:104:20)
+    at DevServer.renderToResponseWithComponents (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:990:41)
+    at DevServer.renderPageComponent (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:1843:35)
+    at async DevServer.renderToResponseImpl (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:1881:32)
+    at async DevServer.pipeImpl (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:909:25)
+    at async NextNodeServer.handleCatchallRenderRequest (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\next-server.js:266:17)
+    at async DevServer.handleRequestImpl (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:805:17)
+ ⨯ TypeError: Response body object should not be disturbed or locked
+    at extractBody (node:internal/deps/undici/undici:5089:17)
+    at new Request (node:internal/deps/undici/undici:6070:48)
+    at new NextRequest (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\web\spec-extension\request.js:33:14)
+    at NextRequestAdapter.fromNodeNextRequest (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\web\spec-extension\adapters\next-request.js:94:16)
+    at NextRequestAdapter.fromBaseNextRequest (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\web\spec-extension\adapters\next-request.js:70:35)
+    at doRender (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:1329:73)
+    at cacheEntry.responseCache.get.routeKind (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:1552:34)
+    at ResponseCache.get (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\response-cache\index.js:49:26)
+    at DevServer.renderToResponseWithComponentsImpl (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:1460:53)
+    at C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:990:121
+    at NextTracerImpl.trace (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\lib\trace\tracer.js:104:20)
+    at DevServer.renderToResponseWithComponents (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:990:41)
+    at DevServer.renderPageComponent (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:1843:35)
+    at async DevServer.renderToResponseImpl (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:1881:32)
+    at async DevServer.pipeImpl (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:909:25)
+    at async NextNodeServer.handleCatchallRenderRequest (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\next-server.js:266:17)
+    at async DevServer.handleRequestImpl (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:805:17)
+ ⨯ TypeError: Response body object should not be disturbed or locked
+    at extractBody (node:internal/deps/undici/undici:5089:17)
+    at new Request (node:internal/deps/undici/undici:6070:48)
+    at new NextRequest (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\web\spec-extension\request.js:33:14)
+    at NextRequestAdapter.fromNodeNextRequest (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\web\spec-extension\adapters\next-request.js:94:16)
+    at NextRequestAdapter.fromBaseNextRequest (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\web\spec-extension\adapters\next-request.js:70:35)
+    at doRender (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:1329:73)
+    at cacheEntry.responseCache.get.routeKind (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:1552:34)
+    at ResponseCache.get (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\response-cache\index.js:49:26)
+    at DevServer.renderToResponseWithComponentsImpl (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:1460:53)
+    at C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:990:121
+    at NextTracerImpl.trace (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\lib\trace\tracer.js:104:20)
+    at DevServer.renderToResponseWithComponents (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:990:41)
+    at DevServer.renderPageComponent (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:1843:35)
+    at async DevServer.renderToResponseImpl (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:1881:32)
+    at async DevServer.pipeImpl (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:909:25)
+    at async NextNodeServer.handleCatchallRenderRequest (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\next-server.js:266:17)
+    at async DevServer.handleRequestImpl (C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\node_modules\next\dist\server\base-server.js:805:17)
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+[ERROR] 2026-10-22T20:59:00.296Z - Failed to get Sheets API authentication client (OAuth2): invalid_grant 
+Error: {
+  stack: 'Error: invalid_grant\n' +
+    '    at Gaxios._request (webpack-internal:///(rsc)/./node_modules/gaxios/build/src/gaxios.js:151:23)\n' +
+    '    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)\n' +
+    '    at async OAuth2Client.refreshTokenNoCache (webpack-internal:///(rsc)/./node_modules/google-auth-library/build/src/auth/oauth2client.js:210:19)\n' +
+    '    at async OAuth2Client.refreshAccessTokenAsync (webpack-internal:///(rsc)/./node_modules/google-auth-library/build/src/auth/oauth2client.js:245:19)\n' +
+    '    at async getSheetsAuthClient (webpack-internal:///(rsc)/./src/app/api/googlesheets.js:140:41)\n' +
+    '    at async getSheetDataApi (webpack-internal:///(rsc)/./src/app/api/googlesheets.js:280:28)\n' +
+    '    at async eval (webpack-internal:///(rsc)/./src/utils/settingsCache.js:48:28)\n' +
+    '    at async getSettingsSheet (webpack-internal:///(rsc)/./src/utils/settingsCache.js:70:12)\n' +
+    '    at async getSetting (webpack-internal:///(rsc)/./src/utils/settingsCache.js:77:19)\n' +
+    '    at async isFeatureEnabled (webpack-internal:///(rsc)/./src/utils/featureGate.js:26:25)\n' +
+    '    at async requireFeature (webpack-internal:///(rsc)/./src/utils/featureGate.js:42:21)\n' +
+    '    at async POST (webpack-internal:///(rsc)/./src/app/extraction/route.js:46:22)\n' +
+    '    at async C:\\Users\\HP\\Desktop\\ZIPPER\\WEBFIXX\\DEV\\API\\offline-headless-webfixx\\node_modules\\next\\dist\\compiled\\next-server\\app-route.runtime.dev.js:6:63251'
+}
+[WARN] 2026-10-22T20:59:00.311Z - [Sheets API] Failed to get Sheets API authentication client for SETTINGS. Trying App Script fallback.
+[ERROR] 2026-10-22T20:59:10.666Z - Failed to get Sheets API authentication client (OAuth2): invalid_grant 
+Error: {
+  stack: 'Error: invalid_grant\n' +
+    '    at Gaxios._request (webpack-internal:///(rsc)/./node_modules/gaxios/build/src/gaxios.js:151:23)\n' +
+    '    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)\n' +
+    '    at async OAuth2Client.refreshTokenNoCache (webpack-internal:///(rsc)/./node_modules/google-auth-library/build/src/auth/oauth2client.js:210:19)\n' +
+    '    at async OAuth2Client.refreshAccessTokenAsync (webpack-internal:///(rsc)/./node_modules/google-auth-library/build/src/auth/oauth2client.js:245:19)\n' +
+    '    at async getSheetsAuthClient (webpack-internal:///(rsc)/./src/app/api/googlesheets.js:140:41)\n' +
+    '    at async initializeGoogleSheets (webpack-internal:///(rsc)/./src/app/api/googlesheets.js:157:5)\n' +
+    '    at async initGoogleClients (webpack-internal:///(rsc)/./src/app/api/initGoogleClients.js:11:9)'
+}
+Browserslist: browsers data (caniuse-lite) is 11 months old. Please run:
+  npx update-browserslist-db@latest
+  Why you should do it regularly: https://github.com/browserslist/update-db#readme

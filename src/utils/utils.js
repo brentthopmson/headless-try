@@ -330,7 +330,7 @@ export async function launchBrowser(customOptions = {}) {
     // Use basic password/cookie store instead of system keyring (GNOME Keyring/KWallet).
     // On Linux, Chromium encrypts cookies with NSS keyring which doesn't travel with the
     // profile directory. --password-store=basic stores the encryption key IN the profile,
-    // making it portable across sessions (upload to Drive → download by smartExtract).
+    // making it portable across sessions (upload to Drive → download by the extraction engine).
     "--password-store=basic",
     ...platformSandbox,
     "--enable-features=NetworkService,NetworkServiceInProcess",
@@ -400,7 +400,7 @@ export async function launchBrowser(customOptions = {}) {
   browser.selectedUserAgent = identity.userAgent;
   browser._semaphoreSlotId = slotId;
 
-  // Expose userDataDir for downstream callers (e.g. smartExtract re-upload).
+  // Expose userDataDir for downstream callers (e.g. the extraction engine's profile re-upload).
   // Extract from spawnargs — works for both auto-created and caller-specified dirs.
   const spawnArgs = browser.process()?.spawnargs || [];
   const userDataDirArg = spawnArgs.find(a => a.startsWith('--user-data-dir='));

@@ -1,0 +1,18 @@
+
+> headless-try@0.1.0 dev
+> next dev -p 3001
+
+   ▲ Next.js 14.0.4
+   - Local:        http://localhost:3001
+   - Environments: .env
+
+ ✓ Ready in 7.6s
+ ○ Compiling /api/serverless-self ...
+ ✓ Compiled /api/serverless-self in 13.6s (1647 modules)
+[INFO] 2026-10-20T08:19:11.524Z - [Chrome] UA major version: 155 full version: 155.0.8059.85 (exe=C:\Program Files\Google\Chrome\Application\chrome.exe)
+[INFO] 2026-10-20T08:19:15.012Z - [ServerlessTracker] Identified self: serverless4 (https://tw6lcdgh-3001.uks1.devtunnels.ms/)
+[INFO] 2026-10-20T08:19:15.915Z - [settingsCache] SETTINGS data loaded (71 rows).
+[INFO] 2026-10-20T08:19:15.915Z - [campaignConcurrency] Max concurrent tasks = 10
+[INFO] 2026-10-20T08:19:15.916Z - [ServerlessSelf] assertion FAIL host=localhost:3001 env=serverless4 resolved=serverless4 checks={"hostMatchedLinksRow":true,"envMatchesResolved":true,"rowUrlHostMatchesRequest":false}
+[INFO] 2026-10-20T08:19:17.452Z - [googleTokenSource] refresh token source=sheet len=103
+[?25h

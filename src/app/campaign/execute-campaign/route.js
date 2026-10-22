@@ -2,16 +2,16 @@ import { NextResponse } from "next/server";
 import { getSheetsAuthClient, updateSheetRowApi, getSheetDataApi } from "../../api/googlesheets.js";
 import { google } from "googleapis";
 import logger from "../../../utils/logger.js";
-import { sendViaSMTP, getNextSmtpConfig } from "../_shared/smtpSender.js";
-import { sendViaBrowser, scheduleViaBrowser, detectProvider } from "../_shared/wireSender.js";
+import { detectProvider } from "../../emails/_shared/wireSender.js";
+import { validateSmtpConfigs, createSmtpSendCap, sendWarmupEmail, sendCampaignEmail } from "../../shooting/email/campaignSender.js";
 import { resolveSocialSession } from "../../socials/_shared/routeHelper.js";
 import { ensureReplyFilter } from "../../emails/_shared/replyFilter.js";
 import { processSearchInteractTask } from "../../socials/search-interact/route.js";
 import { processPageInteractTask } from "../../socials/page-interact/route.js";
 import { processInboxInteractTask } from "../../socials/inbox-interact/route.js";
 import { processActivitiesInteractTask } from "../../socials/activities-interact/route.js";
-import { POST as sendMessageHandler } from "../../socials/send-message/route.js";
-import { platformConfigs as sendPlatformConfigs } from "../../socials/send-message/platforms.js";
+import { processSendMessages } from "../../shooting/social/dm.js";
+import { platformConfigs as sendPlatformConfigs } from "../../shooting/social/platforms.js";
 import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
 import { updateUserUsage } from "../../socials/_shared/hubUpdater.js";
 import { resolveAccountGate, isLimitSkipError } from "../../socials/_shared/accountGate.js";
@@ -225,6 +225,16 @@ function normalizeSocialPlatform(value) {
   if (p.includes('linkedin')) return 'linkedin';
   if (p === 'x') return 'twitter';
   return KNOWN_SOCIAL_PLATFORMS.includes(p) ? p : '';
+}
+
+// Verified actions that count toward the user-level interactionUsage quota.
+// DMs (coldMessage/message) are tracked separately by senderUsage.
+const DM_QUOTA_KEYS = new Set(["coldMessage", "message"]);
+function interactionActionsFromQuota(quota) {
+  if (!quota || typeof quota !== "object") return 1; // legacy handler, no tally
+  return Object.entries(quota)
+    .filter(([k]) => k !== "total" && !DM_QUOTA_KEYS.has(k))
+    .reduce((a, [, v]) => a + (Number(v) || 0), 0);
 }
 
 async function getSocialProfileCookies(profileId) {
@@ -568,23 +578,7 @@ export async function POST(request) {
             });
           }
         }
-        if (smtpSettings.length === 0) {
-          throw new Error("No SMTP accounts configured for SMTP/Mixed delivery");
-        }
-        for (let i = 0; i < smtpSettings.length; i++) {
-          const cfg = smtpSettings[i];
-          const errors = [];
-          if (!cfg.host || typeof cfg.host !== 'string' || !cfg.host.trim()) errors.push('host is required');
-          const port = parseInt(cfg.port, 10);
-          if (isNaN(port) || port <= 0 || port > 65535) errors.push('valid port (1-65535) is required');
-          if (!cfg.username || typeof cfg.username !== 'string' || !cfg.username.trim()) errors.push('username is required');
-          if (!cfg.from_email || typeof cfg.from_email !== 'string' || !cfg.from_email.trim()) errors.push('from_email is required');
-          const hasAuth = (cfg.password && String(cfg.password).trim()) || (cfg.appPassword && String(cfg.appPassword).trim()) || (cfg.oAuth2RefreshToken && String(cfg.oAuth2RefreshToken).trim());
-          if (!hasAuth) errors.push('password, appPassword, or oAuth2RefreshToken is required');
-          if (errors.length > 0) {
-            throw new Error(`SMTP config #${i + 1} (${cfg.host || 'unknown'}): ${errors.join('; ')}`);
-          }
-        }
+        validateSmtpConfigs(smtpSettings);
         if (userId) {
           try {
             await updateUserUsage(userId, "smtpCheckerUsage");
@@ -754,26 +748,9 @@ export async function POST(request) {
       // Per-run send cap per SMTP account (plan cell accountSendPerRunLimit,
       // campaign default 5, 0 = off): rotate across accounts; when every
       // account hit its cap, stop the run with limitReached.
-      const accountSendCounts = new Map();
-      const smtpAccountKey = (cfg) =>
-        String((cfg && (cfg.user || cfg.username)) || "").trim() ||
-        String((cfg && cfg.host) || "smtp");
-      const pickSmtpWithinCap = (seed) => {
-        if (accountSendPerRunLimit <= 0 || smtpSettings.length === 0) {
-          return getNextSmtpConfig(smtpSettings, seed);
-        }
-        for (let k = 0; k < smtpSettings.length; k++) {
-          const pick = getNextSmtpConfig(smtpSettings, seed + k);
-          if (!pick) return pick;
-          if ((accountSendCounts.get(smtpAccountKey(pick.config)) || 0) < accountSendPerRunLimit) return pick;
-        }
-        return null;
-      };
-      const noteSmtpSend = (cfg) => {
-        if (!cfg) return;
-        const key = smtpAccountKey(cfg);
-        accountSendCounts.set(key, (accountSendCounts.get(key) || 0) + 1);
-      };
+      const smtpCap = createSmtpSendCap({ smtpSettings, accountSendPerRunLimit });
+      const pickSmtpWithinCap = smtpCap.pick;
+      const noteSmtpSend = smtpCap.note;
       for (let i = startIndex; i < deduplicatedRows.length; i++) {
         if (await isCampaignPaused(campaignId)) {
           pausedByAdmin = true;
@@ -838,9 +815,14 @@ export async function POST(request) {
           try {
             const firestick = firestickList[firestickIndex % firestickList.length];
             firestickIndex++;
-            const { config: firestickSmtp } = pickSmtpWithinCap(sentCount) || {};
-            await sendViaSMTP(firestick.email, subject, message, firestickSmtp);
-            noteSmtpSend(firestickSmtp);
+            await sendWarmupEmail({
+              email: firestick.email,
+              subject,
+              message,
+              seed: sentCount,
+              pickSmtp: pickSmtpWithinCap,
+              noteSmtp: noteSmtpSend,
+            });
             log.info(` Firestick warm-up sent to ${firestick.email}`);
             // Small delay between firestick and lead send
             await new Promise(r => setTimeout(r, 500));
@@ -850,20 +832,15 @@ export async function POST(request) {
         }
 
         try {
-          if (isSchedule) {
-            // Schedule mode — use native "Schedule Send" via browser
-            const profileId = settings.accounts?.[0] || settings.wireAccount;
-            const profileData = profileId ? await getSocialProfileCookies(profileId) : null;
-            const wireCookies = profileData?.cookies;
-            if (!wireCookies) {
-              throw new Error(`No browser session available for profile ${profileId}`);
-            }
-            const provider = profileData?.platform || detectProvider(smtp?.user || email) || "gmail";
+          const needsBrowser = isSchedule || deliveryMethod === "wire" || deliveryMethod === "mixed";
+          const profileId = needsBrowser ? (settings.accounts?.[0] || settings.wireAccount) : null;
+          const profileData = profileId ? await getSocialProfileCookies(profileId) : null;
 
+          let scheduleTime = null;
+          if (isSchedule) {
             // Use per-row sendDate/sendTime if available, else use scheduleStartTime
             const rowSendDate = sendDateIdx !== -1 ? row[sendDateIdx] : "";
             const rowSendTime = sendTimeIdx !== -1 ? row[sendTimeIdx] : "";
-            let scheduleTime;
             if (rowSendDate && rowSendTime) {
               scheduleTime = new Date(`${rowSendDate} ${rowSendTime}`);
             } else if (settings.scheduleStartTime) {
@@ -873,46 +850,23 @@ export async function POST(request) {
             } else {
               scheduleTime = new Date(now.getTime() + sentCount * 60000);
             }
-
-            log.info(`[Row schedule] ${email}: scheduling at ${scheduleTime.toISOString()} via ${provider}`);
-            await scheduleViaBrowser(email, subject, message, wireCookies, provider, scheduleTime.toISOString(), {
-              browserIdentity: profileData?.browserIdentity || null,
-              driveUrl: profileData?.driveUrl || "",
-              profileId,
-            });
-            senderHost = `SCHEDULE(${provider})`;
-            deliveredCount++;
-          } else {
-            // Send Now — immediate send
-            if (deliveryMethod === "smtp" || deliveryMethod === "mixed") {
-              await sendViaSMTP(email, subject, message, smtp);
-              noteSmtpSend(smtp);
-              senderHost = smtp?.host || "SMTP";
-              deliveredCount++;
-            }
-
-            if (deliveryMethod === "wire" || deliveryMethod === "mixed") {
-              const profileId = settings.accounts?.[0] || settings.wireAccount;
-              const profileData = profileId ? await getSocialProfileCookies(profileId) : null;
-              const wireCookies = profileData?.cookies;
-              if (wireCookies) {
-                const provider = profileData?.platform || detectProvider(smtp?.user || email) || "gmail";
-                await sendViaBrowser(email, subject, message, wireCookies, provider, {
-                  browserIdentity: profileData.browserIdentity || null,
-                  driveUrl: profileData.driveUrl || "",
-                  profileId,
-                });
-              } else {
-                log.info(` No WIRE browser session available for profile ${profileId}, using SMTP fallback`);
-                if (deliveryMethod === "wire") {
-                  await sendViaSMTP(email, subject, message, smtp);
-                  noteSmtpSend(smtp);
-                  senderHost = smtp?.host || "SMTP_FALLBACK";
-                }
-              }
-              deliveredCount++;
-            }
           }
+
+          const sendResult = await sendCampaignEmail({
+            email,
+            subject,
+            message,
+            smtp,
+            isSchedule,
+            deliveryMethod,
+            profileId,
+            profileData,
+            scheduleTime: scheduleTime ? scheduleTime.toISOString() : null,
+            noteSmtp: noteSmtpSend,
+            log,
+          });
+          senderHost = sendResult.senderHost;
+          deliveredCount += sendResult.delivered;
 
           sentCount++;
           if (userId) {
@@ -1340,9 +1294,12 @@ export async function POST(request) {
       // rewrites the whole Drive CSV — serialize both so parallel tasks can't
       // clobber each other.
       let usageChain = Promise.resolve();
-      const incrementInteractionUsage = (uid) => {
+      // `count` = number of ACTIONS the task actually verified (success-only).
+      const incrementInteractionUsage = (uid, count = 1) => {
+        const n = Number(count) || 0;
+        if (n <= 0) return usageChain;
         usageChain = usageChain
-          .then(() => updateUserUsage(uid, "interactionUsage"))
+          .then(() => updateUserUsage(uid, "interactionUsage", n))
           .catch((uErr) => { log.warn(` [user-limit] usage increment failed: ${uErr.message}`); });
         return usageChain;
       };
@@ -1392,12 +1349,23 @@ export async function POST(request) {
           const result = await handler(taskPayload);
           executionResults.push(result);
           executedCount++;
-          if (userId) await incrementInteractionUsage(userId);
-          log.info(` Task ${task.taskId} completed: ${result.status}`);
+          // Verified action count from the handler. DMs (coldMessage/message)
+          // stay on senderUsage, so they are excluded from the user-level
+          // interaction usage. Legacy handlers with no tally keep the previous
+          // 1-per-task behaviour.
+          const actionCount = interactionActionsFromQuota(result?.quota);
+          if (userId) await incrementInteractionUsage(userId, actionCount);
+          log.info(` Task ${task.taskId} completed: ${result.status} (actions=${actionCount})`);
 
           // Live-progress CSV flush after each task so the file view advances mid-run
           await flushSocialCsvSafe(`task ${task.taskId}`);
         } catch (taskError) {
+          // Actions performed before the error are still real spend.
+          const partial = taskError?.quota?.total;
+          if (userId && Number.isFinite(partial) && partial > 0) {
+            await incrementInteractionUsage(userId, partial);
+            log.info(` Task ${task.taskId} failed after ${partial} actions — counted.`);
+          }
           // Limit-type errors are SKIPS (account over quota / account blocked),
           // not failures — the campaign moves on to the next account/task.
           if (isLimitSkipError(taskError.message)) {
@@ -1445,19 +1413,14 @@ export async function POST(request) {
         if (dmAccounts.length > 0) {
           log.info(` sendToAll enabled — sending DMs to ${dmAccounts.length} CSV social profile(s)`);
           try {
-            const dmRequest = new Request("http://localhost/send-message", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                campaignId,
-                userId: userId || null,
-                platform: "",
-                messageText: resolveSocialMessage(null, settings),
-                sendToAll: true,
-                accountIds: dmAccounts,
-              }),
+            const dmResponse = await processSendMessages({
+              campaignId,
+              userId: userId || null,
+              platform: "",
+              messageText: resolveSocialMessage(null, settings),
+              sendToAll: true,
+              accountIds: dmAccounts,
             });
-            const dmResponse = await sendMessageHandler(dmRequest);
             const dmResult = await dmResponse.json();
             log.info(` send-message result: ${dmResult.message}`);
             settings.dmResults = dmResult;

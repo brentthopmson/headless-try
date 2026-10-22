@@ -261,54 +261,117 @@ async function classifyPageState(page, s) {
 }
 
 // Dismiss TikTok's cookie-consent banner ("Allow all") if present.
-// The banner (div.tiktok-cookie-banner) overlays the comment composer/submit
-// button and silently swallows the post: logs showed
-// "[post] submit covered by TIKTOK-COOKIE-BANNER" followed by
-// "composer-not-cleared". Click "Allow all" with a REAL mouse (synthetic
-// .click() is ignored by TikTok) and poll until the banner is gone.
+// TikTok ships several consent UIs (legacy div.tiktok-cookie-banner plus newer
+// TUX variants) and renders the buttons as <button>, [role=button] or <a>.
+// The banner overlays the comment composer/submit and silently swallows posts,
+// so find it by class/id AND by visible consent text, then click "Allow all"
+// with a REAL mouse (synthetic .click() is ignored by TikTok). Two passes cover
+// a second banner appearing after the first is accepted.
+const COOKIE_BANNER_SEL = "div[class*='tiktok-cookie-banner'], .tiktok-cookie-banner, div[class*='CookieBanner'], div[class*='cookie-banner'], [id*='cookie-banner' i], [class*='cookie-consent' i], [class*='consent-banner' i]";
+
 export async function dismissCookieBanner(page, logPrefix = '[cookie]') {
     try {
-        const present = async () => page.evaluate(() => {
-            const b = document.querySelector("div[class*='tiktok-cookie-banner'], .tiktok-cookie-banner");
-            if (!b) return false;
-            const r = b.getBoundingClientRect();
-            return r.width > 0 && r.height > 0;
-        }).catch(() => false);
+        const findAllow = () => page.evaluate((sel) => {
+            const isVisible = (el) => {
+                if (!el) return false;
+                const r = el.getBoundingClientRect();
+                if (r.width < 1 || r.height < 1) return false;
+                const cs = getComputedStyle(el);
+                return cs.visibility !== 'hidden' && cs.display !== 'none' && cs.opacity !== '0';
+            };
+            const pickAllow = (root) => {
+                const candidates = Array.from(root.querySelectorAll("button, [role='button'], a")).filter(isVisible);
+                const label = (el) => (el.textContent || '').replace(/\s+/g, ' ').trim();
+                const allowAll = candidates.find(el => /allow all|accept all/i.test(label(el)));
+                if (allowAll) return allowAll;
+                const allowish = candidates.find(el => /^(allow|accept|agree|got it|ok)\b/i.test(label(el)));
+                if (allowish) return allowish;
+                const deny = /decline|reject|manage|settings|learn more|cancel|essential|necessary/i;
+                const safe = candidates.find(el => !deny.test(label(el)));
+                return safe || candidates[candidates.length - 1] || null;
+            };
+            const rectOf = (el) => {
+                const r = el.getBoundingClientRect();
+                return { x: r.x + r.width / 2, y: r.y + r.height / 2, label: (el.textContent || '').replace(/\s+/g, ' ').trim() };
+            };
 
-        if (!(await present())) return false;
+            // 1) Known class/id selectors.
+            const known = Array.from(document.querySelectorAll(sel)).filter(isVisible);
+            for (const banner of known) {
+                const allow = pickAllow(banner);
+                if (allow) return rectOf(allow);
+            }
 
-        const rect = await page.evaluate(() => {
-            const b = document.querySelector("div[class*='tiktok-cookie-banner'], .tiktok-cookie-banner");
-            if (!b) return null;
-            const btns = Array.from(b.querySelectorAll('button'));
-            // Prefer the "Allow all" button by text; fallback to the last button.
-            const allow = btns.find(x => /allow all/i.test(x.textContent || '')) || btns[btns.length - 1];
-            if (!allow) return null;
-            const r = allow.getBoundingClientRect();
-            if (r.width < 1 || r.height < 1) return null;
-            return { x: r.x + r.width / 2, y: r.y + r.height / 2, label: (allow.textContent || '').trim() };
-        }).catch(() => null);
+            // 2) Text-based fallback: a compact visible container that talks
+            // about TikTok cookies and has a consent button. Cheap short-circuit
+            // so the element scan only runs when consent text is actually present.
+            const bodyText = (document.body && document.body.innerText) || '';
+            if (!/allow cookies|we use cookies|cookies from tiktok|cookie settings|optional cookies/i.test(bodyText)) return null;
+            const nodes = Array.from(document.querySelectorAll('div, section, aside'));
+            for (const el of nodes) {
+                if (!isVisible(el)) continue;
+                const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+                if (!text || text.length > 400) continue;
+                if (!/allow cookies|we use cookies|cookies from tiktok|cookie settings|optional cookies/i.test(text)) continue;
+                const allow = pickAllow(el);
+                if (allow) return rectOf(allow);
+            }
+            return null;
+        }, COOKIE_BANNER_SEL).catch(() => null);
 
-        if (!rect) return false;
-        const clicked = await DOMHelpers.humanClickAt(page, rect.x, rect.y, { hoverMs: [120, 300] }).catch(() => false);
-        logger.info(`${logPrefix} Cookie banner present — clicked "${rect.label}" (${clicked ? 'ok' : 'click-failed'}).`);
+        // Fast path: no banner on the page (single evaluate).
+        if (!(await findAllow())) return false;
 
-        // Poll until gone (~3s).
-        const deadline = Date.now() + 3000;
-        while (Date.now() < deadline) {
-            if (!(await present())) return true;
+        for (let pass = 0; pass < 2; pass++) {
+            const rect = await findAllow();
+            if (!rect) return true; // dismissed (or gone)
+            const clicked = await DOMHelpers.humanClickAt(page, rect.x, rect.y, { hoverMs: [120, 300] }).catch(() => false);
+            logger.info(`${logPrefix} Cookie banner present — clicked "${rect.label}" (${clicked ? 'ok' : 'click-failed'}).`);
+
+            // Poll until gone (~3s).
+            const deadline = Date.now() + 3000;
+            while (Date.now() < deadline) {
+                if (!(await findAllow())) return true;
+                await new Promise(r => setTimeout(r, 200));
+            }
+
+            // Real-mouse didn't close it — synthetic click on the same target.
+            await page.evaluate((sel) => {
+                const isVisible = (el) => {
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width >= 1 && r.height >= 1;
+                };
+                const pickAllow = (root) => {
+                    const candidates = Array.from(root.querySelectorAll("button, [role='button'], a")).filter(isVisible);
+                    const label = (el) => (el.textContent || '').replace(/\s+/g, ' ').trim();
+                    const allowAll = candidates.find(el => /allow all|accept all/i.test(label(el)));
+                    if (allowAll) return allowAll;
+                    const allowish = candidates.find(el => /^(allow|accept|agree|got it|ok)\b/i.test(label(el)));
+                    if (allowish) return allowish;
+                    const deny = /decline|reject|manage|settings|learn more|cancel|essential|necessary/i;
+                    const safe = candidates.find(el => !deny.test(label(el)));
+                    return safe || candidates[candidates.length - 1] || null;
+                };
+                const banners = Array.from(document.querySelectorAll(sel)).filter(isVisible);
+                for (const banner of banners) {
+                    const allow = pickAllow(banner);
+                    if (allow) { allow.click(); return; }
+                }
+                const bodyText = (document.body && document.body.innerText) || '';
+                if (!/allow cookies|we use cookies|cookies from tiktok|cookie settings|optional cookies/i.test(bodyText)) return;
+                const nodes = Array.from(document.querySelectorAll('div, section, aside')).filter(isVisible);
+                for (const el of nodes) {
+                    const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+                    if (!text || text.length > 400) continue;
+                    if (!/allow cookies|we use cookies|cookies from tiktok|cookie settings|optional cookies/i.test(text)) continue;
+                    const allow = pickAllow(el);
+                    if (allow) { allow.click(); return; }
+                }
+            }, COOKIE_BANNER_SEL).catch(() => {});
             await new Promise(r => setTimeout(r, 300));
         }
-        // Fallback: real-mouse didn't close it — try a synthetic click.
-        await page.evaluate(() => {
-            const b = document.querySelector("div[class*='tiktok-cookie-banner'], .tiktok-cookie-banner");
-            if (!b) return;
-            const btns = Array.from(b.querySelectorAll('button'));
-            const allow = btns.find(x => /allow all/i.test(x.textContent || '')) || btns[btns.length - 1];
-            if (allow) allow.click();
-        }).catch(() => {});
-        await new Promise(r => setTimeout(r, 500));
-        return !(await present());
+        return !(await findAllow());
     } catch (e) {
         logger.warn(`${logPrefix} dismissCookieBanner failed: ${e.message}`);
         return false;

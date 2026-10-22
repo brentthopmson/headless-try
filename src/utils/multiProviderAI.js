@@ -309,8 +309,17 @@ class MultiProviderAI {
             imageUrl = null,
             videoUrl = null,
             imageBase64 = null,
-            preferProvider = null
+            preferProvider = null,
+            // Per-call overrides (defaults preserve existing behavior). Low-stakes
+            // calls (e.g. per-comment replies) pass a short timeoutMs + no retry
+            // so a hung/rate-limited provider can't block the interaction flow.
+            timeoutMs = null,
+            maxTransientAttempts = TRANSIENT_MAX_ATTEMPTS
         } = options;
+        const effTimeoutMs = (Number.isFinite(timeoutMs) && timeoutMs > 0) ? timeoutMs : null;
+        const effAttempts = (Number.isFinite(maxTransientAttempts) && maxTransientAttempts > 0)
+            ? Math.floor(maxTransientAttempts)
+            : TRANSIENT_MAX_ATTEMPTS;
 
         logger.info(`[MultiProviderAI] Generating response. Prefer: ${preferProvider || 'auto'}, Has image: ${!!imageUrl}, Has video: ${!!videoUrl}`);
 
@@ -384,7 +393,7 @@ class MultiProviderAI {
             if (match) {
                 try {
                     logger.info(`[MultiProviderAI] Attempting preferred provider: ${preferProvider}/${match.model}`);
-                    const result = await this._callProvider(match, messages, temperature, maxTokens);
+                    const result = await this._callProvider(match, messages, temperature, maxTokens, effTimeoutMs);
                     this.lastProvider = match;
                     this.recordSuccess(match);
                     return result;
@@ -404,14 +413,14 @@ class MultiProviderAI {
 
             // 3 tries: 503 "high demand" spikes from Gemini regularly outlast a
             // single 2s retry, so back off 2s then 4s before giving up on the row.
-            for (let attempt = 0; attempt < TRANSIENT_MAX_ATTEMPTS; attempt++) {
+            for (let attempt = 0; attempt < effAttempts; attempt++) {
                 try {
                     if (attempt > 0) {
-                        logger.warn(`[MultiProviderAI] ${key} transient failure — retrying (attempt ${attempt + 1}/${TRANSIENT_MAX_ATTEMPTS})`);
+                        logger.warn(`[MultiProviderAI] ${key} transient failure — retrying (attempt ${attempt + 1}/${effAttempts})`);
                         await new Promise(r => setTimeout(r, transientBackoffMs(attempt)));
                     }
                     logger.info(`[MultiProviderAI] Trying ${key} (sn:${provider.sn})...`);
-                    const result = await this._callProvider(provider, messages, temperature, maxTokens);
+                    const result = await this._callProvider(provider, messages, temperature, maxTokens, effTimeoutMs);
                     this.lastProvider = provider;
                     this.recordSuccess(provider);
                     logger.info(`[MultiProviderAI] Success with ${key}`);
@@ -431,29 +440,29 @@ class MultiProviderAI {
 
     // ==================== PROVIDER DISPATCH ====================
 
-    async _callProvider(provider, messages, temperature, maxTokens) {
+    async _callProvider(provider, messages, temperature, maxTokens, timeoutMs = null) {
         switch (provider.provider) {
-            case 'opencode': return this._callOpenCode(provider, messages, temperature, maxTokens);
-            case 'gemini': return this._callGemini(provider, messages, temperature, maxTokens);
-            case 'groq': return this._callGroq(provider, messages, temperature, maxTokens);
-            case 'cerebras': return this._callCerebras(provider, messages, temperature, maxTokens);
-            case 'together': return this._callTogether(provider, messages, temperature, maxTokens);
-            case 'mistral': return this._callMistral(provider, messages, temperature, maxTokens);
-            case 'cloudflare': return this._callCloudflare(provider, messages, temperature, maxTokens);
-            case 'cohere': return this._callCohere(provider, messages, temperature, maxTokens);
+            case 'opencode': return this._callOpenCode(provider, messages, temperature, maxTokens, timeoutMs);
+            case 'gemini': return this._callGemini(provider, messages, temperature, maxTokens, timeoutMs);
+            case 'groq': return this._callGroq(provider, messages, temperature, maxTokens, timeoutMs);
+            case 'cerebras': return this._callCerebras(provider, messages, temperature, maxTokens, timeoutMs);
+            case 'together': return this._callTogether(provider, messages, temperature, maxTokens, timeoutMs);
+            case 'mistral': return this._callMistral(provider, messages, temperature, maxTokens, timeoutMs);
+            case 'cloudflare': return this._callCloudflare(provider, messages, temperature, maxTokens, timeoutMs);
+            case 'cohere': return this._callCohere(provider, messages, temperature, maxTokens, timeoutMs);
             default: throw new Error(`Unknown provider type: ${provider.provider}`);
         }
     }
 
     // ==================== OPENCODE ====================
 
-    async _callOpenCode(provider, messages, temperature, maxTokens) {
+    async _callOpenCode(provider, messages, temperature, maxTokens, timeoutMs = null) {
         const { model, key } = provider;
         const response = await axios.post('https://opencode.ai/zen/v1/chat/completions', {
             model, messages, temperature, max_tokens: maxTokens
         }, {
             headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-            timeout: 60000
+            timeout: timeoutMs || 60000
         });
         if (response.data?.choices?.[0]?.message?.content) {
             return response.data.choices[0].message.content;
@@ -463,7 +472,7 @@ class MultiProviderAI {
 
     // ==================== GEMINI ====================
 
-    async _callGemini(provider, messages, temperature, maxTokens) {
+    async _callGemini(provider, messages, temperature, maxTokens, timeoutMs = null) {
         const { model, key } = provider;
 
         const contents = [];
@@ -514,12 +523,12 @@ class MultiProviderAI {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
         let response;
         try {
-            response = await axios.post(url, payload, { timeout: 60000 });
+            response = await axios.post(url, payload, { timeout: timeoutMs || 60000 });
         } catch (err) {
             if (shouldStripThinkingConfig(err.response?.status, payload.generationConfig)) {
                 logger.warn(`[MultiProviderAI] Gemini ${model} rejected thinkingConfig (400) — retrying without it`);
                 stripThinkingConfig(payload.generationConfig);
-                response = await axios.post(url, payload, { timeout: 60000 });
+                response = await axios.post(url, payload, { timeout: timeoutMs || 60000 });
             } else {
                 throw err;
             }
@@ -537,13 +546,13 @@ class MultiProviderAI {
 
     // ==================== GROQ ====================
 
-    async _callGroq(provider, messages, temperature, maxTokens) {
+    async _callGroq(provider, messages, temperature, maxTokens, timeoutMs = null) {
         const { model, key } = provider;
         const response = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
             model, messages, temperature, max_tokens: maxTokens
         }, {
             headers: { 'Authorization': `Bearer ${key}` },
-            timeout: 30000
+            timeout: timeoutMs || 30000
         });
         if (response.data?.choices?.[0]?.message?.content) {
             return response.data.choices[0].message.content;
@@ -553,13 +562,13 @@ class MultiProviderAI {
 
     // ==================== CEREBRAS ====================
 
-    async _callCerebras(provider, messages, temperature, maxTokens) {
+    async _callCerebras(provider, messages, temperature, maxTokens, timeoutMs = null) {
         const { model, key } = provider;
         const response = await axios.post('https://api.cerebras.ai/v1/chat/completions', {
             model, messages, temperature, max_tokens: maxTokens
         }, {
             headers: { 'Authorization': `Bearer ${key}` },
-            timeout: 30000
+            timeout: timeoutMs || 30000
         });
         if (response.data?.choices?.[0]?.message?.content) {
             return response.data.choices[0].message.content;
@@ -569,13 +578,13 @@ class MultiProviderAI {
 
     // ==================== TOGETHER ====================
 
-    async _callTogether(provider, messages, temperature, maxTokens) {
+    async _callTogether(provider, messages, temperature, maxTokens, timeoutMs = null) {
         const { model, key } = provider;
         const response = await axios.post('https://api.together.xyz/v1/chat/completions', {
             model, messages, temperature, max_tokens: maxTokens
         }, {
             headers: { 'Authorization': `Bearer ${key}` },
-            timeout: 30000
+            timeout: timeoutMs || 30000
         });
         if (response.data?.choices?.[0]?.message?.content) {
             return response.data.choices[0].message.content;
@@ -585,13 +594,13 @@ class MultiProviderAI {
 
     // ==================== MISTRAL ====================
 
-    async _callMistral(provider, messages, temperature, maxTokens) {
+    async _callMistral(provider, messages, temperature, maxTokens, timeoutMs = null) {
         const { model, key } = provider;
         const response = await axios.post('https://api.mistral.ai/v1/chat/completions', {
             model, messages, temperature, max_tokens: maxTokens
         }, {
             headers: { 'Authorization': `Bearer ${key}` },
-            timeout: 30000
+            timeout: timeoutMs || 30000
         });
         if (response.data?.choices?.[0]?.message?.content) {
             return response.data.choices[0].message.content;
@@ -601,7 +610,7 @@ class MultiProviderAI {
 
     // ==================== CLOUDFLARE ====================
 
-    async _callCloudflare(provider, messages, temperature, maxTokens) {
+    async _callCloudflare(provider, messages, temperature, maxTokens, timeoutMs = null) {
         const { model, key } = provider;
         // model format: " accountId/ai/run/@cf/meta/llama-3.1-8b-instruct "
         // or just the model part — extract accountId from key or model
@@ -613,7 +622,7 @@ class MultiProviderAI {
             messages, temperature, max_tokens: maxTokens
         }, {
             headers: { 'Authorization': `Bearer ${key}` },
-            timeout: 30000
+            timeout: timeoutMs || 30000
         });
         if (response.data?.success && response.data?.result?.response) {
             return response.data.result.response;
@@ -623,7 +632,7 @@ class MultiProviderAI {
 
     // ==================== COHERE ====================
 
-    async _callCohere(provider, messages, temperature, maxTokens) {
+    async _callCohere(provider, messages, temperature, maxTokens, timeoutMs = null) {
         const { model, key } = provider;
         const chatHistory = messages.slice(1, -1).map(msg => ({
             role: msg.role,
@@ -636,7 +645,7 @@ class MultiProviderAI {
             temperature
         }, {
             headers: { 'Authorization': `Bearer ${key}` },
-            timeout: 30000
+            timeout: timeoutMs || 30000
         });
         if (response.data?.text) {
             return response.data.text;

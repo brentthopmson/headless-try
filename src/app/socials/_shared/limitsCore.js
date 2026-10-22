@@ -28,8 +28,36 @@ const BASE_LIMIT_ACTION_MAP = {
     likeStory: "likeOnStory",
     commentStory: "commentOnStory",
     commentComment: "commentOnComment",
+    repost: "repostOnPost",
+    repostComment: "repostOnComment",
+    repostStory: "repostOnStory",
     extract: "extract",
+    inboxReply: "inboxReply",
 };
+
+// Canonical hub-usage key ← legacy base action name. The hub interactionUsage
+// JSON is keyed by Limits-sheet column names (likesOnComment, ...) so the same
+// action is both checked and incremented. Older rows used base names
+// (likeComment, ...) — resolveUsageEntry() reads both so history still counts.
+const LIMIT_TO_BASE_ALIASES = {
+    likesOnPost: "like",
+    commentOnPost: "comment",
+    likesOnComment: "likeComment",
+    commentOnComment: "commentComment",
+    likeOnStory: "likeStory",
+    commentOnStory: "commentStory",
+    repostOnPost: "repost",
+    repostOnComment: "repostComment",
+    repostOnStory: "repostStory",
+};
+const BASE_TO_LIMIT_ALIASES = Object.fromEntries(
+    Object.entries(LIMIT_TO_BASE_ALIASES).map(([limit, base]) => [base, limit])
+);
+
+// Base action → canonical hub usage key (Limits-sheet column name).
+function canonicalAction(action) {
+    return BASE_TO_LIMIT_ALIASES[action] || action;
+}
 
 // Operation/workflow segments that perform NO quota-consuming platform action.
 const READ_OPERATIONS = new Set([
@@ -50,7 +78,16 @@ const RAW_OP_ACTIONS = {
     interactwithprofile: ["like"],
     engagewithnotifications: ["like", "comment"],
     followback: ["follow"],
-    sendmessage: ["message"],
+    sendmessage: ["inboxReply"],
+    // Reposts (workers not implemented yet — keys reserved so gates/usage work
+    // as soon as the workflows land).
+    repost: ["repost"],
+    repostpost: ["repost"],
+    repostonpost: ["repost"],
+    repostcomment: ["repostComment"],
+    repostoncomment: ["repostComment"],
+    repoststory: ["repostStory"],
+    repostonstory: ["repostStory"],
 };
 
 function toInt(value, fallback = 0) {
@@ -97,6 +134,74 @@ function parseLimitCell(raw) {
         // fall through
     }
     return null;
+}
+
+// Timestamp of a usage entry: lastAction first, then the stored hour/day/month
+// fields (legacy rows). null = unknown (caller treats it as the current window).
+function usageEntryWindow(entry) {
+    if (!entry || typeof entry !== "object") return null;
+    if (entry.lastAction) {
+        const t = Date.parse(entry.lastAction);
+        if (!Number.isNaN(t)) return new Date(t);
+    }
+    if (Number.isFinite(entry.hour) && Number.isFinite(entry.day) && Number.isFinite(entry.month)) {
+        const year = Number.isFinite(entry.year) ? entry.year : new Date().getFullYear();
+        return new Date(year, entry.month, entry.day, entry.hour, 0, 0, 0);
+    }
+    return null;
+}
+
+function sameHour(a, b) {
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth()
+        && a.getDate() === b.getDate() && a.getHours() === b.getHours();
+}
+function sameDay(a, b) {
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+function sameMonth(a, b) {
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
+}
+
+// Read counters for a limit action, merging the canonical key with any legacy
+// base-name key. Counters are summed per window, but only entries from the
+// CURRENT window count — a stale hourly counter from yesterday can't inflate
+// today's hourly total. `total` is always summed (lifetime).
+function resolveUsageEntry(accountUsage, action) {
+    if (!accountUsage || typeof accountUsage !== "object") return {};
+    const keys = [action];
+    if (LIMIT_TO_BASE_ALIASES[action]) keys.push(LIMIT_TO_BASE_ALIASES[action]);
+    if (BASE_TO_LIMIT_ALIASES[action]) keys.push(BASE_TO_LIMIT_ALIASES[action]);
+
+    const now = new Date();
+    let out = null;
+    for (const key of keys) {
+        const entry = accountUsage[key];
+        if (!entry || typeof entry !== "object") continue;
+        const window = usageEntryWindow(entry);
+        const when = window || now;
+        const hoursMatch = sameHour(when, now);
+        const daysMatch = sameDay(when, now);
+        const monthsMatch = sameMonth(when, now);
+
+        if (!out) {
+            out = {
+                hourly: hoursMatch ? toInt(entry.hourly, 0) : 0,
+                daily: daysMatch ? toInt(entry.daily, 0) : 0,
+                monthly: monthsMatch ? toInt(entry.monthly, 0) : 0,
+                total: toInt(entry.total, 0),
+                lastAction: entry.lastAction || null,
+            };
+            continue;
+        }
+        if (hoursMatch) out.hourly += toInt(entry.hourly, 0);
+        if (daysMatch) out.daily += toInt(entry.daily, 0);
+        if (monthsMatch) out.monthly += toInt(entry.monthly, 0);
+        out.total += toInt(entry.total, 0);
+        if (entry.lastAction && (!out.lastAction || entry.lastAction > out.lastAction)) {
+            out.lastAction = entry.lastAction;
+        }
+    }
+    return out || {};
 }
 
 // Core of checkActionAllowed(): evaluate a platform policy against account usage.
@@ -239,6 +344,8 @@ function evaluateUserQuota(usageBlob, planLimits, checks) {
 module.exports = {
     USER_LIMIT_COLUMNS,
     BASE_LIMIT_ACTION_MAP,
+    LIMIT_TO_BASE_ALIASES,
+    BASE_TO_LIMIT_ALIASES,
     READ_OPERATIONS,
     RAW_OP_ACTIONS,
     toInt,
@@ -253,4 +360,6 @@ module.exports = {
     toLimitActions,
     parsePlanRow,
     evaluateUserQuota,
+    canonicalAction,
+    resolveUsageEntry,
 };

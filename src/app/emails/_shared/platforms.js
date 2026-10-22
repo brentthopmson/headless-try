@@ -2,7 +2,7 @@ import logger from "../../../utils/logger.js";
 
 // ==================== Email Platform Configs ====================
 // Platform-specific selectors, URLs, and timing for browser-based email automation.
-// Modeled after socials/send-message/platforms.js pattern.
+// Modeled after shooting/social/platforms.js pattern.
 
 export const emailPlatforms = {
 
@@ -281,5 +281,66 @@ export function getPlatformConfig(platform) {
   const key = (platform || "gmail").toLowerCase();
   return emailPlatforms[key] || emailPlatforms.gmail;
 }
+
+// Inbox read/reply automation config (scan + reply, not compose). Kept in the
+// same provider source as compose so a provider has one canonical definition.
+export const emailInboxPlatforms = {
+  gmail: {
+    inboxUrl: "https://mail.google.com/mail/u/0/#inbox",
+    unreadRow: "tr.zA.zE",
+    anyRow: "tr.zA",
+    rowSender: ".yW span[email], .yW .zF",
+    rowSubject: ".bog, .bqe",
+    rowSnippet: ".y6 span",
+    replyButton: "div[aria-label*='Reply'][role='button'], span[aria-label*='Reply'][role='button']",
+    bodyInput: "div[role='textbox'][aria-label*='Message Body'], div.editable.LW-avf",
+    sendButton: "div[aria-label*='Send'][role='button'], td[aria-label*='Send'] div[role='button']",
+    keyboardFallback: "r",
+    waitAfterOpen: 3500,
+    waitAfterReplyOpen: 2500,
+  },
+  outlook: {
+    inboxUrl: "https://outlook.live.com/mail/0/inbox",
+    unreadRow: "div[role='option'][aria-label*='Unread'], div[data-convid]",
+    anyRow: "div[role='option']",
+    rowSender: "div[role='option'] div[title]",
+    rowSubject: "div[role='option'] [aria-label*='Subject'], div[role='option'] span",
+    rowSnippet: "",
+    replyButton: "button[aria-label='Reply'], button[title='Reply']",
+    bodyInput: "div[role='textbox'][aria-label*='Message'], div[role='textbox'][contenteditable='true']",
+    sendButton: "button[aria-label='Send']",
+    keyboardFallback: null,
+    waitAfterOpen: 3500,
+    waitAfterReplyOpen: 2500,
+  },
+  yahoo: {
+    inboxUrl: "https://mail.yahoo.com/d/folders/1",
+    unreadRow: "li[data-test='message-row'][data-is-unread='true']",
+    anyRow: "li[data-test='message-row']",
+    rowSender: "[data-test-id='sender']",
+    rowSubject: "[data-test-id='subject']",
+    rowSnippet: "[data-test-id='message-subtitle']",
+    replyButton: "button[title='Reply'], button[aria-label='Reply']",
+    bodyInput: "div[role='textbox'][contenteditable='true']",
+    sendButton: "button[data-test-id='compose-send-button'], button[title='Send']",
+    keyboardFallback: null,
+    waitAfterOpen: 3500,
+    waitAfterReplyOpen: 2500,
+  },
+  aol: {
+    inboxUrl: "https://mail.aol.com/d/folders/1",
+    unreadRow: "li[data-test='message-row'][data-is-unread='true']",
+    anyRow: "li[data-test='message-row']",
+    rowSender: "[data-test-id='sender']",
+    rowSubject: "[data-test-id='subject']",
+    rowSnippet: "",
+    replyButton: "button[title='Reply'], button[aria-label='Reply']",
+    bodyInput: "div[role='textbox'][contenteditable='true']",
+    sendButton: "button[data-test-id='compose-send-button'], button[title='Send']",
+    keyboardFallback: null,
+    waitAfterOpen: 3500,
+    waitAfterReplyOpen: 2500,
+  },
+};
 
 export { emailPlatforms as default };

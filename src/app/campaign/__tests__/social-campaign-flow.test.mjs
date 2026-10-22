@@ -170,6 +170,9 @@ const ACTION_LIMIT_MAP_SEARCH = {
   "likeStory": "likeOnStory",
   "commentStory": "commentOnStory",
   "commentComment": "commentOnComment",
+  "repost": "repostOnPost",
+  "repostComment": "repostOnComment",
+  "repostStory": "repostOnStory",
 };
 
 function mapOperationToActions(operation) {

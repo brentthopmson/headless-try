@@ -5,7 +5,7 @@ import { promisify } from 'util';
 import logger from "../../../../utils/logger.js";
 import { getSheetDataApi, appendSheetRowApi, updateSheetRowApi, updateHubAndProjectsFromCookieData, stripFormulaColumns } from '../../../api/googlesheets.js';
 import { fetchDataFromAppScript as _sharedFetchData, startAppScriptDataBackgroundUpdater as _sharedStartUpdater, stopAppScriptDataBackgroundUpdater as _sharedStopUpdater } from '../../../../utils/cookieDataFetcher.js';
-import { runSmartExtract, isExtractInFlight } from '../../../../utils/smartExtract.js';
+import { runSmartExtract, isExtractInFlight } from '../../../extraction/engine.js';
 import { getSetting } from '../../../../utils/settingsCache.js';
 import { enqueueSheetUpdate } from '../../../../utils/writeQueue.js';
 

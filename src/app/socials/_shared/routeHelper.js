@@ -13,6 +13,7 @@ import { detectEmailPlatform } from "../../emails/_shared/platforms.js";
 import limitsCore from './limitsCore.js';
 import { checkActionAllowed } from './limits.js';
 import { getAccountUsage, updateAccountUsage } from './hubUpdater.js';
+import { createTally, stepQuotaAction, accountStep } from './quotaActions.js';
 
 const { toLimitActions } = limitsCore;
 
@@ -699,10 +700,15 @@ export const DOMHelpers = {
     // center), then wheel in small steps with pauses. Wheel events only
     // scroll the element under the mouse — no button events fire.
     humanScroll: async (page, selector = null, options = {}) => {
-        const { totalPx = 600, stepRange = [80, 150], pauseRange = [150, 350] } = options;
+        const { totalPx = 600, stepRange = [80, 150], pauseRange = [100, 220], point = null } = options;
         try {
             let cx, cy;
-            if (selector) {
+            // Explicit wheel point (callers that resolve the real scrollable
+            // container themselves pass its center so the wheel lands on it).
+            if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
+                cx = point.x;
+                cy = point.y;
+            } else if (selector) {
                 const el = await page.$(selector);
                 const box = el ? await el.boundingBox() : null;
                 if (box && box.width > 0 && box.height > 0) {
@@ -716,10 +722,14 @@ export const DOMHelpers = {
                 cy = vp.height * 0.5;
             }
             await _humanMoveTo(page, cx, cy, { settleMs: [80, 200] });
+            // Negative totalPx scrolls the container back up (used by the
+            // comment backlog sweep). Distance is |totalPx|; direction = sign.
+            const distance = Math.abs(totalPx);
+            const dir = totalPx < 0 ? -1 : 1;
             let scrolled = 0;
-            while (scrolled < totalPx) {
-                const dy = Math.min(Math.round(_rand(stepRange[0], stepRange[1])), totalPx - scrolled);
-                await page.mouse.wheel({ deltaY: dy });
+            while (scrolled < distance) {
+                const dy = Math.min(Math.round(_rand(stepRange[0], stepRange[1])), distance - scrolled);
+                await page.mouse.wheel({ deltaY: dir * dy });
                 scrolled += dy;
                 await _sleep(pauseRange[0], pauseRange[1]);
             }
@@ -767,6 +777,9 @@ export function interpolate(value, context) {
 
 export async function executeWorkflow(page, workflow, context, platformConfig, aiProvider) {
     const results = {};
+    // Success-only quota tally for this workflow ({ canonicalKey: count }).
+    const quota = createTally();
+    const selectors = platformConfig.selectors || {};
 
     try {
         logger.info(`[executeWorkflow] Starting workflow: ${workflow.name}`);
@@ -902,7 +915,17 @@ export async function executeWorkflow(page, workflow, context, platformConfig, a
                             const numToLike = Math.min(maxCount, buttons.length);
                             for (let j = 0; j < numToLike; j++) {
                                 try {
-                                    await buttons[Math.floor(Math.random() * buttons.length)].click();
+                                    const btn = buttons[Math.floor(Math.random() * buttons.length)];
+                                    await btn.click();
+                                    // Per-button pressed state is the only reliable
+                                    // signal for random comment likes.
+                                    const pressed = await btn.evaluate(el => el.getAttribute('aria-pressed')).catch(() => null);
+                                    if (pressed === 'true') {
+                                        quota.add('likeComment');
+                                    } else if (pressed === null) {
+                                        logger.warn(`[executeWorkflow] likeComment counted as unverified (no aria-pressed)`);
+                                        quota.add('likeComment');
+                                    }
                                     await DOMHelpers.randomDelay(500, 1500);
                                 } catch (e) { /* skip failed clicks */ }
                             }
@@ -923,7 +946,18 @@ export async function executeWorkflow(page, workflow, context, platformConfig, a
                                 picked.add(idx);
                                 try {
                                     await buttons[idx].click();
-                                    liked++;
+                                    const pressed = await buttons[idx].evaluate(el => el.getAttribute('aria-pressed')).catch(() => null);
+                                    // already-liked hearts report 'true' before the
+                                    // click too, so only count when the click
+                                    // produced/kept a pressed state.
+                                    if (pressed === 'true') {
+                                        liked++;
+                                        quota.add('like');
+                                    } else if (pressed === null) {
+                                        logger.warn(`[executeWorkflow] like counted as unverified (no aria-pressed)`);
+                                        liked++;
+                                        quota.add('like');
+                                    }
                                     await DOMHelpers.randomDelay(500, 1500);
                                 } catch (e) { /* skip failed clicks */ }
                             }
@@ -932,6 +966,13 @@ export async function executeWorkflow(page, workflow, context, platformConfig, a
                     }
                     default:
                         logger.warn(`[executeWorkflow] Unknown action: ${action}`);
+                }
+
+                // Account consuming steps only after they succeeded, and only
+                // when platform state verifies the action (or no signal exists).
+                const quotaAction = stepQuotaAction(step);
+                if (quotaAction) {
+                    await accountStep(page, quotaAction, selectors, quota, `[executeWorkflow:${workflow.name}]`);
                 }
 
                 if (i < workflow.steps.length - 1) {
@@ -945,10 +986,13 @@ export async function executeWorkflow(page, workflow, context, platformConfig, a
             }
         }
 
-        logger.info(`[executeWorkflow] Workflow completed: ${workflow.name}`);
+        logger.info(`[executeWorkflow] Workflow completed: ${workflow.name} (verified actions: ${JSON.stringify(quota.tally)})`);
+        results.__quota = quota.tally;
         return results;
     } catch (e) {
         logger.error(`[executeWorkflow] Workflow failed: ${e.message}`);
+        // Partial progress: actions verified before the failing step are real.
+        e.quota = quota.tally;
         throw e;
     }
 }
@@ -1108,7 +1152,7 @@ export async function postCommentVerified(page, s, text, logPrefix = '', opts = 
         if (!focused) return false;
         await page.keyboard.press('Backspace').catch(() => {}); // clear selection
         await DOMHelpers.randomDelay(150, 300);
-        await page.keyboard.type(value, { delay: 40 }).catch(() => false);
+        await page.keyboard.type(value, { delay: 15 }).catch(() => false);
         return true;
     };
 
@@ -1133,7 +1177,7 @@ export async function postCommentVerified(page, s, text, logPrefix = '', opts = 
         typed = await typeIntoEditor(text);
     }
     if (!typed) return { posted: false, reason: 'composer-not-found' };
-    await DOMHelpers.randomDelay(600, 1200);
+    await DOMHelpers.randomDelay(250, 450);
 
     let composerText = await readComposerText();
     if (composerText === null) return { posted: false, reason: 'composer-missing-after-type' };
@@ -1146,9 +1190,9 @@ export async function postCommentVerified(page, s, text, logPrefix = '', opts = 
         if (logPrefix) logger.warn(`${logPrefix} [${mode}] composer text mismatch after type ("${composerText.substring(0, 40)}" ≠ intended) — clearing and retyping once.`);
         await focusComposer();
         await page.keyboard.press('Backspace').catch(() => {});
-        await DOMHelpers.randomDelay(300, 500);
-        await page.keyboard.type(text, { delay: 40 }).catch(() => false);
-        await DOMHelpers.randomDelay(600, 1200);
+        await DOMHelpers.randomDelay(180, 320);
+        await page.keyboard.type(text, { delay: 15 }).catch(() => false);
+        await DOMHelpers.randomDelay(250, 450);
         composerText = await readComposerText();
         if (composerText === null || normText(composerText) !== normText(text)) {
             return { posted: false, reason: 'text-mismatch' };
@@ -1170,14 +1214,14 @@ export async function postCommentVerified(page, s, text, logPrefix = '', opts = 
     if (popupOpen) {
         if (logPrefix) logger.warn(`${logPrefix} [${mode}] mention/emoji popup open after type — closing with Escape.`);
         await page.keyboard.press('Escape').catch(() => {});
-        await DOMHelpers.randomDelay(300, 500);
+        await DOMHelpers.randomDelay(150, 250);
         const afterPopup = await readComposerText();
         if (normText(afterPopup) !== normText(text)) {
             await focusComposer();
             await page.keyboard.press('Backspace').catch(() => {});
-            await DOMHelpers.randomDelay(300, 500);
-            await page.keyboard.type(text, { delay: 40 }).catch(() => false);
-            await DOMHelpers.randomDelay(600, 1200);
+            await DOMHelpers.randomDelay(180, 320);
+            await page.keyboard.type(text, { delay: 15 }).catch(() => false);
+            await DOMHelpers.randomDelay(250, 450);
         }
     }
 
@@ -1228,7 +1272,7 @@ export async function postCommentVerified(page, s, text, logPrefix = '', opts = 
             if (cookieRect) {
                 await DOMHelpers.humanClickAt(page, cookieRect.x, cookieRect.y, { hoverMs: [120, 300] }).catch(() => false);
                 if (logPrefix) logger.info(`${logPrefix} [${mode}] clicked cookie banner "Allow all" (real mouse) before retry.`);
-                await DOMHelpers.randomDelay(400, 700);
+                await DOMHelpers.randomDelay(250, 400);
             }
         }
         await page.keyboard.press('Escape').catch(() => {});
@@ -1246,7 +1290,7 @@ export async function postCommentVerified(page, s, text, logPrefix = '', opts = 
                 if (submit) submit.scrollIntoView({ block: 'center' });
             }
         }, { mode, containerSel, containerIndex }).catch(() => {});
-        await DOMHelpers.randomDelay(500, 800);
+        await DOMHelpers.randomDelay(250, 400);
         targets = await resolveTargets();
         if (!targets || !targets.submitRect) return { posted: false, reason: 'submit-missing-after-scroll' };
     }
@@ -1254,26 +1298,26 @@ export async function postCommentVerified(page, s, text, logPrefix = '', opts = 
     const clicked = await DOMHelpers.humanClickAt(page, targets.submitRect.x, targets.submitRect.y, { hoverMs: [120, 300] }).catch(() => false);
     if (!clicked) return { posted: false, reason: 'submit-click-failed' };
 
-    // TikTok clears the composer once the post is accepted — poll 6s with
-    // ONE re-click at ~2.5s if text remains (missed first click / swallowed
+    // TikTok clears the composer once the post is accepted — poll 4s with
+    // ONE re-click at ~2s if text remains (missed first click / swallowed
     // coordinates).
-    const deadline = Date.now() + 6000;
+    const deadline = Date.now() + 4000;
     let reClicked = false;
     while (Date.now() < deadline) {
         const remaining = await readComposerText();
         if (remaining === null || !remaining) return { posted: true };
-        if (!reClicked && Date.now() > deadline - 3500) {
-            // ~2.5s elapsed with text still present — re-click submit once.
+        if (!reClicked && Date.now() > deadline - 2000) {
+            // ~2s elapsed with text still present — re-click submit once.
             const again = await resolveTargets();
             if (again && again.submitRect) {
-                if (logPrefix) logger.warn(`${logPrefix} [${mode}] composer still has text ~2.5s after submit — re-clicking submit once.`);
+                if (logPrefix) logger.warn(`${logPrefix} [${mode}] composer still has text ~2s after submit — re-clicking submit once.`);
                 await DOMHelpers.humanClickAt(page, again.submitRect.x, again.submitRect.y, { hoverMs: [100, 200] }).catch(() => false);
                 reClicked = true;
             }
         }
-        await DOMHelpers.randomDelay(400, 700);
+        await DOMHelpers.randomDelay(200, 350);
     }
-    if (logPrefix) logger.warn(`${logPrefix} [${mode}] composer still has text 6s after submit.`);
+    if (logPrefix) logger.warn(`${logPrefix} [${mode}] composer still has text 4s after submit.`);
     return { posted: false, reason: 'composer-not-cleared' };
 }
 
@@ -1290,7 +1334,9 @@ export function classifyStop(reason) {
     return null;
 }
 
-export async function gateAndConsume(platform, profileId, baseAction) {
+// Quota CHECK only — no write. Use before performing an action; call
+// consumeAction() afterwards, only when the action was actually verified.
+export async function checkGate(platform, profileId, baseAction) {
     const limitAction = toLimitActions([baseAction])[0] || baseAction;
     const usageData = profileId ? await getAccountUsage(profileId) : null;
     const usage = usageData?.interactionUsage || {};
@@ -1298,8 +1344,21 @@ export async function gateAndConsume(platform, profileId, baseAction) {
     if (!limit.allowed) {
         return { allowed: false, reason: limit.reason, stopType: classifyStop(limit.reason) };
     }
-    if (profileId) {
-        await updateAccountUsage(profileId, baseAction);
-    }
     return { allowed: true, reason: limit.reason, stopType: null };
+}
+
+// Count an action that was actually performed (success-only accounting).
+// updateAccountUsage() canonicalizes base names → Limits-column keys.
+export async function consumeAction(profileId, baseAction, count = 1) {
+    if (!profileId) return false;
+    return updateAccountUsage(profileId, baseAction, count);
+}
+
+// Check + consume in one step (legacy callers). New code should prefer
+// checkGate() before the action + consumeAction() after verification.
+export async function gateAndConsume(platform, profileId, baseAction) {
+    const gate = await checkGate(platform, profileId, baseAction);
+    if (!gate.allowed) return gate;
+    await consumeAction(profileId, baseAction);
+    return gate;
 }

@@ -3436,7 +3436,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         // rows created before platform stamping existed).
         if (platform && platform !== 'unknown') {
             finalSheetUpdate.platform = platform;
-            // category is also the bank-extract fallback (smartExtract.js:2738)
+            // category is also the bank-extract fallback (extraction/bank/engine.js)
             // — only fill it when the row never had one.
             if (!(getCachedRow(browserId) || {}).category) {
                 finalSheetUpdate.category = platform;

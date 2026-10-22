@@ -16,6 +16,8 @@ const {
     toLimitActions,
     parsePlanRow,
     evaluateUserQuota,
+    canonicalAction,
+    resolveUsageEntry,
 } = require('../src/app/socials/_shared/limitsCore.js');
 
 describe('parseLimitCell / normalizePolicy (Limits sheet cell → policy)', () => {
@@ -140,7 +142,7 @@ describe('baseActionsForOperation / actionsForExecutedKeys / toLimitActions', ()
         expect(baseActionsForOperation('followUser')).toEqual(['follow']);
         expect(baseActionsForOperation('unfollowuser')).toEqual(['unfollow']);
         expect(baseActionsForOperation('interactWithVideo')).toEqual(['like', 'comment']);
-        expect(baseActionsForOperation('sendmessage')).toEqual(['message']);
+        expect(baseActionsForOperation('sendmessage')).toEqual(['inboxReply']);
     });
 
     test('comma chains union their actions', () => {
@@ -157,7 +159,7 @@ describe('baseActionsForOperation / actionsForExecutedKeys / toLimitActions', ()
         expect(actionsForExecutedKeys(['search', 'interactWithVideo'], 'search-interact')).toEqual(['like', 'comment']);
         expect(actionsForExecutedKeys(['followUser'], 'page-interact')).toEqual(['follow']);
         expect(actionsForExecutedKeys(['engageWithNotifications'], 'activities-interact')).toEqual(['like', 'comment']);
-        expect(actionsForExecutedKeys(['sendMessage'], 'sendmessage')).toEqual(['message']);
+        expect(actionsForExecutedKeys(['sendMessage'], 'sendmessage')).toEqual(['inboxReply']);
     });
 
     test('no executed keys → no actions', () => {
@@ -166,10 +168,39 @@ describe('baseActionsForOperation / actionsForExecutedKeys / toLimitActions', ()
 
     test('base actions map to Limits-sheet columns', () => {
         expect(toLimitActions(['like', 'comment', 'follow', 'message'])).toEqual(['likesOnPost', 'commentOnPost', 'follow', 'coldMessage']);
+        expect(toLimitActions(['inboxReply'])).toEqual(['inboxReply']);
         expect(toLimitActions(['extract'])).toEqual(['extract']);
         expect(toLimitActions(['unfollow'])).toEqual(['unfollow']);
         expect(toLimitActions([])).toEqual([]);
         expect(BASE_LIMIT_ACTION_MAP.like).toBe('likesOnPost');
+    });
+
+    test('repost actions map to their Limits-sheet columns', () => {
+        expect(toLimitActions(['repost', 'repostComment', 'repostStory']))
+            .toEqual(['repostOnPost', 'repostOnComment', 'repostOnStory']);
+        expect(canonicalAction('repost')).toBe('repostOnPost');
+        expect(canonicalAction('repostComment')).toBe('repostOnComment');
+        expect(canonicalAction('repostStory')).toBe('repostOnStory');
+    });
+
+    test('future repost operation segments resolve to base actions', () => {
+        expect(actionsForExecutedKeys(['repostOnPost'], 'repostonpost')).toEqual(['repost']);
+        expect(actionsForExecutedKeys(['repostOnComment'], 'repostoncomment')).toEqual(['repostComment']);
+        expect(baseActionsForOperation('repoststory')).toEqual(['repostStory']);
+        expect(operationConsumes('repost', false)).toBe(true);
+    });
+
+    test('resolveUsageEntry merges legacy repost keys with canonical ones', () => {
+        const now = new Date().toISOString();
+        const usage = {
+            repost: { hourly: 2, daily: 2, monthly: 2, total: 10, lastAction: now },
+            repostOnPost: { hourly: 3, daily: 3, monthly: 3, total: 20, lastAction: now },
+        };
+        const r = resolveUsageEntry(usage, 'repostOnPost');
+        expect(r.hourly).toBe(5);
+        expect(r.daily).toBe(5);
+        expect(r.monthly).toBe(5);
+        expect(r.total).toBe(30);
     });
 });
 

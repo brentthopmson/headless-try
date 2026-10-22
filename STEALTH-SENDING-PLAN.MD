@@ -21,7 +21,7 @@ fingerprints that spam filters and Google's risk model associate with automation
 | D1 | **Score threads + new-message fallback** | Reply in-thread only when the existing thread scores eligible; otherwise send a fresh new message (current behavior). |
 | D2 | **Mute thread** after interaction | Mute — NOT archive, NOT label. Muted threads leave the inbox without tripping "archived after reply" patterns. |
 | D3 | **Delete sent copy AND purge from Trash** *(revised 2026-09-30)* | Remove our outgoing message from Sent **and then delete it from Trash/Deleted Items** so zero copy remains in the account (Q3: purge both). Gmail: `Delete forever`; Outlook: delete from Deleted Items (permanent); Yahoo/AOL: delete from Trash. Recipient's copy and thread structure untouched. |
-| D4 | **Standalone shoot: stealth ALWAYS ON** *(revised 2026-09-30)* | Lives in `src/app/emails/send-email/route.js` (+ `compose-email/route.js`). **No feature flag, no `SETTINGS.stealthSending` row** — the dashboard shoot always attempts reply-in-thread (threshold = module default 60), falling back to fresh compose. Campaign = direct fresh compose **only** (no thread logic) + post-send Sent/Trash purge on wire sends + reply-filter pre-pass (D6/D11). |
+| D4 | **Standalone shoot: stealth ALWAYS ON** *(revised 2026-09-30)* | Lives in `src/app/shooting/email/standalone.js` (via `POST /shooting`, channel=email; + `emails/compose-email/route.js`). **No feature flag, no `SETTINGS.stealthSending` row** — the dashboard shoot always attempts reply-in-thread (threshold = module default 60), falling back to fresh compose. Campaign = direct fresh compose **only** (no thread logic) + post-send Sent/Trash purge on wire sends + reply-filter pre-pass (D6/D11). |
 | D5 | **Full parity: Gmail + Outlook + Yahoo + AOL** *(revised 2026-09-30)* | Thread scoring/reply/mute/sent-copy implemented for all four platforms. AOL shares Yahoo's implementation (same white-label UI). Gmail uses URL search; Outlook uses URL search with typed-search fallback; Yahoo/AOL use typed search. |
 | D6 | **Campaigns: hygiene only, no thread logic** *(revised 2026-09-30)* | Campaign sends stay direct fresh compose (`sendViaBrowser`) — no scoring/reply/mute. Added: post-send **Sent+Trash purge** after each wire send (try/caught, send stays counted); pre-loop **reply-filter install** (D11); SMTP send path and `scheduleViaBrowser` untouched (SMTP creates no Sent copy; scheduled wire copies can't be purged later — known limitation). |
 | D7 | **Fix D (realGeo bypass): DEFERRED** | Not part of this work. |
@@ -32,7 +32,7 @@ fingerprints that spam filters and Google's risk model associate with automation
 
 ## 3. Current Baseline (what exists today)
 
-- `src/app/emails/send-email/route.js` — the standalone shoot.
+- `src/app/shooting/email/standalone.js` — the standalone shoot (reached via `POST /shooting`).
   - `resolveShootSession(browserId)` → persistent profile + identity.
   - `sendSingleEmail(page, config, recipient, subject, body)` — always opens
     `config.composeUrl` and fills To/Subject/Body → Send (`route.js:48-90`).
@@ -128,7 +128,7 @@ Same four-step flow as Gmail (score → reply → mute → delete Sent copy), pl
    `mode/score/mute/sentCopy/trashPurged`).
    Selectors added to `_shared/platforms.js` for all four platforms
    (`trashNavLink` on Yahoo + AOL).
-3. **Wire into `send-email/route.js`** ✅ — always-on (no flag):
+3. **Wire into `shooting/email/standalone.js`** ✅ — always-on (no flag):
    - `replyFolder` param destructured; `filterFolder = resolveFolderName(replyFolder)`;
    - after `resolveShootSession`: `ensureReplyFilter(page, platform,
      buildFilterPattern(subject), filterFolder, log)` once per shoot (log-only);
@@ -163,7 +163,7 @@ Same four-step flow as Gmail (score → reply → mute → delete Sent copy), pl
   `replyFilter` pure helpers ✅ (`npx jest replyFilter` = 7/7: token strip, default
   folder, 60-char cap, non-string safety).
 - Syntax + route compile ✅ (`node --check` all touched files in all 3 repos,
-  GET `/emails/send-email` + `/campaign/execute-campaign` → 405).
+  GET `/shooting` + `/campaign/execute-campaign` → 405).
 - Manual canary — **required per platform before trusting in prod (D10)**, 1 account × 3 threads each on Gmail, Outlook, Yahoo, AOL:
   - eligible thread → reply lands in-thread, thread muted (Yahoo/AOL: mute logged `skipped`), Sent copy gone **and Trash/Deleted Items empty of it** (`trashPurged=true` in results), inbox clean;
   - ineligible thread → exact current new-message behavior;
@@ -229,7 +229,7 @@ Shipped fixes:
   non-gmail platforms unchanged.
 - **Injection**: `sanitizeCookiesForInjection()` (drops expired, normalizes sameSite) +
   `injectCookiesViaCDP()` (per-cookie raw CDP, post-set verification, honest
-  missing/failure logs) — used by routeHelper, smartExtract `createTab`, and
+  missing/failure logs) — used by routeHelper, runSmartExtract `createTab`, and
   electron `test-session`.
 - **Launcher (`app.asar`)**: applies saved `browserIdentity` (UA/CH, timezone, locale,
   viewport, webdriver flag), skips expired cookies, and after navigation **verifies the

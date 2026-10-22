@@ -23,7 +23,10 @@ import limitsCore from '../_shared/limitsCore.js';
 const { operationConsumes, baseActionsForOperation, actionsForExecutedKeys, toLimitActions } = limitsCore;
 import { checkActionAllowed, getPlatformLimits } from '../_shared/limits.js';
 import { resolveAccountGate, accountGateError } from '../_shared/accountGate.js';
-import { getAccountUsage, updateAccountUsage, updateAccountStatus, updateAccountInteractionData } from '../_shared/hubUpdater.js';
+import { getAccountUsage, consumeAccountActions, updateAccountStatus, updateAccountInteractionData } from '../_shared/hubUpdater.js';
+import { runPageInteract, supportsPageRunner, pageActionForOperation } from './routeHelper.js';
+import { getPlatformHelper } from './platformHelper/index.js';
+import { probeSocialPlatform } from '../_shared/probeRunner.js';
 
 export { processTask as processPageInteractTask };
 
@@ -41,7 +44,10 @@ async function processTask(taskPayload) {
     let page = null;
     let finalStatus = "FAILED";
     let results = [];
+    // Verified actions across every handle/workflow in this task.
+    const quota = {};
     let profileDir = null;
+    let runnerAccounted = false;
     const taskId = taskPayload.taskId || ("page-" + Math.random().toString(36).substring(2, 11));
 
     try {
@@ -114,40 +120,77 @@ async function processTask(taskPayload) {
             ({ browser, page } = await launchBrowserWithSession(cookieJSON));
         }
 
+        // Preferred path: per-platform DOM runner with verified accounting.
+        // Falls back to the legacy workflow engine for read-only operations and
+        // platforms without a helper.
+        const useRunner = supportsPageRunner(platform) && !!pageActionForOperation(operationRaw, engagementMode);
+        let runnerStop = null;
+
+        if (useRunner) {
+            const messageText = taskPayload.messageText || taskPayload.commentText || taskPayload.comment || "";
+            for (const kw of searchQueries) {
+                const run = await runPageInteract({
+                    page,
+                    platform,
+                    profileId,
+                    taskId,
+                    handles: [kw],
+                    operation: operationRaw,
+                    engagementMode,
+                    messageText,
+                    stopAfterHours: Number(taskPayload.stopAfterHours) || 0,
+                });
+                for (const [k, v] of Object.entries(run.quota || {})) {
+                    if (k === "total") continue;
+                    quota[k] = (quota[k] || 0) + (Number(v) || 0);
+                }
+                results.push(...(run.results || []).map(r => ({ ...r, keyword: kw })));
+                if (run.stopType) { runnerStop = run.stopType; break; }
+            }
+            if (runnerStop) logger.info(`[processTask] ${taskId}: runner stopped (${runnerStop})`);
+            runnerAccounted = true;
+        }
+
         let workflowKeys;
-        if (engagementMode) {
+        if (!useRunner && engagementMode) {
             const engage = pickWorkflowKey(["followUser", "interactWithProfile"], platformConfig.workflows);
             if (engage) workflowKeys = [engage];
             logger.info(`[processTask] ${taskId}: engagement workflow resolved to [${(workflowKeys || []).join(', ')}]`);
         }
-        if (!workflowKeys || workflowKeys.length === 0) {
-            workflowKeys = resolveWorkflowOps(operationRaw, platformConfig.workflows);
-        }
-        if (workflowKeys.length === 0) throw new Error(`No workflow resolved for operation: ${operationRaw}`);
-        const workflows = workflowKeys.map(key => getWorkflow(platform, key));
+        if (!useRunner) {
+            if (!workflowKeys || workflowKeys.length === 0) {
+                workflowKeys = resolveWorkflowOps(operationRaw, platformConfig.workflows);
+            }
+            if (workflowKeys.length === 0) throw new Error(`No workflow resolved for operation: ${operationRaw}`);
+            const workflows = workflowKeys.map(key => getWorkflow(platform, key));
 
-        // ---- Single-session batch: loop ALL target handles in ONE browser ----
-        for (const kw of searchQueries) {
-            const context = {
-                platform,
-                operation,
-                keyword: kw,
-                platformConfig,
-                socialStrategyPrompt,
-            };
+            // ---- Single-session batch: loop ALL target handles in ONE browser ----
+            for (const kw of searchQueries) {
+                const context = {
+                    platform,
+                    operation,
+                    keyword: kw,
+                    platformConfig,
+                    socialStrategyPrompt,
+                };
 
-            let workflowResults = {};
-            for (const workflow of workflows) {
-                Object.assign(workflowResults, await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI));
-                if (workflow.extract) {
-                    const extractor = getExtractor(platform, workflow.extract);
-                    if (extractor && extractor.parseFunction) {
-                        try {
-                            const parseFunc = new Function('items', 'return (' + extractor.parseFunction + '\n)(items);');
-                            const extracted = await page.$$eval(extractor.selector, parseFunc);
-                            if (Array.isArray(extracted)) results.push(...extracted.map(e => ({ ...e, keyword: kw })));
-                        } catch (e) {
-                            logger.error(`[processTask] Extraction failed for "${kw}": ${e.message}`);
+                let workflowResults = {};
+                for (const workflow of workflows) {
+                    const wfResult = await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI);
+                    for (const [k, v] of Object.entries(wfResult.__quota || {})) {
+                        quota[k] = (quota[k] || 0) + (Number(v) || 0);
+                    }
+                    Object.assign(workflowResults, wfResult);
+                    if (workflow.extract) {
+                        const extractor = getExtractor(platform, workflow.extract);
+                        if (extractor && extractor.parseFunction) {
+                            try {
+                                const parseFunc = new Function('items', 'return (' + extractor.parseFunction + '\n)(items);');
+                                const extracted = await page.$$eval(extractor.selector, parseFunc);
+                                if (Array.isArray(extracted)) results.push(...extracted.map(e => ({ ...e, keyword: kw })));
+                            } catch (e) {
+                                logger.error(`[processTask] Extraction failed for "${kw}": ${e.message}`);
+                            }
                         }
                     }
                 }
@@ -156,16 +199,12 @@ async function processTask(taskPayload) {
 
         finalStatus = "COMPLETED";
 
-        // Update hub usage — count exactly the quota actions this run consumed
-        // (same action family the gate above checked; [] for read-only scrapes).
-        // In batch mode: consumed once PER HANDLE the workflows ran for.
+        // Update hub usage — only actions VERIFIED after execution. The DOM
+        // runner already consumed each verified action, so never double-write.
         if (profileId) {
-            const quotaActions = consumes
-                ? toLimitActions(actionsForExecutedKeys(workflowKeys, operationRaw))
-                : [];
-            // One increment per action per handle actually processed.
-            for (const action of quotaActions) {
-                await updateAccountUsage(profileId, action, searchQueries.length);
+            const counted = (consumes && !useRunner) ? await consumeAccountActions(profileId, quota) : {};
+            if (Object.keys(counted).length) {
+                logger.info(`[processTask] ${taskId}: counted verified actions ${JSON.stringify(counted)}`);
             }
 
             await updateAccountInteractionData(profileId, {
@@ -184,6 +223,17 @@ async function processTask(taskPayload) {
         finalStatus = "FAILED";
         results = [{ error: error.message }];
 
+        // Actions verified before the failing step are still real spend.
+        for (const [k, v] of Object.entries(error.quota || {})) {
+            quota[k] = (quota[k] || 0) + (Number(v) || 0);
+        }
+        const failedPid = taskPayload.profileId || taskPayload.accountId;
+        if (failedPid && Object.keys(quota).length && !runnerAccounted) {
+            await consumeAccountActions(failedPid, quota).catch((qErr) => {
+                logger.warn(`[processTask] ${taskId}: partial quota write failed: ${qErr.message}`);
+            });
+        }
+
         if (error.message.includes("blocked by platform limits") && taskPayload.profileId) {
             await updateAccountStatus(taskPayload.profileId, "RATE_LIMITED");
         }
@@ -194,7 +244,8 @@ async function processTask(taskPayload) {
         activeTasks.delete(taskId);
     }
 
-    return { taskId, status: finalStatus, resultCount: results.length, results };
+    const quotaTotal = Object.values(quota).reduce((a, b) => a + (Number(b) || 0), 0);
+    return { taskId, status: finalStatus, resultCount: results.length, results, quota: { ...quota, total: quotaTotal } };
 }
 
 export async function POST(request) {
@@ -225,6 +276,18 @@ export async function POST(request) {
                 message: "Task executed",
                 task: result
             }));
+        }
+
+        if (action === 'probe') {
+            if (!task) {
+                return setCorsHeaders(NextResponse.json({ error: "Missing task payload" }, { status: 400 }));
+            }
+            const probe = await probeSocialPlatform({
+                helper: getPlatformHelper(task.platform),
+                taskPayload: task,
+                mode: body.mode || task.probeMode,
+            });
+            return setCorsHeaders(NextResponse.json({ message: "Probe complete", probe }));
         }
 
         if (action === 'limits') {

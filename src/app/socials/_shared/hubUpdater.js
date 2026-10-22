@@ -1,5 +1,8 @@
 import logger from "../../../utils/logger.js";
 import { getSheetDataApi, updateSheetRowApi } from '../../api/googlesheets.js';
+import limitsCore from './limitsCore.js';
+
+const { canonicalAction } = limitsCore;
 
 const HUB_SHEET = "hub";
 const USERS_SHEET = "user";
@@ -29,26 +32,43 @@ function defaultUsage(action) {
     };
 }
 
+// Window rollover must compare FULL timestamps. Comparing only the hour/day
+// number (the old behavior) let counters survive across days/months that shared
+// the same number (e.g. Sep 21 → Oct 21 kept the daily count).
+function lastUsageDate(entry) {
+    if (!entry || typeof entry !== "object") return null;
+    if (entry.lastAction) {
+        const t = Date.parse(entry.lastAction);
+        if (!Number.isNaN(t)) return new Date(t);
+    }
+    if (Number.isFinite(entry.hour) && Number.isFinite(entry.day) && Number.isFinite(entry.month)) {
+        const year = Number.isFinite(entry.year) ? entry.year : new Date().getFullYear();
+        return new Date(year, entry.month, entry.day, entry.hour, 0, 0, 0);
+    }
+    return null;
+}
+
 function incrementUsage(existing, action, count = 1) {
     const now = new Date();
     const n = Number.isFinite(parseInt(count, 10)) && parseInt(count, 10) > 0 ? parseInt(count, 10) : 1;
     const current = existing[action] || { hourly: 0, daily: 0, monthly: 0, total: 0 };
 
-    const hourChanged = current.hour !== undefined && current.hour !== now.getHours();
-    const dayChanged = current.day !== undefined && current.day !== now.getDate();
-    // Monthly counters must roll over on month change AND on year change
-    // (same calendar month next year must not inherit last year's total).
-    const monthChanged = current.month !== undefined && (
-        current.month !== now.getMonth() ||
-        (current.year !== undefined && current.year !== now.getFullYear())
-    );
+    const last = lastUsageDate(current);
+    const sameHour = !!last
+        && last.getFullYear() === now.getFullYear() && last.getMonth() === now.getMonth()
+        && last.getDate() === now.getDate() && last.getHours() === now.getHours();
+    const sameDay = !!last
+        && last.getFullYear() === now.getFullYear() && last.getMonth() === now.getMonth()
+        && last.getDate() === now.getDate();
+    const sameMonth = !!last
+        && last.getFullYear() === now.getFullYear() && last.getMonth() === now.getMonth();
 
     return {
         ...existing,
         [action]: {
-            hourly: hourChanged ? n : (current.hourly || 0) + n,
-            daily: dayChanged ? n : (current.daily || 0) + n,
-            monthly: monthChanged ? n : (current.monthly || 0) + n,
+            hourly: sameHour ? (current.hourly || 0) + n : n,
+            daily: sameDay ? (current.daily || 0) + n : n,
+            monthly: sameMonth ? (current.monthly || 0) + n : n,
             total: (current.total || 0) + n,
             lastAction: now.toISOString(),
             hour: now.getHours(),
@@ -59,7 +79,32 @@ function incrementUsage(existing, action, count = 1) {
     };
 }
 
-export async function getAccountUsage(accountId) {
+// ==================== Account usage cache ====================
+// A single interaction currently triggers up to 4 HUB_SHEET reads
+// (gate check + the re-read inside updateAccountUsage, for like AND comment).
+// Cache the parsed usage briefly + dedupe concurrent reads; updates mutate the
+// cached copy and write the row WITHOUT re-reading. The sheet is still written
+// on every action, so quota survives crashes — worst case is ~4s of staleness
+// for another process reading the same account.
+// globalThis so every route bundle shares the same cache/chains — Next.js
+// creates a separate module scope per route otherwise (see limits.js).
+const USAGE_CACHE_TTL_MS = 4000;
+if (!globalThis.__hubUsageState) {
+    globalThis.__hubUsageState = {
+        cache: new Map(),         // accountId -> { data, ts }
+        inflight: new Map(),      // accountId -> Promise<data>
+        writeChains: new Map(),   // accountId -> Promise (serialize writes)
+        userCache: new Map(),     // userId -> { record, ts }
+        userInflight: new Map(),  // userId -> Promise<record>
+        userWriteChains: new Map(), // userId -> Promise
+    };
+}
+const hubState = globalThis.__hubUsageState;
+const usageCache = hubState.cache;
+const usageInflight = hubState.inflight;
+const usageWriteChains = hubState.writeChains;
+
+async function fetchAccountUsage(accountId) {
     try {
         const result = await getSheetDataApi(HUB_SHEET);
         if (!result.success) return {};
@@ -85,24 +130,84 @@ export async function getAccountUsage(accountId) {
     }
 }
 
-export async function updateAccountUsage(accountId, action, count = 1) {
-    try {
-        const accountData = await getAccountUsage(accountId);
-        const currentUsage = accountData.interactionUsage || {};
-        const updatedUsage = incrementUsage(currentUsage, action, count);
+export async function getAccountUsage(accountId, options = {}) {
+    const force = options.force === true;
+    const cached = usageCache.get(accountId);
+    if (!force && cached && (Date.now() - cached.ts) < USAGE_CACHE_TTL_MS) {
+        return cached.data;
+    }
+    if (usageInflight.has(accountId)) return usageInflight.get(accountId);
+    const pending = fetchAccountUsage(accountId)
+        .then((data) => {
+            usageCache.set(accountId, { data, ts: Date.now() });
+            return data;
+        })
+        .finally(() => usageInflight.delete(accountId));
+    usageInflight.set(accountId, pending);
+    return pending;
+}
 
-        const result = await updateSheetRowApi(HUB_SHEET, "submissionId", accountId, {
-            interactionUsage: JSON.stringify(updatedUsage),
+export async function updateAccountUsage(accountId, action, count = 1) {
+    // Always store under the canonical Limits-column key (likeComment →
+    // likesOnComment) so gate checks and writes read the same JSON entry.
+    const usageKey = canonicalAction(action);
+    try {
+        // Warm the cache, then re-read it synchronously so concurrent updates
+        // to the same account compose instead of overwriting each other.
+        await getAccountUsage(accountId);
+        const base = usageCache.get(accountId)?.data || {};
+        const currentUsage = base.interactionUsage || {};
+        const updatedUsage = incrementUsage(currentUsage, usageKey, count);
+        usageCache.set(accountId, {
+            data: { ...base, interactionUsage: updatedUsage },
+            ts: Date.now(),
         });
 
-        if (result.success) {
-            logger.info(`[updateAccountUsage] ${accountId} action=${action} usage updated`);
-        }
-        return result.success;
+        const payload = JSON.stringify(updatedUsage);
+        const prev = usageWriteChains.get(accountId) || Promise.resolve();
+        const write = prev.then(async () => {
+            try {
+                const result = await updateSheetRowApi(HUB_SHEET, "submissionId", accountId, {
+                    interactionUsage: payload,
+                });
+                if (result.success) {
+                    logger.info(`[updateAccountUsage] ${accountId} action=${usageKey} usage updated`);
+                } else {
+                    // Force a fresh read next time so we don't drift from the sheet.
+                    usageCache.delete(accountId);
+                }
+                return result.success;
+            } catch (e) {
+                usageCache.delete(accountId);
+                logger.error(`[updateAccountUsage] Error for ${accountId}: ${e.message}`);
+                return false;
+            }
+        });
+        usageWriteChains.set(accountId, write.catch(() => {}));
+        return await write;
     } catch (e) {
         logger.error(`[updateAccountUsage] Error for ${accountId}: ${e.message}`);
         return false;
     }
+}
+
+// Apply a verified action tally to hub usage: { likeComment: 2, ... } or
+// canonical keys. Returns the canonical tally that was actually written.
+export async function consumeAccountActions(accountId, tally) {
+    const written = {};
+    if (!accountId || !tally || typeof tally !== "object") return written;
+    for (const [action, raw] of Object.entries(tally)) {
+        const count = parseInt(raw, 10);
+        if (!Number.isFinite(count) || count <= 0) continue;
+        const key = canonicalAction(action);
+        const ok = await updateAccountUsage(accountId, key, count);
+        if (ok) {
+            written[key] = (written[key] || 0) + count;
+        } else {
+            logger.warn(`[consumeAccountActions] ${accountId} ${key} x${count} NOT counted (write failed)`);
+        }
+    }
+    return written;
 }
 
 export async function updateAccountStatus(accountId, status) {
@@ -145,10 +250,11 @@ export async function updateAccountInteractionData(accountId, interactionData) {
 
 // ==================== User-Level Usage Tracking ====================
 
-// Single users-sheet read returning BOTH the plan (plan-row lookup key for
-// monthly USER quotas) and the usage blob (the *Usage counters themselves).
-// Missing user/columns → { plan: '', usage: {} } (callers fail open).
-export async function getUserRecord(userId) {
+const userCache = hubState.userCache;
+const userInflight = hubState.userInflight;
+const userWriteChains = hubState.userWriteChains;
+
+async function fetchUserRecord(userId) {
     try {
         const result = await getSheetDataApi(USERS_SHEET);
         if (!result.success) return { plan: "", usage: {} };
@@ -172,24 +278,65 @@ export async function getUserRecord(userId) {
     }
 }
 
+// Single users-sheet read returning BOTH the plan (plan-row lookup key for
+// monthly USER quotas) and the usage blob. Cached briefly + in-flight dedupe so
+// concurrent task runners don't stampede the sheet; fail-open on errors.
+export async function getUserRecord(userId, options = {}) {
+    const force = options.force === true;
+    const cached = userCache.get(userId);
+    if (!force && cached && (Date.now() - cached.ts) < USAGE_CACHE_TTL_MS) {
+        return cached.record;
+    }
+    if (userInflight.has(userId)) return userInflight.get(userId);
+    const pending = fetchUserRecord(userId)
+        .then((record) => {
+            userCache.set(userId, { record, ts: Date.now() });
+            return record;
+        })
+        .finally(() => userInflight.delete(userId));
+    userInflight.set(userId, pending);
+    return pending;
+}
+
 export async function getUserUsage(userId) {
     const record = await getUserRecord(userId);
     return record.usage;
 }
 
+// Increment a user's usage counters. Writes are serialized per user and the
+// cache is updated first so quota checks in the same process see the spend
+// immediately. `count` is the number of ACTUAL actions performed.
 export async function updateUserUsage(userId, action, count = 1) {
     try {
-        const currentUsage = await getUserUsage(userId);
-        const updatedUsage = incrementUsage(currentUsage, action, count);
-
-        const result = await updateSheetRowApi(USERS_SHEET, "userId", userId, {
-            usage: JSON.stringify(updatedUsage),
+        await getUserRecord(userId);
+        const base = userCache.get(userId)?.record || { plan: "", usage: {} };
+        const updatedUsage = incrementUsage(base.usage || {}, action, count);
+        userCache.set(userId, {
+            record: { ...base, usage: updatedUsage },
+            ts: Date.now(),
         });
 
-        if (result.success) {
-            logger.info(`[updateUserUsage] ${userId} action=${action} usage updated`);
-        }
-        return result.success;
+        const payload = JSON.stringify(updatedUsage);
+        const prev = userWriteChains.get(userId) || Promise.resolve();
+        const write = prev.then(async () => {
+            try {
+                const result = await updateSheetRowApi(USERS_SHEET, "userId", userId, {
+                    usage: payload,
+                });
+                if (result.success) {
+                    logger.info(`[updateUserUsage] ${userId} action=${action} +${count} usage updated`);
+                } else {
+                    userCache.delete(userId);
+                }
+                return result.success;
+            } catch (e) {
+                userCache.delete(userId);
+                logger.error(`[updateUserUsage] Error for ${userId}: ${e.message}`);
+                return false;
+            }
+        });
+        userWriteChains.set(userId, write.catch(() => {}));
+        return await write;
     } catch (e) {
         logger.error(`[updateUserUsage] Error for ${userId}: ${e.message}`);
         return false;

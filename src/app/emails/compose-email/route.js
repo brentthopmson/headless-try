@@ -372,9 +372,8 @@ async function composeAIMessage(contactEmail, threads, senderIdentity, relations
 
 // ==================== POST Handler ====================
 
-export async function POST(request) {
+export async function composeEmail(body) {
   try {
-    const body = await request.json();
     const { browserId, contactEmail, projectId, linkType, linkId } = body;
 
     if (!browserId || !contactEmail) {
@@ -502,6 +501,15 @@ export async function POST(request) {
       },
     });
 
+  } catch (error) {
+    logger.error(`[compose-email] Error: ${error.message}`);
+    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+  }
+}
+
+export async function POST(request) {
+  try {
+    return await composeEmail(await request.json());
   } catch (error) {
     logger.error(`[compose-email] Error: ${error.message}`);
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });

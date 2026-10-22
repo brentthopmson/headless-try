@@ -1,182 +1,32 @@
+
+> headless-try@0.1.0 dev
+> next dev -p 3001
+
    ▲ Next.js 14.0.4
    - Local:        http://localhost:3001
    - Environments: .env
 
- ✓ Ready in 51.3s
- ○ Compiling /socials/bulk-follow ...
- ✓ Compiled /socials/bulk-follow in 93.4s (1652 modules)
-[INFO] 2026-10-15T21:44:02.895Z - [Chrome] UA major version: 155 full version: 155.0.8059.40 (exe=C:\Program Files\Google\Chrome\Application\chrome.exe)
- ○ Compiling /socials/bulk-unfollow ...
- ✓ Compiled /socials/bulk-unfollow in 4.7s (1652 modules)
-[INFO] 2026-10-15T21:44:53.832Z - [googleTokenSource] refresh token source=sheet len=103
-[INFO] 2026-10-15T21:44:59.850Z - [Chrome] UA major version: 155 full version: 155.0.8059.40 (exe=C:\Program Files\Google\Chrome\Application\chrome.exe)
-Hub accounts fetched: 2323 rows
-No matching platform found for: gmail
-No matching platform found for: outlook
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: outlook
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-Hub accounts fetched: 2323 rows
-No matching platform found for: gmail
-No matching platform found for: outlook
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: outlook
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
- ○ Compiling /socials/bulk-follow ...
- ✓ Compiled /socials/bulk-follow in 3.1s (1652 modules)
-[INFO] 2026-10-15T21:48:02.405Z - [Chrome] UA major version: 155 full version: 155.0.8059.40 (exe=C:\Program Files\Google\Chrome\Application\chrome.exe)
-[INFO] 2026-10-15T21:48:24.175Z - [googleTokenSource] refresh token source=sheet len=103
-Hub accounts fetched: 2323 rows
-No matching platform found for: gmail
-No matching platform found for: outlook
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: outlook
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: tiktok
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-No matching platform found for: gmail
-[?25h
+ ✓ Ready in 8.5s
+ ○ Compiling /shooting ...
+ ✓ Compiled /shooting in 53.6s (1719 modules)
+ ✓ Compiled (1762 modules)
+[INFO] 2026-10-22T20:58:54.564Z - [Chrome] UA major version: 155 full version: 155.0.8059.85 (exe=C:\Program Files\Google\Chrome\Application\chrome.exe)
+ ○ Compiling /not-found ...
+ ✓ Compiled /not-found in 10.6s (2152 modules)
+[INFO] 2026-10-22T20:59:09.304Z - [googleTokenSource] refresh token source=sheet len=103
+[INFO] 2026-10-22T20:59:09.314Z - [Sheets API] App Script fallback read SETTINGS (71 rows).
+[INFO] 2026-10-22T20:59:09.314Z - [settingsCache] SETTINGS data loaded (71 rows).
+[INFO] 2026-10-22T20:59:10.196Z - [Chrome] UA major version: 155 full version: 155.0.8059.85 (exe=C:\Program Files\Google\Chrome\Application\chrome.exe)
+[INFO] 2026-10-22T21:00:40.989Z - [email-extract] browserId=undefined platform=undefined category=undefined
+[INFO] 2026-10-22T21:01:19.439Z - [social-extract] action=undefined platform=twitter username=undefined browserId=undefined
+[INFO] 2026-10-22T21:01:19.556Z - [bank-extract] platform=chase browserId=undefined
+ ✓ Compiled in 18.3s (215 modules)
+ ✓ Compiled in 12.9s (215 modules)
+ ○ Compiling /extraction ...
+ ✓ Compiled /extraction in 7s (1719 modules)
+[INFO] 2026-10-22T21:22:11.521Z - [Chrome] UA major version: 155 full version: 155.0.8059.85 (exe=C:\Program Files\Google\Chrome\Application\chrome.exe)
+[INFO] 2026-10-22T21:22:18.411Z - [googleTokenSource] refresh token source=sheet len=103
+[INFO] 2026-10-22T21:22:23.085Z - [settingsCache] SETTINGS data loaded (71 rows).
+ ○ Compiling /not-found ...
+ ✓ Compiled /not-found in 12.6s (2005 modules)
+[INFO] 2026-10-22T21:26:23.722Z - [googleTokenSource] refresh token source=sheet len=103

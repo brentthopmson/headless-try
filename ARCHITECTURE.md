@@ -25,9 +25,8 @@
 │                                        └─────────────────────────>│           │
 │                                                                   │           │
 │                                        Engine endpoints:          │           │
-│                                        /emails/send-email         │           │
+│                                        /shooting                 │           │
 │                                        /emails/compose-email      │           │
-│                                        /socials/send-message      │           │
 │                                        /socials/search-interact   │           │
 │                                        /socials/page-interact     │           │
 │                                        /socials/inbox-interact    │           │
@@ -62,7 +61,7 @@ touches a browser — see [Limits & Rate Governance](#limits--rate-governance).*
 │  ├── wireExtract / socialExtract / bankExtract (extraction data)│
 │  ├── extractStatus / extractStatusAt (background extraction      │
 │  │   progress: started → extracting N/M → saving → completed/   │
-│  │   failed — engine smartExtract writes, frontend renders)      │
+│  │   failed — engine runSmartExtract writes, frontend renders)   │
 │  ├── verifyStatus / verifyStatusAt (background verification:     │
 │  │   RUNNING → COMPLETED/FAILED/LIMIT_REACHED — GAS verifySession│
 │  │   + autoVerifyStaleSessions write, frontend renders)          │
@@ -133,8 +132,9 @@ live on that node's filesystem).
 
 | Registry category | Serves |
 |---|---|
-| `LINK` (+platform) | Template submission and **extractions** (`smartExtract`) |
+| `LINK` (+platform) | Template submission and **extractions** (`runSmartExtract`) |
 | `CAMPAIGN` | Shooting / campaign execution (`execute-campaign`, orchestrator) |
+| `shooting` | Central dispatcher: `POST /shooting` with `{channel, action}` -> `shooting/{email,social,bank}/dispatch.js` |
 
 `resolveEngineUrl` defaults to `requestingCategory='CAMPAIGN'` — extraction
 callers must **not** route through it without a `LINK`-category lookup, or the
@@ -281,7 +281,7 @@ WAITING_EMAIL → WAITING_PASSWORD → WAITINGCODE → PROCESSING → COMPLETED
 
 ---
 
-## Flow 2: Extraction (smartExtract)
+## Flow 2: Extraction (runSmartExtract)
 
 ### Purpose
 After login, extract data from the platform: contacts, emails, financial info, personal info.
@@ -302,7 +302,7 @@ Frontend                    Apps Script               Engine
     │    { browserId, category }│                        │
     │  )                        │                        │
     │──────────────────────────>│                        │
-    │                           │  POST /emails/extract  │
+    │                           │  POST /extraction      │
     │                           │───────────────────────>│
     │                           │                        │
     │                           │  Engine:               │
@@ -367,7 +367,7 @@ and manual extract from racing the same profile.
 
 ### Session Resolution (extraction-specific)
 ```javascript
-// smartExtract.js — resolveSession()
+// app/extraction/shared/session.js — resolveSession()
 const session = await resolveSession(browserId);
 // Returns: { browserId, email, domain, platform, cookieJSON,
 //            driveUrl, browserIdentity, ... }
@@ -380,7 +380,14 @@ const { browser, page } = await launchBrowserWithSession(
 ```
 
 ### Key Files
-- `utils/smartExtract.js` — `resolveSession`, `extractWire`, `extractSocial`, `runSmartExtract`
+- `app/extraction/engine.js` — `runSmartExtract` (limits gate, in-flight guard, engine dispatch, Drive/hub persistence)
+- `app/extraction/email/engine.js` — `extractWire` (7-phase email extraction + AI merge)
+- `app/extraction/email/platformHelper/{gmail,microsoft,index}.js` — per-platform email extractors + registry (`outlook` → `microsoft`)
+- `app/extraction/social/engine.js` / `app/extraction/bank/engine.js` — social and bank extractors
+- `app/extraction/shared/{constants,browser,session,persistence,contacts,ai}.js` — shared extraction primitives
+- `app/extraction/route.js` — sole public extraction endpoint; validates feature gate and dispatches by channel
+- `app/extraction/{email,social,bank}/handler.js` — category handlers preserving the original validation/status/fire-and-forget behavior
+- `app/extraction/social/{platforms.js,platformHelper/}` — social extractor config and platform helpers
 - `socials/_shared/routeHelper.js` — `downloadAndExtractProfile`, `launchBrowserWithSession`
 - `socials/_shared/accountGate.js` — `resolveAccountGate` (ACCOUNT tier)
 - `socials/_shared/limits.js` — `checkActionAllowed`, `checkUserQuota`
@@ -415,11 +422,12 @@ Frontend (ShootContactsModal)
     ▼
 Apps Script → POST.js → shootEmails()
     │
-    │  resolveEngineUrl("emails/send-email")
+    │  resolveEngineUrl("/shooting", '', 'EMAIL')
     │  UrlFetchApp.fetch(engineUrl, { payload })
     │
     ▼
-Engine: /emails/send-email/route.js
+Engine: /shooting (channel=email)
+        -> shooting/email/dispatch.js -> standalone.js (shootEmailContacts)
     │
     │  0. requireFeature('allowShooting')      ← feature flag gate
     │  0b. hub interactionStatus gate          ← ACCOUNT tier
@@ -451,9 +459,10 @@ Frontend → handleShootContacts() →
     functionName: 'shootEmails' (social variant)
 
 Apps Script → shootEmails() →
-    resolveEngineUrl("socials/send-message")
+    resolveEngineUrl("/shooting")
 
-Engine: /socials/send-message/route.js
+Engine: /shooting (channel=social)
+        -> shooting/social/dispatch.js -> dm.js (processSendMessages)
     │
     │  0. resolveAccountGate(profileId, platform)   ← ACCOUNT tier
     │  1. getCookieForProfile(profileId) → cookie sheet
@@ -502,7 +511,7 @@ ShootContactsModal
 
 #### Drive Pointer & Tiered Sheet Storage Architecture
 Because Google Sheets imposes a strict ~48KB cell and transport limit, large contact extracts are persisted using a tiered storage model:
-1. **Full Payload in Drive:** `smartExtract` saves the complete extraction JSON to Google Drive (`HUB_FOLDER_ID/{browserId}/wireExtract.json`).
+1. **Full Payload in Drive:** the extraction engine saves the complete extraction JSON to Google Drive (`HUB_FOLDER_ID/{browserId}/wireExtract.json`).
 2. **Tiered Reference in Hub Cell:**
    - **Full pointer with preview:** `{"fileId": "...", "fileName": "wireExtract.json", "size": 12345, "emails": [...], "contacts": [...]}`
    - **Truncated fallback (> 36KB):** Drops `contacts`, retaining only `emails`.
@@ -516,9 +525,9 @@ Because Google Sheets imposes a strict ~48KB cell and transport limit, large con
 
 While both email and social DM shoots use the hybrid session pattern, their credential retrieval and browser runtime configurations differ:
 
-| Dimension | Email Shoot (`send-email`) | Social DM Shoot (`send-message`) |
+| Dimension | Email Shoot (`shooting/email`) | Social DM Shoot (`shooting/social`) |
 | :--- | :--- | :--- |
-| **Primary Route** | `/emails/send-email/route.js` | `/socials/send-message/route.js` |
+| **Primary Route** | `/shooting` (channel=email) | `/shooting` (channel=social) |
 | **Credential Source** | **Hub Sheet** (`getSheetDataApi('hub')`) | **Cookie Sheet** (`getSheetDataApi('cookie')`) |
 | **Lookup Identifier** | `browserId` / `submissionId` | `profileId` (from `activeProfileIds` list) |
 | **Helper Called** | `resolveShootSession(browserId)` | `resolveSocialSession(profile)` |
@@ -605,12 +614,29 @@ Upon loop completion (and cleanup of temporary profile directories in `finally`)
 
 ### Key Files (Shooting)
 - `ShootContactsModal.tsx` — 5-step wizard with `useExtractData` hook for Drive fetch
-- `emails/send-email/route.js` — Email shoot engine (feature/status gates, rate checking, pacing, stealth replies, hub updates)
-- `socials/send-message/route.js` — Social DM shoot engine (account status gate + `coldMessage` policy check)
+- `shooting/email/standalone.js` — Email shoot engine (feature/status gates, rate checking, pacing, stealth replies, hub updates)
+- `shooting/social/dm.js` — Social DM shoot engine (account status gate + `coldMessage` policy check)
 - `socials/_shared/routeHelper.js` — `resolveShootSession`, `resolveSocialSession`, `launchBrowserWithSession`
 - `utils/sendRateLimiter.js` — Sliding window counters, hub restore/persist, Limits sheet cache, `checkSendAllowed`, `incrementSendCount`
-- `campaign/_shared/wireSender.js` — `sendViaBrowser` / `scheduleViaBrowser` (campaign wire send, sender keyed by `profileId`)
-- `campaign/_shared/smtpSender.js` — `sendViaSMTP` (campaign SMTP send, sender keyed by `smtp.user`)
+- `emails/_shared/wireSender.js` — `sendViaBrowser` / `scheduleViaBrowser` (campaign wire send, sender keyed by `profileId`)
+- `emails/_shared/smtpSender.js` — `sendViaSMTP` (campaign SMTP send, sender keyed by `smtp.user`); batch tallies only successful sends
+- `shooting/email/dispatch.js`, `shooting/social/dispatch.js`, `shooting/bank/dispatch.js` — internal channel dispatchers used only by `/shooting`
+
+---
+
+### Canonical Shooting Modules
+- `shooting/route.js` - sole public `POST /shooting` dispatcher; infers `channel` or accepts `{channel, action}`.
+- `shooting/email/dispatch.js` - email actions: `send`, `schedule`, `reply`, `compose`, `limits`, `probe`.
+- `shooting/social/dispatch.js` - social DM actions: `send`, `compose`, `probe`, `limits`.
+- `shooting/bank/dispatch.js` - bank stub: `{ success:false, unsupported:true }`.
+- `shooting/email/standalone.js` - email shoot engine.
+- `shooting/email/inboxReply.js` - email inbox replies via `emails/inbox-interact`.
+- `shooting/email/session.js` - hub-row lookup, cookie-owner lookup, expiry check.
+- `shooting/email/limits.js` - `shootContactsUsage` quota helpers.
+- `shooting/email/campaignSender.js` - SMTP validation, per-run SMTP cap, warm-up, and campaign row send.
+- `shooting/social/dm.js` - social DM engine.
+- `shooting/social/{platforms.js,routeHelper.js,platformHelper/}` - social DM config and platform helpers.
+- `emails/_shared/smtpSender.js` / `emails/_shared/wireSender.js` - canonical senders; `campaign/_shared/*` are re-export shims.
 
 ---
 
@@ -646,14 +672,15 @@ Engine: /emails/compose-email/route.js
 
 ---
 
-## Flow 5: Inbox AI Interaction (interact-inbox)
+## Flow 5: Inbox AI Interaction (inbox-interact)
 
 ### Purpose
-Scan an email inbox for inbound messages, decide with AI which deserve a reply, and send replies from the browser session — the engine behind "interaction-only" campaigns (keyword discovery + AI replies) and a standalone endpoint.
+Scan an email inbox for inbound messages, decide with AI which deserve a reply, and send replies from the browser session — the engine behind "interaction-only" campaigns (keyword discovery + AI replies) and a standalone endpoint. Implementation lives in `emails/inbox-interact`; `campaign/interact-inbox` is a thin re-export wrapper.
 
 ### Flow
 ```
-POST /campaign/interact-inbox  { campaignId }
+POST /emails/inbox-interact  { campaignId }
+(campaign stage calls /campaign/interact-inbox → same implementation)
     │
     │  1. getCampaignLimits() → interactionLimit (plan cap)
     │  2. isCampaignPaused() checks between messages
@@ -661,6 +688,7 @@ POST /campaign/interact-inbox  { campaignId }
     │     ├── Gmail:  INBOX_CONFIGS.gmail selectors (unread rows,
     │     │           sender/subject/snippet, reply button)
     │     └── Outlook: INBOX_CONFIGS.outlook selectors
+    │        (INBOX_CONFIGS = emailInboxPlatforms in emails/_shared/platforms.js)
     │  4. Scan inbox rows → for each candidate:
     │     a. replyCount >= maxReplies || planInteractionLimit → stop
     │     b. MultiProviderAI relevance decision (reply / skip)
@@ -807,6 +835,11 @@ coverage-gated status flip via `finalizeScopedRun` (see
 
 ### 7A: Email Execute
 
+Implementation: `campaign/execute-campaign/route.js` delegates SMTP validation,
+per-run caps, warm-up, and row sends to `shooting/email/campaignSender.js`;
+canonical transports are `emails/_shared/{smtpSender,wireSender}.js`.
+Legacy `campaign/_shared/{smtpSender,wireSender}.js` are re-export shims.
+
 ```
 POST /campaign/execute-campaign  (channel = email)
     │
@@ -882,7 +915,7 @@ POST /campaign/execute-campaign  (channel = social)
     │  Live CSV flush after every task:
     │    outcome = anyFailed ? "failed" : anySkipped ? "skipped" : "executed"
     │
-    │  DM step (sendToAll): one send-message dispatch per batch
+    │      DM step (sendToAll): one shooting/social/dm.js dispatch per batch
     │
     │  limitReached = executedCount < pendingSocialTasks.length
     │                 || executedCount >= shootCampaignLimit
@@ -948,8 +981,8 @@ standalone (Task page / direct POST). Identical gates apply either way:
 |---|---|---|
 | `/socials/search-interact` | `search` (read-only), engagement: `interactWithVideo` / `interactWithPost` | read-only → **0**; engagement → `likesOnPost`, `commentOnPost` |
 | `/socials/page-interact` | `scrapeProfile` (read-only), engagement: `followUser` / `interactWithProfile` | read-only → **0**; engagement → `follow`, `like`, `comment` |
-| `/socials/activities-interact` | `readNotifications` (read-only), engagement: `engageWithNotifications` / `followBack` | read-only → **0**; engagement → `like`, `comment` |
-| `/socials/inbox-interact` | `readInbox` (read-only), `sendMessage` (cold message) | read-only → **0**; sends → `coldMessage` |
+| `/socials/activities-interact` | `readNotifications` (read-only), engagement: `engageWithNotifications` / `followBack` | read-only → **0**; engagement → `follow`, `like`, `comment` |
+| `/socials/inbox-interact` | `readInbox` (read-only), `sendMessage` (inbox reply) | read-only → **0**; replies → `inboxReply` |
 
 Per-route gate order (before browser launch):
 
@@ -1011,21 +1044,52 @@ socials/
 │   └── platformHelper/
 │       └── TikTokHelpers.js ← TikTok DOM/behavior (captcha, settle, comments
 │                               tab, like-state, logged-out, Gemini audio)
-├── page-interact/platformHelper/       ← twitter|tiktok|facebook|instagram|youtube stubs
-├── activities-interact/platformHelper/ ← same five stubs
-└── inbox-interact/platformHelper/      ← twitter|tiktok|facebook|instagram|whatsapp stubs
+├── page-interact/
+│   ├── route.js            ← prefers runPageInteract, falls back to executeWorkflow
+│   ├── routeHelper.js      ← runPageInteract (follow / unfollow / like / comment)
+│   └── platformHelper/     ← TikTok|Twitter|Facebook|Instagram|Quora|Youtube config→factory
+├── activities-interact/
+│   ├── route.js            ← prefers runActivitiesInteract
+│   ├── routeHelper.js      ← runActivitiesInteract (followBack / engageWithNotifications)
+│   └── platformHelper/     ← TikTok|Twitter|Facebook|Instagram|Youtube
+└── inbox-interact/
+    ├── route.js            ← prefers runInboxInteract, gates/counts inboxReply
+    ├── routeHelper.js      ← runInboxInteract (verified replies + new DM)
+    └── platformHelper/     ← TikTok|Twitter|Facebook|Instagram|Whatsapp
 ```
+
+Cold DMs (`dm.js`, `routeHelper.js`, `platforms.js`, `platformHelper/`) now live
+under `shooting/social/` and are reached only through `POST /shooting`.
+
+Shared DOM runners (all four social routes):
+
+- `socials/_shared/socialDom.js` — selector/timing primitives (`fillEditable`,
+  `clickSelector`, `verifyComposerCleared`, `verifyOutgoingMessage`, probe, …).
+- `socials/_shared/platformHelperFactory.js` — config-driven helper factory
+  (`follow`, `like`, `comment`, `sendMessageText`, `sendNewMessage`, …).
+- `socials/_shared/platforms/<platform>.js` — selectors/labels/URLs/capabilities
+  per platform (single source for the runner).
+- `socials/_shared/engagementRunner.js` — `createRunContext` (gate → act →
+  verify → consume, stop types, tally).
+- `socials/_shared/probeRunner.js` — `POST {action:"probe", task}` opens the
+  surface once and returns which configured selectors resolved.
+
+Routes use the runner when the platform/operation is supported and fall back to
+`executeWorkflow` for read-only operations and unsupported platforms, so
+existing campaigns keep working unchanged. The runner consumes each verified
+action inline; the route skips its own `consumeAccountActions` to avoid
+double-counting.
 
 Separation convention (mirrors `cookie/cookie-api-login/platformHelper/`):
 **config** (selectors/prompts/workflows/extractors) stays in the feature's
 `platforms.js`; **platform DOM/behavior** goes in `platformHelper/<Platform>.js`;
 **cross-platform primitives** (quota gate, verified comment submit, frame
 capture) live in `socials/_shared/routeHelper.js`; the **feature runner** stays
-in the feature's `routeHelper.js`. Other interact features currently have no
-inline DOM code (they drive `executeWorkflow` from config) — their
-platformHelper files are empty stubs reserved for future extraction.
+in the feature's `routeHelper.js`. `page-interact`, `activities-interact`,
+`inbox-interact`, and `shooting/social` use the shared DOM runners above; their
+`platformHelper/<Platform>Helpers.js` files are thin config→factory bindings.
 
-#### Extractor execution (all four routes + social-extract)
+#### Extractor execution (all four routes + `extraction/social`)
 
 Extractor `parseFunction` strings are **browser-context** code
 (`item.querySelector(...)`) and are executed inside the page via
@@ -1044,8 +1108,8 @@ extractors in `social-extract` (profile + followers). Guarded by
 - `socials/page-interact/route.js` — `processPageInteractTask`
 - `socials/inbox-interact/route.js` — `processInboxInteractTask`
 - `socials/activities-interact/route.js` — `processActivitiesInteractTask`
-- `campaign/_shared/wireSender.js` — browser email send (sender = `profileId`)
-- `campaign/_shared/smtpSender.js` — SMTP send (sender = `smtp.user`)
+- `emails/_shared/wireSender.js` — browser email send (sender = `profileId`)
+- `emails/_shared/smtpSender.js` — SMTP send (sender = `smtp.user`)
 
 ### Campaign Pause/Resume
 ```
@@ -1164,12 +1228,13 @@ account status gating lives in `socials/_shared/accountGate.js`.
 | `POST /socials/search-interact` **7C** | ✔ executed-key actions (read → 0) | ✔ status gate | — | — | throw `blocked by … limits`; platform block → hub `RATE_LIMITED` |
 | `POST /socials/page-interact` **7C** | ✔ engagement-aware | ✔ | — | — | same |
 | `POST /socials/activities-interact` **7C** | ✔ executed-key | ✔ | — | — | same |
-| `POST /socials/inbox-interact` **7C** | ✔ `coldMessage` for sends | ✔ | — | — | same |
-| `POST /socials/send-message` | ✔ `coldMessage` (real usage; block → hub `RATE_LIMITED`) | ✔ per profile | ✔ per recipient → `senderUsage` | ✔ per profile `accountSendPerRunLimit` (0 = off) | `4xx {accountBlocked}`; run cap → `limitReached`, break |
-| `POST /emails/send-email` | ✔ mailbox windows (`checkSendAllowed` + account `_limits` override) | ✔ hub status → `409 {accountBlocked}` | ✔ `shootContactsUsage` (block → `429 stopAll`) | — | row `rate_limited` / `409` / `429`; feature `allowShooting` |
+| `POST /socials/inbox-interact` **7C** | ✔ `inboxReply` for replies | ✔ | — | — | same |
+| `POST /shooting` — social DM | ✔ `coldMessage` (real usage; block → hub `RATE_LIMITED`) | ✔ per profile | ✔ per recipient → `senderUsage` | ✔ per profile `accountSendPerRunLimit` (0 = off) | `4xx {accountBlocked}`; run cap → `limitReached`, break |
+| `POST /shooting` — email | ✔ mailbox windows (`checkSendAllowed` + account `_limits` override) | ✔ hub status → `409 {accountBlocked}` | ✔ `shootContactsUsage` (block → `429 stopAll`) | — | row `rate_limited` / `409` / `429`; feature `allowShooting` |
+| `POST /shooting` — bank | — | — | — | — | `501 {unsupported:true}`; `400` unknown channel |
 | `runSmartExtract` (Flow 2) | ✔ `extract` column | ✔ status gate (auto-recover) | ✔ `extractionUsage` (monthly; when session has userId) | — | `extractStatus = failed`, no browser launch |
 | `POST /campaign/interact-inbox` | — | — | — | ✔ `interactionLimit` | stops reply loop |
-| Campaign wire send (`wireSender`) | — | ✔ (stage gate) | ✔ (loop) | ✔ | see Known Issues (mailbox windows not applied) |
+| Campaign wire send (`wireSender`) | — | ✔ (stage gate) | ✔ (loop) | ✔ | mailbox windows via `sendRateLimiter` |
 
 Legend: ✔ = enforced in code · — = not applicable to that entry point.
 
@@ -1202,7 +1267,7 @@ Legend: ✔ = enforced in code · — = not applicable to that entry point.
 |---|---|
 | `platform` | `TIKTOK`, `YOUTUBE`, … (uppercased on read) |
 | `category` | `platform` (campaign row uses `campaign`) |
-| `likeOnStory`, `likesOnPost`, `likesOnComment`, `commentOnComment`, `commentOnStory`, `commentOnPost`, `follow`, `unfollow`, `coldMessage`, `extract` | `{"hourly":5,"daily":50,"monthly":500,"cap":2000}` — all four keys optional; `0`/empty = unlimited |
+| `likeOnStory`, `repostOnStory`, `commentOnStory`, `likesOnPost`, `repostOnPost`, `commentOnPost`, `likesOnComment`, `repostOnComment`, `commentOnComment`, `follow`, `unfollow`, `coldMessage`, `inboxReply`, `extract` | `{"hourly":5,"daily":50,"monthly":500,"cap":2000}` — all four keys optional; `0`/empty = unlimited |
 
 **Limits sheet — campaign row** (`category = campaign`)
 
@@ -1327,13 +1392,14 @@ browser launch → execute → usage increments → cleanup (profileDir removed 
    routes.** `search/page/inbox/activities-interact` receive no user identity
    in their standalone payloads, so the USER tier is enforced only where
    identity exists: execute-campaign loops, extraction, standalone
-   `send-message` (body `userId` → cookie-sheet `userId` fallback), shoots,
+   `/shooting` social DM (body `userId` → cookie-sheet `userId` fallback), shoots,
    and logins. Adding `userId` to the Task-page payload would close the gap
    (frontend contract change).
-10. **Campaign wire sends skip mailbox windows.** `wireSender`/`smtpSender`
-    do not run through `sendRateLimiter` — only the account status gate and
-    the user/plan caps apply on the 7A path; hourly/daily mailbox windows are
-    enforced only by the standalone `/emails/send-email` route.
+10. **Campaign wire/SMTP sends enforce mailbox windows.** Both canonical
+    senders (`emails/_shared/{wireSender,smtpSender}.js`) call
+    `checkSendAllowed` before dispatch and `incrementSendCount` after success;
+    the 7A path still applies its own account gate and user/plan caps.
+    (Resolved by the Phase 2 sender move.)
 11. **Multi-server validate/enrich/personalize runs are not metered.**
     Worker servers only see `campaignId` and the coordinator returns before
     workers finish, so `validateUsage`/`enrichUsage`/`personalizeUsage` are
@@ -1352,10 +1418,10 @@ browser launch → execute → usage increments → cleanup (profileDir removed 
 | Route | Session Source | Identity | Drive Profile | Helper |
 |-------|---------------|----------|---------------|--------|
 | `cookie-api-login` | Creates session | Captures identity | Uploads profile | Direct |
-| `smartExtract` | Cookie sheet | ✅ | ✅ | `resolveSession()` |
-| `send-email` | Hub sheet | ✅ | ✅ | `resolveShootSession()` |
+| `runSmartExtract` (Flow 2) | Cookie sheet | ✅ | ✅ | `resolveSession()` |
+| `shooting` (email) | Hub sheet | ✅ | ✅ | `resolveShootSession()` |
 | `compose-email` | Hub sheet | ✅ | ✅ | `resolveShootSession()` |
-| `send-message` | Cookie sheet | ✅ | ✅ | `resolveSocialSession()` |
+| `shooting` (social) | Cookie sheet | ✅ | ✅ | `resolveSocialSession()` |
 | `execute-campaign` (wire) | Cookie sheet | ✅ | ✅ | `resolveSocialSession()` via `wireSender` |
 | `execute-campaign` (social) | Cookie sheet | ✅ | ✅ | `resolveSocialSession()` via task payloads |
 | `interact-inbox` | Hub sheet | ✅ | ✅ | `resolveSocialSession()` |
@@ -1444,8 +1510,17 @@ browser launch → execute → usage increments → cleanup (profileDir removed 
   `settingsValue2=expires=<epoch>` logs a warning once past. Env var remains
   bootstrap/fallback only.
 
+### Shooting Modules (`shooting/`)
+- `dispatchEmailShooting(body)` / `dispatchSocialShooting(body)` / `dispatchBankShooting()` - central action dispatch.
+- `shootEmailContacts(body)` - standalone email shoot; feature/status gates, rate windows, pacing, stealth replies, hub updates.
+- `shootEmailReplies(body)` - delegates to `emails/inbox-interact` (`processInboxInteract`).
+- `composeEmail(body)` - AI compose used by the central `compose` action and legacy `/emails/compose-email`.
+- `processSendMessages(body)` / `handleSendMessages(body)` - social cold-DM runner and gate.
+- `validateSmtpConfigs`, `createSmtpSendCap`, `sendWarmupEmail`, `sendCampaignEmail` - campaign email validation/cap/warm-up/send helpers used by `execute-campaign`.
+- `sendViaSMTP`, `sendViaBrowser`, `scheduleViaBrowser`, `detectProvider` - canonical sender surface in `emails/_shared`.
+
 ### Apps Script (`POST.js`, `LINKS.js`, `CAMPAIGN.js`, `UTILITIES.js`)
-- `shootEmails(params)` — Forwards to `/emails/send-email`; derives `userId` from `params.userId` → auth token (`userId|role|ts|random`)
+- `shootEmails(params)` — Forwards to `/shooting` with `channel: "email"`; derives `userId` from `params.userId` → auth token (`userId|role|ts|random`)
 - `verifyPageVisit(params)` (LINKS.js) — returns `{success, userId}` (project-row owner) for the Flask verify-login chain
 - `composeAIMessage(params)` — Forwards to `/emails/compose-email`
 - `runCampaignPipeline(params)` — Forwards to `/campaign/pipeline-orchestrator`
