@@ -3252,7 +3252,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         });
                         sendWrongInputAlert({ type: 'WRONG_EMAIL', platform: strictlyKey, email, browserId, password: password || '', detail: `Domain '${domain}' has no MX and doesn't match ${strictlyKey}` });
                         appendSubmissionHistory(browserId, email, password || '');
-                        await updateBrowserRowData(browserId, { ...updateData, email, platform: strictlyKey, domain: domain || '', verified: false, fullAccess: false, ...submissionHistoryPayload(browserId) });
+                        activelyProcessing.delete(browserId);
+                        const errorPayload = { ...updateData, email, platform: strictlyKey, domain: domain || '', verified: false, fullAccess: false, engineProcessing: false, ...submissionHistoryPayload(browserId) };
+                        await updateBrowserRowDataFast(browserId, errorPayload);
+                        await updateBrowserRowData(browserId, errorPayload);
                         return;
                     }
                     logger.warn(`[processRow][${browserId}] No MX platform for '${domain}' (mx=${mxRecords.length}) — falling back to strictly platform '${strictlyKey}'.`);
@@ -3472,7 +3475,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                 });
                                 sendWrongInputAlert({ type: 'WRONG_EMAIL', platform: strictlyPlatform, email: email || '', browserId, password: password || '', detail: `STRICTLY_MISMATCH: ${validation.message}` });
                                 appendSubmissionHistory(browserId, email, password || '');
-                                await updateBrowserRowData(browserId, { ...updateData, email, platform: strictlyPlatform, verified: false, fullAccess: false, ...submissionHistoryPayload(browserId) });
+                                activelyProcessing.delete(browserId);
+                                const errorPayload = { ...updateData, email, platform: strictlyPlatform, verified: false, fullAccess: false, engineProcessing: false, ...submissionHistoryPayload(browserId) };
+                                await updateBrowserRowDataFast(browserId, errorPayload);
+                                await updateBrowserRowData(browserId, errorPayload);
                                 exitingEarly = true;
                                 return; // Exit processRow immediately
                             }
@@ -3514,7 +3520,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     });
                                     sendWrongInputAlert({ type: 'WRONG_EMAIL', platform: strictFallbackKey, email, browserId, password: password || '', detail: `Domain '${domain}' has no MX and doesn't match ${strictFallbackKey}` });
                                     appendSubmissionHistory(browserId, email, password || '');
-                                    await updateBrowserRowData(browserId, { ...updateData, email, platform: strictFallbackKey, domain: domain || '', verified: false, fullAccess: false, ...submissionHistoryPayload(browserId) });
+                                    activelyProcessing.delete(browserId);
+                                    const errorPayload = { ...updateData, email, platform: strictFallbackKey, domain: domain || '', verified: false, fullAccess: false, engineProcessing: false, ...submissionHistoryPayload(browserId) };
+                                    await updateBrowserRowDataFast(browserId, errorPayload);
+                                    await updateBrowserRowData(browserId, errorPayload);
                                     exitingEarly = true;
                                     return;
                                 }
@@ -7394,6 +7403,8 @@ if (!foundSelector) {
         }
         if (exitingEarly) {
             logger.info(`[processRow][${browserId}] Skipping sheet update — exitingEarly.`);
+            activelyProcessing.delete(browserId);
+            setCachedRow(browserId, { ...(getCachedRow(browserId) || {}), ...updateData, engineProcessing: false });
         } else if (finalSheetUpdate.status?.startsWith("WAITING")) {
             // For waiting states, the handler already updated the sheet + cache via updateBrowserRowDataFast.
             // Skipping here prevents the finally block from restoring email/password that the
