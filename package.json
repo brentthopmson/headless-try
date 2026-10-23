@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "dev:silent": "cross-env NODE_ENV=development LOG_LEVEL=warn next dev",
+    "dev:silent": "cross-env NODE_ENV=development LOG_LEVEL=error NODE_NO_WARNINGS=1 next dev",
+    "start:silent": "cross-env NODE_ENV=production LOG_LEVEL=error NODE_NO_WARNINGS=1 next start",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",

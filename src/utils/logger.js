@@ -93,10 +93,11 @@ const logger = {
     child({ campaignId, stage }) {
         const tag = stage ? `[${stage}]` : '';
         const log = (level, message, args) => {
+            if (!shouldLog(level.toLowerCase())) return;
             const tagged = tag ? `${tag} ${message}` : message;
             // Console
             const consoleFn = { INFO: console.log, WARN: console.warn, ERROR: console.error, DEBUG: console.debug }[level];
-            if (consoleFn && shouldLog(level.toLowerCase())) {
+            if (consoleFn) {
                 consoleFn(`[${level}] ${new Date().toISOString()} - ${tagged}`, ...args);
             }
             // Engine log
