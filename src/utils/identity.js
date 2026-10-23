@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import fs from 'node:fs';
 import { execSync } from 'node:child_process';
 
 // ============================================================
@@ -25,6 +26,9 @@ export function detectChromeMajorVersion(executablePath) {
   let full = null;
   try {
     if (process.platform === 'win32') {
+      if (!fs.existsSync(executablePath)) {
+        throw new Error(`Executable not found at ${executablePath}`);
+      }
       // chrome.exe --version does not print (it reuses an existing session) —
       // read the file version from its VersionInfo instead.
       const escaped = executablePath.replace(/'/g, "''");

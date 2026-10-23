@@ -4,18 +4,45 @@ import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { getMaxConcurrentTasks, getMaxConcurrentTasksSync } from './campaignConcurrency.js';
 
-export const localExecutablePath =
-  process.platform === "win32"
-    ? "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
-    : process.platform === "linux"
-    ? "/usr/bin/google-chrome"
-    : "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-// Production uses FULL Chromium (installed via apt in the Dockerfile) rather than
+export function getDefaultExecutablePath() {
+  if (process.env.CHROME_PATH) {
+    return process.env.CHROME_PATH;
+  }
+  if (process.platform === "win32") {
+    const candidates = [
+      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+      process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe") : null,
+      "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+      "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+    ].filter(Boolean);
+    for (const c of candidates) {
+      if (fs.existsSync(c)) return c;
+    }
+    return "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+  }
+  if (process.platform === "linux") {
+    // Dokploy / Docker: Full Chromium installed via apt
+    if (fs.existsSync("/usr/bin/chromium")) return "/usr/bin/chromium";
+    if (fs.existsSync("/usr/bin/google-chrome")) return "/usr/bin/google-chrome";
+    if (fs.existsSync("/usr/bin/chromium-browser")) return "/usr/bin/chromium-browser";
+    return "/usr/bin/chromium";
+  }
+  if (process.platform === "darwin") {
+    return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  }
+  return "/usr/bin/chromium";
+}
+
+export const localExecutablePath = getDefaultExecutablePath();
+// Production uses FULL Chromium (installed via apt in the Dockerfile on Dokploy) rather than
 // the @sparticuz/chromium-min "chrome-headless-shell". The stripped headless shell
 // never fires domcontentloaded on modern heavy JS pages (login.live.com/login.srf),
 // leaving rows stuck in WAITINGEMAIL/PROCESSING. Full Chromium renders them like a
-// real browser (this is what the Nixpacks deployment used, which worked).
-export const fullChromiumExecutablePath = process.env.CHROME_PATH || "/usr/bin/chromium";
+// real browser (this is what the Nixpacks/Dokploy deployment used, which worked).
+export const fullChromiumExecutablePath = process.platform === "win32"
+  ? getDefaultExecutablePath()
+  : (process.env.CHROME_PATH || (fs.existsSync("/usr/bin/chromium") ? "/usr/bin/chromium" : (fs.existsSync("/usr/bin/google-chrome") ? "/usr/bin/google-chrome" : "/usr/bin/chromium")));
 // NOTE: remoteExecutablePath stays as the sparticuz pack URL — other routes still
 // call chromium.executablePath(remoteExecutablePath), which expects the brotli pack
 // location, not a bare binary path.
