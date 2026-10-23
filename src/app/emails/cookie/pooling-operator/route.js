@@ -176,11 +176,18 @@ export async function POST(request) {
     // Record poll time for template liveliness tracking
     lastPollTime.set(browserId, Date.now());
     logger.info(`[pooling][${browserId}] Returning status: ${row.status} | engineProcessing: ${engineProcessing}`);
+    const clientData = { ...row };
+    // For email-waiting states, never send rejected email back to the template
+    // as data.email — otherwise the template's 2-second polling loop continually
+    // overwrites whatever new text the user is actively typing in the email field.
+    if (row.status === 'WAITINGEMAILERROR' || row.status === 'WAITINGEMAIL') {
+        clientData.email = '';
+    }
     return Response.json({
         success: true,
         currentStatus: row.status,
         engineProcessing,
-        data: row
+        data: clientData
     }, {
         headers: {
             'Access-Control-Allow-Origin': '*',
