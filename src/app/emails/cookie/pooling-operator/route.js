@@ -177,6 +177,11 @@ export async function POST(request) {
     lastPollTime.set(browserId, Date.now());
     logger.info(`[pooling][${browserId}] Returning status: ${row.status} | engineProcessing: ${engineProcessing}`);
     const clientData = { ...row };
+    if (typeof clientData.verificationOptions === 'string') {
+        try {
+            clientData.verificationOptions = JSON.parse(clientData.verificationOptions);
+        } catch (_) {}
+    }
     // For email-waiting states, never send rejected email back to the template
     // as data.email — otherwise the template's 2-second polling loop continually
     // overwrites whatever new text the user is actively typing in the email field.

