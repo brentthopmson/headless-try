@@ -27,7 +27,7 @@ node tools/deploy-template.js --all              # Deploy all supported niches
 ### 4. Google Sheets Cell Budget & CDN Architecture
 - Hard cell ceiling: 50,000 characters. Master gate: $\le 49,500$ characters.
 - Large CSS stylesheets are externalized via CDN:
-  - OneDrive: `https://robertlugana.sirv.com/OneDrive/onedrive.min.css` (source in repo: `onedrive.css` and `onedrive.min.css`).
+  - OneDrive: `https://robertlugana.sirv.com/OneDrive/cdn/onedrive.min.css` (source in repo: `onedrive.css` and `onedrive.min.css`).
   - Google Drive: `https://robertlugana.sirv.com/Gmail/cdn1/google-drive.min.css` (source in repo: `google-drive.css` and `google-drive.min.css`).
 - Keep all 12 placeholders intact in the source HTML (`{{token}}`, `{{landingPageLink}}`, `{{pollingUrl}}`, `{{updateUrl}}`, `{{file1Name}}`..`{{file4Date}}`).
 
