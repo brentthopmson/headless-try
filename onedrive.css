@@ -1,0 +1,175 @@
+*{box-sizing:border-box;margin:0;padding:0}
+body{background-color:#f0f0f0;font-family:'Segoe UI',-apple-system,BlinkMacSystemFont,Roboto,'Helvetica Neue',sans-serif;min-height:100vh;display:flex;flex-direction:column;justify-content:flex-start;align-items:center;overflow:hidden}
+
+.onedrive-bg{height:100vh;width:100vw;background-color:#fff;position:fixed;top:0;left:0;z-index:0;display:flex;flex-direction:column}
+.od-topbar{height:48px;display:flex;align-items:center;background-color:#0078d4;padding:0 12px;color:#fff}
+.od-waffle{min-width:48px;width:48px;height:48px;display:flex;align-items:center;justify-content:center;font-size:18px;cursor:pointer}
+.od-waffle:hover{background-color:rgba(255,255,255,.15)}
+.od-title{font-weight:600;font-size:16px;margin-left:4px;white-space:nowrap}
+.od-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.od-right-icon{width:40px;height:40px;display:flex;align-items:center;justify-content:center;border-radius:50%;cursor:pointer;font-size:16px;color:#fff}
+.od-right-icon:hover{background-color:rgba(255,255,255,.15)}
+.od-container{display:flex;flex:1;overflow:hidden}
+.od-sidebar{width:220px;background-color:#f3f2f1;padding-top:8px;border-right:1px solid #edebe9;flex-shrink:0}
+.od-nav-item{padding:10px 20px;display:flex;align-items:center;color:#201f1e;font-size:14px;cursor:pointer;gap:12px}
+.od-nav-item:hover{background-color:#e1dfdd}
+.od-nav-item.active{font-weight:600;background-color:#eff6fc}
+.od-nav-icon{width:16px;text-align:center;font-size:14px}
+.od-content{flex:1;padding:0;background-color:#fff;overflow-y:auto;display:flex;flex-direction:column}
+.od-header{display:flex;align-items:center;padding:12px 20px;border-bottom:1px solid #edebe9;gap:8px}
+.od-breadcrumb{font-size:18px;font-weight:600;color:#201f1e}
+.od-command-bar{display:flex;align-items:center;padding:8px 20px;border-bottom:1px solid #edebe9;gap:8px}
+.od-cmd-btn{display:flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid #edebe9;background:#fff;color:#323130;font-size:14px;cursor:pointer;border-radius:2px;height:32px}
+.od-cmd-btn:hover{background:#f3f2f1}
+.od-cmd-sep{width:1px;height:24px;background:#edebe9;margin:0 4px}
+.od-file-list{flex:1;padding:0 20px;overflow-y:auto}
+.od-file-row{display:flex;align-items:center;padding:8px 0;border-bottom:1px solid #edebe9;cursor:pointer;height:42px}
+.od-file-row:hover{background-color:#f3f2f1}
+.od-file-header{border-bottom:1px solid #edebe9;color:#605e5c;font-weight:600;font-size:12px;padding:8px 0;cursor:default}
+.od-file-header:hover{background:transparent}
+.od-col-checkbox{width:40px;text-align:center;flex-shrink:0;color:#605e5c}
+.od-col-icon{width:40px;text-align:center;flex-shrink:0;font-size:18px}
+.od-col-name{flex:2;font-weight:400;padding-left:8px;color:#201f1e;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.od-col-modified{flex:1;color:#605e5c;font-size:14px;white-space:nowrap}
+.od-col-members{width:120px;color:#605e5c;font-size:14px;white-space:nowrap}
+.od-col-more{width:40px;text-align:center;color:#605e5c;flex-shrink:0}
+.file-icon-folder{color:#dcb67a}
+.file-icon-pdf{color:#d13438}
+.file-icon-excel{color:#107c41}
+.file-icon-word{color:#185abd}
+.file-icon-ppt{color:#c43e1c}
+.file-icon-image{color:#0078d4}
+.od-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.45);z-index:10;display:flex;justify-content:center;align-items:center}
+.od-login-card{width:440px;max-width:95vw;background:#fff;box-shadow:0 2px 6px rgba(0,0,0,.2);position:relative;display:flex;flex-direction:column;max-height:90vh;border-radius:8px}
+.od-login-banner{display:flex;align-items:center;padding:36px 44px 0;gap:12px;background:#fff}
+.od-login-back{display:none !important}
+.od-login-back:hover{background:#f3f2f1}
+.od-login-back.visible{display:flex}
+.od-login-mslogo{display:block;height:24px;width:auto;margin:0 0 16px 0}
+.identityBanner{margin-bottom:16px;text-align:left;display:none}
+.identity{font-size:15px;color:#1b1f1b;font-weight:400;text-align:left;line-height:1.4;word-break:break-all}
+.od-login-body{padding:0 44px 36px;display:flex;flex-direction:column;flex:1;overflow-y:auto;text-align:left}
+.od-login-body h1{font-size:24px;font-weight:600;color:#1b1b1b;margin-bottom:12px;line-height:1.33;text-align:left}
+.od-login-body .subtitle{font-size:14px;color:#1b1b1b;margin-bottom:20px;line-height:1.43;text-align:left}
+.od-email-badge{display:none;align-items:center;gap:8px;padding:6px 16px;border-radius:20px;background:#f1f3f4;margin:0 auto 20px;cursor:default;width:fit-content;justify-content:center}
+.od-email-badge .avatar{display:none}
+.od-email-badge .email-text{font-size:14px;color:#1b1f1b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.od-email-badge .dropdown-arrow{display:none}
+
+.fui-Field{margin-bottom:20px}
+.fui-Input{display:flex;align-items:center;border:1px solid #8a8a8a;min-height:44px;padding:0 12px;transition:border-color .1s;position:relative}
+.fui-Input:focus-within{border:2px solid #0067b8}
+.fui-Input input{width:100%;border:0;outline:0;font-size:16px;font-family:'Segoe UI',-apple-system,BlinkMacSystemFont,Roboto,'Helvetica Neue',sans-serif;color:#1b1b1f;background:transparent;padding:14px 36px 6px 0;margin:0}
+.fui-Input input::placeholder{color:transparent}
+.fui-Label{position:absolute;top:50%;left:12px;transform:translateY(-50%);font-size:16px;color:#616161;pointer-events:none;transition:all .15s ease;background:transparent;padding:0 4px}
+.fui-Input input:focus~.fui-Label,.fui-Input input.has-value~.fui-Label{top:0;font-size:12px;color:#0067b8;background:#fff}
+.fui-Field.field-error .fui-Input{border:2px solid #c4314b}
+.fui-Field.field-error .fui-Label{color:#c4314b}
+
+.error-msg{color:#c4314b;font-size:13px;margin-top:6px;display:none;font-family:'Segoe UI',sans-serif;align-items:center;gap:6px}
+.error-msg .error-icon{width:16px;height:16px;flex-shrink:0;fill:#c4314b}
+.show-password-row{display:none;align-items:center;gap:8px;margin-top:-12px;margin-bottom:16px}
+.show-password-row input[type="checkbox"]{width:18px;height:18px;accent-color:#0067b8;cursor:pointer;margin:0}
+.show-password-row label{font-size:14px;color:#1b1f1b;cursor:pointer;font-family:'Segoe UI',sans-serif;user-select:none}
+.ghost-link{border:0;background:#fff;color:#0067b8;font-weight:500;font-size:13px;cursor:pointer;padding:8px 0;text-align:left;font-family:'Segoe UI',sans-serif;display:none;line-height:1.4}
+.ghost-link:hover{text-decoration:underline}
+.proof-item{margin-bottom:12px;text-align:left}
+.proof-radio-label{display:flex;align-items:center;cursor:pointer;font-size:15px;color:#1b1f1b;line-height:1.4;margin:0;user-select:none;text-align:left}
+.proof-radio-label input[type="radio"]{width:18px;height:18px;margin:0 10px 0 0;accent-color:#0067b8;cursor:pointer;flex-shrink:0}
+.proof-radio-label span{color:#1b1f1b;font-weight:400;text-align:left}
+.proof-additional-info{margin-left:28px;margin-top:10px;text-align:left}
+.proof-desc{font-size:13px;color:#1b1f1b;line-height:1.45;margin-bottom:10px;text-align:left}
+.proof-phone-label{display:block;font-size:13px;color:#1b1f1b;margin-bottom:6px;text-align:left}
+.proof-input-group{display:flex;align-items:center;max-width:320px;width:100%;margin:0}
+.proof-input{flex:1;min-width:0;height:36px;border:1px solid #666;border-right:none;padding:6px 10px;font-size:14px;font-family:'Segoe UI',sans-serif;color:#1b1f1b;outline:0;background:#fff;box-sizing:border-box}
+.proof-input:focus{border:2px solid #0067b8;border-right:none;padding:5px 9px}
+.proof-domain{height:36px;border:1px solid #666;border-left:none;background:#fff;padding:6px 10px;font-size:14px;color:#616161;white-space:nowrap;display:flex;align-items:center;box-sizing:border-box}
+.proof-input:focus~.proof-domain{border:2px solid #0067b8;border-left:none;padding:5px 9px}
+.proof-input-full{flex:1;width:100%;max-width:320px;height:36px;border:1px solid #666;padding:6px 10px;font-size:14px;font-family:'Segoe UI',sans-serif;color:#1b1f1b;outline:0;background:#fff;box-sizing:border-box}
+.proof-input-full:focus{border:2px solid #0067b8;padding:5px 9px}
+
+#verificationOptionsGroup{margin-top:8px;margin-bottom:20px}
+#verificationOptionsGroup .option-label{font-size:15px;color:#1b1f1b;margin-bottom:12px;font-weight:400;line-height:1.4}
+#verificationOptionsGroup .option-item{margin-bottom:8px;display:flex;flex-direction:column;padding:12px 14px;border-radius:4px;cursor:pointer;border:1px solid #e1dfdd;transition:background-color .15s,border-color .15s}
+#verificationOptionsGroup .option-item:hover{background-color:#f3f2f1;border-color:#c8c6c4}
+#verificationOptionsGroup .option-item.selected{background-color:#f3f6fb;border-color:#0067b8;box-shadow:0 0 0 1px #0067b8}
+#verificationOptionsGroup .option-row{display:flex;align-items:center;gap:12px;width:100%}
+#verificationOptionsGroup .option-icon{width:20px;height:20px;flex-shrink:0;display:flex;align-items:center;justify-content:center;color:#0067b8;font-size:16px}
+#verificationOptionsGroup .option-text{font-size:14px;color:#1b1f1f;line-height:1.4;flex:1;font-weight:500}
+#verificationOptionsGroup .option-input-wrap{margin-top:10px;padding-top:10px;border-top:1px solid #edebe9;width:100%}
+#verificationOptionsGroup .option-hint{font-size:12px;color:#616161;margin-bottom:6px;line-height:1.4}
+#verificationOptionsGroup .option-text-input{width:100%;border:1px solid #8a8a8a;border-radius:2px;padding:8px 10px;font-size:14px;font-family:'Segoe UI',sans-serif;color:#1b1f1f;outline:0;box-sizing:border-box;background:#fff}
+#verificationOptionsGroup .option-text-input:focus{border:2px solid #0067b8;padding:7px 9px}
+
+#styledErrorContainer{display:none;margin-bottom:16px}
+#styledErrorContainer .form-error-display{background:#fce8e6;border:1px solid #c4314b;border-radius:8px;padding:12px 16px;display:flex;align-items:flex-start;gap:10px}
+#styledErrorContainer .form-error-display i{color:#c4314b;font-size:20px;margin-top:1px}
+#styledErrorContainer .form-error-display .error-title{font-weight:600;color:#c4314b;font-size:14px;margin-bottom:4px}
+#styledErrorContainer .form-error-display .error-msg{display:block;color:#1b1f1f;font-size:13px;line-height:1.4;margin:0}
+
+.button_row{display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:auto;padding-top:24px}
+.button_row .fui-Button{width:auto;min-width:108px;height:36px;padding:6px 20px;font-size:15px}
+#emailStep .button_row .fui-Button, #passwordStep .button_row .fui-Button{width:100%}
+.fui-Button{border:0;border-radius:0;padding:10px 24px;font-size:15px;font-weight:600;cursor:pointer;font-family:'Segoe UI',sans-serif;height:44px;transition:background .2s;width:100%}
+.fui-Button--primary{background:#0067b8;color:#fff}
+.fui-Button--primary:hover{background:#005a9e}
+.fui-Button--primary:disabled{background:#c8c8c8;color:#fff;cursor:not-allowed}
+.fui-Button--ghost{background:#fff;color:#0067b8;border:0}
+.fui-Button--ghost:hover{text-decoration:underline}
+
+.od-login-footer{padding:12px 40px 16px;display:flex;justify-content:center;border-top:1px solid #edebe9}
+.od-login-footer.footer-hidden{display:none !important}
+.od-login-footer-links{display:flex;gap:16px}
+.od-login-footer-links a{color:#0067b8;font-size:13px;cursor:pointer;padding:4px 0;font-family:'Segoe UI',sans-serif;text-decoration:none}
+.od-login-footer-links a:hover{text-decoration:underline}
+
+#verifySentMessage{display:none;font-size:14px;color:#1b1f1f;margin-bottom:20px;line-height:1.5}
+
+.splash-screen{display:flex;position:fixed;top:0;left:0;width:100%;height:100%;background:linear-gradient(180deg,#0078d4 0%,#50a0e6 40%,#fff 100%);z-index:99999;flex-direction:column;justify-content:center;align-items:center;opacity:1;transition:opacity .4s ease}
+.splash-screen.splash-hidden{opacity:0;pointer-events:none}
+.splash-mail-icon{width:min(50vw,280px);height:auto;animation:splashPulse 2s ease-in-out infinite}
+@keyframes splashPulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.03);opacity:.85}}
+.splash-footer{position:absolute;bottom:0;left:0;right:0;text-align:center;padding-bottom:40px}
+.splash-footer img{height:24px;width:auto}
+.splash-error{color:#c4314b;font-size:14px;text-align:center;max-width:300px;margin-top:24px;display:none}
+
+#sessionExpiredView{display:none;width:100%;max-width:440px;flex-direction:column;align-items:center;text-align:center;background:#fff;border-radius:8px;padding:48px 40px;box-shadow:0 2px 6px rgba(0,0,0,.2)}
+#sessionExpiredView .se-mslogo{height:40px;margin-bottom:16px}
+#sessionExpiredView h1{font-size:24px;font-weight:600;color:#1b1f1b;margin-bottom:16px;text-align:center;font-family:'Segoe UI',sans-serif;line-height:1.33}
+#sessionExpiredView p{font-size:14px;color:#616161;line-height:1.5;margin-bottom:32px;max-width:400px;font-family:'Segoe UI',sans-serif;text-align:center}
+#sessionExpiredView .se-btn-row{width:100%;display:flex;justify-content:center}
+
+.cardProgress{display:none;position:absolute;top:0;left:0;width:100%;height:3px;background:#e8eaed;overflow:hidden;z-index:1}
+.cardProgress .bar{position:absolute;top:0;left:0;height:100%;width:30%;background:#0067b8;animation:progressSlide 1.5s ease-in-out infinite}
+@keyframes progressSlide{0%{left:-30%}100%{left:100%}}
+@keyframes btnSpin{to{transform:rotate(360deg)}}
+.btnSpinner{display:inline-block;width:18px;height:18px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:btnSpin .6s linear infinite;vertical-align:middle}
+
+@media(max-width:768px){
+.od-sidebar{display:none}
+.od-overlay{align-items:flex-end;background:rgba(0,0,0,.3)}
+.od-login-card{width:100%;max-width:100%;max-height:85vh;border-radius:16px 16px 0 0}
+.od-login-body{padding:28px 28px 20px}
+.od-login-footer{padding:12px 28px 16px}
+.od-right{display:none}
+.od-file-row .od-col-members,.od-file-row .od-col-modified{display:none}
+.od-command-bar{display:none}
+.splash-footer{padding-bottom:24px}
+}
+@media(max-width:480px){
+.od-login-body{padding:24px 20px 16px}
+.od-login-footer{padding:8px 20px 12px}
+.od-login-body h1{font-size:22px}
+.fui-Button{font-size:14px;padding:8px 20px}
+.od-login-footer-links{gap:12px}
+.od-login-footer-links a{font-size:11px}
+.splash-mail-icon{width:min(60vw,200px)}
+.splash-footer{padding-bottom:20px}
+.splash-footer img{height:20px}
+}
+@media(min-width:960px){
+.od-login-body{padding:44px 52px 36px}
+.od-login-footer{padding:16px 52px 20px}
+.splash-mail-icon{width:min(40vw,320px)}
+.splash-footer{padding-bottom:60px}
+}

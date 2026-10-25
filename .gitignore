@@ -52,3 +52,4 @@ package-lock.json
 
 engine.log
 dev-restart.log
+scratch/
