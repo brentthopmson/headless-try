@@ -407,9 +407,10 @@ export async function POST(request) {
     const channel = settings.channel || "email";
     const userId = settings.userId || null;
 
-    // Gate maximum accounts per campaign (from SETTINGS sheet maxAccountsPerCampaign, default 5)
+    // Gate maximum accounts per campaign (from SETTINGS sheet maxAccountsPerCampaign, default 1)
     const maxAccountsSetting = await getSetting('maxAccountsPerCampaign');
-    const maxCampaignAccounts = parseInt(maxAccountsSetting?.value1, 10) || 5;
+    const parsedMax = parseInt(maxAccountsSetting?.value1, 10);
+    const maxCampaignAccounts = (!isNaN(parsedMax) && parsedMax > 0) ? parsedMax : 1;
     const allConfiguredAccounts = (settings._fullAccounts || settings.accounts || []).map(String);
     if (allConfiguredAccounts.length > maxCampaignAccounts) {
       log.warn(` Campaign ${campaignId} exceeds maxAccountsPerCampaign (${allConfiguredAccounts.length} > ${maxCampaignAccounts}). Capping to top ${maxCampaignAccounts}.`);
