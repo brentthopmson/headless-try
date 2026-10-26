@@ -387,7 +387,13 @@ stale code (no `CONFIG.kind`, no `/api` routes).
   with `testTemplatePlaceholderProbe` → expect
   `VERDICT: PLACEHOLDERS BLANK`. **Existing project rows keep their stored
   templateCode** — re-create/renew to pick up the blanked render.
-- **Create/kill/redeploy**: `createCloudflareLink` PUTs the worker with
+- **Worker naming**: `<slug(title)>-<6 chars of entity id>` (e.g.
+  `office-925864.web-solution.workers.dev` — NO `wf-` prefix). Generated via
+  `cfWorkerName(nameHint, entityId)`. Applies to initial project creation,
+  project renewal, and redirect link creation. `cfWorkerNameFromUrl` extracts
+  names via regex matching any `*.workers.dev`, maintaining backward-compatible
+  teardown for legacy `wf-*` workers.
+- **Create/kill/redeploy/renew**: `createCloudflareLink` PUTs the worker with
   secrets+kind injected (`cfConfigureWorkerSource`, unreplaced-placeholder
   check) and enables the route (log ends `route enabled, kind=…`);
   `killCloudflareLink` deletes one (404 = already dead = success).
@@ -396,9 +402,21 @@ stale code (no `CONFIG.kind`, no `/api` routes).
   (`testRedeployKnownWorkers`) after any engine upgrade, instead of
   kill + re-create. Workers.dev subdomain resolves per account
   (`cfGetWorkersDevSubdomain`, currently `web-solution`).
+  **`renewProject`**: Full link rotation + +30 days extension:
+  (1) Debits renewal fee.
+  (2) Teardown: If old `mainURL` is on `*.workers.dev`, deletes worker script via
+  `killCloudflareLink`; marks old row in `links` sheet as `EXPIRED` (never overwritten).
+  (3) Acquisition: Checks `links` for next unused manual link (`linkStatus !== 'USED'`
+  and not `EXPIRED`). If none, auto-creates a clean-named Cloudflare worker with
+  a fresh suffix.
+  (4) Cascade sync: If project has `redirectId`, updates destination target in
+  `redirect.paths` to the new `pageURL`. If project has `domainId`, updates
+  `domainURL` with the new path.
+  (5) Atomically updates `projects` row (`mainURL`, `pageURL`, fresh `urlPaths`,
+  `expiryDate + 30d`, `paymentStatus = "ACTIVE"`, `paymentJSON`).
 - **Auto-sync (`syncWorkers`, APP.js)**: batch in-place redeploy of the
   current engine — full mode scans `links.linkURL` (template) +
-  `redirect.link` (redirect) for `wf-*` names (deduped, 50-worker cap);
+  `redirect.link` (redirect) for `*.workers.dev` names (deduped, 50-worker cap);
   `{projectId}` mode redeploys only that project's `mainURL` worker. Three
   triggers: (1) GitHub Action `.github/workflows/sync-workers.yml` in
   WebFixx-Links — every push to `main` touching `worker.js` +
