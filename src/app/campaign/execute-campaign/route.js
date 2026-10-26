@@ -407,6 +407,15 @@ export async function POST(request) {
     const channel = settings.channel || "email";
     const userId = settings.userId || null;
 
+    // Gate maximum accounts per campaign (from SETTINGS sheet maxAccountsPerCampaign, default 5)
+    const maxAccountsSetting = await getSetting('maxAccountsPerCampaign');
+    const maxCampaignAccounts = parseInt(maxAccountsSetting?.value1, 10) || 5;
+    const allConfiguredAccounts = (settings._fullAccounts || settings.accounts || []).map(String);
+    if (allConfiguredAccounts.length > maxCampaignAccounts) {
+      log.warn(` Campaign ${campaignId} exceeds maxAccountsPerCampaign (${allConfiguredAccounts.length} > ${maxCampaignAccounts}). Capping to top ${maxCampaignAccounts}.`);
+      settings.accounts = (settings.accounts || []).slice(0, maxCampaignAccounts);
+    }
+
     // ── Per-server fan-out scope (GAS dispatchCampaignToServers) ──────────
     // body.accountIds = this server's account subset; body.serverScope = the
     // owning server URL (or 'fallback'). Absent → full-list legacy behavior.
@@ -1067,21 +1076,17 @@ export async function POST(request) {
       // sends") and must never gate social runs. Monthly spend stays gated by
       // checkUserQuota(interactionUsage) per task; platform actions stay gated
       // by the Limits platform rows vs per-account hub usage.
-      let interactionLimit = 0;
+      // Step 4b: interactionLimit from SETTINGS (interactionBatchLimit)
+      // Removed fail-closed blocking: social interaction tasks run without artificial batch gates;
+      // quotas are strictly governed by platform limits and user monthly quota.
+      let interactionLimit = Infinity;
       try {
         const campaignLimits = await getCampaignLimits();
-        interactionLimit = campaignLimits.interactionLimit;
+        if (campaignLimits.interactionLimit > 0) {
+          interactionLimit = campaignLimits.interactionLimit;
+        }
       } catch (limitErr) {
-        log.warn(` Failed to fetch social limits, blocking: ${limitErr.message}`);
-      }
-
-      if (interactionLimit <= 0) {
-        log.info(` interactionBatchLimit is 0 or unavailable, blocking social execution - set interactionBatchLimit in the SETTINGS sheet`);
-        // Also write the campaign-level controlling key ('Limit Reached' is a
-        // known GAS state that resolveCurrentStage skips) so the orchestrator
-        // doesn't re-resolve execute and re-block on every poll.
-        await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "Limit Reached" });
-        return NextResponse.json({ success: true, message: "Execution blocked: interactionBatchLimit is 0 - set it in the SETTINGS sheet", limitReached: true });
+        log.warn(` Failed to fetch social limits (using unlimited batch): ${limitErr.message}`);
       }
 
       log.info(` Queueing social tasks for ${activeProfiles.length} profiles (interactionLimit=${interactionLimit})...`);
@@ -1434,8 +1439,13 @@ export async function POST(request) {
       }
 
       // Step 4g: Single campaign status update
-      const limitReached = executedCount < pendingSocialTasks.length || executedCount >= interactionLimit;
-      const finalStatus = pausedByAdmin ? "paused" : (limitReached ? "Limit Reached" : "completed");
+      const hasHourlyRateLimits = executionResults.some(r => r.status === 'COMPLETED' && (r.results || []).some(sub => sub.status === 'rate_limited' || sub.resumedNextCycle));
+      if (hasHourlyRateLimits) {
+        settings.restUntil = Date.now() + 3600000; // 1-hour rest before auto-resume
+        log.info(` [campaign-rest] Hourly rate limit hit — resting campaign ${campaignId} until ${new Date(settings.restUntil).toISOString()}`);
+      }
+      const limitReached = executedCount < pendingSocialTasks.length || (interactionLimit !== Infinity && executedCount >= interactionLimit) || hasHourlyRateLimits;
+      const finalStatus = pausedByAdmin ? "paused" : (hasHourlyRateLimits ? "resting" : (limitReached ? "Limit Reached" : "completed"));
       const analytics = {
         totalRows: tasksToExecute.length,
         sent: executedCount,

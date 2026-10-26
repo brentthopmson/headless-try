@@ -403,6 +403,11 @@ export async function navigateAndWait(page, url, s, opts = {}) {
         } catch (e) {
             navError = e;
             logger.warn(`${logPrefix} Navigation to ${label} failed (attempt ${attempt}/2): ${e.message}`);
+            if (e.message && (e.message.includes('detached Frame') || e.message.includes('context was destroyed'))) {
+                // In-flight navigation or frame swap destroyed execution context — pause and settle frame
+                await new Promise(r => setTimeout(r, 1200));
+                try { await page.mainFrame(); } catch (_) {}
+            }
             if (attempt < 2) await new Promise(r => setTimeout(r, 1500));
         }
     }
@@ -711,6 +716,14 @@ export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]'
             const composerOk = snap.state === 'composer' ? true : await ensureComposer();
             logger.info(`${logPrefix} Comments panel ready after tab toggle (${snap.state}${snap.items ? `, ${snap.items} items` : ''}, composer=${composerOk}).`);
             return { ok: true, state: snap.state, items: snap.items, composer: composerOk };
+        }
+
+        if (!expectReal) {
+            const composerOk = await ensureComposer();
+            if (composerOk) {
+                logger.info(`${logPrefix} Zero-comment post: composer ready without comment list.`);
+                return { ok: true, state: 'composer-zero-comments', items: 0, composer: true };
+            }
         }
 
         logger.warn(`${logPrefix} Comments panel did not hydrate within 15s.`);

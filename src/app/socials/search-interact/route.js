@@ -190,6 +190,7 @@ async function processTask(taskRow, columnIndexes) {
                 platformConfig,
                 ai: MultiProviderAI,
                 profileId,
+                campaignId,
                 keywords: searchQueries,
                 maxResultsPerKeyword,
                 stopAfterHours: interactionStopAfterHours,

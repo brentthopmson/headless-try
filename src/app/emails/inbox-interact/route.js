@@ -233,15 +233,13 @@ export async function processInboxInteract(body) {
     // Strict per-run interaction cap: unset/empty/0 in the SETTINGS sheet
     // (interactionBatchLimit) blocks the watcher entirely — no Infinity
     // fallback (was the last fail-open path for interactionLimit).
-    let planInteractionLimit = 0;
+    let planInteractionLimit = Infinity;
     try {
       const limits = await getCampaignLimits();
-      planInteractionLimit = limits.interactionLimit || 0;
-    } catch { /* 0 = block below */ }
-    if (planInteractionLimit <= 0) {
-      log.info(` interactionBatchLimit is 0 or unavailable, blocking AI inbox watcher - set interactionBatchLimit in the SETTINGS sheet`);
-      return NextResponse.json({ success: true, limitReached: true, message: "Interact blocked: interactionBatchLimit is 0 - set it in the SETTINGS sheet" });
-    }
+      if (limits.interactionLimit > 0) {
+        planInteractionLimit = limits.interactionLimit;
+      }
+    } catch { /* unlimited */ }
 
     if (hoursElapsed >= stopAfterHours) {
       await updateCampaignSettings(campaignId, { interactionStatus: "completed", interactionStoppedReason: "time_limit_reached" });

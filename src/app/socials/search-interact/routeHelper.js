@@ -5,6 +5,7 @@ import { DOMHelpers, checkGate, consumeAction, capturePostFrame, postCommentVeri
 import { updateAccountStatus } from '../_shared/hubUpdater.js';
 import limitsCore from '../_shared/limitsCore.js';
 import { isTikTokCaptchaVisible, solveTikTokAudioCaptcha, isTikTokLoggedOut, navigateAndWait, ensureCommentsVisible, isPostLiked, isConfidentlyUnliked, readCommentsPanelCount, dismissCookieBanner } from './platformHelper/TikTokHelpers.js';
+import { getAccountPostStatuses, markPostEngaged, getCampaignSettings } from '../../campaign/_shared/pipelineUtils.js';
 
 // Re-like the POST after this many successful comment replies (only when the
 // heart is confidently unliked — never toggle a liked post off).
@@ -194,8 +195,22 @@ export async function runSearchInteractEngagement(page, opts) {
         maxResultsPerKeyword = 5,
         stopAfterHours = 0,
         socialStrategyPrompt,
+        campaignId,
         taskId = 'session',
     } = opts;
+
+    // Per-account post deduplication: avoid re-engaging already completed posts
+    let accountPostStatuses = {};
+    if (campaignId && profileId) {
+        try {
+            const campSettings = await getCampaignSettings(campaignId);
+            accountPostStatuses = Object.assign({}, getAccountPostStatuses(campSettings?.settings, profileId));
+            const count = Object.keys(accountPostStatuses).length;
+            if (count > 0) logger.info(`[engage:${taskId}] Loaded ${count} already-engaged post(s) for account ${profileId}`);
+        } catch (e) {
+            logger.warn(`[engage:${taskId}] Failed to load postStatus: ${e.message}`);
+        }
+    }
 
     const { canonicalAction } = limitsCore;
     const s = platformConfig.selectors || {};
@@ -485,7 +500,20 @@ export async function runSearchInteractEngagement(page, opts) {
             const resultsWithUrl = scraped.filter(v => v.url && !seenUrls.has(v.url) && seenUrls.add(v.url));
             logger.info(`[engage:${taskId}] Keyword "${keyword}": ${scraped.length} scraped, ${resultsWithUrl.length} unique with URLs. Cap=${maxResultsPerKeyword}`);
 
-            const toProcess = resultsWithUrl.slice(0, maxResultsPerKeyword);
+            // Deduplicate against already-engaged posts for this account
+            const freshVideos = resultsWithUrl.filter(v => {
+                const id = (String(v.url || '').match(/\/(\d{15,})/) || [])[1] || null;
+                if (id && accountPostStatuses[id]) return false;
+                return true;
+            });
+            const skippedDueToPostStatus = resultsWithUrl.length - freshVideos.length;
+            if (skippedDueToPostStatus > 0) {
+                logger.info(`[engage:${taskId}] Skipped ${skippedDueToPostStatus} post(s) already engaged by account ${profileId}`);
+            }
+            const toProcess = freshVideos.slice(0, maxResultsPerKeyword);
+            if (toProcess.length === 0 && resultsWithUrl.length > 0) {
+                logger.info(`[engage:${taskId}] All ${resultsWithUrl.length} posts for keyword "${keyword}" already engaged by account ${profileId} — completing keyword.`);
+            }
             for (let rIdx = 0; rIdx < toProcess.length; rIdx++) {
                 if (stopType) break;
                 if (checkTimeStop()) break;
@@ -493,6 +521,10 @@ export async function runSearchInteractEngagement(page, opts) {
                 // Aweme id for URL-drift guard: if TikTok SPA-navigates to a
                 // different post mid-processing, skip the comment/loop entirely.
                 const awemeId = (String(video.url || '').match(/\/(\d{15,})/) || [])[1] || null;
+                if (awemeId && accountPostStatuses[awemeId]) {
+                    logger.info(`[engage:${taskId}] Post ${awemeId} already engaged by account ${profileId} — skipping.`);
+                    continue;
+                }
                 const stillOnTarget = () => {
                     if (!awemeId) return true; // can't verify — assume on-target
                     return String(page.url() || '').includes(awemeId);
@@ -1122,13 +1154,13 @@ export async function runSearchInteractEngagement(page, opts) {
                         }
 
                         // ---- 1. LIKE the comment ----
+                        let skipLikeComment = false;
                         const likeCGate = await checkGate(platform, profileId, 'likeComment');
                         if (!likeCGate.allowed) {
-                            stopType = likeCGate.stopType;
-                            stopReason = likeCGate.reason;
-                            logger.info(`[engage:${taskId}] Comment-like blocked (${stopReason}) — stopping run.`);
-                            break;
+                            skipLikeComment = true;
+                            logger.info(`[engage:${taskId}] Comment-like quota reached (${likeCGate.reason}) — skipping comment like.`);
                         }
+                        if (!skipLikeComment) {
                         try {
                             // Resolve the like button + its pressed state for a
                             // given container index. Live DOM: like is
@@ -1200,6 +1232,7 @@ export async function runSearchInteractEngagement(page, opts) {
                         } catch (e) {
                             logger.warn(`[engage:${taskId}] Comment like verify failed: ${e.message}`);
                         }
+                        }
                         await pause(200, 400);
                         // Re-resolve the container index (the like poll may have
                         // scrolled/re-rendered the virtualized list) so the reply
@@ -1210,13 +1243,17 @@ export async function runSearchInteractEngagement(page, opts) {
                         }
 
                         // ---- 2. REPLY to the comment ----
+                        let skipReplyComment = false;
                         const replyGate = await checkGate(platform, profileId, 'commentComment');
                         if (!replyGate.allowed) {
-                            stopType = replyGate.stopType;
-                            stopReason = replyGate.reason;
-                            logger.info(`[engage:${taskId}] Comment reply blocked (${stopReason}) — stopping run.`);
+                            skipReplyComment = true;
+                            logger.info(`[engage:${taskId}] Comment-reply quota reached (${replyGate.reason}) — skipping comment reply.`);
+                        }
+                        if (skipLikeComment && skipReplyComment) {
+                            logger.info(`[engage:${taskId}] Both comment-like and comment-reply quotas reached — ending comment wave loop on this post.`);
                             break;
                         }
+                        if (!skipReplyComment) {
                         try {
                             // BEST-EFFORT close of any leftover reply box.
                             // Container-verified retarget below guarantees the
@@ -1359,6 +1396,7 @@ export async function runSearchInteractEngagement(page, opts) {
                             attemptsByKey.set(comment.key, fails);
                             await closeReplyBox().catch(() => false);
                         }
+                        }
                         await pause(250, 500);
                     }  // end while (wave loop)
 
@@ -1387,6 +1425,14 @@ export async function runSearchInteractEngagement(page, opts) {
                         status: 'engaged',
                     });
                     logger.info(`[engage:${taskId}] Post ${rIdx + 1} engaged successfully.`);
+                    if (awemeId) {
+                        accountPostStatuses[awemeId] = 'engaged';
+                        if (campaignId && profileId) {
+                            markPostEngaged(campaignId, profileId, awemeId, 'engaged').catch(err => {
+                                logger.warn(`[engage:${taskId}] Failed to mark post ${awemeId} engaged: ${err.message}`);
+                            });
+                        }
+                    }
 
                     // Close overlay / return to results. Direct /photo/ URLs
                     // have no overlay close button — fall back to navigating

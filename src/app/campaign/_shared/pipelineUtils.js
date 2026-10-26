@@ -210,6 +210,54 @@ export async function markTagsDone(campaignId, profileId, tags) {
   return _tagStatusChain;
 }
 
+// ==================== Per-account post deduplication state ====================
+// Post IDs that an account has already interacted with (e.g. status: 'engaged').
+// Shape: settings.postStatus[profileId][postId] = 'engaged'.
+// Writes are serialized (read-merge-write) so parallel accounts or rapid consecutive
+// post engagements never clobber each other's map.
+let _postStatusChain = Promise.resolve();
+
+/**
+ * @param {object} settings - campaign settings object
+ * @param {string} profileId
+ * @returns {Record<string,string>} post IDs already interacted with for this account
+ */
+export function getAccountPostStatuses(settings, profileId) {
+  const all = (settings && settings.postStatus) || {};
+  return all[String(profileId)] || {};
+}
+
+/**
+ * Marks a post as interacted/engaged for one account (per-account scope).
+ * @param {string} campaignId
+ * @param {string} profileId
+ * @param {string} postId
+ * @param {string} [status='engaged']
+ * @returns {Promise<void>}
+ */
+export async function markPostEngaged(campaignId, profileId, postId, status = 'engaged') {
+  if (!campaignId || !profileId || !postId) return;
+  const pid = String(profileId);
+  const pidKey = String(postId).trim();
+  if (!pidKey) return;
+  _postStatusChain = _postStatusChain
+    .then(async () => {
+      const fresh = await getCampaignSettings(campaignId);
+      if (!fresh) return;
+      const postStatus = fresh.settings.postStatus || {};
+      const acct = postStatus[pid] || {};
+      if (acct[pidKey] === status) return;
+      acct[pidKey] = status;
+      postStatus[pid] = acct;
+      await updateCampaignSettings(campaignId, { postStatus });
+      logger.info(`[postStatus] Marked post ${pidKey} (${status}) for ${campaignId}/${pid}`);
+    })
+    .catch((e) => {
+      logger.warn(`[postStatus] Failed to mark post ${pidKey} for ${campaignId}/${pid}: ${e.message}`);
+    });
+  return _postStatusChain;
+}
+
 /**
  * Reads firestick emails from the SETTINGS sheet.
  * Returns an array of { firstName, lastName, email, address, city } objects.

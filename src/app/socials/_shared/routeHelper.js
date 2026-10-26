@@ -1295,18 +1295,47 @@ export async function postCommentVerified(page, s, text, logPrefix = '', opts = 
         if (!targets || !targets.submitRect) return { posted: false, reason: 'submit-missing-after-scroll' };
     }
 
+    let publishResponse = null;
+    let onResponseHandler = null;
+    const responsePromise = new Promise((resolve) => {
+        onResponseHandler = async (res) => {
+            try {
+                const u = res.url();
+                if (/comment\/publish/i.test(u)) {
+                    const text = await res.text().catch(() => '');
+                    try {
+                        const json = JSON.parse(text);
+                        const code = json.status_code ?? json?.status?.status_code ?? json?.data?.status_code;
+                        resolve({ ok: true, status_code: code, json });
+                    } catch (e) {
+                        resolve({ ok: false, text });
+                    }
+                }
+            } catch (e) { /* ignore */ }
+        };
+        page.on('response', onResponseHandler);
+        setTimeout(() => resolve(null), 5000);
+    });
+
     const clicked = await DOMHelpers.humanClickAt(page, targets.submitRect.x, targets.submitRect.y, { hoverMs: [120, 300] }).catch(() => false);
-    if (!clicked) return { posted: false, reason: 'submit-click-failed' };
+    if (!clicked) {
+        if (onResponseHandler) page.off('response', onResponseHandler);
+        return { posted: false, reason: 'submit-click-failed' };
+    }
 
     // TikTok clears the composer once the post is accepted — poll 4s with
     // ONE re-click at ~2s if text remains (missed first click / swallowed
     // coordinates).
-    const deadline = Date.now() + 4000;
+    const deadline = Date.now() + 4500;
     let reClicked = false;
+    let composerCleared = false;
     while (Date.now() < deadline) {
         const remaining = await readComposerText();
-        if (remaining === null || !remaining) return { posted: true };
-        if (!reClicked && Date.now() > deadline - 2000) {
+        if (remaining === null || !remaining) {
+            composerCleared = true;
+            break;
+        }
+        if (!reClicked && Date.now() > deadline - 2500) {
             // ~2s elapsed with text still present — re-click submit once.
             const again = await resolveTargets();
             if (again && again.submitRect) {
@@ -1317,7 +1346,24 @@ export async function postCommentVerified(page, s, text, logPrefix = '', opts = 
         }
         await DOMHelpers.randomDelay(200, 350);
     }
-    if (logPrefix) logger.warn(`${logPrefix} [${mode}] composer still has text 4s after submit.`);
+
+    // Wait briefly for the network publish response (if in-flight)
+    const pubRes = await Promise.race([
+        responsePromise,
+        new Promise(r => setTimeout(() => r(null), 1500))
+    ]);
+    if (onResponseHandler) page.off('response', onResponseHandler);
+
+    if (pubRes && pubRes.status_code !== undefined && String(pubRes.status_code) !== '0') {
+        if (logPrefix) logger.warn(`${logPrefix} [${mode}] Comment rejected by TikTok backend: status_code=${pubRes.status_code}`);
+        return { posted: false, reason: `tiktok_status_${pubRes.status_code}`, status_code: pubRes.status_code };
+    }
+
+    if (composerCleared) {
+        return { posted: true };
+    }
+
+    if (logPrefix) logger.warn(`${logPrefix} [${mode}] composer still has text 4.5s after submit.`);
     return { posted: false, reason: 'composer-not-cleared' };
 }
 

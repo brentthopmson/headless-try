@@ -97,16 +97,14 @@ export async function POST(request) {
     // Strict per-run interaction cap: unset/empty/0 in the SETTINGS sheet
     // (interactionBatchLimit) blocks the interact stage entirely — covers
     // both coordinator and worker dispatch below. No magic defaults.
-    let entryInteractionLimit = 0;
+    let entryInteractionLimit = Infinity;
     try {
       const campaignLimits = await getCampaignLimits();
-      entryInteractionLimit = campaignLimits.interactionLimit;
+      if (campaignLimits.interactionLimit > 0) {
+        entryInteractionLimit = campaignLimits.interactionLimit;
+      }
     } catch (limitErr) {
-      log.warn(` Failed to fetch interactionBatchLimit: ${limitErr.message}`);
-    }
-    if (entryInteractionLimit <= 0) {
-      log.info(` interactionBatchLimit is 0 or unavailable, blocking interact stage - set interactionBatchLimit in the SETTINGS sheet`);
-      return NextResponse.json({ success: true, limitReached: true, message: "Interact blocked: interactionBatchLimit is 0 - set it in the SETTINGS sheet" });
+      log.warn(` Failed to fetch interactionBatchLimit (using unlimited batch): ${limitErr.message}`);
     }
 
     if (serverBatch) {
