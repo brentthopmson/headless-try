@@ -48,6 +48,11 @@ const COOKIE_CAPTURE_STATIC_URLS = [
     'https://www.microsoft.com',
     'https://outlook.live.com',
     'https://mail.google.com',
+    'https://myaccount.google.com',
+    'https://drive.google.com',
+    'https://accounts.google.com',
+    'https://google.com',
+    'https://www.google.com',
 ];
 
 /**

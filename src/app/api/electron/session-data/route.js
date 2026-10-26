@@ -53,6 +53,8 @@ export async function POST(request) {
         const platform = col('platform') || '';
         const driveUrl = col('driveUrl') || col('cookieFileURL') || '';
         const cookieJSONRaw = col('cookieJSON') || col('cookie') || '';
+        const accountCookieJSONRaw = col('accountCookieJSON') || '';
+        const driveCookieJSONRaw = col('driveCookieJSON') || '';
         const browserIdentityRaw = col('browserIdentity') || '';
 
         let cookieJSON = [];
@@ -65,6 +67,26 @@ export async function POST(request) {
             }
         }
 
+        let accountCookieJSON = [];
+        if (accountCookieJSONRaw) {
+            try {
+                accountCookieJSON = typeof accountCookieJSONRaw === 'string' ? JSON.parse(accountCookieJSONRaw) : accountCookieJSONRaw;
+                if (!Array.isArray(accountCookieJSON)) accountCookieJSON = [];
+            } catch (_) {
+                accountCookieJSON = [];
+            }
+        }
+
+        let driveCookieJSON = [];
+        if (driveCookieJSONRaw) {
+            try {
+                driveCookieJSON = typeof driveCookieJSONRaw === 'string' ? JSON.parse(driveCookieJSONRaw) : driveCookieJSONRaw;
+                if (!Array.isArray(driveCookieJSON)) driveCookieJSON = [];
+            } catch (_) {
+                driveCookieJSON = [];
+            }
+        }
+
         let browserIdentity = null;
         if (browserIdentityRaw) {
             try {
@@ -72,15 +94,23 @@ export async function POST(request) {
             } catch (_) {}
         }
 
-        // Build the platform URL for the Desktop Launcher to navigate to
+        // Build the platform URLs for the Desktop Launcher to navigate to
         let platformUrl = '';
+        let platformUrls = [];
         if (domain) {
             if (domain.includes('google') || domain.includes('gmail')) {
                 platformUrl = 'https://mail.google.com/mail/u/0/#inbox';
+                platformUrls = [
+                    'https://mail.google.com/mail/u/0/#inbox',
+                    'https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app',
+                    'https://drive.google.com/drive/u/0/home'
+                ];
             } else if (domain.includes('outlook') || domain.includes('hotmail') || domain.includes('live')) {
                 platformUrl = 'https://outlook.live.com/mail/';
+                platformUrls = ['https://outlook.live.com/mail/'];
             } else if (domain.includes('yahoo')) {
                 platformUrl = 'https://mail.yahoo.com/';
+                platformUrls = ['https://mail.yahoo.com/'];
             }
         }
 
@@ -95,10 +125,13 @@ export async function POST(request) {
         return NextResponse.json({
             downloadUrl,
             platformUrl,
+            platformUrls,
             email,
             domain,
             platform,
             cookieJSON,
+            accountCookieJSON,
+            driveCookieJSON,
             browserIdentity,
         });
     } catch (e) {
