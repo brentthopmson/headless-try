@@ -4450,14 +4450,24 @@ if (!foundSelector) {
                                         });
                                         // If page is stuck on login page after password submit, navigate directly to inbox
                                         const postPwdUrl = page.url();
-                                        if (postPwdUrl.includes('login.microsoftonline.com') || postPwdUrl.includes('login.live.com')) {
+                                        if (
+                                            postPwdUrl.includes('login.microsoftonline.com') ||
+                                            postPwdUrl.includes('login.live.com') ||
+                                            postPwdUrl.includes('login.microsoft.com') ||
+                                            postPwdUrl.includes('fido/')
+                                        ) {
                                             // Normalize the domain (strip trailing backticks/quotes/stray chars from
                                             // sheet-typed emails) so the inbox lookup resolves instead of falling back
                                             // to the fwlink sign-in URL.
                                             const emailDomain = email ? String(email.split('@')[1] || '').toLowerCase().replace(/[^a-z0-9.]/g, '') : '';
-                                            const directInboxUrl = PLATFORM_INBOX_URLS[emailDomain] || platformConfig.url;
+                                            let directInboxUrl = null;
+                                            if (platform === 'outlook' || platformConfig.url?.includes('live.com') || platformConfig.url?.includes('office.com')) {
+                                                directInboxUrl = await platformConfigs._getSmartInboxUrl(page, browserId, email);
+                                            } else {
+                                                directInboxUrl = PLATFORM_INBOX_URLS[emailDomain] || platformConfig.url;
+                                            }
                                             if (directInboxUrl) {
-                                                logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Page still on login page (${postPwdUrl}). Navigating directly to inbox: ${directInboxUrl}`);
+                                                logger.info(`[processRow][${browserId}][WAITINGPASSWORD] Page still on auth/FIDO page (${postPwdUrl}). Navigating directly to inbox: ${directInboxUrl}`);
                                                 await page.goto(directInboxUrl, { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(e =>
                                                     logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Direct navigation to inbox failed: ${e.message}`)
                                                 );

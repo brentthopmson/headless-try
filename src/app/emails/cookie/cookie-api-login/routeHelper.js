@@ -229,7 +229,7 @@ export async function detectPasswordUnavailable(page, platformConfig) {
 export async function stillOnPasswordPage(page, platformConfig) {
     try {
         const currentUrl = page.url() || '';
-        const onLoginUrl = currentUrl.includes('login.live.com') || currentUrl.includes('login.microsoftonline.com') || currentUrl.includes('account.live.com') || (currentUrl.includes('accounts.google.com') && currentUrl.includes('/challenge/pwd'));
+        const onLoginUrl = currentUrl.includes('login.live.com') || currentUrl.includes('login.microsoftonline.com') || currentUrl.includes('login.microsoft.com') || currentUrl.includes('account.live.com') || (currentUrl.includes('accounts.google.com') && currentUrl.includes('/challenge/pwd'));
         if (!onLoginUrl) return false;
         const raw = platformConfig?.selectors?.passwordInput;
         const selectors = Array.isArray(raw) ? raw : (raw ? [raw] : []);
@@ -295,6 +295,7 @@ export async function pageStillOnAuth(page, platformConfig) {
     const markers = [
         'login.live.com',
         'login.microsoftonline.com',
+        'login.microsoft.com',
         'account.live.com',
         'oauth20_authorize',
         'sso_reload',
@@ -727,6 +728,7 @@ export async function isInbox(page, platformConfig) {
       'accounts.google.com',
       'login.live.com',
       'login.microsoftonline.com',
+      'login.microsoft.com',
       'account.live.com',
       'oauth20_authorize',
       'sso_reload',

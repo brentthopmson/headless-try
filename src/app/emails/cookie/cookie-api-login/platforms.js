@@ -233,7 +233,7 @@ export const platformConfigs = {
     // Free Microsoft accounts (outlook.com, live.com, hotmail.com, etc.) use
     // outlook.live.com/mail/. Office 365 accounts (custom domains, onmicrosoft.com)
     // use outlook.office.com/mail/.
-    _getSmartInboxUrl: async (page, instanceId) => {
+    _getSmartInboxUrl: async (page, instanceId, fallbackEmail = null) => {
         const FREE_MS_DOMAINS = new Set([
             'outlook.com', 'hotmail.com', 'live.com', 'windowslive.com',
             'outlook.co.uk', 'hotmail.co.uk', 'live.co.uk',
@@ -249,7 +249,7 @@ export const platformConfigs = {
             'msn.com', 'live.net'
         ]);
 
-        let email = null;
+        let email = fallbackEmail || null;
         try {
             email = await page.evaluate(() => {
                 const text = document.body.innerText;
@@ -265,7 +265,7 @@ export const platformConfigs = {
         }
 
         if (email) {
-            const domain = email.split('@')[1]?.toLowerCase();
+            const domain = email.split('@')[1]?.toLowerCase().replace(/[^a-z0-9.]/g, '');
             if (domain && !FREE_MS_DOMAINS.has(domain)) {
                 logger.info(`[handleAdditionalViews][${instanceId}] Office account detected (${domain}). Using office.com inbox.`);
                 return 'https://outlook.office.com/mail/';
