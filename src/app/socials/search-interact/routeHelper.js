@@ -538,16 +538,21 @@ export async function runSearchInteractEngagement(page, opts) {
                         logPrefix: `[engage:${taskId}]`,
                     });
                     if (!postNav.ok) {
-                        logger.warn(`[engage:${taskId}] Post ${rIdx + 1}: navigation failed (${postNav.error}) — skipping post.`);
-                        results.push({ keyword, url: video.url, status: 'failed', error: `nav_failed: ${postNav.error}` });
-                        continue;
+                        // Soft check: did the browser reach the target post anyway?
+                        if (stillOnTarget()) {
+                            logger.info(`[engage:${taskId}] Post ${rIdx + 1}: navigation returned ${postNav.error}, but browser is on target (${page.url()}). Proceeding with engagement.`);
+                        } else {
+                            logger.warn(`[engage:${taskId}] Post ${rIdx + 1}: navigation failed (${postNav.error}) — skipping post.`);
+                            results.push({ keyword, url: video.url, status: 'failed', error: `nav_failed: ${postNav.error}` });
+                            continue;
+                        }
                     }
                     await enforceSingleTab('after post navigation');
                     if (postNav.state === 'captcha' && !(await ensureCaptchaSolved('post page'))) break;
                     if (postNav.state === 'logged_out' && !(await ensureLoggedIn('post page'))) break;
                     if (!(await ensureCaptchaSolved('post page'))) break;
                     if (!(await ensureLoggedIn('post page'))) break;
-                    if (postNav.state === 'unknown') {
+                    if (postNav.state === 'unknown' && !stillOnTarget()) {
                         logger.warn(`[engage:${taskId}] Post ${rIdx + 1}: page never reached a settled state — skipping post.`);
                         results.push({ keyword, url: video.url, status: 'failed', error: 'page_unsettled' });
                         continue;
@@ -565,7 +570,9 @@ export async function runSearchInteractEngagement(page, opts) {
                     } catch (e) {
                         logger.warn(`[engage:${taskId}] Post ${rIdx + 1}: action bar not rendered within 30s — skipping post (no quota consumed).`);
                         results.push({ keyword, url: video.url, status: 'failed', error: 'action_bar_missing' });
-                        await page.goto(`${platformConfig.searchUrl}?q=${encodeURIComponent(keyword)}`, { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
+                        if (keyword && platformConfig.searchUrl) {
+                            await page.goto(`${platformConfig.searchUrl}?q=${encodeURIComponent(keyword)}`, { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
+                        }
                         await pause(1200, 2000);
                         continue;
                     }
@@ -675,7 +682,9 @@ export async function runSearchInteractEngagement(page, opts) {
                             expectedComments,
                         });
                         // Return to search results (no overlay close on direct URLs).
-                        await page.goto(`${platformConfig.searchUrl}?q=${encodeURIComponent(keyword)}`, { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
+                        if (keyword && platformConfig.searchUrl) {
+                            await page.goto(`${platformConfig.searchUrl}?q=${encodeURIComponent(keyword)}`, { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
+                        }
                         await pause(1200, 2000);
                         continue;
                     }
@@ -833,7 +842,9 @@ export async function runSearchInteractEngagement(page, opts) {
                                 commentsProcessed: 0,
                                 status: 'page_navigated_away',
                             });
-                            await page.goto(`${platformConfig.searchUrl}?q=${encodeURIComponent(keyword)}`, { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
+                            if (keyword && platformConfig.searchUrl) {
+                                await page.goto(`${platformConfig.searchUrl}?q=${encodeURIComponent(keyword)}`, { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
+                            }
                             await pause(1200, 2000);
                             continue;
                         }
@@ -1438,7 +1449,7 @@ export async function runSearchInteractEngagement(page, opts) {
                     // have no overlay close button — fall back to navigating
                     // back to the search page instead of timing out.
                     const closed = await DOMHelpers.humanClick(page, s.browseClose, { timeout: 3000 }).catch(() => false);
-                    if (!closed) {
+                    if (!closed && keyword && platformConfig.searchUrl) {
                         await page.goto(`${platformConfig.searchUrl}?q=${encodeURIComponent(keyword)}`, { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
                     }
                     await pause(1200, 2000);
@@ -1447,7 +1458,9 @@ export async function runSearchInteractEngagement(page, opts) {
                     logger.warn(`[engage:${taskId}] Post ${rIdx + 1} failed: ${postErr.message}`);
                     results.push({ keyword, url: video.url, status: 'failed', error: postErr.message });
                     // Try to recover: navigate back to search.
-                    await page.goto(`${platformConfig.searchUrl}?q=${encodeURIComponent(keyword)}`, { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
+                    if (keyword && platformConfig.searchUrl) {
+                        await page.goto(`${platformConfig.searchUrl}?q=${encodeURIComponent(keyword)}`, { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
+                    }
                     await pause(1500, 2500);
                 }
             }

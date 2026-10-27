@@ -390,27 +390,93 @@ export async function navigateAndWait(page, url, s, opts = {}) {
         logPrefix = '[engage]',
     } = opts;
 
-    // Goto with one retry — do NOT swallow errors silently.
+    const targetAweme = (String(url || '').match(/\/(\d{15,})/) || [])[1] || null;
     let navError = null;
+
     for (let attempt = 1; attempt <= 2; attempt++) {
-        try {
-            await page.goto(url, {
-                waitUntil: 'domcontentloaded',
-                timeout: NAV_RETRY_TIMEOUT_MS,
-            });
-            navError = null;
-            break;
-        } catch (e) {
+        navError = null;
+        let navDone = false;
+
+        // Start goto in background
+        const gotoPromise = page.goto(url, {
+            waitUntil: 'domcontentloaded',
+            timeout: NAV_RETRY_TIMEOUT_MS,
+        }).then(() => {
+            navDone = true;
+        }).catch((e) => {
+            navDone = true;
             navError = e;
-            logger.warn(`${logPrefix} Navigation to ${label} failed (attempt ${attempt}/2): ${e.message}`);
-            if (e.message && (e.message.includes('detached Frame') || e.message.includes('context was destroyed'))) {
+        });
+
+        // Concurrently poll for early readiness: check if the browser has already
+        // arrived on the target post/page and the DOM is rendering.
+        // TikTok video streams / service workers frequently delay the DOMContentLoaded event
+        // past 25s even after the page, video, and action-bar are fully interactive.
+        const pollStart = Date.now();
+        let earlyReady = false;
+        while (Date.now() - pollStart < NAV_RETRY_TIMEOUT_MS) {
+            if (navDone) break;
+            try {
+                const currentUrl = page.url() || '';
+                const onTarget = targetAweme
+                    ? currentUrl.includes(targetAweme)
+                    : (String(url).includes('/search')
+                        ? currentUrl.includes('/search')
+                        : (/tiktok\.com\/@[^/]+\/(photo|video)\//.test(currentUrl)));
+                if (onTarget) {
+                    const hasKeyElements = await page.evaluate((likeSel) => {
+                        return !!(
+                            (likeSel && document.querySelector(likeSel)) ||
+                            document.querySelector("[data-e2e='browse-like-icon'], [data-e2e='browse-comment-icon'], [data-e2e='browse-desc'], [data-e2e='like-icon']") ||
+                            document.querySelector("div[class*='DivVideoDetailContainer'], main[class*='DivVideoContainer'], [id*='search_top-item-list']")
+                        );
+                    }, s.likeButton).catch(() => false);
+
+                    if (hasKeyElements) {
+                        logger.info(`${logPrefix} Post/page DOM rendered early on ${label} (${currentUrl}). Proceeding without waiting for background streams.`);
+                        earlyReady = true;
+                        navError = null;
+                        break;
+                    }
+                }
+            } catch (_) {}
+            await new Promise(r => setTimeout(r, 600));
+        }
+
+        if (earlyReady) {
+            break;
+        }
+
+        await gotoPromise;
+
+        if (navError) {
+            logger.warn(`${logPrefix} Navigation to ${label} failed (attempt ${attempt}/2): ${navError.message}`);
+            // Check if despite the error (e.g. Navigation timeout), the page is on target
+            try {
+                const currentUrl = page.url() || '';
+                const onTarget = targetAweme
+                    ? currentUrl.includes(targetAweme)
+                    : (String(url).includes('/search')
+                        ? currentUrl.includes('/search')
+                        : (/tiktok\.com\/@[^/]+\/(photo|video)\//.test(currentUrl)));
+                if (onTarget) {
+                    logger.info(`${logPrefix} Navigation timeout on ${label}, but browser reached target URL (${currentUrl}). Continuing.`);
+                    navError = null;
+                    break;
+                }
+            } catch (_) {}
+
+            if (navError.message && (navError.message.includes('detached Frame') || navError.message.includes('context was destroyed'))) {
                 // In-flight navigation or frame swap destroyed execution context — pause and settle frame
                 await new Promise(r => setTimeout(r, 1200));
                 try { await page.mainFrame(); } catch (_) {}
             }
             if (attempt < 2) await new Promise(r => setTimeout(r, 1500));
+        } else {
+            break;
         }
     }
+
     if (navError) {
         return { ok: false, state: 'nav_failed', url: page.url(), error: navError.message };
     }
@@ -437,12 +503,19 @@ export async function navigateAndWait(page, url, s, opts = {}) {
 
     const finalUrl = page.url();
     if (state === 'unknown') {
-        // Log what the page actually shows so ambiguity is never silent.
-        let snippet = '';
-        try {
-            snippet = await page.evaluate(() => (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 200));
-        } catch (e) { /* ignore */ }
-        logger.warn(`${logPrefix} ${label} UNRESOLVED after ${settleTimeoutMs}ms: url=${finalUrl} readyState=${await page.evaluate(() => document.readyState).catch(() => '?')} body="${snippet}"`);
+        const onTarget = targetAweme
+            ? finalUrl.includes(targetAweme)
+            : (/tiktok\.com\/@[^/]+\/(photo|video)\//.test(finalUrl));
+        if (onTarget) {
+            state = 'post';
+        } else {
+            // Log what the page actually shows so ambiguity is never silent.
+            let snippet = '';
+            try {
+                snippet = await page.evaluate(() => (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 200));
+            } catch (e) { /* ignore */ }
+            logger.warn(`${logPrefix} ${label} UNRESOLVED after ${settleTimeoutMs}ms: url=${finalUrl} readyState=${await page.evaluate(() => document.readyState).catch(() => '?')} body="${snippet}"`);
+        }
     }
     return { ok: true, state, url: finalUrl };
 }
