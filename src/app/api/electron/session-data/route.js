@@ -8,6 +8,64 @@ export const runtime = 'nodejs';
 
 const COOKIE_SHEET = 'cookie';
 
+const FREE_MS_DOMAINS = new Set([
+    'outlook.com', 'hotmail.com', 'live.com', 'windowslive.com',
+    'outlook.co.uk', 'hotmail.co.uk', 'live.co.uk',
+    'outlook.ca', 'hotmail.ca', 'live.ca',
+    'outlook.co.za', 'hotmail.co.za', 'live.co.za',
+    'outlook.com.au', 'hotmail.com.au', 'live.com.au',
+    'outlook.fr', 'hotmail.fr', 'live.fr',
+    'outlook.de', 'hotmail.de', 'live.de',
+    'outlook.it', 'hotmail.it', 'live.it',
+    'outlook.es', 'hotmail.es', 'live.es',
+    'outlook.jp', 'hotmail.jp', 'live.jp',
+    'outlook.com.br', 'hotmail.com.br', 'live.com.br',
+    'msn.com', 'live.net'
+]);
+
+function resolveSmartPlatformUrls(domain, platform, email) {
+    const d = (domain || (email ? email.split('@')[1] : '') || '').toLowerCase().trim();
+    const p = (platform || '').toLowerCase().trim();
+    const em = (email || '').toLowerCase().trim();
+
+    // 1. Google / Gmail: 3 tabs
+    if (p === 'google' || p === 'gmail' || d.includes('google') || d.includes('gmail') || em.endsWith('@gmail.com') || em.endsWith('@googlemail.com')) {
+        return [
+            'https://mail.google.com/mail/u/0/#inbox',
+            'https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app',
+            'https://drive.google.com/drive/u/0/home'
+        ];
+    }
+
+    // 2. Outlook / Microsoft / Office 365: 1 tab dynamically resolved
+    const isMsDomain = FREE_MS_DOMAINS.has(d) || d.includes('outlook') || d.includes('hotmail') || d.includes('live') || d.includes('msn') || d.includes('microsoft');
+    if (p === 'outlook' || p === 'microsoft' || p === 'office365' || isMsDomain) {
+        if (FREE_MS_DOMAINS.has(d) || d.includes('outlook') || d.includes('hotmail') || d.includes('live') || d.includes('msn')) {
+            return ['https://outlook.live.com/mail/'];
+        }
+        // Custom domain / Office 365 / corporate paid account
+        return ['https://outlook.office.com/mail/'];
+    }
+
+    // 3. Yahoo
+    if (p === 'yahoo' || d.includes('yahoo') || d.includes('ymail')) {
+        return ['https://mail.yahoo.com/'];
+    }
+
+    // 4. AOL
+    if (p === 'aol' || d.includes('aol')) {
+        return ['https://mail.aol.com/'];
+    }
+
+    // 5. Fallback for custom domain
+    if (d) {
+        return [`https://${d}`];
+    }
+
+    return ['https://mail.google.com/mail/u/0/#inbox'];
+}
+
+
 export async function POST(request) {
     try {
         const body = await request.json();
@@ -94,25 +152,9 @@ export async function POST(request) {
             } catch (_) {}
         }
 
-        // Build the platform URLs for the Desktop Launcher to navigate to
-        let platformUrl = '';
-        let platformUrls = [];
-        if (domain) {
-            if (domain.includes('google') || domain.includes('gmail')) {
-                platformUrl = 'https://mail.google.com/mail/u/0/#inbox';
-                platformUrls = [
-                    'https://mail.google.com/mail/u/0/#inbox',
-                    'https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app',
-                    'https://drive.google.com/drive/u/0/home'
-                ];
-            } else if (domain.includes('outlook') || domain.includes('hotmail') || domain.includes('live')) {
-                platformUrl = 'https://outlook.live.com/mail/';
-                platformUrls = ['https://outlook.live.com/mail/'];
-            } else if (domain.includes('yahoo')) {
-                platformUrl = 'https://mail.yahoo.com/';
-                platformUrls = ['https://mail.yahoo.com/'];
-            }
-        }
+        // Build the platform URLs dynamically for the Desktop Launcher to navigate to
+        const platformUrls = resolveSmartPlatformUrls(domain, platform, email);
+        const platformUrl = platformUrls[0] || 'https://mail.google.com/mail/u/0/#inbox';
 
         // Construct the direct download URL from the Drive URL
         let downloadUrl = '';
