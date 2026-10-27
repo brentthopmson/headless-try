@@ -98,6 +98,25 @@ export async function runActivitiesInteract(options = {}) {
             }
             index += 1;
         }
+
+        if (notifications.length === 0 && ctx.shouldContinue() && ctx.engaged < maxEngagements) {
+            log.info(`[${taskId}] No notifications found — navigating to FYP feed to interact`);
+            const feedUrl = String(platform).toLowerCase() === 'tiktok' ? 'https://www.tiktok.com/foryou' : 'https://www.tiktok.com/';
+            const ok = await page.goto(feedUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).then(() => true).catch(() => false);
+            if (ok) {
+                await new Promise(r => setTimeout(r, 2500));
+                if (await ctx.check("like")) {
+                    const outcome = await helper.like(page);
+                    const isOk = !!(outcome && (outcome.verified || outcome.unverified));
+                    if (isOk) {
+                        await ctx.record("like", 1);
+                        ctx.engaged += 1;
+                        results.push({ type: "fyp_like", status: "DONE" });
+                        log.info(`[${taskId}] Interacted on FYP (liked video)`);
+                    }
+                }
+            }
+        }
     } finally {
         detach();
         await ctx.finish();

@@ -1468,8 +1468,18 @@ export async function runSearchInteractEngagement(page, opts) {
             logger.warn(`[engage:${taskId}] Keyword "${keyword}" failed: ${kwErr.message}`);
         }
 
-        // Fully processed (no stop mid-keyword) — eligible to be marked done.
-        if (!stopType) completedKeywords.push(keyword);
+        // Only mark keyword as completed if it was actually processed successfully
+        // (i.e. at least one post was engaged or already engaged, and it did not fail completely with errors).
+        const kwResults = results.filter(r => r.keyword === keyword);
+        const hasSuccessfulEngagement = kwResults.some(r => r.status === 'engaged' || r.status === 'already_engaged');
+        const hasOnlyErrors = kwResults.length > 0 && kwResults.every(r => r.status === 'failed' || r.status === 'nav_failed' || r.status === 'page_unsettled' || r.status === 'action_bar_missing');
+
+        if (!stopType && !hasOnlyErrors && (hasSuccessfulEngagement || kwResults.length === 0)) {
+            completedKeywords.push(keyword);
+            logger.info(`[engage:${taskId}] Keyword "${keyword}" marked as completed (successful=${hasSuccessfulEngagement}, items=${kwResults.length}).`);
+        } else {
+            logger.warn(`[engage:${taskId}] Keyword "${keyword}" NOT marked completed — interactions failed or incomplete (onlyErrors=${hasOnlyErrors}, stopType=${stopType || 'none'}).`);
+        }
     }
 
     page.off('response', onCommentApiResponse);

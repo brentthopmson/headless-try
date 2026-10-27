@@ -1093,7 +1093,7 @@ export async function POST(request) {
       log.info(` Queueing social tasks for ${activeProfiles.length} profiles (interactionLimit=${interactionLimit})...`);
 
       // Step 4c: Accumulate all tasks in-memory with priority ordering
-      const PRIORITY_MAP = { "inbox-interact": 0, "activities-interact": 1, "page-interact": 2, "search-interact": 3 };
+      const PRIORITY_MAP = { "inbox-interact": 0, "page-interact": 1, "search-interact": 2, "activities-interact": 3 };
       const pendingSocialTasks = [];
       const profilePlatforms = {};
       // Batch engagement settings from campaign settings JSON (safe defaults).
@@ -1105,6 +1105,9 @@ export async function POST(request) {
       // browser reopen). searchQuery is kept as the first query for CSV
       // flush compatibility.
       const queueSocialTask = (operation, queries, platform, profileData, profileId) => {
+        if (pendingSocialTasks.some(t => t.profileId === profileId && t.operation === operation)) {
+          return;
+        }
         const queryList = Array.isArray(queries) ? queries : [queries];
         pendingSocialTasks.push({
           taskId: "task-" + Math.random().toString(36).substring(2, 11),
@@ -1190,6 +1193,7 @@ export async function POST(request) {
           /^[A-Za-z0-9._-]+$/.test(kw.replace(/^@+/, ""))
         );
 
+        let queuedForProfile = 0;
         for (const op of interactionTypes) {
           if (pendingSocialTasks.length >= interactionLimit) break;
           if (op === "inbox") continue; // queued once per profile above
@@ -1203,13 +1207,36 @@ export async function POST(request) {
           // still-pending tags.
           if (operation === "search-interact") {
             const doneTags = getAccountTagStatuses(settings, profileId);
-            opQueries = opQueries.filter(k => doneTags[String(k).trim()] !== "done");
+            const accountPosts = (settings.postStatus && settings.postStatus[String(profileId)]) || {};
+            const totalEngagedPosts = Object.keys(accountPosts).length;
+
+            // Stale doneTags recovery: If an account has doneTags recorded, but 0 posts
+            // were ever engaged for this account, those tags were marked done by the prior
+            // failed navigation bug. Clear them so the newly fixed navigation can run them!
+            if (totalEngagedPosts === 0 && Object.keys(doneTags).length > 0) {
+              log.info(` [tag-resume] profile ${profileId}: 0 posts ever engaged for this profile — clearing stale done tags to allow clean run.`);
+              opQueries = profileKeywords;
+            } else {
+              opQueries = opQueries.filter(k => doneTags[String(k).trim()] !== "done");
+            }
+
             if (opQueries.length === 0) {
-              log.info(` [tag-resume] profile ${profileId}: all search tags already done — skipping search-interact`);
+              log.info(` [tag-resume] profile ${profileId}: all search tags already done — queueing activities-interact fallback`);
+              queueSocialTask("activities-interact", [""], platform, profileData, profileId);
+              queuedForProfile++;
+              continue;
             }
           }
           if (opQueries.length === 0) continue;
           queueSocialTask(operation, opQueries, platform, profileData, profileId);
+          queuedForProfile++;
+        }
+
+        // Automatic fallback: if no tasks were queued for this active profile (e.g. all search tags completed),
+        // trigger activities-interact so the profile continues engaging (notifications, follower interactions, FYP)
+        if (queuedForProfile === 0 && pendingSocialTasks.length < interactionLimit) {
+          log.info(` [activities-fallback] profile ${profileId}: no pending tag tasks — queueing activities-interact`);
+          queueSocialTask("activities-interact", [""], platform, profileData, profileId);
         }
         if (pendingSocialTasks.length >= interactionLimit) break;
       }

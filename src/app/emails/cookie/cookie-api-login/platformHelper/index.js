@@ -40,6 +40,11 @@ export const TAB_WHITELIST = [
     'outlook.office365.com',
     'portal.office.com',
     'onedrive.live.com',
+    'myaccount.google.com',
+    'drive.google.com',
+    'mail.google.com',
+    'accounts.google.com',
+    'google.com',
 ];
 
 const COOKIE_CAPTURE_STATIC_URLS = [

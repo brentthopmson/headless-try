@@ -3125,6 +3125,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                 targetCreatedListener = async (target) => { // Assign to the outer scope variable
                     if (target.type() === 'page') {
+                        if (browser && browser._isCapturingMultiTab) {
+                            return; // Legitimate tab opened by multi-tab cookie capture
+                        }
                         try {
                             const newPage = await target.page();
                             if (newPage && newPage !== page && !newPage.isClosed()) {

