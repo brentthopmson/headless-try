@@ -1283,15 +1283,12 @@ export async function solveImageCaptcha(page, instanceId) {
     }
 
     try {
-        logger.info(`[solveImageCaptcha][${instanceId}] Waiting for CAPTCHA image...`);
-        await page.waitForSelector('#captchaimg', { visible: true, timeout: 3000 });
-        await new Promise(r => setTimeout(r, 1000));
-
-        const captchaImg = await page.$('#captchaimg');
+        const captchaImg = await page.$('#captchaimg').catch(() => null);
         if (!captchaImg) {
-            logger.warn(`[solveImageCaptcha][${instanceId}] CAPTCHA image element not found.`);
             return false;
         }
+        logger.info(`[solveImageCaptcha][${instanceId}] CAPTCHA image element found. Waiting for render...`);
+        await new Promise(r => setTimeout(r, 1000));
 
         const screenshotBuffer = await captchaImg.screenshot({ type: 'png' });
         const base64Image = screenshotBuffer.toString('base64');
@@ -1371,7 +1368,7 @@ export async function solveImageCaptcha(page, instanceId) {
         return false;
 
     } catch (error) {
-        logger.error(`[solveImageCaptcha][${instanceId}] Error: ${error.message}`);
+        logger.warn(`[solveImageCaptcha][${instanceId}] CAPTCHA solve notice: ${error.message}`);
         return false;
     }
 }

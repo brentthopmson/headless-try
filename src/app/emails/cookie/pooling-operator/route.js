@@ -17,7 +17,12 @@ function parseBody(text) {
 export async function POST(request) {
     incrementUsage();
 
-    const text = await request.text();
+    let text = '';
+    try {
+        text = await request.text();
+    } catch (e) {
+        return corsJson({ success: false, error: "Request aborted" }, 200);
+    }
     const body = parseBody(text);
     if (!body) return corsJson({ success: false, error: "Invalid request body" }, 400);
 

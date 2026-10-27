@@ -1270,9 +1270,10 @@ function startPolling(interval = 10000) { // Default to 10 seconds
 
 // Poll the operator endpoint
 async function pollOperator() {
-  if (!browserId) {
-      console.log('[Template] pollOperator: no browserId, stopping');
+  if (!browserId || currentStatus === 'PROCESSING_FINALIZING' || currentStatus === 'COMPLETED') {
+      console.log('[Template] pollOperator: stopped (status: ' + currentStatus + ')');
     clearInterval(pollingIntervalId);
+    pollingIntervalId = null;
     return;
   }
 
