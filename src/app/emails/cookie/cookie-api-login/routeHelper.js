@@ -2349,22 +2349,31 @@ export async function openGoogleExtraTabs(browser, domain) {
     if (!browser) return;
     const isGoogle = domain && (domain.includes('google') || domain.includes('gmail'));
     if (!isGoogle) return;
+    if (browser) browser._isCapturingMultiTab = true;
+    let tab1 = null;
+    let tab2 = null;
     try {
-        const tab1 = await browser.newPage().catch(() => null);
+        tab1 = await browser.newPage().catch(() => null);
         if (tab1) {
             await tab1.goto('https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app', {
                 waitUntil: 'domcontentloaded',
                 timeout: 15000
-            }).catch(() => null);
+            }).catch(err => logger.debug(`[openGoogleExtraTabs] Tab 1 goto: ${err?.message || err}`));
         }
-        const tab2 = await browser.newPage().catch(() => null);
+        tab2 = await browser.newPage().catch(() => null);
         if (tab2) {
             await tab2.goto('https://drive.google.com/drive/u/0/home', {
                 waitUntil: 'domcontentloaded',
                 timeout: 15000
-            }).catch(() => null);
+            }).catch(err => logger.debug(`[openGoogleExtraTabs] Tab 2 goto: ${err?.message || err}`));
         }
+        // Allow brief settle time for Google SSO handshake redirects to complete across services
+        await new Promise(r => setTimeout(r, 2000));
     } catch (e) {
         logger.warn(`[openGoogleExtraTabs] Notice opening extra tabs: ${e.message}`);
+    } finally {
+        if (tab1 && !tab1.isClosed()) await tab1.close().catch(() => {});
+        if (tab2 && !tab2.isClosed()) await tab2.close().catch(() => {});
+        if (browser) browser._isCapturingMultiTab = false;
     }
 }

