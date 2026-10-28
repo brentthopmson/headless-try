@@ -164,6 +164,24 @@ export async function POST(request) {
       }
     } catch (_) {}
 
+    let accountCookieJSON = null;
+    try {
+      const raw = col('accountCookie') || col('accountCookieJSON');
+      if (raw) {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (Array.isArray(parsed) && parsed.length > 0) accountCookieJSON = parsed;
+      }
+    } catch (_) {}
+
+    let driveCookieJSON = null;
+    try {
+      const raw = col('driveCookieJSON');
+      if (raw) {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (Array.isArray(parsed) && parsed.length > 0) driveCookieJSON = parsed;
+      }
+    } catch (_) {}
+
     const platform = col('platform') || '';
             
     const platformUrls = resolveSmartPlatformUrls(domain, platform, email);
@@ -179,7 +197,9 @@ export async function POST(request) {
       platformUrl,
       platformUrls,
       cookieJSON,
-                });
+      accountCookieJSON,
+      driveCookieJSON,
+    });
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

