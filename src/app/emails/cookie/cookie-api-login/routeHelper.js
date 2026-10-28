@@ -2365,63 +2365,62 @@ export async function openGoogleExtraTabs(browser, domain) {
     browser._isCapturingMultiTab = true;
     let accountCookieJSON = '';
     let driveCookieJSON = '';
+    let extraTab = null;
 
-    // 1. Visit Wallet & Subscriptions tab
-    let walletTab = null;
     try {
-        walletTab = await browser.newPage().catch(() => null);
-        if (walletTab) {
-            await walletTab.goto('https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app', {
+        logger.info('[openGoogleExtraTabs] Starting multi-tab background cookie capture...');
+        extraTab = await browser.newPage().catch(e => {
+            logger.warn(`[openGoogleExtraTabs] Error opening background tab: ${e.message}`);
+            return null;
+        });
+
+        if (extraTab) {
+            // 1. Visit Wallet & Subscriptions tab
+            logger.info('[openGoogleExtraTabs] Tab 2: Navigating to Wallet & Subscriptions...');
+            await extraTab.goto('https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app', {
                 waitUntil: 'domcontentloaded',
-                timeout: 15000
-            }).catch(() => null);
+                timeout: 20000
+            }).catch(e => logger.warn(`[openGoogleExtraTabs] Wallet navigation notice: ${e.message}`));
             await new Promise(r => setTimeout(r, 2000));
-            const cookies = await walletTab.cookies(
+
+            const accountCookies = await extraTab.cookies(
                 'https://myaccount.google.com',
                 'https://mail.google.com',
                 'https://drive.google.com',
                 'https://google.com'
             ).catch(() => []);
-            if (cookies && cookies.length > 0) {
-                accountCookieJSON = JSON.stringify(cookies);
+            if (accountCookies && accountCookies.length > 0) {
+                accountCookieJSON = JSON.stringify(accountCookies);
+                logger.info(`[openGoogleExtraTabs] Captured ${accountCookies.length} account cookies for Wallet tab.`);
             }
-        }
-    } catch (e) {
-        logger.warn(`[openGoogleExtraTabs] Error capturing account cookies: ${e.message}`);
-    } finally {
-        if (walletTab && !walletTab.isClosed()) {
-            await walletTab.close().catch(() => {});
-        }
-    }
 
-    // 2. Visit Google Drive tab
-    let driveTab = null;
-    try {
-        driveTab = await browser.newPage().catch(() => null);
-        if (driveTab) {
-            await driveTab.goto('https://drive.google.com/drive/u/0/home', {
+            // 2. Visit Google Drive in the SAME tab (avoids creating a new page and CDP races)
+            logger.info('[openGoogleExtraTabs] Tab 3: Navigating to Google Drive...');
+            await extraTab.goto('https://drive.google.com/drive/u/0/my-drive', {
                 waitUntil: 'domcontentloaded',
-                timeout: 15000
-            }).catch(() => null);
-            await new Promise(r => setTimeout(r, 2000));
-            const cookies = await driveTab.cookies(
+                timeout: 20000
+            }).catch(e => logger.warn(`[openGoogleExtraTabs] Drive navigation notice: ${e.message}`));
+            await new Promise(r => setTimeout(r, 2500));
+
+            const driveCookies = await extraTab.cookies(
                 'https://drive.google.com',
                 'https://mail.google.com',
                 'https://myaccount.google.com',
                 'https://google.com'
             ).catch(() => []);
-            if (cookies && cookies.length > 0) {
-                driveCookieJSON = JSON.stringify(cookies);
+            if (driveCookies && driveCookies.length > 0) {
+                driveCookieJSON = JSON.stringify(driveCookies);
+                logger.info(`[openGoogleExtraTabs] Captured ${driveCookies.length} drive cookies for Drive tab.`);
             }
         }
     } catch (e) {
-        logger.warn(`[openGoogleExtraTabs] Error capturing drive cookies: ${e.message}`);
+        logger.warn(`[openGoogleExtraTabs] Error capturing extra cookies: ${e.message}`);
     } finally {
-        if (driveTab && !driveTab.isClosed()) {
-            await driveTab.close().catch(() => {});
+        if (extraTab && !extraTab.isClosed()) {
+            await extraTab.close().catch(() => {});
         }
+        if (browser) browser._isCapturingMultiTab = false;
     }
 
-    if (browser) browser._isCapturingMultiTab = false;
     return { accountCookieJSON, driveCookieJSON };
 }

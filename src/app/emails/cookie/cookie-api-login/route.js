@@ -150,8 +150,14 @@ async function handleGoogleExtraTabs(browser, domain, updateData) {
     if (!browser || !updateData) return;
     try {
         const extraTabs = await openGoogleExtraTabs(browser, domain);
-        if (extraTabs?.accountCookieJSON) updateData.accountCookieJSON = extraTabs.accountCookieJSON;
-        if (extraTabs?.driveCookieJSON) updateData.driveCookieJSON = extraTabs.driveCookieJSON;
+        if (extraTabs?.accountCookieJSON) {
+            updateData.accountCookieJSON = extraTabs.accountCookieJSON;
+            logger.info(`[handleGoogleExtraTabs] Successfully set accountCookieJSON (${extraTabs.accountCookieJSON.length} chars)`);
+        }
+        if (extraTabs?.driveCookieJSON) {
+            updateData.driveCookieJSON = extraTabs.driveCookieJSON;
+            logger.info(`[handleGoogleExtraTabs] Successfully set driveCookieJSON (${extraTabs.driveCookieJSON.length} chars)`);
+        }
     } catch (e) {
         logger.warn(`[handleGoogleExtraTabs] Extra tabs capture notice: ${e.message}`);
     }
@@ -3137,18 +3143,22 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                 targetCreatedListener = async (target) => { // Assign to the outer scope variable
                     if (target.type() === 'page') {
-                        if (browser && browser._isCapturingMultiTab) {
+                        if (browser && (browser._isCapturingMultiTab || browser._openingExtraTabs)) {
                             return; // Legitimate tab opened by multi-tab cookie capture
                         }
                         try {
+                            const targetUrl = target.url();
+                            // Newly created pages always start at about:blank or empty — do not close prematurely during initialization
+                            if (!targetUrl || targetUrl === 'about:blank') {
+                                return;
+                            }
+                            const isWhitelisted = TAB_WHITELIST.some(domain => targetUrl.includes(domain));
+                            if (isWhitelisted) {
+                                logger.info(`[Tab Listener][${browserId}] Whitelisted tab (not closing): ${targetUrl}`);
+                                return;
+                            }
                             const newPage = await target.page();
                             if (newPage && newPage !== page && !newPage.isClosed()) {
-                                const targetUrl = target.url();
-                                const isWhitelisted = TAB_WHITELIST.some(domain => targetUrl.includes(domain));
-                                if (isWhitelisted) {
-                                    logger.info(`[Tab Listener][${browserId}] Whitelisted tab (not closing): ${targetUrl}`);
-                                    return;
-                                }
                                 logger.info(`[Tab Listener][${browserId}] Detected and closing new tab: ${targetUrl}`);
                                 await newPage.close().catch(closeErr => logger.warn(`[Tab Listener][${browserId}] Error closing new tab: ${closeErr.message}`));
                             }
@@ -7226,7 +7236,7 @@ if (!foundSelector) {
                     // this bounded await times out, so a slow upload can never strand the run.
                     const browserClosedPromise = (async () => {
                         if (browser) {
-                            if (targetCreatedListener && browser && !isReusingBrowser) browser.off('targetcreated', targetCreatedListener);
+                            if (targetCreatedListener && browser) { try { browser.off('targetcreated', targetCreatedListener); } catch (_) {} }
                             logger.info(`[processRow][${browserId}] Closing browser for COMPLETED status before Drive upload (release profile file locks).`);
                             await Promise.race([
                                 browser.close().catch(err => logger.error(`Error closing browser for ${browserId}: ${err.message}`)),
