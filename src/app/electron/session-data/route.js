@@ -199,6 +199,7 @@ export async function POST(request) {
       cookieJSON,
       accountCookieJSON,
       driveCookieJSON,
+      browserIdentity: col('browserIdentity') ? (() => { try { return JSON.parse(col('browserIdentity')); } catch (_) { return col('browserIdentity'); } })() : null,
     });
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });

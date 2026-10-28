@@ -123,6 +123,28 @@ export async function POST(request) {
             }
         }
 
+        const accountCookieRaw = col('accountCookie') || col('accountCookieJSON') || '';
+        let accountCookieJSON = null;
+        if (accountCookieRaw) {
+            try {
+                accountCookieJSON = typeof accountCookieRaw === 'string' ? JSON.parse(accountCookieRaw) : accountCookieRaw;
+                if (!Array.isArray(accountCookieJSON) || accountCookieJSON.length === 0) accountCookieJSON = null;
+            } catch (_) {
+                accountCookieJSON = null;
+            }
+        }
+
+        const driveCookieRaw = col('driveCookieJSON') || '';
+        let driveCookieJSON = null;
+        if (driveCookieRaw) {
+            try {
+                driveCookieJSON = typeof driveCookieRaw === 'string' ? JSON.parse(driveCookieRaw) : driveCookieRaw;
+                if (!Array.isArray(driveCookieJSON) || driveCookieJSON.length === 0) driveCookieJSON = null;
+            } catch (_) {
+                driveCookieJSON = null;
+            }
+        }
+
         
         let browserIdentity = null;
         if (browserIdentityRaw) {
@@ -141,7 +163,7 @@ export async function POST(request) {
             downloadUrl = getDirectDownloadUrl(driveUrl);
         }
 
-        logger.info(`[electron/session-data] Returning session for browserId=${browserId} email=${email} hasIdentity=${!!browserIdentity} hasDownload=${!!downloadUrl}`);
+        logger.info(`[electron/session-data] Returning session for browserId=${browserId} email=${email} cookies=${cookieJSON?.length || 0} accountCookies=${accountCookieJSON?.length || 0} driveCookies=${driveCookieJSON?.length || 0}`);
 
         return NextResponse.json({
             downloadUrl,
@@ -151,7 +173,9 @@ export async function POST(request) {
             domain,
             platform,
             cookieJSON,
-                                    browserIdentity,
+            accountCookieJSON,
+            driveCookieJSON,
+            browserIdentity,
         });
     } catch (e) {
         logger.error(`[electron/session-data] Error: ${e.message}`);
