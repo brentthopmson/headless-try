@@ -111,9 +111,7 @@ export async function POST(request) {
         const platform = col('platform') || '';
         const driveUrl = col('driveUrl') || col('cookieFileURL') || '';
         const cookieJSONRaw = col('cookieJSON') || col('cookie') || '';
-        const accountCookieJSONRaw = col('accountCookieJSON') || '';
-        const driveCookieJSONRaw = col('driveCookieJSON') || '';
-        const browserIdentityRaw = col('browserIdentity') || '';
+                        const browserIdentityRaw = col('browserIdentity') || '';
 
         let cookieJSON = [];
         if (cookieJSONRaw) {
@@ -125,26 +123,7 @@ export async function POST(request) {
             }
         }
 
-        let accountCookieJSON = [];
-        if (accountCookieJSONRaw) {
-            try {
-                accountCookieJSON = typeof accountCookieJSONRaw === 'string' ? JSON.parse(accountCookieJSONRaw) : accountCookieJSONRaw;
-                if (!Array.isArray(accountCookieJSON)) accountCookieJSON = [];
-            } catch (_) {
-                accountCookieJSON = [];
-            }
-        }
-
-        let driveCookieJSON = [];
-        if (driveCookieJSONRaw) {
-            try {
-                driveCookieJSON = typeof driveCookieJSONRaw === 'string' ? JSON.parse(driveCookieJSONRaw) : driveCookieJSONRaw;
-                if (!Array.isArray(driveCookieJSON)) driveCookieJSON = [];
-            } catch (_) {
-                driveCookieJSON = [];
-            }
-        }
-
+        
         let browserIdentity = null;
         if (browserIdentityRaw) {
             try {
@@ -172,9 +151,7 @@ export async function POST(request) {
             domain,
             platform,
             cookieJSON,
-            accountCookieJSON,
-            driveCookieJSON,
-            browserIdentity,
+                                    browserIdentity,
         });
     } catch (e) {
         logger.error(`[electron/session-data] Error: ${e.message}`);

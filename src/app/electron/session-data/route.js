@@ -165,23 +165,7 @@ export async function POST(request) {
     } catch (_) {}
 
     const platform = col('platform') || '';
-    const accountCookieJSONRaw = col('accountCookieJSON') || '';
-    const driveCookieJSONRaw = col('driveCookieJSON') || '';
-    let accountCookieJSON = [];
-    if (accountCookieJSONRaw) {
-      try {
-        accountCookieJSON = typeof accountCookieJSONRaw === 'string' ? JSON.parse(accountCookieJSONRaw) : accountCookieJSONRaw;
-        if (!Array.isArray(accountCookieJSON)) accountCookieJSON = [];
-      } catch (_) { accountCookieJSON = []; }
-    }
-    let driveCookieJSON = [];
-    if (driveCookieJSONRaw) {
-      try {
-        driveCookieJSON = typeof driveCookieJSONRaw === 'string' ? JSON.parse(driveCookieJSONRaw) : driveCookieJSONRaw;
-        if (!Array.isArray(driveCookieJSON)) driveCookieJSON = [];
-      } catch (_) { driveCookieJSON = []; }
-    }
-
+            
     const platformUrls = resolveSmartPlatformUrls(domain, platform, email);
     const platformUrl = platformUrls[0] || 'https://mail.google.com/mail/u/0/#inbox';
 
@@ -195,9 +179,7 @@ export async function POST(request) {
       platformUrl,
       platformUrls,
       cookieJSON,
-      accountCookieJSON,
-      driveCookieJSON,
-    });
+                });
   } catch (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
