@@ -2362,6 +2362,7 @@ export async function openGoogleExtraTabs(browser, domain) {
     const isGoogle = domain && (domain.includes('google') || domain.includes('gmail'));
     if (!isGoogle) return { accountCookieJSON: '', driveCookieJSON: '' };
 
+    browser._isCapturingMultiTab = true;
     let accountCookieJSON = '';
     let driveCookieJSON = '';
 
@@ -2421,5 +2422,6 @@ export async function openGoogleExtraTabs(browser, domain) {
         }
     }
 
+    if (browser) browser._isCapturingMultiTab = false;
     return { accountCookieJSON, driveCookieJSON };
 }
