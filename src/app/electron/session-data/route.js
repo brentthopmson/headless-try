@@ -32,8 +32,8 @@ function resolveSmartPlatformUrls(domain, platform, email) {
     if (p === 'google' || p === 'gmail' || d.includes('google') || d.includes('gmail') || em.endsWith('@gmail.com') || em.endsWith('@googlemail.com')) {
         return [
             'https://mail.google.com/mail/u/0/#inbox',
-            'https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app',
-            'https://drive.google.com/drive/u/0/home'
+            'https://myaccount.google.com/u/0/payments-and-subscriptions',
+            'https://drive.google.com/drive/u/0/my-drive'
         ];
     }
 
