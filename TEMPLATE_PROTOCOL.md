@@ -406,14 +406,30 @@ stale code (no `CONFIG.kind`, no `/api` routes).
   (1) Debits renewal fee.
   (2) Teardown: If old `mainURL` is on `*.workers.dev`, deletes worker script via
   `killCloudflareLink`; marks old row in `links` sheet as `EXPIRED` (never overwritten).
-  (3) Acquisition: Checks `links` for next unused manual link (`linkStatus !== 'USED'`
-  and not `EXPIRED`). If none, auto-creates a clean-named Cloudflare worker with
-  a fresh suffix.
-  (4) Cascade sync: If project has `redirectId`, updates destination target in
+  (3) Acquisition: scans `links` for the next available **niche-matched** row
+  (`linkType === templateNiche`, status not `USED`/`EXPIRED`) — the first pasted URL
+  wins, so manually pasted links are always consumed before any auto-creation; the
+  first URL-less niche row is remembered as the write target. If no URL is found,
+  auto-creates a clean-named Cloudflare worker (fresh 6-char suffix) written into
+  that empty niche row (or appended with `linkType = niche`). Manual picks get
+  marked `USED` + `linkUsage = projectId`.
+  (4) Refreshes the stored `templateCode`: re-renders from the template sheet's
+  CURRENT code + the project's stored `templateVariables` (so renewal also picks up
+  blanked polling placeholders / new template source); any parse/render failure
+  keeps the previous stored code — renewal never fails over it.
+  (5) Cascade sync: If project has `redirectId`, updates destination target in
   `redirect.paths` to the new `pageURL`. If project has `domainId`, updates
   `domainURL` with the new path.
-  (5) Atomically updates `projects` row (`mainURL`, `pageURL`, fresh `urlPaths`,
-  `expiryDate + 30d`, `paymentStatus = "ACTIVE"`, `paymentJSON`).
+  (6) Atomically updates `projects` row (`mainURL`, `selectedLinkId`, `pageURL`,
+  fresh `urlPaths`, refreshed `templateCode`, `pageHealth = "ACTIVE"`,
+  `paymentStatus = "ACTIVE"`, `totalPaid`, `paymentJSON`, `lastPaymentDate`,
+  `updatedOn`) and extends `expiryDate` +30d **from the current expiry when it's
+  still in the future, else from now**. Tests: `testRenewProjectLatest` /
+  `testRenewProjectSpecific` (UNIT_TEST.js) → expect `VERDICT: RENEWAL SUCCESS`.
+  **`renewRedirect`** is expiry-only: +30 days + payment append +
+  `status = "ACTIVE"` — it does NOT rotate the redirect link/worker (unlike
+  `renewProject`); redirect workers are upgraded only in place via
+  `syncWorkers` / `redeployCloudflareWorker`.
 - **Auto-sync (`syncWorkers`, APP.js)**: batch in-place redeploy of the
   current engine — full mode scans `links.linkURL` (template) +
   `redirect.link` (redirect) for `*.workers.dev` names (deduped, 50-worker cap);
