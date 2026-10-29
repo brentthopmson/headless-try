@@ -407,6 +407,29 @@ export async function POST(request) {
     const channel = settings.channel || "email";
     const userId = settings.userId || null;
 
+    // Check Campaign Duration Window (immutable per-campaign durationDays stored at creation)
+    const cCreatedOnIndex = cHeaders.indexOf("createdOn");
+    const createdOnRaw = cCreatedOnIndex !== -1 ? campaignRow[cCreatedOnIndex] : null;
+    const durationDays = Math.max(1, parseInt(settings.durationDays, 10) || 7);
+    if (createdOnRaw) {
+      const createdOnTime = new Date(createdOnRaw).getTime();
+      const elapsedMs = Date.now() - createdOnTime;
+      const maxDurationMs = durationDays * 24 * 60 * 60 * 1000;
+      if (elapsedMs >= maxDurationMs) {
+        log.info(` [campaign-duration] Campaign ${campaignId} reached its scheduled duration (${(elapsedMs / 86400000).toFixed(1)} / ${durationDays} days). Completing campaign.`);
+        await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+          status: "completed",
+          updatedOn: new Date().toISOString()
+        });
+        return NextResponse.json({
+          success: true,
+          message: `Campaign reached its duration limit of ${durationDays} day(s) and is completed.`,
+          completed: true,
+          durationExpired: true
+        });
+      }
+    }
+
     // Gate maximum accounts per campaign (from SETTINGS sheet maxAccountsPerCampaign, default 1)
     const maxAccountsSetting = await getSetting('maxAccountsPerCampaign');
     const parsedMax = parseInt(maxAccountsSetting?.value1, 10);
@@ -1468,12 +1491,29 @@ export async function POST(request) {
 
       // Step 4g: Single campaign status update
       const hasHourlyRateLimits = executionResults.some(r => r.status === 'COMPLETED' && (r.results || []).some(sub => sub.status === 'rate_limited' || sub.resumedNextCycle));
+      const hasNetworkErrors = executionResults.some(r =>
+        r.status === 'NETWORK_ERROR' ||
+        (r.results || []).some(sub => sub.status === 'network_error' || sub.status === 'nav_failed')
+      );
       if (hasHourlyRateLimits) {
         settings.restUntil = Date.now() + 3600000; // 1-hour rest before auto-resume
         log.info(` [campaign-rest] Hourly rate limit hit — resting campaign ${campaignId} until ${new Date(settings.restUntil).toISOString()}`);
+      } else if (hasNetworkErrors) {
+        settings.restUntil = Date.now() + 15 * 60 * 1000; // 15-minute network cooldown rest
+        log.warn(` [campaign-rest] Network/navigation error detected — resting campaign ${campaignId} for 15m until ${new Date(settings.restUntil).toISOString()}`);
       }
+
+      const totalActions = executionResults.reduce((acc, r) => acc + interactionActionsFromQuota(r?.quota), 0);
+      const isZeroActionTransientFailure = totalActions === 0 && (hasNetworkErrors || failedCount > 0);
+      const shouldRest = hasHourlyRateLimits || hasNetworkErrors || isZeroActionTransientFailure;
+
+      if (isZeroActionTransientFailure && !settings.restUntil) {
+        settings.restUntil = Date.now() + 15 * 60 * 1000;
+        log.warn(` [campaign-rest] Zero actions completed with errors — resting campaign ${campaignId} for 15m cooldown`);
+      }
+
       const limitReached = executedCount < pendingSocialTasks.length || (interactionLimit !== Infinity && executedCount >= interactionLimit) || hasHourlyRateLimits;
-      const finalStatus = pausedByAdmin ? "paused" : (hasHourlyRateLimits ? "resting" : (limitReached ? "Limit Reached" : "completed"));
+      const finalStatus = pausedByAdmin ? "paused" : (shouldRest ? "resting" : (limitReached ? "Limit Reached" : "completed"));
       const analytics = {
         totalRows: tasksToExecute.length,
         sent: executedCount,

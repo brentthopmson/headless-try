@@ -305,6 +305,26 @@ export async function POST(request) {
     const { settings } = campaignData;
     settings._campaignStatus = campaignData.status;
 
+    // Check Campaign Duration Window (immutable per-campaign durationDays stored at creation)
+    const headers = campaignData.headers || [];
+    const createdOnIdx = headers.indexOf("createdOn");
+    const createdOnRaw = createdOnIdx !== -1 && campaignData.campaignRow ? campaignData.campaignRow[createdOnIdx] : null;
+    const durationDays = Math.max(1, parseInt(settings.durationDays, 10) || 7);
+    if (createdOnRaw) {
+      const elapsedMs = Date.now() - new Date(createdOnRaw).getTime();
+      const maxDurationMs = durationDays * 24 * 60 * 60 * 1000;
+      if (elapsedMs >= maxDurationMs) {
+        log.info(`[campaign-duration] Campaign ${campaignId} reached its scheduled duration (${(elapsedMs / 86400000).toFixed(1)} / ${durationDays} days). Completing campaign.`);
+        await updateCampaignSettings(campaignId, { status: "completed" });
+        return NextResponse.json({
+          success: true,
+          message: `Campaign reached its duration limit of ${durationDays} day(s) and is completed.`,
+          completed: true,
+          durationExpired: true,
+        });
+      }
+    }
+
     if (await isCampaignPaused(campaignId)) {
       log.info(`Campaign is paused, skipping`);
       return NextResponse.json({ success: true, message: "Campaign is paused", paused: true });

@@ -221,6 +221,14 @@ async function processTask(taskRow, columnIndexes) {
             } else if (engagementSummary.captchaFailed) {
                 finalStatus = "FAILED";
                 results.push({ status: 'captcha_failed' });
+            } else if (engagementSummary.stopType === 'network_error' || (engagementSummary.engaged === 0 && engagementSummary.isNetworkError)) {
+                finalStatus = "NETWORK_ERROR";
+                results.push({ status: 'network_error', reason: engagementSummary.stopReason || 'network_navigation_failed', resumedNextCycle: true });
+                logger.warn(`[processTask] ${taskId}: network error encountered — marked NETWORK_ERROR for cooldown rest.`);
+            } else if (engagementSummary.engaged === 0 && (engagementSummary.completedKeywords || []).length === 0 && engagementSummary.failed > 0) {
+                finalStatus = "FAILED";
+                results.push({ status: 'failed', reason: 'all_interactions_failed' });
+                logger.warn(`[processTask] ${taskId}: 0 engagements achieved and interactions failed — marked FAILED.`);
             } else {
                 finalStatus = "COMPLETED";
             }

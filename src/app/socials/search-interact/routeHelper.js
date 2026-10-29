@@ -471,6 +471,12 @@ export async function runSearchInteractEngagement(page, opts) {
             });
             if (!nav.ok) {
                 logger.warn(`[engage:${taskId}] Keyword "${keyword}": navigation failed (${nav.error}) — skipping keyword.`);
+                results.push({
+                    keyword,
+                    status: 'nav_failed',
+                    error: nav.error,
+                    isNetworkError: /ERR_NAME_NOT_RESOLVED|ERR_NETWORK_CHANGED|ERR_INTERNET_DISCONNECTED|ERR_CONNECTION|timeout|net::/i.test(nav.error || '')
+                });
                 continue;
             }
             await enforceSingleTab('after search navigation');
@@ -481,6 +487,7 @@ export async function runSearchInteractEngagement(page, opts) {
             if (!(await ensureLoggedIn('search results'))) break;
             if (nav.state === 'unknown') {
                 logger.warn(`[engage:${taskId}] Keyword "${keyword}": page never reached a settled state — skipping keyword (no silent 0-scrape).`);
+                results.push({ keyword, status: 'page_unsettled', error: 'page never reached a settled state' });
                 continue;
             }
 
@@ -1466,19 +1473,23 @@ export async function runSearchInteractEngagement(page, opts) {
             }
         } catch (kwErr) {
             logger.warn(`[engage:${taskId}] Keyword "${keyword}" failed: ${kwErr.message}`);
+            results.push({ keyword, status: 'failed', error: kwErr.message });
         }
 
         // Only mark keyword as completed if it was actually processed successfully
         // (i.e. at least one post was engaged or already engaged, and it did not fail completely with errors).
         const kwResults = results.filter(r => r.keyword === keyword);
+        const hasNavError = kwResults.some(r => r.status === 'nav_failed' || r.status === 'page_unsettled');
         const hasSuccessfulEngagement = kwResults.some(r => r.status === 'engaged' || r.status === 'already_engaged');
         const hasOnlyErrors = kwResults.length > 0 && kwResults.every(r => r.status === 'failed' || r.status === 'nav_failed' || r.status === 'page_unsettled' || r.status === 'action_bar_missing');
 
-        if (!stopType && !hasOnlyErrors && (hasSuccessfulEngagement || kwResults.length === 0)) {
+        // A keyword is only completed if navigation succeeded without network/fatal errors,
+        // and had successful engagements (or search genuinely returned empty results with no errors).
+        if (!stopType && !hasNavError && !hasOnlyErrors && (hasSuccessfulEngagement || (kwResults.length === 0 && !hasNavError))) {
             completedKeywords.push(keyword);
             logger.info(`[engage:${taskId}] Keyword "${keyword}" marked as completed (successful=${hasSuccessfulEngagement}, items=${kwResults.length}).`);
         } else {
-            logger.warn(`[engage:${taskId}] Keyword "${keyword}" NOT marked completed — interactions failed or incomplete (onlyErrors=${hasOnlyErrors}, stopType=${stopType || 'none'}).`);
+            logger.warn(`[engage:${taskId}] Keyword "${keyword}" NOT marked completed — interactions failed, incomplete, or navigation errored (hasNavError=${hasNavError}, onlyErrors=${hasOnlyErrors}, stopType=${stopType || 'none'}).`);
         }
     }
 
@@ -1497,6 +1508,15 @@ export async function runSearchInteractEngagement(page, opts) {
         logger.warn(`[engage:${taskId}] Captcha solve failed — account ${profileId} set WAITING.`);
     }
 
+    const totalKeywords = keywords.length;
+    const navFailedKeywords = keywords.filter(kw => results.some(r => r.keyword === kw && r.status === 'nav_failed'));
+    const isNetworkError = navFailedKeywords.length > 0 && navFailedKeywords.length === totalKeywords;
+    if (!stopType && isNetworkError) {
+        stopType = 'network_error';
+        stopReason = 'all_keywords_nav_failed';
+        logger.warn(`[engage:${taskId}] All ${totalKeywords} keyword(s) failed navigation due to network/connectivity error — set stopType=network_error.`);
+    }
+
     const quotaTotal = Object.values(quotaTally).reduce((a, b) => a + b, 0);
     logger.info(`[engage:${taskId}] Verified quota this run: ${JSON.stringify(quotaTally)} (total ${quotaTotal})`);
     return {
@@ -1505,8 +1525,9 @@ export async function runSearchInteractEngagement(page, opts) {
         stopType,
         stopReason,
         captchaFailed,
+        isNetworkError,
         engaged: results.filter(r => r.status === 'engaged').length,
-        failed: results.filter(r => r.status === 'failed').length,
+        failed: results.filter(r => r.status === 'failed' || r.status === 'nav_failed').length,
         quota: { ...quotaTally, total: quotaTotal },
     };
 }
