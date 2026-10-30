@@ -46,7 +46,17 @@ function column_index_to_letter(index) {
 // API OR App Script). Writing them replaces the formula with a literal value. These are
 // stripped from every payload before it reaches either write path; the deployed GAS
 // endpoint mirrors this same list in UTILITIES.js (FORMULA_COLUMNS).
-export const FORMULA_PROTECTED_COLUMNS = new Set(['id', 'end']);
+export const FORMULA_PROTECTED_COLUMNS = new Set([
+  'id',
+  'end',
+  'link',
+  'linkhost',
+  'linkgoogleurl',
+  'totalcredit',
+  'totaldebit',
+  'pendingbalance',
+  'balance'
+]);
 
 /**
  * Returns a copy of obj with any formula-protected columns removed (case-insensitive).
