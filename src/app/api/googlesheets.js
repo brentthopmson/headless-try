@@ -441,6 +441,55 @@ export async function appendSheetRowApi(sheetName, headerAndValueMap) {
 }
 
 /**
+ * Updates cells in a Google Sheet row matching search criteria using Google Apps Script fallback.
+ * @param {string} sheetName - The name of the sheet.
+ * @param {string} searchColumn - Column to search in.
+ * @param {string} searchValue - Value to search for.
+ * @param {Object} headerAndValueMap - Key-value pairs to update.
+ * @returns {Promise<{ success: boolean, message?: string, error?: string, viaAppScript?: boolean }>}
+ */
+export async function updateSheetRowViaAppScript(sheetName, searchColumn, searchValue, headerAndValueMap) {
+  const appScriptUrl = process.env.SCRIPT_URL;
+  const appScriptKey = process.env.SCRIPT_KEY;
+  if (!appScriptUrl || !appScriptKey) {
+    return { success: false, error: 'SCRIPT_URL/SCRIPT_KEY not configured for App Script fallback.' };
+  }
+
+  const cleanData = stripFormulaColumns(headerAndValueMap);
+  if (Object.keys(cleanData).length === 0) {
+    return { success: false, error: "No valid columns to update after filtering formula columns." };
+  }
+
+  try {
+    const params = new URLSearchParams({
+      action: 'setMultipleCellDataByColumnSearch',
+      sheetName: sheetName,
+      searchColumn: searchColumn,
+      searchValue: String(searchValue),
+      key: appScriptKey,
+      data: JSON.stringify(cleanData)
+    });
+
+    const response = await axios.post(appScriptUrl, params, {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 60000,
+    });
+
+    if (response.data && response.data.success) {
+      logger.info(`[Sheets API] Row in '${sheetName}' (${searchColumn}='${searchValue}') updated successfully via App Script fallback.`);
+      return { success: true, message: "Cells updated successfully via App Script fallback", viaAppScript: true };
+    }
+
+    const err = response.data?.error || 'Unknown App Script error';
+    logger.warn(`[Sheets API] App Script fallback update failed for ${sheetName} (${searchColumn}='${searchValue}'): ${err}`);
+    return { success: false, error: err };
+  } catch (error) {
+    logger.error(`[Sheets API] App Script fallback error for ${sheetName} (${searchColumn}='${searchValue}'): ${error.message}`);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
  * Updates cells in a Google Sheet row matching search criteria using the Sheets API.
  * @param {string} sheetName - The name of the sheet.
  * @param {string} searchColumn - Column to search in.
@@ -455,7 +504,8 @@ export async function updateSheetRowApi(sheetName, searchColumn, searchValue, he
   try {
     const authClient = await getSheetsAuthClient();
     if (!authClient) {
-      return { success: false, error: "Failed to get Sheets API authentication client." };
+      logger.warn(`[Sheets API] No Sheets auth client available. Falling back to App Script for sheet '${sheetName}'.`);
+      return await updateSheetRowViaAppScript(sheetName, searchColumn, searchValue, headerAndValueMap);
     }
 
     const sheets = google.sheets({ version: 'v4', auth: authClient });
@@ -479,7 +529,8 @@ export async function updateSheetRowApi(sheetName, searchColumn, searchValue, he
 
     const searchColumnIndex = headers.indexOf(searchColumn);
     if (searchColumnIndex === -1) {
-      return { success: false, error: `Header '${searchColumn}' not found in the table.` };
+      logger.warn(`[Sheets API] Header '${searchColumn}' not found in sheet '${sheetName}'. Falling back to App Script.`);
+      return await updateSheetRowViaAppScript(sheetName, searchColumn, searchValue, headerAndValueMap);
     }
 
     // Read only the search column to find the row index — minimal read (~1KB vs ~100KB)
@@ -516,7 +567,8 @@ export async function updateSheetRowApi(sheetName, searchColumn, searchValue, he
     });
 
     if (requests.length === 0) {
-      return { success: false, error: "No valid headers found for update." };
+      logger.warn(`[Sheets API] No matching headers found in sheet '${sheetName}' for update. Attempting App Script fallback.`);
+      return await updateSheetRowViaAppScript(sheetName, searchColumn, searchValue, headerAndValueMap);
     }
 
     const response = await sheets.spreadsheets.values.batchUpdate({
@@ -529,8 +581,13 @@ export async function updateSheetRowApi(sheetName, searchColumn, searchValue, he
 
     return { success: true, message: "Cells updated successfully via Sheets API", updates: response.data.responses };
   } catch (error) {
-    return { success: false, error: error.message };
+    logger.warn(`[Sheets API] updateSheetRowApi failed (${error.message}). Attempting App Script fallback.`);
+    const fallbackResult = await updateSheetRowViaAppScript(sheetName, searchColumn, searchValue, headerAndValueMap);
+    if (fallbackResult.success) {
+      return fallbackResult;
     }
+    return { success: false, error: error.message, fallbackError: fallbackResult.error };
+  }
 }
 
 /**
@@ -553,7 +610,8 @@ export async function ensureSheetColumns(sheetName, columns) {
   try {
     const authClient = await getSheetsAuthClient();
     if (!authClient) {
-      return { success: false, error: "Failed to get Sheets API authentication client.", added: [] };
+      logger.info(`[ensureSheetColumns] No auth client; assuming App Script auto-header creation for sheet '${sheetName}'.`);
+      return { success: true, added: [] };
     }
 
     const sheets = google.sheets({ version: 'v4', auth: authClient });
