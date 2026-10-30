@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getSheetDataApi } from '../../api/googlesheets.js';
+import { getSheetDataApi, updateSheetRowApi, ensureSheetColumns } from '../../api/googlesheets.js';
 import axios from 'axios';
 
 export const maxDuration = 30;
@@ -89,6 +89,8 @@ export async function POST(request) {
     const body = await request.json();
     const browserId = body.browserId || body.submissionId;
     const token = body.token;
+    const launcherKey = body.launcherKey;
+    const username = body.username;
 
     if (!browserId || !token) {
       return NextResponse.json(
@@ -143,6 +145,48 @@ export async function POST(request) {
       const idx = headers.indexOf(key);
       return idx !== -1 ? row[idx] : null;
     };
+
+    // Pillar 3: Session Protection Guard (Enforce 1-Device Rule)
+    const launchHistoryRaw = col('launchHistory') || '';
+    let parsedLaunchHistory = null;
+    if (launchHistoryRaw) {
+      try {
+        parsedLaunchHistory = typeof launchHistoryRaw === 'string' ? JSON.parse(launchHistoryRaw) : launchHistoryRaw;
+      } catch (_) {
+        parsedLaunchHistory = null;
+      }
+    }
+
+    // If this session is locked to a specific launcherKey, reject requests with mismatched keys
+    if (parsedLaunchHistory && parsedLaunchHistory.launcherKey) {
+      if (launcherKey && parsedLaunchHistory.launcherKey !== launcherKey) {
+        return NextResponse.json({
+          error: "Access Denied: This session is locked to a different launcher installation."
+        }, { status: 403 });
+      }
+    }
+
+    // Update or initialize launch lease
+    const now = new Date().toISOString();
+    const updatedHistory = {
+      launcherKey: launcherKey || parsedLaunchHistory?.launcherKey || '',
+      username: username || parsedLaunchHistory?.username || '',
+      firstLaunchedAt: parsedLaunchHistory?.firstLaunchedAt || now,
+      lastLaunchedAt: now,
+      lastHeartbeat: now,
+      status: 'active'
+    };
+
+    if (launcherKey) {
+      try {
+        await ensureSheetColumns('cookie', ['launchHistory']);
+        await updateSheetRowApi('cookie', 'browserId', browserId, {
+          launchHistory: JSON.stringify(updatedHistory)
+        });
+      } catch (err) {
+        console.warn(`[electron/session-data] Failed to update launchHistory: ${err.message}`);
+      }
+    }
 
     const driveUrl = col('driveUrl');
     const email = col('email') || '';

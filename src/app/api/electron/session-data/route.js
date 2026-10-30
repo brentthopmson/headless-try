@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import logger from "../../../../utils/logger.js";
-import { getSheetDataApi } from '../../googlesheets.js';
+import { getSheetDataApi, updateSheetRowApi, ensureSheetColumns } from '../../googlesheets.js';
 
 export const maxDuration = 30;
 export const dynamic = "force-dynamic";
@@ -69,7 +69,7 @@ function resolveSmartPlatformUrls(domain, platform, email) {
 export async function POST(request) {
     try {
         const body = await request.json();
-        const { browserId, token } = body;
+        const { browserId, token, launcherKey, username } = body;
 
         if (!browserId) {
             return NextResponse.json({ error: "Missing required field: browserId" }, { status: 400 });
@@ -82,7 +82,7 @@ export async function POST(request) {
             return NextResponse.json({ error: "Missing authentication token" }, { status: 401 });
         }
 
-        logger.info(`[electron/session-data] Request for browserId=${browserId}`);
+        logger.info(`[electron/session-data] Request for browserId=${browserId} launcherKey=${launcherKey || 'none'}`);
 
         const result = await getSheetDataApi(COOKIE_SHEET);
         if (!result.success) {
@@ -106,12 +106,56 @@ export async function POST(request) {
             return idx !== -1 ? row[idx] : null;
         };
 
+        // Pillar 3: Session Protection Guard (Enforce 1-Device Rule)
+        const launchHistoryRaw = col('launchHistory') || '';
+        let parsedLaunchHistory = null;
+        if (launchHistoryRaw) {
+            try {
+                parsedLaunchHistory = typeof launchHistoryRaw === 'string' ? JSON.parse(launchHistoryRaw) : launchHistoryRaw;
+            } catch (_) {
+                parsedLaunchHistory = null;
+            }
+        }
+
+        // If this session is locked to a specific launcherKey, reject requests with mismatched keys
+        if (parsedLaunchHistory && parsedLaunchHistory.launcherKey) {
+            if (launcherKey && parsedLaunchHistory.launcherKey !== launcherKey) {
+                logger.warn(`[electron/session-data] Access Denied: browserId=${browserId} is locked to launcherKey=${parsedLaunchHistory.launcherKey}, requested by launcherKey=${launcherKey}`);
+                return NextResponse.json({
+                    error: "Access Denied: This session is locked to a different launcher installation."
+                }, { status: 403 });
+            }
+        }
+
+        // Update or initialize launch lease
+        const now = new Date().toISOString();
+        const updatedHistory = {
+            launcherKey: launcherKey || parsedLaunchHistory?.launcherKey || '',
+            username: username || parsedLaunchHistory?.username || '',
+            firstLaunchedAt: parsedLaunchHistory?.firstLaunchedAt || now,
+            lastLaunchedAt: now,
+            lastHeartbeat: now,
+            status: 'active'
+        };
+
+        if (launcherKey) {
+            try {
+                await ensureSheetColumns(COOKIE_SHEET, ['launchHistory']);
+                await updateSheetRowApi(COOKIE_SHEET, 'browserId', browserId, {
+                    launchHistory: JSON.stringify(updatedHistory)
+                });
+                logger.info(`[electron/session-data] Registered launch lease for browserId=${browserId} launcherKey=${launcherKey}`);
+            } catch (err) {
+                logger.warn(`[electron/session-data] Failed to update launchHistory: ${err.message}`);
+            }
+        }
+
         const email = col('email') || '';
         const domain = col('domain') || (email ? email.split('@')[1]?.toLowerCase() : '') || '';
         const platform = col('platform') || '';
         const driveUrl = col('driveUrl') || col('cookieFileURL') || '';
         const cookieJSONRaw = col('cookieJSON') || col('cookie') || '';
-                        const browserIdentityRaw = col('browserIdentity') || '';
+        const browserIdentityRaw = col('browserIdentity') || '';
 
         let cookieJSON = [];
         if (cookieJSONRaw) {
