@@ -2364,8 +2364,50 @@ if (!globalThis.__googleExtraTabsQueue) {
     globalThis.__googleExtraTabsQueue = Promise.resolve();
 }
 
+export const GOOGLE_ECOSYSTEM_SERVICES = [
+    // Priority Tier 1: Core Identity, Long-Life Token Anchors & High-Priority Sub-Origins
+    { name: 'YouTube', url: 'https://www.youtube.com' },
+    { name: 'Wallet & Subscriptions', url: 'https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app' },
+    { name: 'Google Wallet', url: 'https://wallet.google.com' },
+    { name: 'Google Drive', url: 'https://drive.google.com/drive/u/0/my-drive' },
+    { name: 'Google Docs', url: 'https://docs.google.com/document/u/0/' },
+    { name: 'Google Sheets', url: 'https://docs.google.com/spreadsheets/u/0/' },
+    { name: 'Google Forms', url: 'https://docs.google.com/forms/u/0/' },
+    { name: 'Gemini', url: 'https://gemini.google.com' },
+    { name: 'Google Photos', url: 'https://photos.google.com' },
+    { name: 'Google Maps', url: 'https://maps.google.com' },
+    { name: 'Google Calendar', url: 'https://calendar.google.com' },
+    { name: 'Google Contacts', url: 'https://contacts.google.com' },
+    { name: 'Google Keep', url: 'https://keep.google.com' },
+    { name: 'Google Meet', url: 'https://meet.google.com' },
+    { name: 'Google Translate', url: 'https://translate.google.com' },
+    { name: 'Google One', url: 'https://one.google.com' },
+    { name: 'Google Play', url: 'https://play.google.com' },
+    { name: 'Google News', url: 'https://news.google.com' },
+    { name: 'Google Finance', url: 'https://www.google.com/finance' },
+    { name: 'Google Chat', url: 'https://chat.google.com' },
+    { name: 'Google Classroom', url: 'https://classroom.google.com' },
+    { name: 'Google Passwords', url: 'https://passwords.google.com' },
+    { name: 'NotebookLM', url: 'https://notebooklm.google.com' },
+    { name: 'Google Tasks', url: 'https://tasks.google.com' },
+    { name: 'Chrome Web Store', url: 'https://chromewebstore.google.com' },
+    { name: 'Google Shopping', url: 'https://www.google.com/shopping' },
+    { name: 'Google Travel', url: 'https://www.google.com/travel' },
+    { name: 'Google Books', url: 'https://books.google.com' },
+    { name: 'Google Earth', url: 'https://earth.google.com' },
+    { name: 'Google Save', url: 'https://www.google.com/save' },
+    { name: 'Arts & Culture', url: 'https://artsandculture.google.com' },
+    { name: 'My Ad Center', url: 'https://myadcenter.google.com' },
+    { name: 'Google Ads', url: 'https://ads.google.com' },
+    { name: 'Google Merchants', url: 'https://merchants.google.com' },
+    { name: 'Google Analytics', url: 'https://analytics.google.com' },
+    { name: 'Blogger', url: 'https://www.blogger.com' },
+];
+
 /**
- * Internal worker for Google extra tabs cookie capture.
+ * Internal worker for Google ecosystem multi-service cookie capture.
+ * Sequentially visits Google ecosystem services in a single background tab,
+ * allowing cross-domain SSO authorization tickets and service cookies to drop.
  */
 async function _executeGoogleExtraTabs(browser, domain) {
     browser._isCapturingMultiTab = true;
@@ -2374,79 +2416,91 @@ async function _executeGoogleExtraTabs(browser, domain) {
     let extraTab = null;
 
     try {
-        logger.info('[openGoogleExtraTabs] Starting multi-tab background cookie capture (queue lock acquired)...');
+        logger.info(`[openGoogleExtraTabs] Starting Google Ecosystem multi-service cookie tour across ${GOOGLE_ECOSYSTEM_SERVICES.length} services (queue lock acquired)...`);
         extraTab = await browser.newPage().catch(e => {
             logger.warn(`[openGoogleExtraTabs] Error opening background tab: ${e.message}`);
             return null;
         });
 
         if (extraTab) {
-            // 1. Visit Wallet & Subscriptions tab
-            logger.info('[openGoogleExtraTabs] Tab 2: Navigating to Wallet & Subscriptions...');
-            await extraTab.goto('https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app', {
-                waitUntil: 'domcontentloaded',
-                timeout: 35000
-            }).catch(e => logger.warn(`[openGoogleExtraTabs] Wallet navigation notice: ${e.message}`));
-            await new Promise(r => setTimeout(r, 2500));
+            extraTab.setDefaultNavigationTimeout(10000);
 
-            let accountCookies = await extraTab.cookies(
-                'https://myaccount.google.com',
-                'https://mail.google.com',
-                'https://drive.google.com',
-                'https://google.com'
-            ).catch(() => []);
-
-            // Quick retry if cookies were still being written to jar
-            if (!accountCookies || accountCookies.length === 0) {
-                await new Promise(r => setTimeout(r, 2000));
-                accountCookies = await extraTab.cookies(
-                    'https://myaccount.google.com',
-                    'https://mail.google.com',
-                    'https://drive.google.com',
-                    'https://google.com'
-                ).catch(() => []);
+            // Sequentially tour all ecosystem services in the single extraTab
+            for (let i = 0; i < GOOGLE_ECOSYSTEM_SERVICES.length; i++) {
+                const service = GOOGLE_ECOSYSTEM_SERVICES[i];
+                logger.info(`[openGoogleExtraTabs] [${i + 1}/${GOOGLE_ECOSYSTEM_SERVICES.length}] Visiting ${service.name} (${service.url})...`);
+                try {
+                    await extraTab.goto(service.url, {
+                        waitUntil: 'domcontentloaded',
+                        timeout: 8000
+                    });
+                } catch (navErr) {
+                    logger.debug(`[openGoogleExtraTabs] Notice visiting ${service.name}: ${navErr.message}`);
+                }
+                // Brief pause for SSO ticket bounce and cookie jar write
+                await new Promise(r => setTimeout(r, 800));
             }
 
-            if (accountCookies && accountCookies.length > 0) {
+            // Extract comprehensive cookie jar across all origins via CDP Network.getAllCookies
+            let allRawCookies = [];
+            try {
+                const cdp = await extraTab.target().createCDPSession();
+                const result = await cdp.send('Network.getAllCookies');
+                if (Array.isArray(result?.cookies) && result.cookies.length > 0) {
+                    allRawCookies = result.cookies;
+                    logger.info(`[openGoogleExtraTabs] CDP Network.getAllCookies captured ${allRawCookies.length} total ecosystem cookies.`);
+                }
+            } catch (cdpErr) {
+                logger.warn(`[openGoogleExtraTabs] CDP Network.getAllCookies notice: ${cdpErr.message}. Falling back to origin list.`);
+            }
+
+            if (allRawCookies.length === 0) {
+                const origins = GOOGLE_ECOSYSTEM_SERVICES.map(s => s.url).concat([
+                    'https://google.com',
+                    'https://accounts.google.com',
+                    'https://mail.google.com',
+                    'https://youtube.com',
+                    'https://blogger.com'
+                ]);
+                allRawCookies = await extraTab.cookies(...origins).catch(() => []);
+            }
+
+            // Deduplicate by name + domain + path
+            const seen = new Set();
+            const deduplicated = [];
+            for (const c of allRawCookies) {
+                if (!c || !c.name || !c.domain) continue;
+                const key = `${c.name}|${c.domain}|${c.path || '/'}`;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    deduplicated.push(c);
+                }
+            }
+
+            // Helper to check if a domain belongs to the Google ecosystem
+            const isGoogleEcosystem = (dom) => {
+                if (!dom) return false;
+                const d = dom.toLowerCase();
+                return d.includes('google') || d.includes('youtube') || d.includes('blogger') ||
+                       d.includes('youtu.be') || d.includes('googleusercontent') || d.includes('1e100.net');
+            };
+
+            // 1. driveCookieJSON: Superset of all ecosystem cookies (Google + YouTube + Blogger + suborigins)
+            const ecosystemCookies = deduplicated.filter(c => isGoogleEcosystem(c.domain));
+            if (ecosystemCookies.length > 0) {
+                driveCookieJSON = JSON.stringify(ecosystemCookies);
+                logger.info(`[openGoogleExtraTabs] Successfully assembled driveCookieJSON with ${ecosystemCookies.length} rich ecosystem cookies.`);
+            }
+
+            // 2. accountCookieJSON: Subdomains excluding drive
+            const accountCookies = deduplicated.filter(c => isGoogleEcosystem(c.domain) && !c.domain.includes('drive.google.com'));
+            if (accountCookies.length > 0) {
                 accountCookieJSON = JSON.stringify(accountCookies);
-                logger.info(`[openGoogleExtraTabs] Captured ${accountCookies.length} account cookies for Wallet tab.`);
-            }
-
-            // 2. Visit Google Drive in the SAME tab (avoids creating a new page and CDP races)
-            logger.info('[openGoogleExtraTabs] Tab 3: Navigating to Google Drive...');
-            await extraTab.goto('https://drive.google.com/drive/u/0/my-drive', {
-                waitUntil: 'domcontentloaded',
-                timeout: 35000
-            }).catch(e => logger.warn(`[openGoogleExtraTabs] Drive navigation notice: ${e.message}`));
-            await new Promise(r => setTimeout(r, 2500));
-
-            let driveCookies = await extraTab.cookies(
-                'https://drive.google.com',
-                'https://mail.google.com',
-                'https://myaccount.google.com',
-                'https://google.com'
-            ).catch(() => []);
-
-            // Quick retry if cookies were still being written to jar
-            if (!driveCookies || driveCookies.length === 0) {
-                await new Promise(r => setTimeout(r, 2000));
-                driveCookies = await extraTab.cookies(
-                    'https://drive.google.com',
-                    'https://mail.google.com',
-                    'https://myaccount.google.com',
-                    'https://google.com'
-                ).catch(() => []);
-            }
-
-            if (driveCookies && driveCookies.length > 0) {
-                driveCookieJSON = JSON.stringify(driveCookies);
-                logger.info(`[openGoogleExtraTabs] Captured ${driveCookies.length} drive cookies for Drive tab.`);
+                logger.info(`[openGoogleExtraTabs] Successfully assembled accountCookieJSON with ${accountCookies.length} cookies.`);
             }
         }
 
-        // 3. Fallback: If either cookie set failed to capture (e.g. navigation timeout or proxy glitch),
-        // synthesize from the primary page's master auth cookies on .google.com.
-        // As proven by our longevity test harness, master tokens on .google.com authenticate across all Google sub-origins.
+        // 3. Fallback: If either cookie set failed to capture, synthesize from primary page master auth cookies
         if (!accountCookieJSON || !driveCookieJSON) {
             try {
                 const pages = await browser.pages().catch(() => []);
@@ -2455,7 +2509,8 @@ async function _executeGoogleExtraTabs(browser, domain) {
                     const masterCookies = await primaryPage.cookies(
                         'https://mail.google.com',
                         'https://accounts.google.com',
-                        'https://google.com'
+                        'https://google.com',
+                        'https://youtube.com'
                     ).catch(() => []);
                     if (masterCookies && masterCookies.length > 0) {
                         const masterJson = JSON.stringify(masterCookies);
@@ -2508,7 +2563,7 @@ export async function openGoogleExtraTabs(browser, domain, platform) {
     logger.info('[openGoogleExtraTabs] Awaiting queue lock for post-login extra tabs...');
     await Promise.race([
         previousQueue,
-        new Promise(resolve => setTimeout(resolve, 80000))
+        new Promise(resolve => setTimeout(resolve, 180000))
     ]).catch(() => {});
 
     try {

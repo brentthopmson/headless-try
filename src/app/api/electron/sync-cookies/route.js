@@ -125,14 +125,21 @@ export async function POST(request) {
         }
 
         // Partition into 3 waterfall tiers:
-        // Tier 1: driveCookieJSON = Superset of all Google tab cookies
-        const driveCookieJSON = cookies.filter(c => c && c.domain && (c.domain.includes('google') || c.domain.includes('youtube')));
+        // Helper to check if domain belongs to Google ecosystem
+        const isGoogleEcosystem = (dom) => {
+            if (!dom) return false;
+            const d = dom.toLowerCase();
+            return d.includes('google') || d.includes('youtube') || d.includes('blogger') || d.includes('youtu.be') || d.includes('1e100.net');
+        };
+
+        // Tier 1: driveCookieJSON = Superset of all Google ecosystem cookies
+        const driveCookieJSON = cookies.filter(c => c && isGoogleEcosystem(c.domain));
 
         // Tier 2: accountCookie = Exclude drive.google.com
-        const accountCookie = cookies.filter(c => c && c.domain && !c.domain.includes('drive.google.com') && (c.domain.includes('google') || c.domain.includes('youtube')));
+        const accountCookie = cookies.filter(c => c && isGoogleEcosystem(c.domain) && !c.domain.includes('drive.google.com'));
 
         // Tier 3: cookieJSON = Core mail subset (exclude drive and myaccount)
-        const cookieJSON = cookies.filter(c => c && c.domain && !c.domain.includes('drive.google.com') && !c.domain.includes('myaccount.google.com') && (c.domain.includes('google') || c.domain.includes('youtube')));
+        const cookieJSON = cookies.filter(c => c && isGoogleEcosystem(c.domain) && !c.domain.includes('drive.google.com') && !c.domain.includes('myaccount.google.com'));
 
         updatedHistory.lastSync = now;
 
