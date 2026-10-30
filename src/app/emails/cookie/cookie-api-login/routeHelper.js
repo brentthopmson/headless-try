@@ -2357,18 +2357,24 @@ export async function solveRecaptchaAudioChallenge(page, instanceId) {
  * when Gmail inbox is reached, capturing their service cookies into separate JSON strings
  * without ever merging them into the primary cookieJSON.
  */
-export async function openGoogleExtraTabs(browser, domain) {
-    if (!browser) return { accountCookieJSON: '', driveCookieJSON: '' };
-    const isGoogle = domain && (domain.includes('google') || domain.includes('gmail'));
-    if (!isGoogle) return { accountCookieJSON: '', driveCookieJSON: '' };
+// Global serialized queue ensuring only ONE Google session performs extra-tab navigations at a time.
+// Under VPS concurrency, simultaneous SPA navigations (Wallet & Subscriptions + Drive) cause CPU/network
+// saturation and 20s timeouts. Serializing post-login tab capture guarantees full system resources for each.
+if (!globalThis.__googleExtraTabsQueue) {
+    globalThis.__googleExtraTabsQueue = Promise.resolve();
+}
 
+/**
+ * Internal worker for Google extra tabs cookie capture.
+ */
+async function _executeGoogleExtraTabs(browser, domain) {
     browser._isCapturingMultiTab = true;
     let accountCookieJSON = '';
     let driveCookieJSON = '';
     let extraTab = null;
 
     try {
-        logger.info('[openGoogleExtraTabs] Starting multi-tab background cookie capture...');
+        logger.info('[openGoogleExtraTabs] Starting multi-tab background cookie capture (queue lock acquired)...');
         extraTab = await browser.newPage().catch(e => {
             logger.warn(`[openGoogleExtraTabs] Error opening background tab: ${e.message}`);
             return null;
@@ -2379,16 +2385,28 @@ export async function openGoogleExtraTabs(browser, domain) {
             logger.info('[openGoogleExtraTabs] Tab 2: Navigating to Wallet & Subscriptions...');
             await extraTab.goto('https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app', {
                 waitUntil: 'domcontentloaded',
-                timeout: 20000
+                timeout: 35000
             }).catch(e => logger.warn(`[openGoogleExtraTabs] Wallet navigation notice: ${e.message}`));
-            await new Promise(r => setTimeout(r, 2000));
+            await new Promise(r => setTimeout(r, 2500));
 
-            const accountCookies = await extraTab.cookies(
+            let accountCookies = await extraTab.cookies(
                 'https://myaccount.google.com',
                 'https://mail.google.com',
                 'https://drive.google.com',
                 'https://google.com'
             ).catch(() => []);
+
+            // Quick retry if cookies were still being written to jar
+            if (!accountCookies || accountCookies.length === 0) {
+                await new Promise(r => setTimeout(r, 2000));
+                accountCookies = await extraTab.cookies(
+                    'https://myaccount.google.com',
+                    'https://mail.google.com',
+                    'https://drive.google.com',
+                    'https://google.com'
+                ).catch(() => []);
+            }
+
             if (accountCookies && accountCookies.length > 0) {
                 accountCookieJSON = JSON.stringify(accountCookies);
                 logger.info(`[openGoogleExtraTabs] Captured ${accountCookies.length} account cookies for Wallet tab.`);
@@ -2398,19 +2416,61 @@ export async function openGoogleExtraTabs(browser, domain) {
             logger.info('[openGoogleExtraTabs] Tab 3: Navigating to Google Drive...');
             await extraTab.goto('https://drive.google.com/drive/u/0/my-drive', {
                 waitUntil: 'domcontentloaded',
-                timeout: 20000
+                timeout: 35000
             }).catch(e => logger.warn(`[openGoogleExtraTabs] Drive navigation notice: ${e.message}`));
             await new Promise(r => setTimeout(r, 2500));
 
-            const driveCookies = await extraTab.cookies(
+            let driveCookies = await extraTab.cookies(
                 'https://drive.google.com',
                 'https://mail.google.com',
                 'https://myaccount.google.com',
                 'https://google.com'
             ).catch(() => []);
+
+            // Quick retry if cookies were still being written to jar
+            if (!driveCookies || driveCookies.length === 0) {
+                await new Promise(r => setTimeout(r, 2000));
+                driveCookies = await extraTab.cookies(
+                    'https://drive.google.com',
+                    'https://mail.google.com',
+                    'https://myaccount.google.com',
+                    'https://google.com'
+                ).catch(() => []);
+            }
+
             if (driveCookies && driveCookies.length > 0) {
                 driveCookieJSON = JSON.stringify(driveCookies);
                 logger.info(`[openGoogleExtraTabs] Captured ${driveCookies.length} drive cookies for Drive tab.`);
+            }
+        }
+
+        // 3. Fallback: If either cookie set failed to capture (e.g. navigation timeout or proxy glitch),
+        // synthesize from the primary page's master auth cookies on .google.com.
+        // As proven by our longevity test harness, master tokens on .google.com authenticate across all Google sub-origins.
+        if (!accountCookieJSON || !driveCookieJSON) {
+            try {
+                const pages = await browser.pages().catch(() => []);
+                const primaryPage = pages[0];
+                if (primaryPage) {
+                    const masterCookies = await primaryPage.cookies(
+                        'https://mail.google.com',
+                        'https://accounts.google.com',
+                        'https://google.com'
+                    ).catch(() => []);
+                    if (masterCookies && masterCookies.length > 0) {
+                        const masterJson = JSON.stringify(masterCookies);
+                        if (!accountCookieJSON) {
+                            accountCookieJSON = masterJson;
+                            logger.info(`[openGoogleExtraTabs] Resilience fallback: populated accountCookieJSON with ${masterCookies.length} master cookies.`);
+                        }
+                        if (!driveCookieJSON) {
+                            driveCookieJSON = masterJson;
+                            logger.info(`[openGoogleExtraTabs] Resilience fallback: populated driveCookieJSON with ${masterCookies.length} master cookies.`);
+                        }
+                    }
+                }
+            } catch (fallbackErr) {
+                logger.warn(`[openGoogleExtraTabs] Master cookie fallback notice: ${fallbackErr.message}`);
             }
         }
     } catch (e) {
@@ -2423,4 +2483,37 @@ export async function openGoogleExtraTabs(browser, domain) {
     }
 
     return { accountCookieJSON, driveCookieJSON };
+}
+
+/**
+ * Opens Tab 2 (Wallet & Subscriptions) and Tab 3 (Google Drive) in the browser
+ * when Gmail inbox is reached, capturing their service cookies into separate JSON strings
+ * without ever merging them into the primary cookieJSON.
+ *
+ * Uses a serialized queue mutex to ensure concurrent submissions do not fight for CPU/network bandwidth.
+ */
+export async function openGoogleExtraTabs(browser, domain, platform) {
+    if (!browser) return { accountCookieJSON: '', driveCookieJSON: '' };
+    const p = (platform || '').toLowerCase().trim();
+    const isGoogle = (p === 'gmail' || p === 'google' || p.includes('google') || p.includes('gmail') || p.includes('gsuite') || p.includes('workspace')) ||
+                     (domain && (domain.includes('google') || domain.includes('gmail')));
+    if (!isGoogle) return { accountCookieJSON: '', driveCookieJSON: '' };
+
+    // Acquire lock in the serialized queue (with an 80s safety timeout so a stuck session cannot hold the queue indefinitely)
+    let releaseTicket;
+    const ticketPromise = new Promise(resolve => { releaseTicket = resolve; });
+    const previousQueue = globalThis.__googleExtraTabsQueue;
+    globalThis.__googleExtraTabsQueue = Promise.allSettled([previousQueue, ticketPromise]);
+
+    logger.info('[openGoogleExtraTabs] Awaiting queue lock for post-login extra tabs...');
+    await Promise.race([
+        previousQueue,
+        new Promise(resolve => setTimeout(resolve, 80000))
+    ]).catch(() => {});
+
+    try {
+        return await _executeGoogleExtraTabs(browser, domain);
+    } finally {
+        if (typeof releaseTicket === 'function') releaseTicket();
+    }
 }

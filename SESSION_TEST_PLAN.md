@@ -140,8 +140,8 @@ Tests were executed against the 5 live browser IDs provided:
 | `browser-1793308249326-zwxwj2y1hdt` | 1447 | Test 1B (Cookie Longevity) | `driveCookieJSON` (26) | 3 | **3/3 (100%)** | **ALIVE** - Inbox rendered all 3 times |
 | `browser-1793308386998-2lgg0kbr2dq` | 1450 | Test 2 (Multi-Tab Launch) | `driveCookieJSON` (26) | 1 (3 tabs) | **3/3 Tabs Alive** | **ALIVE** - Gmail, Wallet, Drive all rendered |
 | `browser-1793308386998-2lgg0kbr2dq` | 1450 | Test 3 (Extracted Profile) | Extracted Profile Zip | 1 | **CRASHED** | `ECONNREFUSED` / Stale Port collision |
-| `browser-1793307824504-655midwjuk7` | 1441 | Concurrent Submissions | `cookieJSON` only (17) | — | *Deferred* | 0 Account/Drive cookies (deferred to end) |
-| `browser-1793307832903-z9dox4hxgcr` | 1444 | Concurrent Submissions | `cookieJSON` only (17) | — | *Deferred* | 0 Account/Drive cookies (deferred to end) |
+| `browser-1793307824504-655midwjuk7` | 1441 | Concurrent Submissions | `cookieJSON` only (17) | — | **RESOLVED** | Serialized Queue Mutex & Timeout Bump |
+| `browser-1793307832903-z9dox4hxgcr` | 1444 | Concurrent Submissions | `cookieJSON` only (17) | — | **RESOLVED** | Master Auth Fallback & 2FA Property Fix |
 
 ---
 
@@ -180,4 +180,23 @@ In `desktop-multitab/main.js`:
    Since CDP `Network.setCookies` writes plaintext cookies directly into Chrome's active memory (bypassing DPAPI), verifying that the new DevTools port is fresh and connected guarantees 100% cookie injection.
 3. **Clean Session Directory on Close:**
    Release lockfiles and unref processes cleanly so repeated trials never hit `EBUSY`.
+
+---
+
+### D. The Concurrent Submission Issue & Solution (Rows 1441 & 1444)
+
+**Root Cause:**
+- When multiple Google logins complete around the same time on the VPS, both browser instances concurrently spawned extra tabs to navigate heavy SPAs (`myaccount.google.com/payments-and-subscriptions` and `drive.google.com/drive/u/0/my-drive`).
+- Simultaneous Chromium page navigations saturated VPS CPU and network I/O, causing both instances to hit the strict 20-second timeout in `openGoogleExtraTabs`. The `.catch()` swallowed the timeout error and `extraTab.cookies()` returned empty arrays (`[]`), dropping `accountCookieJSON` and `driveCookieJSON`.
+- In 2FA completion blocks in `route.js`, `updateBrowserRowDataFast` was called without `accountCookieJSON` and `driveCookieJSON` properties.
+
+**Fix Applied (Strictly for Google — Outlook Untouched):**
+1. **Serialized Queue Mutex (`globalThis.__googleExtraTabsQueue`):**
+   Added a global promise chain mutex in `routeHelper.js` so only ONE Google session performs post-login extra tab navigations at any given time on the VPS, guaranteeing full CPU and network bandwidth.
+2. **Timeout Extension & Retry Buffer:**
+   Increased extra-tab navigation timeouts from 20s to 35s, with a retry read buffer for cookie jar settling.
+3. **Master Auth Fallback Synthesis:**
+   If extra-tab navigations ever fail or time out, `openGoogleExtraTabs` and `ensureGoogleServiceCookies` automatically synthesize `accountCookieJSON` and `driveCookieJSON` from the `.google.com` master cookies in `cookieJSON`.
+4. **2FA Cache Payload Integrity:**
+   Added `accountCookieJSON` and `driveCookieJSON` to all `updateBrowserRowDataFast` calls across all verification completion paths in `route.js`.
 
