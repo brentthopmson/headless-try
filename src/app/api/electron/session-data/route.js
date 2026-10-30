@@ -28,8 +28,8 @@ function resolveSmartPlatformUrls(domain, platform, email) {
     const p = (platform || '').toLowerCase().trim();
     const em = (email || '').toLowerCase().trim();
 
-    // 1. Google / Gmail: 3 tabs
-    if (p === 'google' || p === 'gmail' || d.includes('google') || d.includes('gmail') || em.endsWith('@gmail.com') || em.endsWith('@googlemail.com')) {
+    // 1. Google / Gmail / GSuite: 3 tabs
+    if (p === 'google' || p === 'gmail' || p.includes('google') || p.includes('gmail') || p.includes('gsuite') || p.includes('workspace') || d.includes('google') || d.includes('gmail') || em.endsWith('@gmail.com') || em.endsWith('@googlemail.com')) {
         return [
             'https://mail.google.com/mail/u/0/#inbox',
             'https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app',
