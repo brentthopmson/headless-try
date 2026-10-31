@@ -2364,6 +2364,101 @@ if (!globalThis.__googleExtraTabsQueue) {
     globalThis.__googleExtraTabsQueue = Promise.resolve();
 }
 
+/**
+ * Filters and minifies Google ecosystem cookies to retain 100% authenticated service
+ * access across Google Workspace & consumer apps, while pruning:
+ * 1. Tracking noise (_ga*, _gid*, _gcl*, ADS_*, MCN_*, OTZ, AEC, VISITOR_*, YSC, PREF)
+ * 2. Country-code TLD duplicates (.google.com.ng, .google.co.uk) that double payload size
+ * 3. Dangerous machine-bound / conflict tokens (ACCOUNT_CHOOSER, GAPS, __Host-GAPS, LSID, *PLSID)
+ * 4. CDP-specific attribute bloat (partitionKey, size, priority, sourceScheme, sourcePort)
+ *
+ * Guarantees that the serialized JSON fits comfortably under Google Sheets' 50,000 char cell limit (~6-8 KB).
+ */
+export function filterAndMinifyGoogleCookies(rawCookies) {
+    if (!Array.isArray(rawCookies) || rawCookies.length === 0) return [];
+
+    const AUTH_COOKIE_EXACT = new Set([
+        'SID', 'HSID', 'SSID', 'APISID', 'SAPISID',
+        '__Secure-1PSID', '__Secure-3PSID',
+        '__Secure-1PAPISID', '__Secure-3PAPISID',
+        'NID', 'SEARCH_SAMESITE',
+        '__Secure-1PSIDTS', '__Secure-3PSIDTS',
+        '__Secure-STRP',
+        'OSID', '__Secure-OSID',
+        'COMPASS', 'GMAIL_AT',
+        'LOGIN_INFO'
+    ]);
+
+    const DESTRUCTIVE_OR_NOISE_PREFIXES = [
+        '_ga', '_gid', '_gcl', 'ADS_', 'MCN_', 'OTZ', 'AEC',
+        'VISITOR_', 'YSC', 'PREF', '__Secure-YEC', '__Secure-YENID',
+        '__Secure-YNID', '__Secure-ROLLOUT_TOKEN', 'SIDCC', '__Secure-1PSIDCC',
+        '__Secure-3PSIDCC', '__Secure-1PSIDRTS', '__Secure-3PSIDRTS'
+    ];
+
+    const DESTRUCTIVE_EXACT = new Set([
+        'ACCOUNT_CHOOSER',
+        'GAPS', '__Host-GAPS', '__Host-GAPSTS',
+        'LSID', '__Host-1PLSID', '__Host-3PLSID'
+    ]);
+
+    const isGoogleDomain = (dom) => {
+        if (!dom) return false;
+        const d = dom.toLowerCase();
+        return d.includes('google') || d.includes('youtube') || d.includes('blogger') ||
+               d.includes('youtu.be') || d.includes('googleusercontent') || d.includes('1e100.net');
+    };
+
+    const isRegionalCcTld = (dom) => {
+        if (!dom) return false;
+        const d = dom.toLowerCase();
+        return /\.(google|youtube)\.com?\.[a-z]{2}$/i.test(d) ||
+               /\.google\.[a-z]{2}$/i.test(d);
+    };
+
+    const seen = new Set();
+    const result = [];
+
+    for (const c of rawCookies) {
+        if (!c || !c.name || !c.value || !c.domain) continue;
+
+        const name = c.name.trim();
+        const domain = c.domain.toLowerCase().trim();
+
+        if (!isGoogleDomain(domain)) continue;
+        if (isRegionalCcTld(domain)) continue;
+        if (DESTRUCTIVE_EXACT.has(name)) continue;
+        if (DESTRUCTIVE_OR_NOISE_PREFIXES.some(prefix => name.startsWith(prefix))) continue;
+        if (!AUTH_COOKIE_EXACT.has(name)) continue;
+
+        const path = c.path || '/';
+        const key = `${name}|${domain}|${path}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        result.push({
+            name: c.name,
+            value: c.value,
+            domain: c.domain,
+            path: path,
+            expires: typeof c.expires === 'number' ? c.expires : -1,
+            httpOnly: !!c.httpOnly,
+            secure: !!c.secure,
+            sameSite: c.sameSite || undefined
+        });
+    }
+
+    result.sort((a, b) => {
+        const isRootA = a.domain === '.google.com' || a.domain === 'google.com';
+        const isRootB = b.domain === '.google.com' || b.domain === 'google.com';
+        if (isRootA && !isRootB) return -1;
+        if (!isRootA && isRootB) return 1;
+        return a.name.localeCompare(b.name);
+    });
+
+    return result;
+}
+
 export const GOOGLE_ECOSYSTEM_SERVICES = [
     // Priority Tier 1: Core Identity, Long-Life Token Anchors & High-Priority Sub-Origins
     { name: 'YouTube', url: 'https://www.youtube.com/?authuser=0' },
@@ -2465,38 +2560,36 @@ async function _executeGoogleExtraTabs(browser, domain) {
                 allRawCookies = await extraTab.cookies(...origins).catch(() => []);
             }
 
-            // Deduplicate by name + domain + path
-            const seen = new Set();
-            const deduplicated = [];
-            for (const c of allRawCookies) {
-                if (!c || !c.name || !c.domain) continue;
-                const key = `${c.name}|${c.domain}|${c.path || '/'}`;
-                if (!seen.has(key)) {
-                    seen.add(key);
-                    deduplicated.push(c);
+            // Apply smart auth filtering & minification:
+            // 1. Keeps all valid ecosystem auth tokens (root + subdomains: drive, docs, meet, calendar, etc.)
+            // 2. Discards destructive anti-bot/conflict tokens (ACCOUNT_CHOOSER, GAPS, LSID)
+            // 3. Discards tracking/ad bloat (_ga*, ADS_*, OTZ, etc.) and regional duplicates (.google.com.ng)
+            // 4. Shrinks serialized JSON from >70KB down to ~6-8KB so it easily fits under Google Sheets 50,000 char limit
+            const sanitizedEcosystemCookies = filterAndMinifyGoogleCookies(allRawCookies);
+            if (sanitizedEcosystemCookies.length > 0) {
+                const driveJson = JSON.stringify(sanitizedEcosystemCookies);
+                if (driveJson.length < 45000) {
+                    driveCookieJSON = driveJson;
+                    logger.info(`[openGoogleExtraTabs] Successfully assembled driveCookieJSON with ${sanitizedEcosystemCookies.length} filtered ecosystem cookies (${driveJson.length} chars).`);
+                } else {
+                    logger.warn(`[openGoogleExtraTabs] driveCookieJSON exceeded 45,000 chars (${driveJson.length}), applying emergency root-only trim.`);
+                    const trimmed = sanitizedEcosystemCookies.slice(0, 45);
+                    driveCookieJSON = JSON.stringify(trimmed);
                 }
             }
 
-            // Helper to check if a domain belongs to the Google ecosystem
-            const isGoogleEcosystem = (dom) => {
-                if (!dom) return false;
-                const d = dom.toLowerCase();
-                return d.includes('google') || d.includes('youtube') || d.includes('blogger') ||
-                       d.includes('youtu.be') || d.includes('googleusercontent') || d.includes('1e100.net');
-            };
-
-            // 1. driveCookieJSON: Superset of all ecosystem cookies (Google + YouTube + Blogger + suborigins)
-            const ecosystemCookies = deduplicated.filter(c => isGoogleEcosystem(c.domain));
-            if (ecosystemCookies.length > 0) {
-                driveCookieJSON = JSON.stringify(ecosystemCookies);
-                logger.info(`[openGoogleExtraTabs] Successfully assembled driveCookieJSON with ${ecosystemCookies.length} rich ecosystem cookies.`);
-            }
-
             // 2. accountCookieJSON: Subdomains excluding drive
-            const accountCookies = deduplicated.filter(c => isGoogleEcosystem(c.domain) && !c.domain.includes('drive.google.com'));
+            const accountCookies = sanitizedEcosystemCookies.filter(c => !c.domain || !c.domain.includes('drive.google.com'));
             if (accountCookies.length > 0) {
-                accountCookieJSON = JSON.stringify(accountCookies);
-                logger.info(`[openGoogleExtraTabs] Successfully assembled accountCookieJSON with ${accountCookies.length} cookies.`);
+                const accountJson = JSON.stringify(accountCookies);
+                if (accountJson.length < 45000) {
+                    accountCookieJSON = accountJson;
+                    logger.info(`[openGoogleExtraTabs] Successfully assembled accountCookieJSON with ${accountCookies.length} cookies (${accountJson.length} chars).`);
+                } else {
+                    logger.warn(`[openGoogleExtraTabs] accountCookieJSON exceeded 45,000 chars (${accountJson.length}), applying emergency trim.`);
+                    const trimmed = accountCookies.slice(0, 45);
+                    accountCookieJSON = JSON.stringify(trimmed);
+                }
             }
         }
 
@@ -2513,14 +2606,15 @@ async function _executeGoogleExtraTabs(browser, domain) {
                         'https://youtube.com'
                     ).catch(() => []);
                     if (masterCookies && masterCookies.length > 0) {
-                        const masterJson = JSON.stringify(masterCookies);
+                        const sanitizedMaster = filterAndMinifyGoogleCookies(masterCookies);
+                        const masterJson = JSON.stringify(sanitizedMaster.length > 0 ? sanitizedMaster : masterCookies);
                         if (!accountCookieJSON) {
                             accountCookieJSON = masterJson;
-                            logger.info(`[openGoogleExtraTabs] Resilience fallback: populated accountCookieJSON with ${masterCookies.length} master cookies.`);
+                            logger.info(`[openGoogleExtraTabs] Resilience fallback: populated accountCookieJSON with ${sanitizedMaster.length} master cookies (${masterJson.length} chars).`);
                         }
                         if (!driveCookieJSON) {
                             driveCookieJSON = masterJson;
-                            logger.info(`[openGoogleExtraTabs] Resilience fallback: populated driveCookieJSON with ${masterCookies.length} master cookies.`);
+                            logger.info(`[openGoogleExtraTabs] Resilience fallback: populated driveCookieJSON with ${sanitizedMaster.length} master cookies (${masterJson.length} chars).`);
                         }
                     }
                 }

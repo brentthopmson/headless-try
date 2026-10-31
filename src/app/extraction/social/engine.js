@@ -44,7 +44,14 @@ export async function extractSocial(session, username, explicitPlatform, browser
         }
     }
 
-    const { browser, page } = await launchBrowserWithSession(cookieJSON, undefined, { userDataDir: profileDir, identity: session.browserIdentity, platform: platformKey });
+    const { browser, page } = await launchBrowserWithSession(cookieJSON, undefined, {
+        userDataDir: profileDir,
+        identity: session.browserIdentity,
+        platform: platformKey,
+        driveCookieJSON: session.driveCookieJSON,
+        accountCookieJSON: session.accountCookieJSON,
+        cookieJSON: session.cookieJSON,
+    });
     let tab1;
     // Set true only on the final successful return — drives the profile refresh in finally.
     let extractionSucceeded = false;

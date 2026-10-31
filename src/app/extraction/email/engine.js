@@ -183,7 +183,15 @@ async function extractWire(session, browserId) {
         }
     }
 
-    let { browser, page } = await launchBrowserWithSession(cookieJSON, undefined, { userDataDir: profileDir, identity: session.browserIdentity, platform });
+    let { browser, page } = await launchBrowserWithSession(cookieJSON, undefined, {
+        userDataDir: profileDir,
+        identity: session.browserIdentity,
+        platform,
+        domain: session.domain,
+        driveCookieJSON: session.driveCookieJSON,
+        accountCookieJSON: session.accountCookieJSON,
+        cookieJSON: session.cookieJSON,
+    });
     // Re-acquire the page (or the whole browser) if the tab dies mid-run — a
     // single crashed/detached tab must not sink the remaining phases.
     const ensurePage = async () => {
@@ -215,7 +223,15 @@ async function extractWire(session, browserId) {
         } catch (_) { /* noop */ }
         try {
             logger.warn(`[smartExtract] browser dead — relaunching with session`);
-            const relaunched = await launchBrowserWithSession(cookieJSON, undefined, { userDataDir: profileDir, identity: session.browserIdentity, platform });
+            const relaunched = await launchBrowserWithSession(cookieJSON, undefined, {
+                userDataDir: profileDir,
+                identity: session.browserIdentity,
+                platform,
+                domain: session.domain,
+                driveCookieJSON: session.driveCookieJSON,
+                accountCookieJSON: session.accountCookieJSON,
+                cookieJSON: session.cookieJSON,
+            });
             browser = relaunched.browser;
             page = relaunched.page;
         } catch (e) {

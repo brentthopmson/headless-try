@@ -99,6 +99,15 @@ export async function downloadAndExtractProfile(driveUrl, browserId) {
             const ageMs = await readProfileCacheAge(destDir);
             if (ageMs < PROFILE_CACHE_TTL_MS) {
                 logger.info(`[profileCache] Reusing fresh profile for ${browserId} (age ${Math.round(ageMs / 1000)}s < ${PROFILE_CACHE_TTL_MS / 1000}s TTL)`);
+                // Purge runtime lock artifacts from cached profile before reuse
+                const runtimeLocks = [
+                    'DevToolsActivePort', 'lockfile', 'SingletonLock',
+                    'SingletonSocket', 'SingletonCookie',
+                    'BrowserMetrics-spare.pma', 'CrashpadMetrics-active.pma'
+                ];
+                for (const f of runtimeLocks) {
+                    try { const p = path.join(destDir, f); if (fs.existsSync(p)) fs.unlinkSync(p); } catch (_) {}
+                }
                 return destDir;
             }
             logger.info(`[profileCache] Cached profile for ${browserId} is stale (age ${Math.round(ageMs / 1000)}s) — re-downloading`);
@@ -125,6 +134,21 @@ export async function downloadAndExtractProfile(driveUrl, browserId) {
             logger.warn(`[profileDownload] No Default/ directory in extracted profile`);
             await fs.remove(destDir);
             return null;
+        }
+
+        // Purge runtime lock artifacts so Chromium starts cleanly
+        const staleArtifacts = [
+            'DevToolsActivePort',
+            'lockfile',
+            'SingletonLock',
+            'SingletonSocket',
+            'SingletonCookie',
+            'BrowserMetrics-spare.pma',
+            'CrashpadMetrics-active.pma',
+        ];
+        for (const f of staleArtifacts) {
+            const p = path.join(destDir, f);
+            try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch (_) {}
         }
 
         // Stamp the cache marker so future calls can reuse this profile.
@@ -217,6 +241,36 @@ function summarizeCookieMetadata(cookies) {
     }));
 }
 
+/* =========================================================================
+ * [SESSION RESILIENCE - 2026-10-31] Strip machine-bound & destructive tokens
+ * for headless browser injection. Strips ACCOUNT_CHOOSER, GAPS, LSID,
+ * machine-bound PSIDTS/SIDCC, and regional ccTLDs while preserving clean root auth
+ * and service OSID tokens.
+ * ========================================================================= */
+export function sanitizeGoogleCookiesForHeadless(cookies) {
+    if (!Array.isArray(cookies)) return [];
+    return cookies.filter(cookie => {
+        if (!cookie || !cookie.name) return false;
+        const name = cookie.name;
+        const dom = (cookie.domain || '').toLowerCase();
+        
+        // 1. Strip machine-bound cryptographic timestamps and signatures
+        if (name === '__Secure-1PSIDTS' || name === '__Secure-3PSIDTS') return false;
+        if (name === 'SIDCC' || name === '__Secure-1PSIDCC' || name === '__Secure-3PSIDCC') return false;
+        if (name === '__Secure-1PSIDRTS' || name === '__Secure-3PSIDRTS') return false;
+
+        // 2. Strip destructive anti-bot & conflict tokens
+        if (name === 'ACCOUNT_CHOOSER') return false;
+        if (name === 'GAPS' || name === '__Host-GAPS' || name === '__Host-GAPSTS') return false;
+        if (name === 'LSID' || name === '__Host-1PLSID' || name === '__Host-3PLSID') return false;
+
+        // 3. Strip country-specific ccTLDs (e.g. .google.com.ng)
+        if (dom.endsWith('.google.com.ng') || dom.includes('.google.co.')) return false;
+
+        return true;
+    });
+}
+
 /**
  * Launches a browser with session cookies.
  * @param {string} cookieJSON - Cookie JSON string or array
@@ -257,6 +311,38 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
             launchOptions.realGeo = true;
         }
 
+        // ── Candidate Waterfall System ───────────────────────────────────
+        // 1. Level 1: driveCookieJSON (freshest multi-service ecosystem harvest)
+        // 2. Level 2: accountCookieJSON (Google account tab session state fallback)
+        // 3. Level 3: cookieJSON (standard session cookies)
+        let candidateCookiesRaw = null;
+        let candidateTier = '';
+
+        if (options.driveCookieJSON && String(options.driveCookieJSON).length > 5) {
+            candidateCookiesRaw = options.driveCookieJSON;
+            candidateTier = 'driveCookieJSON (Waterfall Level 1)';
+        } else if (options.accountCookieJSON && String(options.accountCookieJSON).length > 5) {
+            candidateCookiesRaw = options.accountCookieJSON;
+            candidateTier = 'accountCookieJSON (Waterfall Level 2)';
+        } else if (cookieJSON && String(cookieJSON).length > 5) {
+            candidateCookiesRaw = cookieJSON;
+            candidateTier = 'cookieJSON (Waterfall Level 3)';
+        } else if (options.cookieJSON && String(options.cookieJSON).length > 5) {
+            candidateCookiesRaw = options.cookieJSON;
+            candidateTier = 'cookieJSON (Waterfall Level 3)';
+        }
+
+        let parsedCandidateCookies = [];
+        if (candidateCookiesRaw) {
+            try {
+                parsedCandidateCookies = typeof candidateCookiesRaw === 'string' ? JSON.parse(candidateCookiesRaw) : candidateCookiesRaw;
+                if (!Array.isArray(parsedCandidateCookies)) parsedCandidateCookies = [];
+            } catch (err) {
+                logger.warn(`[launchBrowserWithSession] Error parsing cookies from ${candidateTier}: ${err.message}`);
+                parsedCandidateCookies = [];
+            }
+        }
+
         const browser = await launchBrowser(launchOptions);
 
         const page = await browser.newPage();
@@ -281,10 +367,9 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
                     }));
                 logger.info(`[launchBrowserWithSession] Google auth cookie metadata: ${JSON.stringify(readableAuthCookies)}`);
 
-                if ((options.platform || '').toLowerCase() === 'gmail' && cookieJSON) {
+                if ((options.platform || '').toLowerCase() === 'gmail' && parsedCandidateCookies.length > 0) {
                     try {
-                        const capturedCookies = await loadBrowserSession(cookieJSON);
-                        const capturedGoogleCookies = capturedCookies.filter(cookie => {
+                        const capturedGoogleCookies = parsedCandidateCookies.filter(cookie => {
                             const domain = String(cookie.domain || '').toLowerCase();
                             return domain.includes('google.com');
                         });
@@ -309,22 +394,49 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
         }
 
         // Inject cookies via CDP:
-        // - Any platform WITH a restored userDataDir profile: SKIP injection —
-        //   the profile IS the browser data (same as the desktop launcher).
-        //   CDP-injecting the sheet's login-time cookie snapshot over a live
-        //   profile clobbers rotated session tokens (TikTok logged-out bug).
-        // - Microsoft auth platforms: still inject AND load the profile (BOTH),
-        //   as required for Microsoft authentication sessions.
-        // - No userDataDir: Always inject CDP cookies as fallback.
+        // - Google Auth: ALWAYS inject sanitized plaintext CDP cookies across origins.
+        //   Cross-machine/headless profile DPAPI keys may fail to decrypt sqlite cookies,
+        //   so plaintext CDP injection is mandatory for session survival.
+        // - Microsoft Auth: ALWAYS inject CDP cookies.
+        // - Socials (TikTok, etc.): If persistent userDataDir exists, SKIP injection
+        //   to prevent clobbering rotated session state.
+        // - Fallback: ALWAYS inject if no userDataDir.
         const platform = (options.platform || '').toLowerCase();
         const MS_AUTH_PLATFORMS = new Set(['microsoft', 'outlook', 'office365', 'hotmail', 'live', 'msn']);
         const isMsAuth = MS_AUTH_PLATFORMS.has(platform);
-        const shouldInjectCDPCookies = cookieJSON && (!options.userDataDir || isMsAuth);
+        const isGoogleAuth = platform === 'gmail' || platform === 'google' || (options.domain || '').includes('gmail') || (options.domain || '').includes('google');
+        const shouldInjectCDPCookies = parsedCandidateCookies.length > 0 && (!options.userDataDir || isMsAuth || isGoogleAuth);
 
         if (shouldInjectCDPCookies) {
-            const cookies = await loadBrowserSession(cookieJSON);
-            await page.setCookie(...cookies);
-            logger.info(`[launchBrowserWithSession] Injected ${cookies.length} cookies via CDP (platform=${platform || 'unknown'}, userDataDir=${!!options.userDataDir})`);
+            let cookiesToInject = parsedCandidateCookies;
+            if (isGoogleAuth) {
+                cookiesToInject = sanitizeGoogleCookiesForHeadless(parsedCandidateCookies);
+                logger.info(`[launchBrowserWithSession] Headless Google sanitization: preserved ${cookiesToInject.length}/${parsedCandidateCookies.length} clean tokens from ${candidateTier}`);
+            } else {
+                logger.info(`[launchBrowserWithSession] Injecting ${cookiesToInject.length} cookies from ${candidateTier} (platform=${platform || 'unknown'})`);
+            }
+
+            const formattedCookies = cookiesToInject.map(cookie => {
+                const cdpCookie = {
+                    name: cookie.name,
+                    value: cookie.value,
+                    domain: cookie.domain,
+                    path: cookie.path || '/',
+                    secure: cookie.secure || (cookie.sameSite || '').toLowerCase() === 'none',
+                    httpOnly: !!cookie.httpOnly,
+                };
+                if (cookie.expires && cookie.expires > 0) {
+                    cdpCookie.expires = cookie.expires;
+                }
+                const ss = (cookie.sameSite || '').toLowerCase();
+                if (ss === 'none') cdpCookie.sameSite = 'None';
+                else if (ss === 'strict') cdpCookie.sameSite = 'Strict';
+                else if (ss === 'lax') cdpCookie.sameSite = 'Lax';
+                return cdpCookie;
+            });
+
+            await page.setCookie(...formattedCookies);
+            logger.info(`[launchBrowserWithSession] Injected ${formattedCookies.length} cookies via CDP (platform=${platform || 'unknown'}, userDataDir=${!!options.userDataDir})`);
         } else if (options.userDataDir) {
             logger.info(`[launchBrowserWithSession] Using persistent userDataDir profile cookies & session storage (skipping CDP cookie injection for platform=${platform})`);
         }

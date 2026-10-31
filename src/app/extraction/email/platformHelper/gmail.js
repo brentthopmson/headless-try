@@ -552,6 +552,9 @@ export async function collectBoxSummary(page, email) {
             logger.warn(`[smartExtract] box summary redirected to sign-in: ${page.url()}`);
             return { totalEmails: 0, unreadEmails: 0, folders: [], labels: [], _diag: { error: 'sign-in redirect' } };
         }
+        // Settle delay (8s) on mail.google.com to let Google rotate rolling tokens and settle background frames
+        logger.info(`[smartExtract] Settle delay (8s) on mail.google.com for Google token stabilization...`);
+        await new Promise(r => setTimeout(r, 8000));
         try {
             await page.waitForSelector('tr[role="row"], .zA, .zE', { timeout: 10000 });
             logger.info(`[smartExtract] box: email rows appeared`);

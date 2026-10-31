@@ -367,3 +367,63 @@ When validating a session launch in development or production:
    - Wait 15 seconds after launch.
    - Confirm: `[INFO] [Pillar 2] Synced 26 live cookies to server.`
    - Confirm `cookie` sheet row updates `launchHistory` with updated `lastSyncedAt`.
+
+---
+
+## 10. Headless Extraction, Campaign Hydration & Multi-Service Longevity (v2.1)
+
+### 10.1 4-Pillar Headless Hydration Model
+To ensure long-term resilience across headless extraction and automation campaigns, the headless engine in [`src/app/socials/_shared/routeHelper.js`](file:///c:/Users/HP/Desktop/ZIPPER/WEBFIXX/DEV/API/offline-headless-webfixx/src/app/socials/_shared/routeHelper.js) enforces the 4-pillar hydration architecture:
+
+1. **Pillar 1: Candidate Waterfall**:
+   - Level 1: `driveCookieJSON` (comprehensive multi-service ecosystem harvest).
+   - Level 2: `accountCookieJSON` (Google account tab state fallback).
+   - Level 3: `cookieJSON` (standard session cookie fallback).
+2. **Pillar 2: Google Token Sanitization**:
+   - Machine-bound cryptographic timestamps and signatures (`__Secure-1PSIDTS`, `__Secure-3PSIDTS`, `SIDCC`, `__Secure-1PSIDCC`, `__Secure-3PSIDCC`, `__Secure-1PSIDRTS`, `__Secure-3PSIDRTS`) are stripped.
+   - Destructive anti-bot & conflict tokens (`ACCOUNT_CHOOSER`, `GAPS`, `__Host-GAPS`, `__Host-GAPSTS`, `LSID`, `__Host-1PLSID`, `__Host-3PLSID`) are stripped.
+   - Regional duplicate ccTLDs (`.google.com.ng`, `.google.co.*`) are removed.
+   - Clean root auth tokens (`SID`, `HSID`, `SSID`, `APISID`, `SAPISID`, `__Secure-1PSID`, `__Secure-3PSID`, `__Secure-1PAPISID`, `__Secure-3PAPISID`, `NID`, `SEARCH_SAMESITE`) and service OSIDs (`OSID`, `__Secure-OSID`, `COMPASS`, `GMAIL_AT`, `LOGIN_INFO`) are preserved intact.
+3. **Pillar 3: Runtime Lock Purge**:
+   - Both upon profile cache reuse and following fresh archive decompression, runtime lock artifacts (`DevToolsActivePort`, `lockfile`, `SingletonLock`, `SingletonSocket`, `SingletonCookie`, `BrowserMetrics-spare.pma`, `CrashpadMetrics-active.pma`) are deleted to guarantee a clean browser launch.
+4. **Pillar 4: Plaintext CDP Cookie Injection**:
+   - For Google authentication, plaintext CDP cookie injection is **always executed** across origins (even when persistent `userDataDir` is present) because profiles created on Linux VPS or different machines cannot decrypt SQLite cookies due to DPAPI machine-key binding.
+   - For Microsoft auth, CDP injection is likewise preserved.
+   - For social networks (e.g. TikTok), when `userDataDir` is present, CDP injection is skipped to avoid clobbering live rotated session tokens.
+
+### 10.2 Settle Delay for Rolling Token Rotation
+Before querying the inbox DOM in [`src/app/extraction/email/platformHelper/gmail.js`](file:///c:/Users/HP/Desktop/ZIPPER/WEBFIXX/DEV/API/offline-headless-webfixx/src/app/extraction/email/platformHelper/gmail.js), the engine pauses for **8 seconds** on `https://mail.google.com/mail/u/0/#inbox`. This allows Google's background iframes and authentication service workers to complete rolling token rotation without race conditions.
+
+### 10.3 Post-Extraction Cookie Refresh Policy: SILENCED / DORMANT
+Per explicit operational directives, **post-extraction cookie refresh back to the Google Sheet is strictly silenced and dormant**. Headless extraction runs as a read-only consumer regarding database tokens. Existing tokens in Google Sheets (`cookieJSON`, `accountCookieJSON`, `driveCookieJSON`, `driveUrl`, `browserIdentity`) are never overwritten or mutated during or after extraction runs.
+
+### 10.4 Social & Webmail Platform Routing Matrix
+The `platform` column in Google Sheets serves as the primary authority for launch navigation. Fallback to domain evaluation occurs only when `platform` is unassigned:
+
+| Platform Column | Target URL(s) | Description |
+| :--- | :--- | :--- |
+| `tiktok` | `https://www.tiktok.com/` | Fixes bug where accounts with `@eaj.jp` opened `https://eaj.jp` |
+| `whatsapp` | `https://web.whatsapp.com/` | WhatsApp Web |
+| `comcast`, `xfinity` | `https://connect.xfinity.com/` | Xfinity Webmail |
+| `instagram` | `https://www.instagram.com/` | Instagram Feed |
+| `twitter`, `x` | `https://x.com/` | X (Twitter) |
+| `facebook` | `https://www.facebook.com/` | Facebook |
+| `linkedin` | `https://www.linkedin.com/feed/` | LinkedIn Feed |
+| `reddit` | `https://www.reddit.com/` | Reddit |
+| `pinterest` | `https://www.pinterest.com/` | Pinterest |
+| `discord` | `https://discord.com/app` | Discord Web App |
+| `telegram` | `https://web.telegram.org/` | Telegram Web |
+| `snapchat` | `https://web.snapchat.com/` | Snapchat Web |
+| `youtube` | `https://www.youtube.com/` | YouTube |
+| `gmail`, `google` | Multi-tab: `mail.google.com`, `myaccount...payments`, `drive.google.com` | Google Multi-Service Ecosystem |
+| `outlook`, `hotmail` | `https://outlook.live.com/mail/` (consumer) / `https://outlook.office.com/mail/` | Microsoft Outlook |
+| `yahoo` | `https://mail.yahoo.com/` | Yahoo Mail |
+| `aol` | `https://mail.aol.com/` | AOL Mail |
+| `zoho` | `https://mail.zoho.com/` | Zoho Mail |
+| `proton`, `protonmail` | `https://mail.proton.me/` | Proton Mail |
+| `gmx` | `https://www.gmx.com/` | GMX Mail |
+| `mail.com` | `https://www.mail.com/` | Mail.com |
+
+### 10.5 Google Sheets 50,000 Character Cell Limit Guard
+In [`src/app/emails/cookie/cookie-api-login/routeHelper.js`](file:///c:/Users/HP/Desktop/ZIPPER/WEBFIXX/DEV/API/offline-headless-webfixx/src/app/emails/cookie/cookie-api-login/routeHelper.js), `filterAndMinifyGoogleCookies(rawCookies)` prunes all tracking telemetry (`_ga*`, `_gid*`, `_gcl*`, `ADS_*`, `OTZ`, `AEC`), removes country ccTLD duplicates, and strips redundant CDP attributes (`partitionKey`, `size`, `priority`, `sourceScheme`, `sourcePort`). The minified cookie jar shrinks from >70KB to **~6–8 KB** (35–45 essential cookies), fitting easily within Google Sheets' 50,000-character cell ceiling and eliminating Apps Script payload crashes.
+

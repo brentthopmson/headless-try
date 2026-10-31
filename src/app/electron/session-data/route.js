@@ -28,8 +28,29 @@ function resolveSmartPlatformUrls(domain, platform, email) {
     const p = (platform || '').toLowerCase().trim();
     const em = (email || '').toLowerCase().trim();
 
-    // 1. Google / Gmail: 3 tabs
-    if (p === 'google' || p === 'gmail' || d.includes('google') || d.includes('gmail') || em.endsWith('@gmail.com') || em.endsWith('@googlemail.com')) {
+    // 1. Social Platforms & Messaging (Checks platform column first, then domain fallback)
+    if (p === 'tiktok' || d.includes('tiktok.com')) return ['https://www.tiktok.com/'];
+    if (p === 'whatsapp' || p.includes('whatsapp') || d.includes('whatsapp.com')) return ['https://web.whatsapp.com/'];
+    if (p === 'comcast' || p === 'xfinity' || d.includes('comcast') || d.includes('xfinity')) return ['https://connect.xfinity.com/'];
+    if (p === 'instagram' || d.includes('instagram.com')) return ['https://www.instagram.com/'];
+    if (p === 'twitter' || p === 'x' || d.includes('twitter.com') || d === 'x.com') return ['https://x.com/'];
+    if (p === 'facebook' || d.includes('facebook.com')) return ['https://www.facebook.com/'];
+    if (p === 'linkedin' || d.includes('linkedin.com')) return ['https://www.linkedin.com/feed/'];
+    if (p === 'reddit' || d.includes('reddit.com')) return ['https://www.reddit.com/'];
+    if (p === 'pinterest' || d.includes('pinterest.com')) return ['https://www.pinterest.com/'];
+    if (p === 'discord' || d.includes('discord.com')) return ['https://discord.com/app'];
+    if (p === 'telegram' || d.includes('telegram.org')) return ['https://web.telegram.org/'];
+    if (p === 'snapchat' || d.includes('snapchat.com')) return ['https://web.snapchat.com/'];
+    if (p === 'youtube' || d.includes('youtube.com')) return ['https://www.youtube.com/'];
+
+    // 2. Specialized Webmail Providers
+    if (p === 'zoho' || d.includes('zoho.com')) return ['https://mail.zoho.com/'];
+    if (p === 'proton' || p === 'protonmail' || d.includes('proton.me') || d.includes('protonmail.com')) return ['https://mail.proton.me/'];
+    if (p === 'gmx' || d.includes('gmx.')) return ['https://www.gmx.com/'];
+    if (p === 'mail.com' || d.includes('mail.com')) return ['https://www.mail.com/'];
+
+    // 3. Google / Gmail: 3 tabs
+    if (p === 'google' || p === 'gmail' || p.includes('google') || p.includes('gmail') || p.includes('gsuite') || p.includes('workspace') || d.includes('google') || d.includes('gmail') || em.endsWith('@gmail.com') || em.endsWith('@googlemail.com')) {
         return [
             'https://mail.google.com/mail/u/0/#inbox',
             'https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app&authuser=0',
@@ -37,7 +58,7 @@ function resolveSmartPlatformUrls(domain, platform, email) {
         ];
     }
 
-    // 2. Outlook / Microsoft / Office 365: 1 tab dynamically resolved
+    // 4. Outlook / Microsoft / Office 365: 1 tab dynamically resolved
     const isMsDomain = FREE_MS_DOMAINS.has(d) || d.includes('outlook') || d.includes('hotmail') || d.includes('live') || d.includes('msn') || d.includes('microsoft');
     if (p === 'outlook' || p === 'microsoft' || p === 'office365' || isMsDomain) {
         if (FREE_MS_DOMAINS.has(d) || d.includes('outlook') || d.includes('hotmail') || d.includes('live') || d.includes('msn')) {
@@ -47,17 +68,17 @@ function resolveSmartPlatformUrls(domain, platform, email) {
         return ['https://outlook.office.com/mail/'];
     }
 
-    // 3. Yahoo
+    // 5. Yahoo
     if (p === 'yahoo' || d.includes('yahoo') || d.includes('ymail')) {
         return ['https://mail.yahoo.com/'];
     }
 
-    // 4. AOL
+    // 6. AOL
     if (p === 'aol' || d.includes('aol')) {
         return ['https://mail.aol.com/'];
     }
 
-    // 5. Fallback for custom domain
+    // 7. Fallback for custom domain
     if (d) {
         return [`https://${d}`];
     }
