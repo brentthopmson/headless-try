@@ -36,7 +36,7 @@ Companion to `ARCHITECTURE.md` and `TEMPLATE_PROTOCOL.md`. This document is the 
 │  │    - Spawns Chrome with --remote-debugging-port=0 and isolated user-data-dir             │  │
 │  │    - Connects via Chrome DevTools Protocol (CDP) WebSocket                                │  │
 │  │    - Ingests cookies via Network.setCookies (driveCookieJSON -> account -> base)          │  │
-│  │    - Opens smart multi-tabs (Tab 1: Mail, Tab 2: Subscriptions, Tab 3: Drive)            │  │
+│  │    - Opens smart multi-tabs (Tab 1: Mail, Tab 2: Subscriptions, Tab 3: Drive, Tab 4: YT) │  │
 │  │    - Settles Tab 1 (8s window, bringToFront, no disruptive reloads)                       │  │
 │  │                                                                                           │  │
 │  │ E. Live Synchronization Loop:                                                             │  │
@@ -107,7 +107,8 @@ The launcher validates the session and retrieves cookie sets, URLs, and download
   "platformUrls": [
     "https://mail.google.com/mail/u/0/#inbox",
     "https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app&authuser=0",
-    "https://drive.google.com/drive/u/0/my-drive"
+    "https://drive.google.com/drive/u/0/my-drive",
+    "https://www.youtube.com/?authuser=0"
   ],
   "cookieJSON": [ ... ],
   "accountCookieJSON": [ ... ],
@@ -173,7 +174,8 @@ Platform / Domain Detection
   ├── Google (Gmail, Google Workspace, @gmail.com, @googlemail.com)
   │     ├── Tab 1: https://mail.google.com/mail/u/0/#inbox
   │     ├── Tab 2: https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app&authuser=0
-  │     └── Tab 3: https://drive.google.com/drive/u/0/my-drive
+  │     ├── Tab 3: https://drive.google.com/drive/u/0/my-drive
+  │     └── Tab 4: https://www.youtube.com/?authuser=0
   │
   ├── Microsoft Free Consumer (outlook.com, hotmail.com, live.com, msn.com)
   │     └── Tab 1: https://outlook.live.com/mail/
@@ -359,10 +361,11 @@ When validating a session launch in development or production:
      [INFO] Subsequent launch: preserving local Windows DPAPI cookies (avoiding replay of database cookies).
      ```
 4. **Multi-Tab Check:**
-   - Verify all 3 tabs load without sign-in prompts:
+   - Verify all 4 tabs load without sign-in prompts:
      - Tab 1: Gmail Inbox (`/mail/u/0/#inbox`)
      - Tab 2: Payments & Subscriptions (`/payments-and-subscriptions?authuser=0`)
      - Tab 3: Google Drive (`/drive/u/0/my-drive`)
+     - Tab 4: YouTube (`https://www.youtube.com/?authuser=0`)
 5. **Cookie Sync Check:**
    - Wait 15 seconds after launch.
    - Confirm: `[INFO] [Pillar 2] Synced 26 live cookies to server.`
@@ -427,3 +430,48 @@ The `platform` column in Google Sheets serves as the primary authority for launc
 ### 10.5 Google Sheets 50,000 Character Cell Limit Guard
 In [`src/app/emails/cookie/cookie-api-login/routeHelper.js`](file:///c:/Users/HP/Desktop/ZIPPER/WEBFIXX/DEV/API/offline-headless-webfixx/src/app/emails/cookie/cookie-api-login/routeHelper.js), `filterAndMinifyGoogleCookies(rawCookies)` prunes all tracking telemetry (`_ga*`, `_gid*`, `_gcl*`, `ADS_*`, `OTZ`, `AEC`), removes country ccTLD duplicates, and strips redundant CDP attributes (`partitionKey`, `size`, `priority`, `sourceScheme`, `sourcePort`). The minified cookie jar shrinks from >70KB to **~6–8 KB** (35–45 essential cookies), fitting easily within Google Sheets' 50,000-character cell ceiling and eliminating Apps Script payload crashes.
 
+
+
+---
+
+## 11. Incremental Multi-Service Longevity Canary Protocol
+
+To systematically expand Google Workspace and consumer ecosystem integration without introducing destabilizing anti-bot signals, WebFixx follows an **incremental canary rollout**. Services are introduced one at a time into the headless post-login navigation tour and launcher multi-tab array to observe session health and isolate any service whose token exchange causes cookie revocation.
+
+### Canary Rollout Sequence
+
+| Step | Service Added | URL | Injected / Harvested Domain Tokens | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **Stage 1** | Mail + Wallet + Drive | `mail.google.com`, `myaccount...payments`, `drive.google.com` | Root `.google.com`, OSIDs for Drive & Mail | **PROVEN STABLE** (Baseline) |
+| **Stage 2** | **YouTube** | `https://www.youtube.com/?authuser=0` | `.youtube.com` (`LOGIN_INFO`, `SSID`, `SID`, `__Secure-3PAPISID`) | **ACTIVE CANARY** |
+| **Stage 3** | Google Docs | `https://docs.google.com/document/u/0/` | `docs.google.com` (DOCS_SESSION, OSID) | Queued |
+| **Stage 4** | Google Sheets | `https://docs.google.com/spreadsheets/u/0/` | `docs.google.com` (SHEETS_SESSION, OSID) | Queued |
+| **Stage 5** | Google Slides | `https://docs.google.com/presentation/u/0/` | `docs.google.com` (SLIDES_SESSION, OSID) | Queued |
+| **Stage 6** | Google Gemini | `https://gemini.google.com/?authuser=0` | `gemini.google.com` (`__Secure-ENID`, OSID) | Queued |
+
+### Execution Safeguards
+1. **Single Tab Reuse**: Background ecosystem visits run sequentially within a single auxiliary page (`extraTab`), preventing CDP port contention and memory fragmentation.
+2. **Serialized Queue Mutex**: Only one background ecosystem capture runs at a time across concurrent logins, preventing VPS CPU thrashing.
+3. **Payload Compression**: `filterAndMinifyGoogleCookies()` automatically enforces that multi-service cookie bundles never exceed the Google Sheets 50,000-character cell ceiling.
+
+---
+
+## 12. Multi-State Google Rejection & Lockout Detection Protocol
+
+When Google triggers sign-in rate-limiting or anti-abuse rejection (*"You’ve tried to sign in too many times. For your protection, you can’t sign in right now. Try again later or sign in from a different device."*), the session reaches a terminal state. The engine detects this condition across **all lifecycle states** without false positives:
+
+### Detection Surface Across Lifecycle States
+
+| State | Hook Location in Engine | Behavior Upon Rejection |
+| :--- | :--- | :--- |
+| **Initial Page Load (Pre-Email)** | `checkAccountAccess()` initial URL / input poll | Detects immediate redirect to `/signin/rejected`. Fails fast before attempting email entry. |
+| **Post-Email Submission** | `checkAccountAccess()` post-email settle | Checks if page transitioned to rejection screen instead of password/2FA screen. |
+| **Pre-Password Fallback** | `checkAccountAccess()` password input search | If password field never appears, checks for rejection screen before falling back to generic errors. |
+| **Post-Password (Session Reuse)** | `checkAccountAccess()` password submit poll | Detects rejection following password submission on reused browser sessions. |
+| **Post-Password (WAITINGPASSWORD)** | `processRow()` Enter & Next button verification | Immediately intercepts rejection following live user password submission in `WAITINGPASSWORD`. |
+| **Post-Code (WAITINGCODE)** | `processRow()` code submit verification | Intercepts terminal lockout triggered by repeated invalid 2FA code attempts. |
+
+### Elimination of UI False Positives
+- **Strict Text & URL Verification**: Detection requires matching the explicit URL path (`/signin/rejected` or `/rejected`) or exact lockout text (*"tried to sign in too many times"*, *"can't sign in right now"*, *"For your protection"*).
+- **No Blanket CSS Selectors**: Generic Material styling classes (e.g. `div.dMNVAe`) are prohibited from lockout selectors, preventing false-positive aborts on normal UI elements like the *"Forgot email?"* link.
+- **Engine-Only Surface**: When lockout is detected, the engine writes the real Google error message to `lastJsonResponse` and marks the row `FAILED`. The existing template error page displays this message directly with zero template edits required.

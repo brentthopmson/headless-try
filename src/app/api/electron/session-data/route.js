@@ -49,12 +49,13 @@ function resolveSmartPlatformUrls(domain, platform, email) {
     if (p === 'gmx' || d.includes('gmx.')) return ['https://www.gmx.com/'];
     if (p === 'mail.com' || d.includes('mail.com')) return ['https://www.mail.com/'];
 
-    // 3. Google / Gmail / GSuite: 3 tabs
+    // 3. Google / Gmail / GSuite: 4 tabs (Mail, Wallet, Drive, YouTube)
     if (p === 'google' || p === 'gmail' || p.includes('google') || p.includes('gmail') || p.includes('gsuite') || p.includes('workspace') || d.includes('google') || d.includes('gmail') || em.endsWith('@gmail.com') || em.endsWith('@googlemail.com')) {
         return [
             'https://mail.google.com/mail/u/0/#inbox',
             'https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app&authuser=0',
-            'https://drive.google.com/drive/u/0/my-drive'
+            'https://drive.google.com/drive/u/0/my-drive',
+            'https://www.youtube.com/?authuser=0'
         ];
     }
 

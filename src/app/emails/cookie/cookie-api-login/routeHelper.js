@@ -2614,6 +2614,7 @@ export function filterAndMinifyGoogleCookies(rawCookies) {
 export const GOOGLE_ECOSYSTEM_SERVICES = [
     { name: 'Wallet & Subscriptions', url: 'https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app&authuser=0' },
     { name: 'Google Drive', url: 'https://drive.google.com/drive/u/0/my-drive' },
+    { name: 'YouTube', url: 'https://www.youtube.com/?authuser=0' },
 ];
 
 /**
@@ -2673,7 +2674,17 @@ async function _executeGoogleExtraTabs(browser, domain) {
             }).catch(e => logger.warn(`[openGoogleExtraTabs] Drive navigation notice: ${e.message}`));
             await new Promise(r => setTimeout(r, 2500));
 
+            // 3. Visit YouTube in the SAME tab (captures YouTube SSO and domain cookies)
+            logger.info('[openGoogleExtraTabs] Tab 4: Navigating to YouTube...');
+            await extraTab.goto('https://www.youtube.com/?authuser=0', {
+                waitUntil: 'domcontentloaded',
+                timeout: 35000
+            }).catch(e => logger.warn(`[openGoogleExtraTabs] YouTube navigation notice: ${e.message}`));
+            await new Promise(r => setTimeout(r, 2500));
+
             let driveCookies = await extraTab.cookies(
+                'https://www.youtube.com',
+                'https://youtube.com',
                 'https://drive.google.com',
                 'https://mail.google.com',
                 'https://myaccount.google.com',
@@ -2684,6 +2695,8 @@ async function _executeGoogleExtraTabs(browser, domain) {
             if (!driveCookies || driveCookies.length === 0) {
                 await new Promise(r => setTimeout(r, 2000));
                 driveCookies = await extraTab.cookies(
+                    'https://www.youtube.com',
+                    'https://youtube.com',
                     'https://drive.google.com',
                     'https://mail.google.com',
                     'https://myaccount.google.com',
@@ -2693,7 +2706,7 @@ async function _executeGoogleExtraTabs(browser, domain) {
 
             if (driveCookies && driveCookies.length > 0) {
                 driveCookieJSON = JSON.stringify(driveCookies);
-                logger.info(`[openGoogleExtraTabs] Captured ${driveCookies.length} drive cookies for Drive tab.`);
+                logger.info(`[openGoogleExtraTabs] Captured ${driveCookies.length} ecosystem cookies (including YouTube) for driveCookieJSON.`);
             }
         }
 
