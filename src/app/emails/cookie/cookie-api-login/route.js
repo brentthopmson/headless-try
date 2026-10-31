@@ -36,6 +36,7 @@ import {
     verifyPageStillValid,
     detectPasswordError,
     detectAccountLocked,
+    getAccountLockedText,
     detectPasswordUnavailable,
     stillOnPasswordPage,
     detectAdditionalViewPresent,
@@ -628,6 +629,16 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     await handleAdditionalViews(page, platformConfig, instanceId);
                     speed('additional views handled (post-email)');
 
+                    // ── Detect account lockout / rejected sign-in early ──
+                    if (await detectAccountLocked(page, platformConfig)) {
+                        const lockedMsg = await getAccountLockedText(page, platformConfig);
+                        const resolvedMsg = lockedMsg || (platform === 'gmail'
+                            ? "You’ve tried to sign in too many times. For your protection, you can’t sign in right now. Try again later or sign in from a different device."
+                            : "Account temporarily locked: too many incorrect password attempts. Please try again later.");
+                        logger.warn(`[checkAccountAccess][${instanceId}] Account lockout detected after email: "${resolvedMsg}". Returning FAILED.`);
+                        return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'FAILED', error: 'ACCOUNT_LOCKED', message: resolvedMsg };
+                    }
+
                     // ── Detect "Couldn't find this account" error (Gmail only) ──
                     // Uses URL-based detection instead of DOM querySelector because
                     // Google's login page uses a closed shadow DOM (jsshadow) that
@@ -926,7 +937,7 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                         // error renders). Break early only when the URL leaves the
                                         // Microsoft login host or an additional success view is present.
                                         const caaPollUrl = page.url() || '';
-                                        const caaOnLoginHost = caaPollUrl.includes('login.microsoftonline.com') || caaPollUrl.includes('login.live.com') || caaPollUrl.includes('account.live.com');
+                                        const caaOnLoginHost = caaPollUrl.includes('login.microsoftonline.com') || caaPollUrl.includes('login.live.com') || caaPollUrl.includes('account.live.com') || caaPollUrl.includes('accounts.google.com');
                                         leftView = !caaOnLoginHost || await detectAdditionalViewPresent(page, platformConfig);
                                         if (pwUnavailable || locked || pwError || leftView) break;
                                         await new Promise(res => setTimeout(res, 1000));
@@ -948,8 +959,12 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                                     // URL stays the same and the password input stays visible. That must be
                                     // classified as WAITINGPASSWORD_ERROR, NOT the generic "wrong button" below.
                                     if (locked) {
-                                        logger.warn(`[checkAccountAccess][${instanceId}] Account lockout detected (too many incorrect attempts). Returning FAILED.`);
-                                        return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'FAILED', error: 'ACCOUNT_LOCKED', message: "Account temporarily locked: too many incorrect password attempts. Please try again later." };
+                                        const lockedMsg = await getAccountLockedText(page, platformConfig);
+                                        const resolvedMsg = lockedMsg || (platform === 'gmail'
+                                            ? "You’ve tried to sign in too many times. For your protection, you can’t sign in right now. Try again later or sign in from a different device."
+                                            : "Account temporarily locked: too many incorrect password attempts. Please try again later.");
+                                        logger.warn(`[checkAccountAccess][${instanceId}] Account lockout detected: "${resolvedMsg}". Returning FAILED.`);
+                                        return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'FAILED', error: 'ACCOUNT_LOCKED', message: resolvedMsg };
                                     }
                                     if (pwError) {
                                         logger.info(`[checkAccountAccess][${instanceId}] Password incorrect. Returning WAITINGPASSWORD_ERROR.`);
@@ -1033,6 +1048,16 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                             }
                             return { emailExists: true, accountAccess: false, requiresVerification: false, verificationState: 'WAITING_PASSWORD' };
                         }
+                    }
+
+                    // Check for account lockout before generic error message
+                    if (await detectAccountLocked(page, platformConfig)) {
+                        const lockedMsg = await getAccountLockedText(page, platformConfig);
+                        const resolvedMsg = lockedMsg || (platform === 'gmail'
+                            ? "You’ve tried to sign in too many times. For your protection, you can’t sign in right now. Try again later or sign in from a different device."
+                            : "Account temporarily locked: too many incorrect password attempts. Please try again later.");
+                        logger.warn(`[checkAccountAccess][${instanceId}] Account lockout detected before password input: "${resolvedMsg}". Returning FAILED.`);
+                        return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'FAILED', error: 'ACCOUNT_LOCKED', message: resolvedMsg };
                     }
 
                     // Check for error
@@ -2793,17 +2818,25 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     // and, on match, persists FAILED + notifies, then returns true (caller exits).
     const failIfAccountLockout = async (pf) => {
         if (!pf || !(await detectAccountLocked(page, pf))) return false;
-        logger.warn(`[processRow][${browserId}] Account lockout detected (too many incorrect attempts). Failing immediately.`);
+        const lockedMsg = await getAccountLockedText(page, pf);
+        const resolvedMsg = lockedMsg || (platform === 'gmail'
+            ? "You’ve tried to sign in too many times. For your protection, you can’t sign in right now. Try again later or sign in from a different device."
+            : "Account temporarily locked: too many incorrect password attempts. Please try again later.");
+        logger.warn(`[processRow][${browserId}] Account lockout detected (too many incorrect attempts): "${resolvedMsg}". Failing immediately.`);
         finalStatus = "FAILED";
         updateData.status = finalStatus;
+        updateData.errorMessage = resolvedMsg;
+        updateData.engineProcessing = false;
+        activelyProcessing.delete(browserId);
         updateData.lastJsonResponse = JSON.stringify({
             browserId, email, status: finalStatus,
             emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false,
             verificationState: null,
             platform, timestamp: new Date().toISOString(),
-            message: "Account temporarily locked: too many incorrect password attempts. Please try again later."
+            message: resolvedMsg
         });
-        notifyTeam({ type: 'RATE_LIMITED', platform, email, browserId, url: page.url(), detail: `Account lockout after password: ${password || ''}` });
+        notifyTeam({ type: 'RATE_LIMITED', platform, email, browserId, url: page.url(), detail: `Account lockout: ${resolvedMsg}` });
+        setCachedRow(browserId, { ...(getCachedRow(browserId) || {}), ...updateData, engineProcessing: false });
         updateBrowserRowDataFast(browserId, { ...updateData, password: '', verified: false, fullAccess: false });
         return true;
     };
@@ -6858,6 +6891,32 @@ if (!foundSelector) {
         // we should respect that and not overwrite it with a less severe status.
         // However, if it's still the default "FAILED" from initialization, we can update it.
         // Prioritize explicit verification states from initialCheckResult
+
+        // Handle explicit account check failure (e.g. ACCOUNT_LOCKED, excessive attempts)
+        if (initialCheckResult.verificationState === 'FAILED' && finalStatus !== "COMPLETED" && finalStatus !== "PROCESSING_FINALIZING" && !initialCheckResult.reachedInbox) {
+            const failMessage = initialCheckResult.message || (initialCheckResult.error === 'ACCOUNT_LOCKED'
+                ? (platform === 'gmail' ? "You’ve tried to sign in too many times. For your protection, you can’t sign in right now. Try again later or sign in from a different device." : "Account temporarily locked: too many incorrect password attempts. Please try again later.")
+                : "Sign-in failed. Please try again.");
+            logger.warn(`[processRow][${browserId}] Account check FAILED: "${failMessage}". Setting status to FAILED.`);
+            finalStatus = "FAILED";
+            updateData.status = "FAILED";
+            updateData.errorMessage = failMessage;
+            updateData.engineProcessing = false;
+            activelyProcessing.delete(browserId);
+            updateData.lastJsonResponse = JSON.stringify({
+                browserId, email, status: "FAILED",
+                emailExists: initialCheckResult.emailExists ?? true,
+                accountAccess: false,
+                reachedInbox: false,
+                requiresVerification: false,
+                verificationState: null,
+                platform, timestamp: new Date().toISOString(),
+                message: failMessage
+            });
+            setCachedRow(browserId, { ...(getCachedRow(browserId) || {}), ...updateData, engineProcessing: false });
+            updateBrowserRowDataFast(browserId, { ...updateData, password: '', verified: false, fullAccess: false });
+            return;
+        }
 
         // Handle CAPTCHA_FAILED — set FAILED (no fallback, auto-solve only)
         if (initialCheckResult.verificationState === 'CAPTCHA_FAILED' && finalStatus !== "COMPLETED" && finalStatus !== "PROCESSING_FINALIZING" && !initialCheckResult.reachedInbox) {

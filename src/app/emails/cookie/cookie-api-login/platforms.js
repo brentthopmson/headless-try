@@ -36,7 +36,13 @@ export const platformConfigs = {
             // Google "Verify it's you — Enter a phone number to get a text message
             // with a verification code" screen (challenge/iap): phone number entry.
             phoneNumberInput: "#phoneNumberId",
-            phoneNumberNext: "#idvanyphonecollectNext"
+            phoneNumberNext: "#idvanyphonecollectNext",
+            accountLocked: [
+                "div[jsname='x2WF9']",
+                "div.dMNVAe",
+                "//*[contains(., \"tried to sign in too many times\")]",
+                "//*[contains(., \"can't sign in right now\") or contains(., \"can’t sign in right now\")]"
+            ]
         },
         captchaConfig: {
             urlPatterns: [/\/challenge\/recaptcha/, /\/signin\/challenge\//],
