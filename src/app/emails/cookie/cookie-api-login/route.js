@@ -518,6 +518,14 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                             inputFound = true;
                             logger.info(`[checkAccountAccess][${instanceId}] Email input found via outlook.live.com fallback. URL: ${page.url()}`);
                         } catch (e3) {
+                            if (await detectAccountLocked(page, platformConfig)) {
+                                const lockedMsg = await getAccountLockedText(page, platformConfig);
+                                const resolvedMsg = lockedMsg || (platform === 'gmail'
+                                    ? "You’ve tried to sign in too many times. For your protection, you can’t sign in right now. Try again later or sign in from a different device."
+                                    : "Account temporarily locked: too many incorrect password attempts. Please try again later.");
+                                logger.warn(`[checkAccountAccess][${instanceId}] Account lockout detected on initial page load: "${resolvedMsg}". Returning FAILED.`);
+                                return { emailExists: true, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: 'FAILED', error: 'ACCOUNT_LOCKED', message: resolvedMsg };
+                            }
                             logger.warn(`[checkAccountAccess][${instanceId}] Input not found after fallback. Returning RETRY_TECHNICAL (no wrong-email signal).`);
                         }
                     }
@@ -5846,6 +5854,7 @@ if (!foundSelector) {
                         }
 
                             if (codeEntryAttempted) {
+                                if (await failIfAccountLockout(platformConfig)) return;
                                 // Check for codeError immediately after submission
                                 let codeErrorSelector = platformConfig.selectors?.codeError;
                                 if (foundCodeSelector === platformConfig.selectors?.authenticatorCodeInput) {

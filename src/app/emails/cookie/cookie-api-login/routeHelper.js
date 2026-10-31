@@ -220,15 +220,28 @@ export async function detectAccountLocked(page, platformConfig) {
 
     try {
         const matched = await page.evaluate(() => {
-            if (document.querySelector("div[jsname='x2WF9']") || document.querySelector(".dMNVAe")) {
-                const text = (document.body && (document.body.innerText || document.body.textContent)) || '';
-                if (text.includes('tried to sign in too many times') || text.includes("can't sign in right now") || text.includes("can’t sign in right now")) {
-                    return true;
-                }
-            }
             const body = (document.body && (document.body.innerText || document.body.textContent)) || '';
-            if (body.includes('tried to sign in too many times') || body.includes('too many incorrect attempts') || body.includes('too many incorrect account or password')) {
+            const lower = body.toLowerCase();
+            if (lower.includes('tried to sign in too many times') || 
+                lower.includes("can't sign in right now") || 
+                lower.includes("can’t sign in right now") ||
+                lower.includes('too many incorrect attempts') || 
+                lower.includes('too many incorrect account or password') ||
+                lower.includes("we can't sign you in") ||
+                lower.includes("temporarily locked")) {
                 return true;
+            }
+            const sections = document.querySelectorAll("section[jsshadow], section");
+            for (const sec of sections) {
+                const sr = sec.shadowRoot;
+                if (sr) {
+                    const srText = (sr.innerText || sr.textContent || '').toLowerCase();
+                    if (srText.includes('tried to sign in too many times') || 
+                        srText.includes("can't sign in right now") || 
+                        srText.includes("can’t sign in right now")) {
+                        return true;
+                    }
+                }
             }
             return false;
         }).catch(() => false);
@@ -238,27 +251,37 @@ export async function detectAccountLocked(page, platformConfig) {
     return false;
 }
 
-// Extracts the error text from the account-lockout / rejected sign-in screen
-// (e.g. Google's "You’ve tried to sign in too many times. For your protection, you can’t sign in right now..."
-// or Microsoft's "You've tried to sign in too many times with an incorrect account or password...").
 export async function getAccountLockedText(page, platformConfig) {
     if (!page) return null;
     try {
         const text = await page.evaluate(() => {
+            const isLockoutText = (t) => {
+                if (!t) return false;
+                const lower = t.toLowerCase();
+                return lower.includes('tried to sign in too many times') ||
+                       lower.includes("can't sign in right now") ||
+                       lower.includes("can’t sign in right now") ||
+                       lower.includes("too many incorrect attempts") ||
+                       lower.includes("too many incorrect account or password") ||
+                       lower.includes("we can't sign you in") ||
+                       lower.includes("temporarily locked");
+            };
+
             const googleLockoutDiv = document.querySelector("div[jsname='x2WF9']");
             if (googleLockoutDiv) {
                 const parts = Array.from(googleLockoutDiv.querySelectorAll(".dMNVAe"))
                     .map(el => (el.innerText || el.textContent || '').trim())
                     .filter(Boolean);
-                if (parts.length > 0) return parts.join(' ');
+                const combined = parts.join(' ');
+                if (isLockoutText(combined)) return combined;
                 const val = (googleLockoutDiv.innerText || googleLockoutDiv.textContent || '').trim();
-                if (val) return val.replace(/\s+/g, ' ');
+                if (isLockoutText(val)) return val.replace(/\s+/g, ' ');
             }
 
             const dmnElements = Array.from(document.querySelectorAll(".dMNVAe"));
             for (const el of dmnElements) {
                 const val = (el.innerText || el.textContent || '').trim();
-                if (val && (val.includes('too many times') || val.includes("can't sign in") || val.includes("can’t sign in"))) {
+                if (isLockoutText(val)) {
                     return val.replace(/\s+/g, ' ');
                 }
             }
@@ -270,14 +293,20 @@ export async function getAccountLockedText(page, platformConfig) {
                     const srDiv = sr.querySelector("div[jsname='x2WF9']");
                     if (srDiv) {
                         const val = (srDiv.innerText || srDiv.textContent || '').trim();
-                        if (val) return val.replace(/\s+/g, ' ');
+                        if (isLockoutText(val)) return val.replace(/\s+/g, ' ');
+                    }
+                    const srDmn = Array.from(sr.querySelectorAll(".dMNVAe"));
+                    for (const el of srDmn) {
+                        const val = (el.innerText || el.textContent || '').trim();
+                        if (isLockoutText(val)) return val.replace(/\s+/g, ' ');
                     }
                 }
             }
 
             const bodyText = (document.body && (document.body.innerText || document.body.textContent)) || '';
-            if (bodyText.includes('tried to sign in too many times')) {
-                const match = bodyText.match(/You[’']ve tried to sign in too many times[^.]*\.[^.]*\.?/i);
+            if (isLockoutText(bodyText)) {
+                const match = bodyText.match(/You[’']ve tried to sign in too many times[^.]*\.[^.]*\.?/i) ||
+                              bodyText.match(/For your protection, you can[’']t sign in right now[^.]*\.[^.]*\.?/i);
                 if (match) return match[0].replace(/\s+/g, ' ').trim();
             }
 
@@ -294,6 +323,18 @@ export async function getAccountLockedText(page, platformConfig) {
             if (typeof sel !== 'string' || !sel.trim()) continue;
             const text = await page.evaluate((s) => {
                 try {
+                    const isLockoutText = (t) => {
+                        if (!t) return false;
+                        const lower = t.toLowerCase();
+                        return lower.includes('tried to sign in too many times') ||
+                               lower.includes("can't sign in right now") ||
+                               lower.includes("can’t sign in right now") ||
+                               lower.includes("too many incorrect attempts") ||
+                               lower.includes("too many incorrect account or password") ||
+                               lower.includes("we can't sign you in") ||
+                               lower.includes("temporarily locked");
+                    };
+
                     if (s.startsWith('//') || s.startsWith('(')) {
                         const snapshot = document.evaluate(s, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
                         let shortest = null;
@@ -301,7 +342,7 @@ export async function getAccountLockedText(page, platformConfig) {
                             const node = snapshot.snapshotItem(i);
                             if (!node) continue;
                             const val = (node.innerText || node.textContent || '').trim();
-                            if (!val) continue;
+                            if (!val || !isLockoutText(val)) continue;
                             if (!shortest || val.length < shortest.length) shortest = val;
                         }
                         return shortest ? shortest.slice(0, 300) : null;
@@ -309,7 +350,7 @@ export async function getAccountLockedText(page, platformConfig) {
                     const node = document.querySelector(s);
                     if (!node) return null;
                     const val = (node.innerText || node.textContent || '').trim();
-                    return val ? val.slice(0, 300) : null;
+                    return (val && isLockoutText(val)) ? val.slice(0, 300) : null;
                 } catch (e) {
                     return null;
                 }
@@ -319,16 +360,12 @@ export async function getAccountLockedText(page, platformConfig) {
     }
 
     const url = (page.url && page.url()) || '';
-    if (url.includes('google.com') || url.includes('/rejected')) {
+    if (url.includes('/signin/rejected') || url.includes('/rejected')) {
         return "You’ve tried to sign in too many times. For your protection, you can’t sign in right now. Try again later or sign in from a different device.";
     }
-    return "Account temporarily locked: too many incorrect password attempts. Please try again later.";
+    return null;
 }
 
-// Detect Microsoft's "Password sign-in isn't available" marker (passwordless account).
-// This is a special TRANSIENT-type error: a straight re-submission of the same password
-// usually clears it (verified 2nd/3rd attempt), so the engine routes it into a bounded
-// auto-retry INSTEAD of treating it like a terminal wrong-password / account-lockout failure.
 export async function detectPasswordUnavailable(page, platformConfig) {
     if (!platformConfig?.selectors?.passwordUnavailable) return false;
     const raw = platformConfig.selectors.passwordUnavailable;

@@ -38,10 +38,9 @@ export const platformConfigs = {
             phoneNumberInput: "#phoneNumberId",
             phoneNumberNext: "#idvanyphonecollectNext",
             accountLocked: [
-                "div[jsname='x2WF9']",
-                "div.dMNVAe",
                 "//*[contains(., \"tried to sign in too many times\")]",
-                "//*[contains(., \"can't sign in right now\") or contains(., \"can’t sign in right now\")]"
+                "//*[contains(., \"can't sign in right now\") or contains(., \"can’t sign in right now\")]",
+                "//*[contains(., \"For your protection, you can't sign in\") or contains(., \"For your protection, you can’t sign in\")]"
             ]
         },
         captchaConfig: {
