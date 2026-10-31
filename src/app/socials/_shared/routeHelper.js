@@ -254,8 +254,9 @@ export function sanitizeGoogleCookiesForHeadless(cookies) {
         const name = cookie.name;
         const dom = (cookie.domain || '').toLowerCase();
         
-        // 1. Strip machine-bound cryptographic timestamps and signatures
-        if (name === '__Secure-1PSIDTS' || name === '__Secure-3PSIDTS') return false;
+        // NOTE: __Secure-1PSIDTS and __Secure-3PSIDTS MUST BE PRESERVED.
+        // Modern Google requires PSIDTS paired with PSID; omitting it flags the session
+        // as "Action required" and forces re-authentication.
         if (name === 'SIDCC' || name === '__Secure-1PSIDCC' || name === '__Secure-3PSIDCC') return false;
         if (name === '__Secure-1PSIDRTS' || name === '__Secure-3PSIDRTS') return false;
 
