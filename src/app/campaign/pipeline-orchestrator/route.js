@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { getSelfUrl, getSelfUrlWithFallback, getSelfId, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
-import { getCampaignSettings, updateCampaignSettings, isCampaignPaused } from "../_shared/pipelineUtils.js";
+import { getCampaignSettings, updateCampaignSettings, isCampaignPaused, classifyStageFailure, recordStageError, clearStageError, getRetryBudget } from "../_shared/pipelineUtils.js";
 import { acquireCampaignLock, releaseCampaignLock } from "../../../utils/campaignLock.js";
 import { getCampaignLimits } from "../../socials/_shared/limits.js";
 import { getSheetDataApi } from "../../api/googlesheets.js";
@@ -63,6 +63,7 @@ function resolveCurrentStage(settings) {
       if (status === "completed") continue;
       if (status === "monitoring") continue;
       if (status === "processing") return { stage, action: "wait" };
+      if (status === "retry") return { stage, action: "retry" };
       if (status === "failed") return { stage, action: "fail" };
     }
 
@@ -281,6 +282,7 @@ export async function POST(request) {
   try {
     await identifySelfFromHost(request.headers.get('host'));
     const body = await request.json();
+    const retry = body.retry;
     ({ campaignId } = body);
 
     if (!campaignId) {
@@ -304,6 +306,27 @@ export async function POST(request) {
 
     const { settings } = campaignData;
     settings._campaignStatus = campaignData.status;
+
+    // Expiry guard
+    try {
+      const firstStartedAt = settings.firstStartedAt || settings.startedAt;
+      let expiresAt = settings.expiresAt || null;
+      if (!expiresAt && firstStartedAt && settings.durationDays) {
+        const ms = new Date(firstStartedAt).getTime() + parseInt(settings.durationDays, 10) * 86400000;
+        expiresAt = new Date(ms).toISOString();
+      }
+      if (expiresAt && Date.now() >= new Date(expiresAt).getTime()) {
+        return NextResponse.json({ success: false, error: 'campaign_expired', message: 'This campaign has expired and cannot be continued.' }, { status: 400 });
+      }
+    } catch {}
+
+
+    // Track first start time
+    try {
+      if (campaignData.status !== 'running' && settings.firstStartedAt) {
+        // keep existing
+      }
+    } catch {}
 
     // Check Campaign Duration Window (immutable per-campaign durationDays stored at creation)
     const headers = campaignData.headers || [];
@@ -393,19 +416,53 @@ export async function POST(request) {
     const { stage, action } = resolution;
     const config = STAGE_CONFIG[stage];
 
+    if (action === "retry") {
+      const budget = await getRetryBudget();
+      const attempts = typeof settings.retryAttempts === 'number' ? settings.retryAttempts : 0;
+      if (attempts < budget) {
+        await updateCampaignSettings(campaignId, {
+          ...(config.statusField ? { [config.statusField]: "processing" } : {}),
+          status: "running",
+          retryAttempts: attempts + 1,
+        });
+        // fall through to dispatch below
+      } else {
+        await recordStageError(campaignId, { stage, reason: settings.lastError?.reason || `${config.label} failed`, kind: 'transient' });
+        await updateCampaignSettings(campaignId, {
+          ...(config.statusField ? { [config.statusField]: "failed" } : {}),
+          status: "failed",
+          lastError: { ...(settings.lastError || {}), reason: `retry budget exhausted (${budget}): ${settings.lastError?.reason || ''}` },
+        });
+        await notifyCampaignFailure({
+          campaignId,
+          stage,
+          channelType: 'campaign',
+          failedCount: 1,
+          reason: `${config.label} stage failed after retries`,
+          details: { stageStatus: settings[config.statusField], retryBudget: budget },
+        });
+        return NextResponse.json({
+          success: false,
+          message: `${config.label} stage failed after retries`,
+          failedStage: stage,
+          error: true,
+        });
+      }
+    }
+
     if (action === "fail") {
-      // Terminal: never auto-reset+re-trigger here (the old fall-through
-      // retried the same failing stage on every poll — infinite loop).
-      // The row shows 'failed' so the UI can surface it; a manual re-trigger
-      // is required to clear the stage status and retry.
+      // Terminal: never auto-reset+re-trigger here unless explicitly marked retry.
       log.info(`Stage ${config.label} is failed — marking campaign failed`);
+      if (!settings.lastError) {
+        await recordStageError(campaignId, { stage, reason: `${config.label} stage failed`, kind: 'permanent' });
+      }
       await notifyCampaignFailure({
         campaignId,
         stage,
         channelType: 'campaign',
         failedCount: 1,
         reason: `${config.label} stage failed`,
-        details: { stageStatus: settings[config.statusField] },
+        details: { stageStatus: config.statusField ? settings[config.statusField] : null },
       });
       await updateCampaignSettings(campaignId, { status: "failed" });
       return NextResponse.json({
@@ -425,7 +482,7 @@ export async function POST(request) {
     }
 
     // Race condition guard: if stage is already processing, skip duplicate call
-    if (config.statusField && settings[config.statusField] === "processing") {
+    if (config.statusField && settings[config.statusField] === "processing" && action !== "retry") {
       log.info(`${config.label} already processing, skipping duplicate call`);
       return NextResponse.json({ success: true, message: `${config.label} already processing`, waitingStage: stage });
     }
@@ -476,6 +533,42 @@ export async function POST(request) {
           });
         }
 
+        const kind = classifyStageFailure(result?.error || result?.message || result);
+        if (kind === 'limit' || result?.limitReached) {
+          await clearStageError(campaignId);
+          await updateCampaignSettings(campaignId, { status: "Limit Reached" });
+          return NextResponse.json({
+            success: true,
+            message: `${config.label} stopped: limit reached`,
+            limitReached: true,
+            completedStage: stage,
+          });
+        }
+        if (kind === 'transient') {
+          await updateCampaignSettings(campaignId, {
+            ...(config.statusField ? { [config.statusField]: "retry" } : {}),
+            status: "error",
+          });
+          await recordStageError(campaignId, { stage, reason: result?.error || result?.message || `${config.label} stage failed`, kind: 'transient' });
+          await notifyCampaignFailure({
+            campaignId,
+            stage,
+            channelType: 'campaign',
+            failedCount: 1,
+            reason: `transient: ${result?.error || result?.message || `${config.label} stage failed`}`,
+            details: result,
+          });
+          return NextResponse.json({
+            success: false,
+            message: `${config.label} stage failed (retrying)`,
+            failedStage: stage,
+            error: true,
+            retryable: true,
+            details: result,
+          });
+        }
+
+        await recordStageError(campaignId, { stage, reason: result?.error || result?.message || `${config.label} stage failed`, kind: 'permanent' });
         await notifyCampaignFailure({
           campaignId,
           stage,
@@ -514,6 +607,7 @@ export async function POST(request) {
       // 'Limit Reached' instead of polling forever. Idempotent — execute and
       // interact already write the same value themselves.
       if (result.limitReached) {
+        await clearStageError(campaignId);
         await updateCampaignSettings(campaignId, { status: "Limit Reached" });
         return NextResponse.json({
           success: true,
@@ -523,11 +617,18 @@ export async function POST(request) {
         });
       }
 
+      // Clear errors on successful stage completion
+      try {
+        if (config.statusField && result && result.success) {
+          await clearStageError(campaignId);
+        }
+      } catch {}
+
       const updatedData = await getCampaignSettings(campaignId);
       if (updatedData) {
         updatedData.settings._campaignStatus = updatedData.status;
         const nextResolution = resolveCurrentStage(updatedData.settings);
-        if (nextResolution && nextResolution.action === "run" && nextResolution.stage !== stage) {
+        if (nextResolution && (nextResolution.action === "run" || nextResolution.action === "retry") && nextResolution.stage !== stage) {
           const nextConfig = STAGE_CONFIG[nextResolution.stage];
           log.info(`Auto-advancing to ${nextConfig.label}`);
           const nextResult = await triggerStage(campaignId, nextResolution.stage, updatedData.settings, scope);

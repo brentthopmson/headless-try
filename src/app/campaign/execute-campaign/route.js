@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSheetsAuthClient, updateSheetRowApi, getSheetDataApi } from "../../api/googlesheets.js";
-import { google } from "googleapis";
+import { downloadCsvText, updateSheetRowApi, getSheetDataApi } from "../../api/googlesheets.js";
 import logger from "../../../utils/logger.js";
 import { detectProvider } from "../../emails/_shared/wireSender.js";
 import { validateSmtpConfigs, createSmtpSendCap, sendWarmupEmail, sendCampaignEmail } from "../../shooting/email/campaignSender.js";
@@ -548,22 +547,10 @@ export async function POST(request) {
         throw new Error("Invalid CSV contact list fileUrl");
       }
 
-      const authClient = await getSheetsAuthClient();
-      if (!authClient) {
-        throw new Error("Failed to authenticate with Google APIs");
-      }
-      const drive = google.drive({ version: "v3", auth: authClient });
-
       log.info(` Downloading CSV file for campaign sending: ${fileId}`);
-      const driveFile = await drive.files.get({
-        fileId: fileId,
-        alt: "media"
-      });
-
-      const csvContent = driveFile.data;
-      if (typeof csvContent !== "string") {
-        throw new Error("Failed to download CSV as text content");
-      }
+      const dl = await downloadCsvText(fileId);
+      if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
+      const csvContent = dl.content;
 
       // Step 3a: Normalize CSV to 88-column boilerplate
       const normalizedRows = normalizeAndMapCSV(csvContent, STANDARD_88_COLUMNS);
@@ -1066,15 +1053,11 @@ export async function POST(request) {
       if (socialFileUrl) {
         socialFileId = extractFileId(socialFileUrl);
         if (socialFileId) {
-          const auth = await getSheetsAuthClient();
-          if (auth) {
-            drive = google.drive({ version: "v3", auth });
-            log.info(` Downloading social CSV file: ${socialFileId}`);
-            const dFile = await drive.files.get({ fileId: socialFileId, alt: "media" });
-            if (typeof dFile.data === "string") {
-              const normalized = normalizeAndMapCSV(dFile.data, STANDARD_88_COLUMNS);
-              if (normalized.length > 1) socialCsvRows = normalized;
-            }
+          log.info(` Downloading social CSV file: ${socialFileId}`);
+          const sdl = await downloadCsvText(socialFileId);
+          if (sdl.success && typeof sdl.content === "string") {
+            const normalized = normalizeAndMapCSV(sdl.content, STANDARD_88_COLUMNS);
+            if (normalized.length > 1) socialCsvRows = normalized;
           }
         }
       }

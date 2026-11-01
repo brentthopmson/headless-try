@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import { identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { extractFileId, parseCSV, stringifyCSV, getCampaignSettings, mergeTemplate } from "../_shared/pipelineUtils.js";
-import { getDriveClient } from "../../../utils/multiServerDispatcher.js";
+import { downloadCsvText } from "../../api/googlesheets.js";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -51,22 +51,14 @@ export async function POST(request) {
       });
     }
 
-    const drive = await getDriveClient();
-    if (!drive) {
+    const dl = await downloadCsvText(fileId);
+    if (!dl.success) {
       return NextResponse.json(
-        { success: false, error: "Failed to get Drive client" },
+        { success: false, error: `Failed to download CSV: ${dl.error}` },
         { status: 500 }
       );
     }
-
-    const driveFile = await drive.files.get({ fileId, alt: "media" });
-    const csvContent = driveFile.data;
-    if (typeof csvContent !== "string") {
-      return NextResponse.json(
-        { success: false, error: "CSV file is not text" },
-        { status: 400 }
-      );
-    }
+    const csvContent = dl.content;
 
     const rows = parseCSV(csvContent);
     if (rows.length <= 1) {

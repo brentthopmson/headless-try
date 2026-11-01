@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSheetsAuthClient } from "../../api/googlesheets.js";
-import { google } from "googleapis";
+import { downloadCsvText } from "../../api/googlesheets.js";
 import axios from "axios";
 import * as cheerio from "cheerio";
 import MultiProviderAI from "../../../utils/multiProviderAI.js";
@@ -190,12 +189,6 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
     return NextResponse.json({ success: false, error: "Invalid fileUrl or Drive file ID" }, { status: 400 });
   }
 
-  const authClient = await getSheetsAuthClient();
-  if (!authClient) {
-    return NextResponse.json({ success: false, error: "Failed to authenticate with Google APIs" }, { status: 500 });
-  }
-  const drive = google.drive({ version: "v3", auth: authClient });
-
   // Read batch limits from SETTINGS, falling back to performance level presets
   const perfLevelSetting = await getSetting('performanceLevel');
   const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
@@ -213,9 +206,9 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
 
   // 1. Download CSV
   log.info(`Downloading CSV file: ${fileId}`);
-  const driveFile = await drive.files.get({ fileId, alt: "media" });
-  const csvContent = driveFile.data;
-  if (typeof csvContent !== "string") throw new Error("Failed to download CSV as text content");
+  const dl = await downloadCsvText(fileId);
+  if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
+  const csvContent = dl.content;
 
   const cleanContent = csvContent.charCodeAt(0) === 0xFEFF ? csvContent.slice(1) : csvContent;
 
@@ -527,12 +520,6 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
     return NextResponse.json({ success: false, error: "Invalid fileUrl or Drive file ID" }, { status: 400 });
   }
 
-  const authClient = await getSheetsAuthClient();
-  if (!authClient) {
-    return NextResponse.json({ success: false, error: "Failed to authenticate with Google APIs" }, { status: 500 });
-  }
-  const drive = google.drive({ version: "v3", auth: authClient });
-
   const enrichBatchSetting = await getSetting('enrichBatchLimit');
   const ENRICH_BATCH_SIZE = parseInt(enrichBatchSetting?.value1) || perfPresets.enrichBatchLimit;
   const searchBatchSetting = await getSetting('enrichSearchBatchLimit');
@@ -544,9 +531,9 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
 
   // 1. Download full CSV
   log.info(` Worker downloading CSV file: ${fileId}`);
-  const driveFile = await drive.files.get({ fileId, alt: "media" });
-  const csvContent = driveFile.data;
-  if (typeof csvContent !== "string") throw new Error("Failed to download CSV as text content");
+  const dl = await downloadCsvText(fileId);
+  if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
+  const csvContent = dl.content;
 
   const cleanContent = csvContent.charCodeAt(0) === 0xFEFF ? csvContent.slice(1) : csvContent;
 

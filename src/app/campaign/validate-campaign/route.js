@@ -1,13 +1,12 @@
 import { NextResponse } from "next/server";
-import { getSheetsAuthClient } from "../../api/googlesheets.js";
-import { google } from "googleapis";
+import { downloadCsvText } from "../../api/googlesheets.js";
 import dns from "dns";
 import { promisify } from "util";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { launchBrowser } from "../../../utils/utils.js";
 import { platformConfigs } from "../../emails/cookie/cookie-api-login/platforms.js";
-import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
+import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, getPerformancePresets } from "../_shared/pipelineUtils.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
@@ -178,12 +177,6 @@ export async function POST(request) {
  * Coordinator mode: check multi-server, dispatch if enabled, otherwise run single-server.
  */
 async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUserId) {
-  const authClient = await getSheetsAuthClient();
-  if (!authClient) {
-    return NextResponse.json({ success: false, error: "Failed to authenticate with Google APIs" }, { status: 500 });
-  }
-  const drive = google.drive({ version: "v3", auth: authClient });
-
   // Read batch limits from SETTINGS, falling back to performance level presets
   const perfLevelSetting = await getSetting('performanceLevel');
   const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
@@ -197,9 +190,9 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
 
   // 1. Download CSV
   log.info(` Downloading CSV file: ${fileId}`);
-  const driveFile = await drive.files.get({ fileId, alt: "media" });
-  const csvContent = driveFile.data;
-  if (typeof csvContent !== "string") throw new Error("Failed to download CSV as text content");
+  const dl = await downloadCsvText(fileId);
+  if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
+  const csvContent = dl.content;
 
   const cleanContent = csvContent.charCodeAt(0) === 0xFEFF ? csvContent.slice(1) : csvContent;
 
@@ -460,11 +453,6 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
 
   await updateMyAssignment(campaignId, 'validate', { status: 'running' });
 
-  const drive = await getDriveClient();
-  if (!drive) {
-    return NextResponse.json({ success: false, error: "Failed to get Drive client" }, { status: 500 });
-  }
-
   // Read SETTINGS, falling back to performance level presets
   const perfLevelSetting = await getSetting('performanceLevel');
   const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
@@ -477,9 +465,9 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
   const PLATFORM_VERIFICATION_ENABLED = platformEnabledSetting?.value1 !== 'false';
 
   // 1. Download full CSV
-  const driveFile = await drive.files.get({ fileId, alt: "media" });
-  const csvContent = driveFile.data;
-  if (typeof csvContent !== "string") throw new Error("Failed to download CSV");
+  const dl = await downloadCsvText(fileId);
+  if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
+  const csvContent = dl.content;
   const cleanContent = csvContent.charCodeAt(0) === 0xFEFF ? csvContent.slice(1) : csvContent;
 
   // 2. Normalize

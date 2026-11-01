@@ -195,6 +195,8 @@ export async function getSheetId(sheetName) {
 // works and the hub cookieAccess/Telegram flows don't degrade.
 const APP_SCRIPT_READ_RETRIES = 3;
 const APP_SCRIPT_READ_TIMEOUT_MS = 120000;
+const APP_SCRIPT_DRIVE_RETRIES = 2;
+const APP_SCRIPT_DRIVE_TIMEOUT_MS = 120000;
 
 async function getSheetDataViaAppScript(sheetName) {
   const appScriptUrl = process.env.SCRIPT_URL;
@@ -242,6 +244,55 @@ async function getSheetDataViaAppScript(sheetName) {
     }
   }
   return { success: false, error: `App Script read fallback failed for ${sheetName}: ${lastError}` };
+}
+
+async function getDriveFileTextViaAppScript(fileId) {
+  const appScriptUrl = process.env.SCRIPT_URL;
+  if (!appScriptUrl) {
+    return { success: false, error: 'SCRIPT_URL not configured.' };
+  }
+  let lastError = '';
+  for (let attempt = 1; attempt <= APP_SCRIPT_DRIVE_RETRIES; attempt++) {
+    try {
+      const params = new URLSearchParams({
+        action: 'getDriveFileText',
+        fileId: String(fileId),
+        key: process.env.SCRIPT_KEY,
+      });
+      const response = await axios.post(appScriptUrl, params, {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        timeout: APP_SCRIPT_DRIVE_TIMEOUT_MS,
+      });
+      if (response.data?.success && typeof response.data.content === 'string') {
+        logger.info(`[Sheets API] Drive file ${fileId} downloaded via App Script fallback.`);
+        return { success: true, content: response.data.content, viaAppScript: true };
+      }
+      lastError = response.data?.error || 'unsuccessful response';
+      logger.warn(`[Sheets API] Drive App Script fallback attempt ${attempt}/${APP_SCRIPT_DRIVE_RETRIES} for ${fileId} returned: ${lastError}`);
+    } catch (err) {
+      lastError = err.message;
+      if (attempt < APP_SCRIPT_DRIVE_RETRIES) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+      }
+    }
+  }
+  return { success: false, error: `App Script Drive fallback failed for ${fileId}: ${lastError}` };
+}
+
+export async function downloadCsvText(fileId) {
+  const authClient = await getSheetsAuthClient();
+  if (authClient) {
+    try {
+      const drive = google.drive({ version: 'v3', auth: authClient });
+      const res = await drive.files.get({ fileId, alt: 'media' });
+      if (typeof res.data === 'string') {
+        return { success: true, content: res.data };
+      }
+    } catch (err) {
+      logger.warn(`[Sheets API] Drive OAuth download failed for ${fileId}: ${err.message}. Trying App Script fallback.`);
+    }
+  }
+  return getDriveFileTextViaAppScript(fileId);
 }
 
 export async function getSheetDataApi(sheetName) {

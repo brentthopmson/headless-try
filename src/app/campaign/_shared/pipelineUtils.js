@@ -1,5 +1,6 @@
 import { getSheetDataApi, updateSheetRowApi } from "../../api/googlesheets.js";
 import logger from "../../../utils/logger.js";
+import { getSetting } from "../../../utils/settingsCache.js";
 
 /**
  * Extracts a Google Drive file ID from a URL or returns the raw ID.
@@ -154,6 +155,76 @@ export async function getCampaignSettings(campaignId) {
   } catch (err) {
     logger.warn(`[Pipeline] Failed to read campaign settings for ${campaignId}: ${err.message}`);
     return null;
+  }
+}
+
+// ==================== Failure classification & retry/error tracking ====================
+
+export function classifyStageFailure(errorLike) {
+  const msg = typeof errorLike === 'string' ? errorLike : (errorLike?.message || errorLike?.error || '');
+  const s = String(msg).toLowerCase();
+  // limit/quota
+  if (/(limit|quota|cap|daily.*limit|monthly.*limit|limit reached|429.*quota|insufficient.*quota)/.test(s)) {
+    if (/transient|retry later|temporary/.test(s)) return 'transient';
+    return 'limit';
+  }
+  // transient/network
+  if (/(etimedout|econnreset|econnrefused|eai_again|fetch failed|socket hang up|timeout|deadline exceeded|network|connection)/.test(s)) return 'transient';
+  if (/(502|503|504|bad gateway|service unavailable|gateway timeout)/.test(s)) return 'transient';
+  if (/(500|internal server error)/.test(s)) return 'transient';
+  if (/(invalid_grant|token.*expired|refresh.*token)/.test(s)) return 'transient';
+  if (/(429|too many requests|rate limit)/.test(s)) {
+    if (/quota|daily|monthly|limit/.test(s)) return 'limit';
+    return 'transient';
+  }
+  // permanent
+  if (/(no email column|missing.*column|bad csv|invalid.*csv|no targets|no leads|invalid file)/.test(s)) return 'permanent';
+  if (/(401|unauthorized)/.test(s) && !/invalid_grant/.test(s)) return 'permanent';
+  if (/(400|bad request)/.test(s)) return 'permanent';
+  return 'permanent';
+}
+
+export async function recordStageError(campaignId, { stage, reason, kind } = {}) {
+  try {
+    const fresh = await getCampaignSettings(campaignId);
+    if (!fresh) return;
+    const settings = { ...(fresh.settings || {}) };
+    settings.lastError = {
+      stage: stage || settings.lastError?.stage || null,
+      reason: String(reason || '').slice(0, 500),
+      kind: kind || settings.lastError?.kind || null,
+      at: new Date().toISOString(),
+    };
+    if (kind === 'transient') {
+      settings.retryAttempts = typeof settings.retryAttempts === 'number' ? settings.retryAttempts : 0;
+    }
+    await updateCampaignSettings(campaignId, settings);
+  } catch (e) {
+    logger.warn(`[Pipeline] Failed to record stage error for ${campaignId}: ${e.message}`);
+  }
+}
+
+export async function clearStageError(campaignId) {
+  try {
+    const fresh = await getCampaignSettings(campaignId);
+    if (!fresh) return;
+    const settings = { ...(fresh.settings || {}) };
+    delete settings.lastError;
+    settings.retryAttempts = 0;
+    await updateCampaignSettings(campaignId, settings);
+  } catch (e) {
+    logger.warn(`[Pipeline] Failed to clear stage error for ${campaignId}: ${e.message}`);
+  }
+}
+
+export async function getRetryBudget() {
+  try {
+    const s = await getSetting('pipelineRetryBudget');
+    const v = s?.value1;
+    const n = parseInt(v);
+    return Number.isFinite(n) && n >= 0 ? n : 2;
+  } catch {
+    return 2;
   }
 }
 

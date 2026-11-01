@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
-import { getSheetsAuthClient } from "../../api/googlesheets.js";
-import { google } from "googleapis";
+import { downloadCsvText } from "../../api/googlesheets.js";
 import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
-import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete, getDriveClient } from "../../../utils/multiServerDispatcher.js";
+import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, getPerformancePresets } from "../_shared/pipelineUtils.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
@@ -87,12 +86,6 @@ Rules:
 }
 
 async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUserId) {
-  const authClient = await getSheetsAuthClient();
-  if (!authClient) {
-    return NextResponse.json({ success: false, error: "Failed to authenticate with Google APIs" }, { status: 500 });
-  }
-  const drive = google.drive({ version: "v3", auth: authClient });
-
   const perfLevelSetting = await getSetting('performanceLevel');
   const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
 
@@ -101,9 +94,9 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   log.info(` Batch size: ${BATCH_SIZE}, level=${perfLevelSetting?.value1 || 'balanced'}`);
 
   log.info(` Downloading CSV file: ${fileId}`);
-  const driveFile = await drive.files.get({ fileId, alt: "media" });
-  const csvContent = driveFile.data;
-  if (typeof csvContent !== "string") throw new Error("Failed to download CSV as text content");
+  const dl = await downloadCsvText(fileId);
+  if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
+  const csvContent = dl.content;
 
   const rows = parseCSV(csvContent);
   if (rows.length === 0) throw new Error("CSV file is empty");
@@ -363,8 +356,6 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
 
   await updateMyAssignment(campaignId, 'personalize', { status: 'running' });
 
-  const drive = await getDriveClient();
-
   const perfLevelSetting = await getSetting('performanceLevel');
   const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
 
@@ -373,9 +364,9 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
   log.info(` Worker batch size: ${BATCH_SIZE}, level=${perfLevelSetting?.value1 || 'balanced'}`);
 
   log.info(` Worker downloading CSV file: ${fileId}`);
-  const driveFile = await drive.files.get({ fileId, alt: "media" });
-  const csvContent = driveFile.data;
-  if (typeof csvContent !== "string") throw new Error("Failed to download CSV as text content");
+  const dl = await downloadCsvText(fileId);
+  if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
+  const csvContent = dl.content;
 
   const rows = parseCSV(csvContent);
   if (rows.length === 0) throw new Error("CSV file is empty");

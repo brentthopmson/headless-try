@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import { identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignSettings, updateCampaignSettings, extractFileId, parseCSV, stringifyCSV } from "../_shared/pipelineUtils.js";
-import { getDriveClient } from "../../../utils/multiServerDispatcher.js";
+import { downloadCsvText } from "../../api/googlesheets.js";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -104,12 +104,10 @@ export async function POST(request) {
     if (fileUrl && config.csvColumns.length > 0) {
       const fileId = extractFileId(fileUrl);
       if (fileId) {
-        const drive = await getDriveClient();
-        if (drive) {
-          try {
-            const driveFile = await drive.files.get({ fileId, alt: "media" });
-            const csvContent = driveFile.data;
-            if (typeof csvContent === "string") {
+        try {
+          const dl = await downloadCsvText(fileId);
+          if (dl.success && typeof dl.content === "string") {
+            const csvContent = dl.content;
               const rows = parseCSV(csvContent);
               if (rows.length > 1) {
                 const headers = rows[0];
@@ -125,11 +123,21 @@ export async function POST(request) {
                     }
                     csvCleared++;
                   }
-                  await drive.files.update({
-                    fileId,
-                    media: { mimeType: "text/csv", body: stringifyCSV(rows) },
-                  });
-                  logger.info(`[Reset Campaign] Cleared ${colsToClear.length} CSV columns for ${csvCleared} rows`);
+                  try {
+                    const { getDriveClient } = await import("../../../utils/multiServerDispatcher.js");
+                    const driveWrite = await getDriveClient();
+                    if (driveWrite) {
+                      await driveWrite.files.update({
+                        fileId,
+                        media: { mimeType: "text/csv", body: stringifyCSV(rows) },
+                      });
+                      logger.info(`[Reset Campaign] Cleared ${colsToClear.length} CSV columns for ${csvCleared} rows`);
+                    } else {
+                      logger.warn(`[Reset Campaign] No Drive client to persist CSV column clears for ${campaignId}`);
+                    }
+                  } catch (e2) {
+                    logger.warn(`[Reset Campaign] Failed to persist CSV clears: ${e2.message}`);
+                  }
                 }
               }
             }
