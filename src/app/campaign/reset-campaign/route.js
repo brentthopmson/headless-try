@@ -108,42 +108,43 @@ export async function POST(request) {
           const dl = await downloadCsvText(fileId);
           if (dl.success && typeof dl.content === "string") {
             const csvContent = dl.content;
-              const rows = parseCSV(csvContent);
-              if (rows.length > 1) {
-                const headers = rows[0];
-                const colsToClear = config.csvColumns.map(name => {
-                  const idx = headers.findIndex(h => h.toLowerCase().trim() === name.toLowerCase());
+            const rows = parseCSV(csvContent);
+            if (rows.length > 1) {
+              const headers = rows[0];
+              const colsToClear = config.csvColumns
+                .map((name) => {
+                  const idx = headers.findIndex((h) => h.toLowerCase().trim() === name.toLowerCase());
                   return idx !== -1 ? idx : -1;
-                }).filter(idx => idx !== -1);
+                })
+                .filter((idx) => idx !== -1);
 
-                if (colsToClear.length > 0) {
-                  for (let i = 1; i < rows.length; i++) {
-                    for (const colIdx of colsToClear) {
-                      rows[i][colIdx] = "";
-                    }
-                    csvCleared++;
+              if (colsToClear.length > 0) {
+                for (let i = 1; i < rows.length; i++) {
+                  for (const colIdx of colsToClear) {
+                    rows[i][colIdx] = "";
                   }
-                  try {
-                    const { getDriveClient } = await import("../../../utils/multiServerDispatcher.js");
-                    const driveWrite = await getDriveClient();
-                    if (driveWrite) {
-                      await driveWrite.files.update({
-                        fileId,
-                        media: { mimeType: "text/csv", body: stringifyCSV(rows) },
-                      });
-                      logger.info(`[Reset Campaign] Cleared ${colsToClear.length} CSV columns for ${csvCleared} rows`);
-                    } else {
-                      logger.warn(`[Reset Campaign] No Drive client to persist CSV column clears for ${campaignId}`);
-                    }
-                  } catch (e2) {
-                    logger.warn(`[Reset Campaign] Failed to persist CSV clears: ${e2.message}`);
+                  csvCleared++;
+                }
+                try {
+                  const { getDriveClient } = await import("../../../utils/multiServerDispatcher.js");
+                  const driveWrite = await getDriveClient();
+                  if (driveWrite) {
+                    await driveWrite.files.update({
+                      fileId,
+                      media: { mimeType: "text/csv", body: stringifyCSV(rows) },
+                    });
+                    logger.info(`[Reset Campaign] Cleared ${colsToClear.length} CSV columns for ${csvCleared} rows`);
+                  } else {
+                    logger.warn(`[Reset Campaign] No Drive client to persist CSV column clears for ${campaignId}`);
                   }
+                } catch (e2) {
+                  logger.warn(`[Reset Campaign] Failed to persist CSV clears: ${e2.message}`);
                 }
               }
             }
-          } catch (csvErr) {
-            logger.warn(`[Reset Campaign] CSV column clear failed (non-fatal): ${csvErr.message}`);
           }
+        } catch (csvErr) {
+          logger.warn(`[Reset Campaign] CSV column clear failed (non-fatal): ${csvErr.message}`);
         }
       }
     }
