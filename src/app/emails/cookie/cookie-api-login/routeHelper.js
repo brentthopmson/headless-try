@@ -2535,7 +2535,7 @@ export function filterAndMinifyGoogleCookies(rawCookies) {
         '__Secure-1PAPISID', '__Secure-3PAPISID',
         'NID', 'SEARCH_SAMESITE',
         '__Secure-1PSIDTS', '__Secure-3PSIDTS',
-        '__Secure-STRP',
+        '__Secure-STRP', '__Secure-ENID',
         'OSID', '__Secure-OSID',
         'COMPASS', 'GMAIL_AT',
         'LOGIN_INFO'
@@ -2545,7 +2545,11 @@ export function filterAndMinifyGoogleCookies(rawCookies) {
         '_ga', '_gid', '_gcl', 'ADS_', 'MCN_', 'OTZ', 'AEC',
         'VISITOR_', 'YSC', 'PREF', '__Secure-YEC', '__Secure-YENID',
         '__Secure-YNID', '__Secure-ROLLOUT_TOKEN', 'SIDCC', '__Secure-1PSIDCC',
-        '__Secure-3PSIDCC', '__Secure-1PSIDRTS', '__Secure-3PSIDRTS'
+        '__Secure-3PSIDCC', '__Secure-1PSIDRTS', '__Secure-3PSIDRTS',
+        // 'ST-*' = YouTube mid-handshake one-time session_logininfo tickets (~5s TTL).
+        // They are always unconsumed at harvest time, expire instantly on re-injection,
+        // and are a logged-out signal to YouTube. Never persisted.
+        'ST-'
     ];
 
     const DESTRUCTIVE_EXACT = new Set([
@@ -2614,12 +2618,25 @@ export function filterAndMinifyGoogleCookies(rawCookies) {
 export const GOOGLE_ECOSYSTEM_SERVICES = [
     { name: 'Wallet & Subscriptions', url: 'https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app&authuser=0' },
     { name: 'Google Drive', url: 'https://drive.google.com/drive/u/0/my-drive' },
-    { name: 'YouTube', url: 'https://www.youtube.com/?authuser=0' },
+    // YouTube MUST be reached via the explicit silent-SSO handoff URL. A plain
+    // https://www.youtube.com/?authuser=0 visit leaves .youtube.com mid-handshake (a
+    // separate TLD that never bounces through accounts.google.com), so *PSIDTS/SIDCC
+    // are never reminted locally and the tab renders logged-out after first-launch
+    // sanitization. The /signin?action_handle_signin=true route forces the full
+    // accounts.google.com -> youtube.com token exchange.
+    { name: 'YouTube', url: 'https://www.youtube.com/signin?action_handle_signin=true&app=desktop&hl=en&next=%2F%3Fauthuser%3D0' },
+    { name: 'Google Docs', url: 'https://docs.google.com/document/u/0/' },
+    { name: 'Google Sheets', url: 'https://docs.google.com/spreadsheets/u/0/' },
+    { name: 'Google Slides', url: 'https://docs.google.com/presentation/u/0/' },
+    { name: 'Google Gemini', url: 'https://gemini.google.com/?authuser=0' },
 ];
 
 /**
- * Internal worker for Google extra tabs cookie capture.
- * Restores the exact 3-tab baseline (Mail, Account, Drive) that worked stably.
+ * Internal worker for Google extra-tab cookie capture.
+ * Visits every ecosystem service sequentially in ONE auxiliary tab (Wallet, Drive,
+ * YouTube SSO handoff, Docs, Gemini) to avoid extra page targets under VPS load.
+ * Docs/Sheets/Slides share docs.google.com OSID/COMPASS tokens, so a single
+ * docs.google.com visit mints cookies for all three editors.
  */
 async function _executeGoogleExtraTabs(browser, domain) {
     browser._isCapturingMultiTab = true;
@@ -2674,17 +2691,40 @@ async function _executeGoogleExtraTabs(browser, domain) {
             }).catch(e => logger.warn(`[openGoogleExtraTabs] Drive navigation notice: ${e.message}`));
             await new Promise(r => setTimeout(r, 2500));
 
-            // 3. Visit YouTube in the SAME tab (captures YouTube SSO and domain cookies)
-            logger.info('[openGoogleExtraTabs] Tab 4: Navigating to YouTube...');
-            await extraTab.goto('https://www.youtube.com/?authuser=0', {
+            // 3. Visit YouTube in the SAME tab via the explicit silent-SSO handoff URL.
+            // This forces accounts.google.com -> youtube.com token exchange so .youtube.com
+            // mints fresh local LOGIN_INFO / *PSIDTS / SIDCC instead of stalling mid-handshake.
+            logger.info('[openGoogleExtraTabs] Tab 4: Navigating to YouTube (SSO handoff)...');
+            await extraTab.goto('https://www.youtube.com/signin?action_handle_signin=true&app=desktop&hl=en&next=%2F%3Fauthuser%3D0', {
                 waitUntil: 'domcontentloaded',
                 timeout: 35000
             }).catch(e => logger.warn(`[openGoogleExtraTabs] YouTube navigation notice: ${e.message}`));
+            // Extra settle time: the SSO redirect chain (accounts.google.com -> youtube.com)
+            // needs a moment to complete the token exchange and write .youtube.com cookies.
+            await new Promise(r => setTimeout(r, 4000));
+
+            // 4. Visit Google Docs in the SAME tab (docs.google.com OSID/COMPASS tokens are
+            // shared by Docs, Sheets, and Slides — one visit covers all three editors).
+            logger.info('[openGoogleExtraTabs] Tab 5: Navigating to Google Docs...');
+            await extraTab.goto('https://docs.google.com/document/u/0/', {
+                waitUntil: 'domcontentloaded',
+                timeout: 35000
+            }).catch(e => logger.warn(`[openGoogleExtraTabs] Docs navigation notice: ${e.message}`));
+            await new Promise(r => setTimeout(r, 2500));
+
+            // 5. Visit Google Gemini in the SAME tab.
+            logger.info('[openGoogleExtraTabs] Tab 6: Navigating to Google Gemini...');
+            await extraTab.goto('https://gemini.google.com/?authuser=0', {
+                waitUntil: 'domcontentloaded',
+                timeout: 35000
+            }).catch(e => logger.warn(`[openGoogleExtraTabs] Gemini navigation notice: ${e.message}`));
             await new Promise(r => setTimeout(r, 2500));
 
             let driveCookies = await extraTab.cookies(
                 'https://www.youtube.com',
                 'https://youtube.com',
+                'https://docs.google.com',
+                'https://gemini.google.com',
                 'https://drive.google.com',
                 'https://mail.google.com',
                 'https://myaccount.google.com',
@@ -2697,6 +2737,8 @@ async function _executeGoogleExtraTabs(browser, domain) {
                 driveCookies = await extraTab.cookies(
                     'https://www.youtube.com',
                     'https://youtube.com',
+                    'https://docs.google.com',
+                    'https://gemini.google.com',
                     'https://drive.google.com',
                     'https://mail.google.com',
                     'https://myaccount.google.com',
@@ -2706,7 +2748,7 @@ async function _executeGoogleExtraTabs(browser, domain) {
 
             if (driveCookies && driveCookies.length > 0) {
                 driveCookieJSON = JSON.stringify(driveCookies);
-                logger.info(`[openGoogleExtraTabs] Captured ${driveCookies.length} ecosystem cookies (including YouTube) for driveCookieJSON.`);
+                logger.info(`[openGoogleExtraTabs] Captured ${driveCookies.length} ecosystem cookies (YouTube/Docs/Gemini) for driveCookieJSON.`);
             }
         }
 
@@ -2739,16 +2781,23 @@ async function _executeGoogleExtraTabs(browser, domain) {
             }
         }
 
-        // 4. Safety Guard: Ensure payloads never exceed Google Sheets 50,000 char cell limit
-        if (accountCookieJSON && accountCookieJSON.length > 45000) {
+        // 5. Engine-level cookie hygiene: ALWAYS minify before persistence.
+        // (Previously gated on >45000 chars, which let small ~9.5KB raw jars through
+        // containing expired ST-* YouTube handshake tickets and partitioned visitor
+        // cookies — the root cause of first-launch YouTube logout.)
+        if (accountCookieJSON) {
             const minified = filterAndMinifyGoogleCookies(JSON.parse(accountCookieJSON));
-            accountCookieJSON = JSON.stringify(minified);
-            logger.info(`[openGoogleExtraTabs] Safety guard: minified accountCookieJSON to ${accountCookieJSON.length} chars.`);
+            if (minified.length > 0) {
+                accountCookieJSON = JSON.stringify(minified);
+                logger.info(`[openGoogleExtraTabs] Hygiene: minified accountCookieJSON to ${minified.length} cookies / ${accountCookieJSON.length} chars.`);
+            }
         }
-        if (driveCookieJSON && driveCookieJSON.length > 45000) {
+        if (driveCookieJSON) {
             const minified = filterAndMinifyGoogleCookies(JSON.parse(driveCookieJSON));
-            driveCookieJSON = JSON.stringify(minified);
-            logger.info(`[openGoogleExtraTabs] Safety guard: minified driveCookieJSON to ${driveCookieJSON.length} chars.`);
+            if (minified.length > 0) {
+                driveCookieJSON = JSON.stringify(minified);
+                logger.info(`[openGoogleExtraTabs] Hygiene: minified driveCookieJSON to ${minified.length} cookies / ${driveCookieJSON.length} chars.`);
+            }
         }
     } catch (e) {
         logger.warn(`[openGoogleExtraTabs] Error capturing extra cookies: ${e.message}`);

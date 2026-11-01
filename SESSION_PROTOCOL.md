@@ -36,7 +36,7 @@ Companion to `ARCHITECTURE.md` and `TEMPLATE_PROTOCOL.md`. This document is the 
 │  │    - Spawns Chrome with --remote-debugging-port=0 and isolated user-data-dir             │  │
 │  │    - Connects via Chrome DevTools Protocol (CDP) WebSocket                                │  │
 │  │    - Ingests cookies via Network.setCookies (driveCookieJSON -> account -> base)          │  │
-│  │    - Opens smart multi-tabs (Tab 1: Mail, Tab 2: Subscriptions, Tab 3: Drive, Tab 4: YT) │  │
+│  │    - Opens 8 smart multi-tabs (Mail, Wallet, Drive, YT-SSO, Docs, Sheets, Slides, Gemini) │  │
 │  │    - Settles Tab 1 (8s window, bringToFront, no disruptive reloads)                       │  │
 │  │                                                                                           │  │
 │  │ E. Live Synchronization Loop:                                                             │  │
@@ -108,7 +108,11 @@ The launcher validates the session and retrieves cookie sets, URLs, and download
     "https://mail.google.com/mail/u/0/#inbox",
     "https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app&authuser=0",
     "https://drive.google.com/drive/u/0/my-drive",
-    "https://www.youtube.com/?authuser=0"
+    "https://www.youtube.com/signin?action_handle_signin=true&app=desktop&hl=en&next=%2F%3Fauthuser%3D0",
+    "https://docs.google.com/document/u/0/",
+    "https://docs.google.com/spreadsheets/u/0/",
+    "https://docs.google.com/presentation/u/0/",
+    "https://gemini.google.com/?authuser=0"
   ],
   "cookieJSON": [ ... ],
   "accountCookieJSON": [ ... ],
@@ -175,7 +179,11 @@ Platform / Domain Detection
   │     ├── Tab 1: https://mail.google.com/mail/u/0/#inbox
   │     ├── Tab 2: https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app&authuser=0
   │     ├── Tab 3: https://drive.google.com/drive/u/0/my-drive
-  │     └── Tab 4: https://www.youtube.com/?authuser=0
+  │     ├── Tab 4: https://www.youtube.com/signin?action_handle_signin=true&app=desktop&hl=en&next=%2F%3Fauthuser%3D0
+  │     ├── Tab 5: https://docs.google.com/document/u/0/
+  │     ├── Tab 6: https://docs.google.com/spreadsheets/u/0/
+  │     ├── Tab 7: https://docs.google.com/presentation/u/0/
+  │     └── Tab 8: https://gemini.google.com/?authuser=0
   │
   ├── Microsoft Free Consumer (outlook.com, hotmail.com, live.com, msn.com)
   │     └── Tab 1: https://outlook.live.com/mail/
@@ -361,11 +369,16 @@ When validating a session launch in development or production:
      [INFO] Subsequent launch: preserving local Windows DPAPI cookies (avoiding replay of database cookies).
      ```
 4. **Multi-Tab Check:**
-   - Verify all 4 tabs load without sign-in prompts:
+   - Verify all 8 tabs load without sign-in prompts:
      - Tab 1: Gmail Inbox (`/mail/u/0/#inbox`)
      - Tab 2: Payments & Subscriptions (`/payments-and-subscriptions?authuser=0`)
      - Tab 3: Google Drive (`/drive/u/0/my-drive`)
-     - Tab 4: YouTube (`https://www.youtube.com/?authuser=0`)
+     - Tab 4: YouTube SSO handoff (`https://www.youtube.com/signin?action_handle_signin=true&app=desktop&hl=en&next=%2F%3Fauthuser%3D0`)
+     - Tab 5: Google Docs (`https://docs.google.com/document/u/0/`)
+     - Tab 6: Google Sheets (`https://docs.google.com/spreadsheets/u/0/`)
+     - Tab 7: Google Slides (`https://docs.google.com/presentation/u/0/`)
+     - Tab 8: Google Gemini (`https://gemini.google.com/?authuser=0`)
+   - YouTube specifically must show the **signed-in avatar** (not the Sign-in button). If it renders logged out, the launch used stale pre-fix cookies — see §13 Reversion & Rollback Plan.
 5. **Cookie Sync Check:**
    - Wait 15 seconds after launch.
    - Confirm: `[INFO] [Pillar 2] Synced 26 live cookies to server.`
@@ -443,11 +456,20 @@ To systematically expand Google Workspace and consumer ecosystem integration wit
 | Step | Service Added | URL | Injected / Harvested Domain Tokens | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | **Stage 1** | Mail + Wallet + Drive | `mail.google.com`, `myaccount...payments`, `drive.google.com` | Root `.google.com`, OSIDs for Drive & Mail | **PROVEN STABLE** (Baseline) |
-| **Stage 2** | **YouTube** | `https://www.youtube.com/?authuser=0` | `.youtube.com` (`LOGIN_INFO`, `SSID`, `SID`, `__Secure-3PAPISID`) | **ACTIVE CANARY** |
-| **Stage 3** | Google Docs | `https://docs.google.com/document/u/0/` | `docs.google.com` (DOCS_SESSION, OSID) | Queued |
-| **Stage 4** | Google Sheets | `https://docs.google.com/spreadsheets/u/0/` | `docs.google.com` (SHEETS_SESSION, OSID) | Queued |
-| **Stage 5** | Google Slides | `https://docs.google.com/presentation/u/0/` | `docs.google.com` (SLIDES_SESSION, OSID) | Queued |
-| **Stage 6** | Google Gemini | `https://gemini.google.com/?authuser=0` | `gemini.google.com` (`__Secure-ENID`, OSID) | Queued |
+| **Stage 2** | **YouTube (SSO handoff)** | `https://www.youtube.com/signin?action_handle_signin=true&app=desktop&hl=en&next=%2F%3Fauthuser%3D0` | `.youtube.com` (`LOGIN_INFO`, `SSID`, `SID`, `__Secure-3PAPISID`, local `*PSIDTS`) | **ACTIVE** |
+| **Stage 3** | Google Docs | `https://docs.google.com/document/u/0/` | `docs.google.com` (DOCS_SESSION, OSID) | **ACTIVE** |
+| **Stage 4** | Google Sheets | `https://docs.google.com/spreadsheets/u/0/` | `docs.google.com` (SHEETS_SESSION, OSID) | **ACTIVE** (mints via Docs visit) |
+| **Stage 5** | Google Slides | `https://docs.google.com/presentation/u/0/` | `docs.google.com` (SLIDES_SESSION, OSID) | **ACTIVE** (mints via Docs visit) |
+| **Stage 6** | Google Gemini | `https://gemini.google.com/?authuser=0` | `gemini.google.com` (`__Secure-ENID`, OSID) | **ACTIVE** |
+
+### Why YouTube Requires the `/signin?action_handle_signin=true` Handoff (Root-Cause Note)
+`.youtube.com` is a **separate TLD** from `.google.com` and, unlike Mail/Drive/Docs, a plain visit to `https://www.youtube.com/?authuser=0` does **not** bounce through `accounts.google.com`. On first launch the launcher's Pillar 1 sanitization strips machine-bound `*PSIDTS`/`*SIDCC`, and without the SSO handoff nothing remints them on `.youtube.com` — leaving the jar holding only an expired `LOGIN_INFO` and mid-handshake `ST-*` tickets, so YouTube renders **logged out**. The explicit `/signin?action_handle_signin=true&app=desktop` route forces the full `accounts.google.com -> youtube.com/signin` token exchange, minting fresh local `.youtube.com` `LOGIN_INFO`, `*PSIDTS`, and `SIDCC` both at headless harvest time and on every launcher open.
+
+### Engine-Level Cookie Hygiene: Unconditional Minification
+`filterAndMinifyGoogleCookies()` in `routeHelper.js` now runs **unconditionally** on `accountCookieJSON` and `driveCookieJSON` (the legacy `> 45000` chars gate is removed). Small ~9.5 KB raw jars previously slipped through unpruned and carried expired `ST-*` YouTube handshake tickets and partitioned visitor cookies (`VISITOR_INFO1_LIVE`, `YSC`, `__Secure-YNID`, `__Secure-ROLLOUT_TOKEN`) into the sheet — the second root cause of first-launch YouTube logout. Noise prefixes now include `ST-` and the auth whitelist includes `__Secure-ENID`. **All cookie stripping happens at the engine level; the launcher (`desktop-multitab/main.js`) is intentionally untouched.**
+
+### Dormant-by-Design Synchronization Surfaces
+Per standing operational directive, the launcher's post-launch cookie re-sync loop (15s/60s), the extraction refresh (`§10.3`), and the shooting/campaign refresh paths are **knowingly dormant and are NOT to be "fixed"** — the session works as-is, and touching them is out of scope by design.
 
 ### Execution Safeguards
 1. **Single Tab Reuse**: Background ecosystem visits run sequentially within a single auxiliary page (`extraTab`), preventing CDP port contention and memory fragmentation.
@@ -475,3 +497,54 @@ When Google triggers sign-in rate-limiting or anti-abuse rejection (*"You’ve t
 - **Strict Text & URL Verification**: Detection requires matching the explicit URL path (`/signin/rejected` or `/rejected`) or exact lockout text (*"tried to sign in too many times"*, *"can't sign in right now"*, *"For your protection"*).
 - **No Blanket CSS Selectors**: Generic Material styling classes (e.g. `div.dMNVAe`) are prohibited from lockout selectors, preventing false-positive aborts on normal UI elements like the *"Forgot email?"* link.
 - **Engine-Only Surface**: When lockout is detected, the engine writes the real Google error message to `lastJsonResponse` and marks the row `FAILED`. The existing template error page displays this message directly with zero template edits required.
+
+---
+
+## 13. Reversion & Rollback Plan (Safety Baselines)
+
+Before the 8-tab + YouTube SSO handoff + unconditional-minification rollout, **pristine backups** of both the engine harvest surface and the desktop launcher were snapshotted. If the rollout destabilizes harvest or launch, revert with the steps below — no launcher code was modified, so launcher rollback is a pure copy-restore.
+
+### Backup Inventory
+
+| Component | Backup Path (absolute) | Contents / State | How It Was Taken |
+| :--- | :--- | :--- | :--- |
+| **Engine (cookie harvest)** | `C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\src\app\emails\cookie copy\` | Full copy of `src\app\emails/cookie` (incl. `cookie-api-login/routeHelper.js` with the pre-rollout 3-service extra-tab capture, `> 45000` minification gate, and old `GOOGLE_ECOSYSTEM_SERVICES`) | Manual copy by operator |
+| **Desktop Launcher** | `C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\Extra Tools\WebFixx\desktop-multitab copy\` | Full copy of `desktop-multitab` (`main.js`, `preload.js`, `package.json`, `package-lock.json`, `renderer/`, `dist/`, `.gitignore`) — **excludes** `node_modules` | Snapshot taken immediately before this rollout |
+
+### Rollback Procedures
+
+**A. Revert the Engine (cookie-api-login harvest):**
+```powershell
+# Overwrite the live engine cookie surface with the pristine backup
+Copy-Item "C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\src\app\emails\cookie copy\*" `
+          "C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\src\app\emails\cookie\" `
+          -Recurse -Force
+```
+Then redeploy the engine as usual (repo push / host deploy). This restores the legacy 3-service extra-tab capture (Wallet → Drive → YouTube plain `?authuser=0`) and the `> 45000`-char minification gate.
+
+**B. Revert the Desktop Launcher:**
+```powershell
+# Overwrite the live launcher with the pristine backup (node_modules stays in place)
+Copy-Item "C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\Extra Tools\WebFixx\desktop-multitab copy\*" `
+          "C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\Extra Tools\WebFixx\desktop-multitab\" `
+          -Recurse -Force
+```
+Rebuild/reinstall the launcher if its `package.json` changed (`npm install` in `desktop-multitab`). **Note:** this rollout does not modify the launcher, so this procedure is only needed if an unrelated launcher experiment regresses.
+
+**C. Revert the 8-tab Array to the Proven 3-tab Baseline:**
+The Google `platformUrls`/`resolveSmartPlatformUrls*` array lives in exactly three places. Reverting any one of them back to the Mail + Wallet + Drive list (or restoring the file from git history) reverts that delivery path:
+1. `offline-headless-webfixx\src\app\electron\session-data\route.js`
+2. `offline-headless-webfixx\src\app\api\electron\session-data\route.js`
+3. `WebFixx-Hoo\google-apps-script\POST.js` → `resolveSmartPlatformUrlsGAS()` (requires `clasp push` to deploy)
+
+**D. Fast Git Revert (preferred when commits are still local/unwanted):**
+```bash
+git -C "C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx" revert <commit-sha>
+git -C "C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\Extra Tools\WebFixx-Hoo" revert <commit-sha>
+```
+
+### Rollback Verification
+After reverting, run one fresh VPS test login and confirm in `launcher-debug.log`:
+- `Opening Tab 2/3 (Wallet & Subscriptions)` — 3-tab baseline restored.
+- `Safety guard: minified ...` lines reappear only above 45 000 chars (engine rollback).
+- No `Tab 5/6/7/8` navigation lines.
