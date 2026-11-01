@@ -3,6 +3,7 @@ import logger from './logger.js';
 import { updateSheetRowApi } from '../app/api/googlesheets.js';
 import { getSettingsSheet, invalidateSettings } from './settingsCache.js';
 import aiCore from './multiProviderAICore.js';
+import { callOllama } from './localAIClient.js';
 
 const {
     TRANSIENT_MAX_ATTEMPTS,
@@ -41,6 +42,11 @@ const PROVIDER_CONTEXT_WINDOWS = {
     mistral: 32000,
     cloudflare: 8192,
     cohere: 8192,
+    ollama: 4096,
+    local: 4096,
+    lmstudio: 4096,
+    vllm: 4096,
+    llamacpp: 4096,
 };
 
 /**
@@ -54,14 +60,18 @@ function estimateTokens(text) {
 }
 
 function getEnvFallback(provider) {
-    if (provider === 'opencode') return process.env.OPENCODE_API_KEY || process.env.OPENAI_API_KEY || '';
-    if (provider === 'gemini') return process.env.GOOGLE_GEMINI_API_KEY || '';
-    if (provider === 'groq') return process.env.GROQ_API_KEY || '';
-    if (provider === 'cerebras') return process.env.CEREBRAS_API_KEY || '';
-    if (provider === 'together') return process.env.TOGETHER_API_KEY || '';
-    if (provider === 'mistral') return process.env.MISTRAL_API_KEY || '';
-    if (provider === 'cloudflare') return process.env.CF_API_TOKEN || '';
-    if (provider === 'cohere') return process.env.COHERE_API_KEY || '';
+    const p = String(provider || '').toLowerCase().trim();
+    if (p === 'opencode') return process.env.OPENCODE_API_KEY || process.env.OPENAI_API_KEY || '';
+    if (p === 'gemini') return process.env.GOOGLE_GEMINI_API_KEY || '';
+    if (p === 'groq') return process.env.GROQ_API_KEY || '';
+    if (p === 'cerebras') return process.env.CEREBRAS_API_KEY || '';
+    if (p === 'together') return process.env.TOGETHER_API_KEY || '';
+    if (p === 'mistral') return process.env.MISTRAL_API_KEY || '';
+    if (p === 'cloudflare') return process.env.CF_API_TOKEN || '';
+    if (p === 'cohere') return process.env.COHERE_API_KEY || '';
+    if (p === 'ollama' || p === 'local' || p === 'lmstudio' || p === 'vllm' || p === 'llamacpp') {
+        return process.env.OLLAMA_API_KEY || process.env.LOCAL_AI_API_KEY || '';
+    }
     return '';
 }
 
@@ -97,6 +107,8 @@ class MultiProviderAI {
             const aiStatusIdx = headers.indexOf('aiStatus');
             const aiLastRunIdx = headers.indexOf('aiLastRun');
             const aiLimitRetryIdx = headers.indexOf('aiLimitRetry');
+            const aiBaseUrlIdx = headers.indexOf('aiBaseUrl');
+            const aiTimeoutMsIdx = headers.indexOf('aiTimeoutMs');
 
             if (aiSnIdx === -1 || aiProviderIdx === -1 || aiModelIdx === -1 || aiKeyIdx === -1) {
                 logger.warn('[MultiProviderAI] SETTINGS missing required columns (aiSn, aiProvider, aiModel, aiKey)');
@@ -110,23 +122,34 @@ class MultiProviderAI {
                 const provider = (row[aiProviderIdx] || '').toLowerCase().trim();
                 const model = (row[aiModelIdx] || '').trim();
                 const service = (row[aiServiceIdx] || '').trim();
-                const key = (row[aiKeyIdx] || '').trim() || getEnvFallback(provider);
+                let key = (row[aiKeyIdx] || '').trim() || getEnvFallback(provider);
                 const status = (row[aiStatusIdx] || '').toUpperCase().trim();
                 const lastRun = aiLastRunIdx !== -1 ? (row[aiLastRunIdx] || '').trim() : '';
                 const limitRetryHours = aiLimitRetryIdx !== -1 ? parseInt(row[aiLimitRetryIdx]) || 0 : 0;
+                const baseUrl = aiBaseUrlIdx !== -1 ? (row[aiBaseUrlIdx] || '').trim() : '';
+                const timeoutMs = aiTimeoutMsIdx !== -1 ? parseInt(row[aiTimeoutMsIdx]) || 0 : 0;
 
-                if (!provider || !model || !key) continue;
+                const isLocalProvider = ['ollama', 'local', 'lmstudio', 'llamacpp', 'vllm'].includes(provider);
+                // Keyless only allowed for local/ollama providers
+                if (!provider || !model) continue;
+                if (!key && !isLocalProvider) continue;
+                if (!key && isLocalProvider) {
+                    key = '';
+                } else if (key && key.includes('openai/glm-5.3') && provider === 'openai') {
+                    // Keep sn 11 openai/glm-5.3 inert as requested
+                    continue;
+                }
 
                 // ACTIVE → always include
                 if (status === 'ACTIVE' || status === '') {
-                    providers.push({ sn, provider, model, service, key, status: 'ACTIVE' });
+                    providers.push({ sn, provider, model, service, key, status: 'ACTIVE', baseUrl: baseUrl || undefined, timeoutMs: timeoutMs || undefined });
                     continue;
                 }
 
                 // RATE-LIMITED → retry after aiLimitRetry hours
                 if (status === 'RATE-LIMITED') {
                     if (!lastRun) {
-                        providers.push({ sn, provider, model, service, key, status: 'ACTIVE' });
+                        providers.push({ sn, provider, model, service, key, status: 'ACTIVE', baseUrl: baseUrl || undefined, timeoutMs: timeoutMs || undefined });
                         continue;
                     }
                     const cooldownMs = limitRetryHours > 0
@@ -134,7 +157,7 @@ class MultiProviderAI {
                         : 60 * 60 * 1000;
                     if (this._isExpired(lastRun, cooldownMs)) {
                         logger.info(`[MultiProviderAI] RATE-LIMITED cooldown expired (${limitRetryHours}h): ${provider}/${model} — retrying`);
-                        providers.push({ sn, provider, model, service, key, status: 'ACTIVE' });
+                        providers.push({ sn, provider, model, service, key, status: 'ACTIVE', baseUrl: baseUrl || undefined, timeoutMs: timeoutMs || undefined });
                     } else {
                         const hrs = this._remainingHours(lastRun, cooldownMs);
                         logger.debug(`[MultiProviderAI] SKIP ${provider}/${model} RATE-LIMITED (${hrs}h left)`);
@@ -145,12 +168,12 @@ class MultiProviderAI {
                 // FAILED → retry after 24 hours
                 if (status === 'FAILED') {
                     if (!lastRun) {
-                        providers.push({ sn, provider, model, service, key, status: 'ACTIVE' });
+                        providers.push({ sn, provider, model, service, key, status: 'ACTIVE', baseUrl: baseUrl || undefined, timeoutMs: timeoutMs || undefined });
                         continue;
                     }
                     if (this._isExpired(lastRun, FAILED_COOLDOWN_MS)) {
                         logger.info(`[MultiProviderAI] FAILED 24h cooldown expired: ${provider}/${model} — retrying`);
-                        providers.push({ sn, provider, model, service, key, status: 'ACTIVE' });
+                        providers.push({ sn, provider, model, service, key, status: 'ACTIVE', baseUrl: baseUrl || undefined, timeoutMs: timeoutMs || undefined });
                     } else {
                         const hrs = this._remainingHours(lastRun, FAILED_COOLDOWN_MS);
                         logger.debug(`[MultiProviderAI] SKIP ${provider}/${model} FAILED (${hrs}h left)`);
@@ -314,12 +337,14 @@ class MultiProviderAI {
             // calls (e.g. per-comment replies) pass a short timeoutMs + no retry
             // so a hung/rate-limited provider can't block the interaction flow.
             timeoutMs = null,
-            maxTransientAttempts = TRANSIENT_MAX_ATTEMPTS
+            maxTransientAttempts = TRANSIENT_MAX_ATTEMPTS,
+            jsonMode = false,
         } = options;
         const effTimeoutMs = (Number.isFinite(timeoutMs) && timeoutMs > 0) ? timeoutMs : null;
         const effAttempts = (Number.isFinite(maxTransientAttempts) && maxTransientAttempts > 0)
             ? Math.floor(maxTransientAttempts)
             : TRANSIENT_MAX_ATTEMPTS;
+        this._lastOptionsJsonMode = !!jsonMode;
 
         logger.info(`[MultiProviderAI] Generating response. Prefer: ${preferProvider || 'auto'}, Has image: ${!!imageUrl}, Has video: ${!!videoUrl}`);
 
@@ -411,12 +436,15 @@ class MultiProviderAI {
             if (tried.has(key)) continue;
             tried.add(key);
 
+            const isLocal = ['ollama', 'local', 'lmstudio', 'llamacpp', 'vllm'].includes(provider.provider);
+            const maxAtt = isLocal ? 1 : effAttempts;
+
             // 3 tries: 503 "high demand" spikes from Gemini regularly outlast a
             // single 2s retry, so back off 2s then 4s before giving up on the row.
-            for (let attempt = 0; attempt < effAttempts; attempt++) {
+            for (let attempt = 0; attempt < maxAtt; attempt++) {
                 try {
                     if (attempt > 0) {
-                        logger.warn(`[MultiProviderAI] ${key} transient failure — retrying (attempt ${attempt + 1}/${effAttempts})`);
+                        logger.warn(`[MultiProviderAI] ${key} transient failure — retrying (attempt ${attempt + 1}/${maxAtt})`);
                         await new Promise(r => setTimeout(r, transientBackoffMs(attempt)));
                     }
                     logger.info(`[MultiProviderAI] Trying ${key} (sn:${provider.sn})...`);
@@ -428,7 +456,7 @@ class MultiProviderAI {
                 } catch (err) {
                     const transient = this.isTransientError(err) && !this.isRateLimitError(err);
                     logger.warn(`[MultiProviderAI] ${key} failed: ${err.message}`);
-                    if (shouldRetryTransient(transient, attempt)) continue;
+                    if (shouldRetryTransient(transient, attempt) && attempt < maxAtt - 1) continue;
                     await this._handleProviderError(provider, err);
                     break;
                 }
@@ -441,6 +469,19 @@ class MultiProviderAI {
     // ==================== PROVIDER DISPATCH ====================
 
     async _callProvider(provider, messages, temperature, maxTokens, timeoutMs = null) {
+        const isLocal = ['ollama', 'local', 'lmstudio', 'llamacpp', 'vllm'].includes(provider.provider);
+        if (isLocal) {
+            let localMaxTokens = maxTokens;
+            if (provider.provider === 'ollama') {
+                // Cloudflare proxied tunnel has ~100s timeout; clamp to avoid 524
+                const isProxied = String(provider.baseUrl || '').includes('trycloudflare.com');
+                localMaxTokens = Math.min(maxTokens, isProxied ? 700 : 1200);
+            }
+            // Apply input clamp
+            const maxInputTokens = Math.min(this._getMaxInputTokens(provider), 3000);
+            // messages are already built; if needed could truncate - but keep simple
+            return callOllama(provider, messages, temperature, localMaxTokens, timeoutMs || provider.timeoutMs, { jsonMode: this._lastOptionsJsonMode });
+        }
         switch (provider.provider) {
             case 'opencode': return this._callOpenCode(provider, messages, temperature, maxTokens, timeoutMs);
             case 'gemini': return this._callGemini(provider, messages, temperature, maxTokens, timeoutMs);
@@ -452,6 +493,14 @@ class MultiProviderAI {
             case 'cohere': return this._callCohere(provider, messages, temperature, maxTokens, timeoutMs);
             default: throw new Error(`Unknown provider type: ${provider.provider}`);
         }
+    }
+
+    _getMaxInputTokens(provider) {
+        if (['ollama', 'local', 'lmstudio', 'llamacpp', 'vllm'].includes(provider.provider)) {
+            const envLimit = process.env.LOCAL_MAX_INPUT_TOKENS ? parseInt(process.env.LOCAL_MAX_INPUT_TOKENS) : null;
+            return envLimit || 3000;
+        }
+        return 6000;
     }
 
     // ==================== OPENCODE ====================
