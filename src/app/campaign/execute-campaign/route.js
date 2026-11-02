@@ -295,6 +295,18 @@ async function getSocialProfileCookies(profileId) {
     const getH = (name) => { const i = hub.headers.indexOf(name); return i !== -1 ? hub.row[i] : ""; };
     if (!cookies) cookies = getH("cookieJSON") || "";
     if (!driveUrl) driveUrl = getH("cookieFileURL") || "";
+    // Social profile handle (socials[0].username) is the self-identifying
+    // name — prefer it over login emails so campaign stats never show a raw
+    // browserId/submissionId as the account label.
+    try {
+      const socialsRaw = getH("socials");
+      if (socialsRaw) {
+        const socialsArr = typeof socialsRaw === "string" ? JSON.parse(socialsRaw) : socialsRaw;
+        if (socialsArr && socialsArr[0] && socialsArr[0].username && String(socialsArr[0].username).trim()) {
+          identifier = String(socialsArr[0].username).trim();
+        }
+      }
+    } catch (_) { /* malformed socials JSON — keep current identifier */ }
     if (!identifier) identifier = String(getH("email") || getH("username") || "").trim();
     if (!browserIdentity) {
       const raw = getH("browserIdentity");
