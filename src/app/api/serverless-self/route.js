@@ -6,7 +6,10 @@ import {
     getSelfId,
     getSelfUrl,
 } from "../../../utils/serverlessTracker.js";
-import { getMaxConcurrentTasks } from "../../../utils/campaignConcurrency.js";
+import {
+     getMaxConcurrentTasks,
+     getActiveCampaignIdsInProcess,
+} from "../../../utils/campaignConcurrency.js";
 import { getBrowserSemaphoreStats } from "../../../utils/utils.js";
 
 export const dynamic = "force-dynamic";
@@ -31,6 +34,20 @@ let envIdentifyAttempted = false;
  *   - local/dev (no matching row) → 409 with hostMatchedLinksRow=false
  */
 export async function GET(request) {
+    try {
+        const reqUrl = new URL(request.url);
+        if (reqUrl.searchParams.get('ping') === '1') {
+            const activeCampaignIds = getActiveCampaignIdsInProcess();
+            const checkId = reqUrl.searchParams.get('campaignId');
+            return NextResponse.json({
+                alive: true,
+                activeCampaignIds,
+                isCampaignActive: checkId ? activeCampaignIds.includes(String(checkId).trim()) : undefined,
+                timestamp: new Date().toISOString(),
+            }, { status: 200 });
+        }
+    } catch {}
+
     const hostHeader = request.headers.get('host') || '';
     const forwardedHost = request.headers.get('x-forwarded-host') || '';
     // Proxies (Vercel, devtunnels) may rewrite Host to the upstream address —
@@ -98,6 +115,8 @@ export async function GET(request) {
 
     const payload = {
         pass,
+        alive: true,
+        activeCampaignIds: getActiveCampaignIdsInProcess(),
         severlessId: resolvedId || envId,
         envId,
         resolvedId,

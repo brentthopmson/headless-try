@@ -4,7 +4,7 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import { getSelfUrl, getSelfUrlWithFallback, getSelfId, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignSettings, updateCampaignSettings, isCampaignPaused, classifyStageFailure, recordStageError, clearStageError, getRetryBudget } from "../_shared/pipelineUtils.js";
 import { acquireCampaignLock, releaseCampaignLock } from "../../../utils/campaignLock.js";
-import { checkUserConcurrentCampaigns } from "../../../utils/campaignConcurrency.js";
+import { checkUserConcurrentCampaigns, registerActiveCampaignRun, unregisterActiveCampaignRun } from "../../../utils/campaignConcurrency.js";
 import { getSheetDataApi, updateSheetRowApi } from "../../api/googlesheets.js";
 import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
 
@@ -248,6 +248,7 @@ export async function POST(request) {
     }
 
     log = logger.child({ campaignId, stage: 'orchestrator' });
+    registerActiveCampaignRun(campaignId, 'orchestrator');
     const campaignData = await getCampaignSettings(campaignId);
     if (!campaignData) {
       return NextResponse.json({ success: false, error: "Campaign not found" }, { status: 404 });
@@ -645,6 +646,10 @@ export async function POST(request) {
       try { await updateCampaignSettings(campaignId, { status: "failed" }); } catch { /* best-effort */ }
     }
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+  } finally {
+    if (campaignId) {
+      unregisterActiveCampaignRun(campaignId, 'orchestrator');
+    }
   }
 }
 

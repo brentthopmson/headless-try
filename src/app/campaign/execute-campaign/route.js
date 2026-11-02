@@ -19,7 +19,7 @@ import workflowOps from "../../socials/_shared/workflowOps.js";
 const { resolveSocialMessage } = workflowOps;
 import { requireFeature } from "../../../utils/featureGate.js";
 import { getSetting } from "../../../utils/settingsCache.js";
-import { getMaxConcurrentTasks, checkUserConcurrentCampaigns } from "../../../utils/campaignConcurrency.js";
+import { getMaxConcurrentTasks, checkUserConcurrentCampaigns, registerActiveCampaignRun, unregisterActiveCampaignRun } from "../../../utils/campaignConcurrency.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { dispatchToServers } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getFirestickEmails, getPerformancePresets, updateCampaignSettings, getCampaignSettings, getAccountTagStatuses } from "../_shared/pipelineUtils.js";
@@ -375,6 +375,7 @@ export async function POST(request) {
     }
     _executingCampaigns.add(campaignId);
     _isExecuting = true;
+    registerActiveCampaignRun(campaignId, 'execute');
     log.info(`Received execution trigger`);
 
     // 1. Fetch Campaign Details
@@ -1667,7 +1668,10 @@ export async function POST(request) {
     try { const { flushAllCampaignStats } = await import("../../socials/_shared/hubUpdater.js"); await flushAllCampaignStats(); } catch (e) {}
     // Only the run that claimed the slot releases it. A skipped duplicate
     // returns before claiming, so it never touches the set here.
-    if (_isExecuting && campaignId) _executingCampaigns.delete(campaignId);
+    if (_isExecuting && campaignId) {
+      _executingCampaigns.delete(campaignId);
+      unregisterActiveCampaignRun(campaignId, 'execute');
+    }
   }
 }
 

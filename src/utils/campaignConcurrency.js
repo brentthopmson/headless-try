@@ -140,3 +140,43 @@ export async function checkUserConcurrentCampaigns(userId, excludeCampaignId) {
     return { allowed: true, current: 0, limit: resolvedLimit };
   }
 }
+
+// ==================== In-process active campaign liveness registry ====================
+// Tracks which campaignIds are actively executing in this Node process across
+// pipeline-orchestrator and stage routes. Exposed via GET /api/serverless-self?ping=1
+// so GAS getCampaign can verify whether a 'running' campaign in the sheet is
+// actually still running on the engine (zero extra sheet writes).
+if (!globalThis.__activeCampaignRuns) {
+  globalThis.__activeCampaignRuns = new Map(); // campaignId -> { stages: Set<string>, updatedAt: number }
+}
+const activeCampaignRuns = globalThis.__activeCampaignRuns;
+
+export function registerActiveCampaignRun(campaignId, stage = 'execute') {
+  if (!campaignId) return;
+  const cid = String(campaignId).trim();
+  if (!cid) return;
+  let entry = activeCampaignRuns.get(cid);
+  if (!entry) {
+    entry = { stages: new Set(), updatedAt: Date.now() };
+    activeCampaignRuns.set(cid, entry);
+  }
+  entry.stages.add(String(stage || 'execute'));
+  entry.updatedAt = Date.now();
+}
+
+export function unregisterActiveCampaignRun(campaignId, stage = 'execute') {
+  if (!campaignId) return;
+  const cid = String(campaignId).trim();
+  const entry = activeCampaignRuns.get(cid);
+  if (!entry) return;
+  entry.stages.delete(String(stage || 'execute'));
+  entry.updatedAt = Date.now();
+  if (entry.stages.size === 0) {
+    activeCampaignRuns.delete(cid);
+  }
+}
+
+export function getActiveCampaignIdsInProcess() {
+  return Array.from(activeCampaignRuns.keys());
+}
+
