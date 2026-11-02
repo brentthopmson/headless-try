@@ -4,8 +4,9 @@ import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import { launchBrowserWithSession, resolveSocialSession, DOMHelpers } from "../../socials/_shared/routeHelper.js";
 import { getCampaignLimits, checkActionAllowed, checkUserQuota } from "../../socials/_shared/limits.js";
 import { resolveAccountGate } from "../../socials/_shared/accountGate.js";
-import { getAccountUsage, updateAccountUsage, updateUserUsage } from "../../socials/_shared/hubUpdater.js";
+import { getAccountUsage, updateAccountUsage, updateUserUsage, setActiveCampaignForAccount, clearActiveCampaignForAccount, seedCampaignAccountsInStats } from "../../socials/_shared/hubUpdater.js";
 import { isCampaignPaused, updateCampaignSettings, getCampaignSettings } from "../../campaign/_shared/pipelineUtils.js";
+import { updateSheetRowApi } from "../../api/googlesheets.js";
 import { INBOX_CONFIGS, detectInboxProvider } from "./platform.js";
 import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
 
@@ -214,6 +215,24 @@ export async function processInboxInteract(body) {
     }
     const settings = campaignData.settings || {};
 
+    // Campaign duration guard: if durationDays has elapsed, complete and abandon
+    const headers = campaignData.headers || [];
+    const createdOnIdx = headers.indexOf("createdOn");
+    const createdOnRaw = createdOnIdx !== -1 && campaignData.campaignRow ? campaignData.campaignRow[createdOnIdx] : null;
+    const durationDays = Math.max(1, parseInt(settings.durationDays, 10) || 7);
+    const createdOnTime = createdOnRaw ? new Date(createdOnRaw).getTime() : 0;
+    const maxDurationMs = durationDays * 24 * 60 * 60 * 1000;
+    const isDurationElapsed = () => createdOnTime > 0 && (Date.now() - createdOnTime >= maxDurationMs);
+    if (isDurationElapsed()) {
+      log.info(`[campaign-duration] Campaign ${campaignId} reached its scheduled duration (${durationDays}d). Completing campaign.`);
+      await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+        status: "completed",
+        updatedOn: new Date().toISOString(),
+      }).catch(() => {});
+      await updateCampaignSettings(campaignId, { interactionStatus: "completed", status: "completed", interactionStoppedReason: "duration_elapsed" });
+      return NextResponse.json({ success: true, completed: true, durationExpired: true, message: "Campaign duration reached; completed.", replies: 0 });
+    }
+
     const interactionAccountIds = settings.interactionAccounts || [];
     const emailKeywords = settings.emailKeywords || [];
     if (interactionAccountIds.length === 0) {
@@ -271,6 +290,12 @@ export async function processInboxInteract(body) {
       return NextResponse.json({ success: false, error: "No interaction accounts have cookies" }, { status: 400 });
     }
 
+    await seedCampaignAccountsInStats(campaignId, accounts.map(a => ({
+      accountId: a.accountId,
+      identifier: a.identifier || a.accountId,
+      platform: a.platform || a.provider || "email",
+    }))).catch(() => {});
+
     // Ledger of already-replied threads (persisted in settings, capped)
     const repliedThreads = new Set(settings.repliedThreads || []);
     const maxScan = parseInt(String(settings.interactionMaxScan || ""), 10) || 25;
@@ -285,7 +310,20 @@ export async function processInboxInteract(body) {
     });
 
     for (const account of accounts) {
+      if (isDurationElapsed()) {
+        await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+          status: "completed",
+          updatedOn: new Date().toISOString(),
+        }).catch(() => {});
+        await updateCampaignSettings(campaignId, { interactionStatus: "completed", status: "completed", interactionStoppedReason: "duration_elapsed" });
+        break;
+      }
       if (await isCampaignPaused(campaignId)) break;
+      setActiveCampaignForAccount(account.accountId, {
+        campaignId,
+        identifier: account.identifier || account.accountId,
+        platform: account.platform || account.provider || "email",
+      });
 
       // Monthly quota re-check per account (spend can move between passes)
       const accountQuota = await checkUserQuota(userId, { keys: ["interactionUsage"] });
@@ -416,6 +454,7 @@ export async function processInboxInteract(body) {
       } catch (accErr) {
         log.warn(` [${account.identifier}] inbox pass failed: ${accErr.message}`);
       } finally {
+        clearActiveCampaignForAccount(account.accountId, campaignId);
         try { if (page) await page.close(); } catch { /* noop */ }
         try { if (browser) await browser.close(); } catch { /* noop */ }
         if (profileDir) { const fs = await import('fs-extra'); await fs.remove(profileDir).catch(() => {}); }

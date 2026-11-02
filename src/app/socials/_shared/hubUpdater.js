@@ -6,6 +6,7 @@ const { canonicalAction } = limitsCore;
 
 const HUB_SHEET = "hub";
 const USERS_SHEET = "user";
+const CAMPAIGNS_SHEET = "campaigns";
 
 // ==================== Hub Account Interaction Tracking ====================
 
@@ -97,12 +98,171 @@ if (!globalThis.__hubUsageState) {
         userCache: new Map(),     // userId -> { record, ts }
         userInflight: new Map(),  // userId -> Promise<record>
         userWriteChains: new Map(), // userId -> Promise
+        activeCampaigns: new Map(), // accountId -> { campaignId, identifier, platform }
+        campaignStatsCache: new Map(), // campaignId -> { stats, ts }
+        campaignWriteChains: new Map(), // campaignId -> Promise
     };
 }
 const hubState = globalThis.__hubUsageState;
+if (!hubState.activeCampaigns) hubState.activeCampaigns = new Map();
+if (!hubState.campaignStatsCache) hubState.campaignStatsCache = new Map();
+if (!hubState.campaignWriteChains) hubState.campaignWriteChains = new Map();
 const usageCache = hubState.cache;
 const usageInflight = hubState.inflight;
 const usageWriteChains = hubState.writeChains;
+const activeCampaigns = hubState.activeCampaigns;
+const campaignStatsCache = hubState.campaignStatsCache;
+const campaignWriteChains = hubState.campaignWriteChains;
+
+export function setActiveCampaignForAccount(accountId, meta) {
+    if (!accountId || !meta || !meta.campaignId) return;
+    activeCampaigns.set(String(accountId).trim(), {
+        campaignId: String(meta.campaignId).trim(),
+        identifier: meta.identifier || String(accountId).trim(),
+        platform: meta.platform || "",
+    });
+}
+
+export function clearActiveCampaignForAccount(accountId, campaignId) {
+    if (!accountId) return;
+    const key = String(accountId).trim();
+    const cur = activeCampaigns.get(key);
+    if (!campaignId || (cur && cur.campaignId === String(campaignId).trim())) {
+        activeCampaigns.delete(key);
+    }
+}
+
+async function fetchCampaignStats(campaignId) {
+    try {
+        const result = await getSheetDataApi(CAMPAIGNS_SHEET);
+        if (!result.success) return { totalActions: 0, interactions: 0, conversions: 0, inbox: 0, accounts: {} };
+        const headers = result.headers || [];
+        const idIdx = headers.indexOf("campaignId");
+        const statsIdx = headers.indexOf("stats");
+        if (idIdx === -1) return { totalActions: 0, interactions: 0, conversions: 0, inbox: 0, accounts: {} };
+        const row = (result.data || []).find(r => String(r[idIdx] || "").trim() === String(campaignId).trim());
+        if (!row) return { totalActions: 0, interactions: 0, conversions: 0, inbox: 0, accounts: {} };
+        const parsed = parseInteractionUsage(statsIdx !== -1 ? row[statsIdx] : null);
+        if (!parsed.accounts || typeof parsed.accounts !== "object") parsed.accounts = {};
+        if (typeof parsed.totalActions !== "number") parsed.totalActions = Number(parsed.interactions) || 0;
+        if (typeof parsed.interactions !== "number") parsed.interactions = parsed.totalActions || 0;
+        if (typeof parsed.conversions !== "number") parsed.conversions = 0;
+        if (typeof parsed.inbox !== "number") parsed.inbox = 0;
+        return parsed;
+    } catch (e) {
+        logger.warn(`[fetchCampaignStats] Error for ${campaignId}: ${e.message}`);
+        return { totalActions: 0, interactions: 0, conversions: 0, inbox: 0, accounts: {} };
+    }
+}
+
+export async function seedCampaignAccountsInStats(campaignId, accountsList = []) {
+    if (!campaignId || !Array.isArray(accountsList) || accountsList.length === 0) return;
+    const cid = String(campaignId).trim();
+    const prev = campaignWriteChains.get(cid) || Promise.resolve();
+    const job = prev.then(async () => {
+        try {
+            let stats = campaignStatsCache.get(cid)?.stats;
+            if (!stats) {
+                stats = await fetchCampaignStats(cid);
+            }
+            if (!stats.accounts || typeof stats.accounts !== "object") stats.accounts = {};
+            let changed = false;
+            for (const acc of accountsList) {
+                const aid = String(acc.accountId || acc.profileId || "").trim();
+                if (!aid) continue;
+                if (!stats.accounts[aid]) {
+                    stats.accounts[aid] = {
+                        identifier: acc.identifier || aid,
+                        platform: acc.platform || "",
+                        total: 0,
+                        usage: {},
+                    };
+                    changed = true;
+                } else {
+                    if (acc.identifier && stats.accounts[aid].identifier !== acc.identifier) {
+                        stats.accounts[aid].identifier = acc.identifier;
+                        changed = true;
+                    }
+                    if (acc.platform && !stats.accounts[aid].platform) {
+                        stats.accounts[aid].platform = acc.platform;
+                        changed = true;
+                    }
+                }
+            }
+            campaignStatsCache.set(cid, { stats, ts: Date.now() });
+            if (changed) {
+                await updateSheetRowApi(CAMPAIGNS_SHEET, "campaignId", cid, {
+                    stats: JSON.stringify(stats),
+                    updatedOn: new Date().toISOString(),
+                });
+            }
+        } catch (e) {
+            logger.warn(`[seedCampaignAccountsInStats] Error for ${cid}: ${e.message}`);
+        }
+    });
+    campaignWriteChains.set(cid, job.catch(() => {}));
+    return job;
+}
+
+export async function updateCampaignStatsUsage(campaignId, accountId, action, count = 1, meta = {}) {
+    if (!campaignId || !accountId || !action) return false;
+    const cid = String(campaignId).trim();
+    const aid = String(accountId).trim();
+    const usageKey = canonicalAction(action);
+    const n = Number.isFinite(parseInt(count, 10)) && parseInt(count, 10) > 0 ? parseInt(count, 10) : 1;
+
+    const prev = campaignWriteChains.get(cid) || Promise.resolve();
+    const write = prev.then(async () => {
+        try {
+            let stats = campaignStatsCache.get(cid)?.stats;
+            if (!stats) {
+                stats = await fetchCampaignStats(cid);
+            }
+            if (!stats.accounts || typeof stats.accounts !== "object") stats.accounts = {};
+            const accEntry = stats.accounts[aid] || {
+                identifier: meta.identifier || aid,
+                platform: meta.platform || "",
+                total: 0,
+                usage: {},
+            };
+            if (meta.identifier && (!accEntry.identifier || accEntry.identifier === aid)) {
+                accEntry.identifier = meta.identifier;
+            }
+            if (meta.platform && !accEntry.platform) {
+                accEntry.platform = meta.platform;
+            }
+            accEntry.usage = incrementUsage(accEntry.usage || {}, usageKey, n);
+            accEntry.total = Object.values(accEntry.usage).reduce((sum, u) => sum + (Number(u?.total) || 0), 0);
+            stats.accounts[aid] = accEntry;
+
+            const totalAcrossAccounts = Object.values(stats.accounts).reduce((sum, a) => sum + (Number(a?.total) || 0), 0);
+            stats.totalActions = Math.max(totalAcrossAccounts, (Number(stats.totalActions) || 0) + n);
+            stats.interactions = stats.totalActions;
+            if (usageKey === "inboxReply" || usageKey === "coldMessage" || usageKey === "emailSent") {
+                stats.inbox = (Number(stats.inbox) || 0) + n;
+            }
+
+            campaignStatsCache.set(cid, { stats, ts: Date.now() });
+
+            const res = await updateSheetRowApi(CAMPAIGNS_SHEET, "campaignId", cid, {
+                stats: JSON.stringify(stats),
+                updatedOn: new Date().toISOString(),
+            });
+            if (res.success) {
+                logger.info(`[updateCampaignStatsUsage] campaign=${cid} account=${aid} action=${usageKey} +${n} (total=${stats.totalActions})`);
+            } else {
+                campaignStatsCache.delete(cid);
+            }
+            return res.success;
+        } catch (e) {
+            campaignStatsCache.delete(cid);
+            logger.warn(`[updateCampaignStatsUsage] Error for ${cid}/${aid}: ${e.message}`);
+            return false;
+        }
+    });
+    campaignWriteChains.set(cid, write.catch(() => {}));
+    return await write;
+}
 
 async function fetchAccountUsage(accountId) {
     try {
@@ -184,7 +344,12 @@ export async function updateAccountUsage(accountId, action, count = 1) {
             }
         });
         usageWriteChains.set(accountId, write.catch(() => {}));
-        return await write;
+        const resultOk = await write;
+        const activeCtx = activeCampaigns.get(String(accountId).trim());
+        if (resultOk && activeCtx && activeCtx.campaignId) {
+            await updateCampaignStatsUsage(activeCtx.campaignId, accountId, usageKey, count, activeCtx).catch(() => {});
+        }
+        return resultOk;
     } catch (e) {
         logger.error(`[updateAccountUsage] Error for ${accountId}: ${e.message}`);
         return false;

@@ -12,7 +12,7 @@ import { processActivitiesInteractTask } from "../../socials/activities-interact
 import { processSendMessages } from "../../shooting/social/dm.js";
 import { platformConfigs as sendPlatformConfigs } from "../../shooting/social/platforms.js";
 import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
-import { updateUserUsage } from "../../socials/_shared/hubUpdater.js";
+import { updateUserUsage, setActiveCampaignForAccount, clearActiveCampaignForAccount, seedCampaignAccountsInStats, updateCampaignStatsUsage } from "../../socials/_shared/hubUpdater.js";
 import { resolveAccountGate, isLimitSkipError } from "../../socials/_shared/accountGate.js";
 import workflowOps from "../../socials/_shared/workflowOps.js";
 
@@ -242,6 +242,7 @@ async function getSocialProfileCookies(profileId) {
   let platform = "";
   let browserIdentity = null;
   let driveUrl = "";
+  let identifier = "";
 
   // Cookie sheet (legacy capture table) — first choice when it has data.
   const cookieResult = await getSheetDataApi("cookie");
@@ -253,6 +254,7 @@ async function getSocialProfileCookies(profileId) {
     const categoryIdx = headers.indexOf("category");
     const identityIdx = headers.indexOf("browserIdentity");
     const driveUrlIdx = headers.indexOf("driveUrl");
+    const emailIdx = headers.indexOf("email");
     if (browserIdIdx !== -1) {
       const row = cookieResult.data.find(r => String(r[browserIdIdx]).trim() === sid);
       if (row) {
@@ -263,6 +265,7 @@ async function getSocialProfileCookies(profileId) {
           try { browserIdentity = typeof row[identityIdx] === 'string' ? JSON.parse(row[identityIdx]) : row[identityIdx]; } catch (_) {}
         }
         driveUrl = driveUrlIdx !== -1 ? row[driveUrlIdx] || "" : "";
+        if (emailIdx !== -1 && row[emailIdx]) identifier = String(row[emailIdx]).trim();
       }
     }
   }
@@ -271,14 +274,17 @@ async function getSocialProfileCookies(profileId) {
   // missing or an empty shell. Accounts logged in via the hub carry cookieJSON,
   // the profile ZIP link (cookieFileURL), platform and identity here only.
   let hub = null;
-  if (!cookies || !platform) {
+  if (!cookies || !platform || !identifier) {
     try {
       const hubResult = await getSheetDataApi("hub");
       if (hubResult.success) {
         const hh = hubResult.headers;
         const sidIdx = hh.indexOf("submissionId");
+        const bidIdx = hh.indexOf("browserId");
         if (sidIdx !== -1) {
-          const hubRow = hubResult.data.find(r => String(r[sidIdx]).trim() === sid);
+          const hubRow = hubResult.data.find(r =>
+            String(r[sidIdx]).trim() === sid || (bidIdx !== -1 && String(r[bidIdx]).trim() === sid)
+          );
           if (hubRow) hub = { headers: hh, row: hubRow };
         }
       }
@@ -289,6 +295,7 @@ async function getSocialProfileCookies(profileId) {
     const getH = (name) => { const i = hub.headers.indexOf(name); return i !== -1 ? hub.row[i] : ""; };
     if (!cookies) cookies = getH("cookieJSON") || "";
     if (!driveUrl) driveUrl = getH("cookieFileURL") || "";
+    if (!identifier) identifier = String(getH("email") || getH("username") || "").trim();
     if (!browserIdentity) {
       const raw = getH("browserIdentity");
       if (raw) { try { browserIdentity = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (_) {} }
@@ -321,6 +328,7 @@ async function getSocialProfileCookies(profileId) {
     platform,
     browserIdentity,
     driveUrl,
+    identifier: identifier || sid,
   };
 }
 
@@ -410,23 +418,22 @@ export async function POST(request) {
     const cCreatedOnIndex = cHeaders.indexOf("createdOn");
     const createdOnRaw = cCreatedOnIndex !== -1 ? campaignRow[cCreatedOnIndex] : null;
     const durationDays = Math.max(1, parseInt(settings.durationDays, 10) || 7);
-    if (createdOnRaw) {
-      const createdOnTime = new Date(createdOnRaw).getTime();
+    const createdOnTime = createdOnRaw ? new Date(createdOnRaw).getTime() : 0;
+    const maxDurationMs = durationDays * 24 * 60 * 60 * 1000;
+    const isDurationElapsed = () => createdOnTime > 0 && (Date.now() - createdOnTime >= maxDurationMs);
+    if (isDurationElapsed()) {
       const elapsedMs = Date.now() - createdOnTime;
-      const maxDurationMs = durationDays * 24 * 60 * 60 * 1000;
-      if (elapsedMs >= maxDurationMs) {
-        log.info(` [campaign-duration] Campaign ${campaignId} reached its scheduled duration (${(elapsedMs / 86400000).toFixed(1)} / ${durationDays} days). Completing campaign.`);
-        await updateSheetRowApi("campaigns", "campaignId", campaignId, {
-          status: "completed",
-          updatedOn: new Date().toISOString()
-        });
-        return NextResponse.json({
-          success: true,
-          message: `Campaign reached its duration limit of ${durationDays} day(s) and is completed.`,
-          completed: true,
-          durationExpired: true
-        });
-      }
+      log.info(` [campaign-duration] Campaign ${campaignId} reached its scheduled duration (${(elapsedMs / 86400000).toFixed(1)} / ${durationDays} days). Completing campaign.`);
+      await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+        status: "completed",
+        updatedOn: new Date().toISOString()
+      });
+      return NextResponse.json({
+        success: true,
+        message: `Campaign reached its duration limit of ${durationDays} day(s) and is completed.`,
+        completed: true,
+        durationExpired: true
+      });
     }
 
     // Gate maximum accounts per campaign (from SETTINGS sheet maxAccountsPerCampaign, default 1)
@@ -764,6 +771,7 @@ export async function POST(request) {
 
       // Step 3e: Processing loop over deduplicated rows with checkpointing
       let pausedByAdmin = false;
+      let durationExpiredMidRun = false;
       let firestickIndex = 0;
       // Per-run send cap per SMTP account (plan cell accountSendPerRunLimit,
       // campaign default 5, 0 = off): rotate across accounts; when every
@@ -772,6 +780,11 @@ export async function POST(request) {
       const pickSmtpWithinCap = smtpCap.pick;
       const noteSmtpSend = smtpCap.note;
       for (let i = startIndex; i < deduplicatedRows.length; i++) {
+        if (isDurationElapsed()) {
+          durationExpiredMidRun = true;
+          log.info(` [campaign-duration] Campaign ${campaignId} duration elapsed mid-run at row ${i}. Stopping and completing.`);
+          break;
+        }
         if (await isCampaignPaused(campaignId)) {
           pausedByAdmin = true;
           log.info(` Campaign ${campaignId} was paused during run. Stopping at row ${i}.`);
@@ -889,6 +902,10 @@ export async function POST(request) {
           deliveredCount += sendResult.delivered;
 
           sentCount++;
+          await updateCampaignStatsUsage(campaignId, profileId || senderHost, "emailSent", 1, {
+            identifier: profileData?.identifier || senderHost,
+            platform: "email",
+          }).catch(() => {});
           if (userId) {
             try {
               await updateUserUsage(userId, "shootCampaignUsage");
@@ -964,7 +981,9 @@ export async function POST(request) {
       });
 
       // Step 3e: Single campaign status update
-      const finalStatus = pausedByAdmin ? "paused" : (limitReached ? "Limit Reached" : "completed");
+      const finalStatus = (durationExpiredMidRun || isDurationElapsed())
+        ? "completed"
+        : (pausedByAdmin ? "paused" : (limitReached ? "Limit Reached" : "completed"));
       const analytics = {
         totalRows: dataRows.length,
         sent: sentCount,
@@ -1142,6 +1161,7 @@ export async function POST(request) {
         });
       };
 
+      const seededAccounts = [];
       for (const profileId of activeProfiles) {
         const profileData = await getSocialProfileCookies(profileId);
         if (!profileData || !profileData.cookies) {
@@ -1151,6 +1171,16 @@ export async function POST(request) {
 
         const platform = profileData.platform || normalizeSocialPlatform(settings.platform) || "twitter";
         profilePlatforms[profileId] = platform;
+        setActiveCampaignForAccount(profileId, {
+          campaignId,
+          identifier: profileData.identifier || profileId,
+          platform,
+        });
+        seededAccounts.push({
+          accountId: profileId,
+          identifier: profileData.identifier || profileId,
+          platform,
+        });
 
         // ACCOUNT-tier status gate — skip blocked profiles entirely (no tasks
         // queued for them); the rest of the campaign continues normally.
@@ -1320,7 +1350,12 @@ export async function POST(request) {
         csvUpdated = true;
       };
 
+      if (seededAccounts.length > 0) {
+        await seedCampaignAccountsInStats(campaignId, seededAccounts).catch(() => {});
+      }
+
       let pausedByAdmin = false;
+      let durationExpiredMidRun = false;
       let skippedLimitCount = 0;
       let quotaStopped = false;
 
@@ -1351,6 +1386,11 @@ export async function POST(request) {
       };
 
       const runSocialTask = async (task) => {
+        if (isDurationElapsed()) {
+          durationExpiredMidRun = true;
+          log.info(` [campaign-duration] Campaign ${campaignId} duration elapsed mid-run. Stopping social tasks.`);
+          return;
+        }
         if (await isCampaignPaused(campaignId)) {
           pausedByAdmin = true;
           log.info(` Campaign ${campaignId} was paused during social run. Stopping.`);
@@ -1430,7 +1470,11 @@ export async function POST(request) {
       const socialRunners = Array.from(
         { length: Math.min(maxConcurrentSocial, socialQueue.length) },
         async () => {
-          while (!pausedByAdmin && !quotaStopped) {
+          while (!pausedByAdmin && !quotaStopped && !durationExpiredMidRun) {
+            if (isDurationElapsed()) {
+              durationExpiredMidRun = true;
+              break;
+            }
             const task = socialQueue.shift();
             if (!task) break;
             await runSocialTask(task);
@@ -1441,7 +1485,7 @@ export async function POST(request) {
 
       // Step 4f: Send direct messages to all social profiles in CSV if enabled
       const shouldSendMessage = settings.shouldSendMessage === true || settings.shouldSendMessage === "true" || settings.sendToAll === true;
-      if (shouldSendMessage && socialFileUrl) {
+      if (shouldSendMessage && socialFileUrl && !durationExpiredMidRun && !isDurationElapsed() && !pausedByAdmin) {
         const dmAccounts = activeProfiles.filter(id => {
           const p = profilePlatforms[id];
           return p && sendPlatformConfigs[p];
@@ -1495,8 +1539,19 @@ export async function POST(request) {
         log.warn(` [campaign-rest] Zero actions completed with errors — resting campaign ${campaignId} for 15m cooldown`);
       }
 
+      for (const pid of activeProfiles) {
+        clearActiveCampaignForAccount(pid, campaignId);
+      }
+
+      const isNowExpired = durationExpiredMidRun || isDurationElapsed();
+      if (isNowExpired) {
+        delete settings.restUntil;
+      }
+
       const limitReached = executedCount < pendingSocialTasks.length || (interactionLimit !== Infinity && executedCount >= interactionLimit) || hasHourlyRateLimits;
-      const finalStatus = pausedByAdmin ? "paused" : (shouldRest ? "resting" : (limitReached ? "Limit Reached" : "completed"));
+      const finalStatus = isNowExpired
+        ? "completed"
+        : (pausedByAdmin ? "paused" : (shouldRest ? "resting" : (limitReached ? "Limit Reached" : "completed")));
       const analytics = {
         totalRows: tasksToExecute.length,
         sent: executedCount,

@@ -5,7 +5,7 @@ import { getSelfUrl, getSelfUrlWithFallback, getSelfId, identifySelfFromHost } f
 import { getCampaignSettings, updateCampaignSettings, isCampaignPaused, classifyStageFailure, recordStageError, clearStageError, getRetryBudget } from "../_shared/pipelineUtils.js";
 import { acquireCampaignLock, releaseCampaignLock } from "../../../utils/campaignLock.js";
 import { getCampaignLimits } from "../../socials/_shared/limits.js";
-import { getSheetDataApi } from "../../api/googlesheets.js";
+import { getSheetDataApi, updateSheetRowApi } from "../../api/googlesheets.js";
 import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
 
 export const maxDuration = 60;
@@ -316,7 +316,12 @@ export async function POST(request) {
         expiresAt = new Date(ms).toISOString();
       }
       if (expiresAt && Date.now() >= new Date(expiresAt).getTime()) {
-        return NextResponse.json({ success: false, error: 'campaign_expired', message: 'This campaign has expired and cannot be continued.' }, { status: 400 });
+        await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+          status: "completed",
+          updatedOn: new Date().toISOString()
+        }).catch(() => {});
+        await updateCampaignSettings(campaignId, { status: "completed" });
+        return NextResponse.json({ success: false, error: 'campaign_expired', completed: true, durationExpired: true, message: 'This campaign has expired and cannot be continued.' }, { status: 400 });
       }
     } catch {}
 
@@ -338,6 +343,10 @@ export async function POST(request) {
       const maxDurationMs = durationDays * 24 * 60 * 60 * 1000;
       if (elapsedMs >= maxDurationMs) {
         log.info(`[campaign-duration] Campaign ${campaignId} reached its scheduled duration (${(elapsedMs / 86400000).toFixed(1)} / ${durationDays} days). Completing campaign.`);
+        await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+          status: "completed",
+          updatedOn: new Date().toISOString()
+        }).catch(() => {});
         await updateCampaignSettings(campaignId, { status: "completed" });
         return NextResponse.json({
           success: true,
