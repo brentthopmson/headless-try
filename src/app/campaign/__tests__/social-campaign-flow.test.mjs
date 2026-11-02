@@ -655,19 +655,19 @@ test('increments existing usage', () => {
 });
 
 test('resets hourly counter when hour changes', () => {
-  const existing = { follow: { hourly: 5, daily: 5, monthly: 5, total: 5, hour: 10, day: new Date().getDate(), month: new Date().getMonth() } };
+  const existing = { follow: { hourly: 5, daily: 5, monthly: 5, total: 5, hour: (new Date().getHours() + 1) % 24, day: new Date().getDate(), month: new Date().getMonth() } };
   const result = incrementUsage(existing, 'follow');
   assert.strictEqual(result.follow.hourly, 1);
 });
 
 test('resets daily counter when day changes', () => {
-  const existing = { follow: { hourly: 1, daily: 10, monthly: 10, total: 10, hour: new Date().getHours(), day: 1, month: new Date().getMonth() } };
+  const existing = { follow: { hourly: 1, daily: 10, monthly: 10, total: 10, hour: new Date().getHours(), day: new Date().getDate() === 1 ? 2 : 1, month: new Date().getMonth() } };
   const result = incrementUsage(existing, 'follow');
   assert.strictEqual(result.follow.daily, 1);
 });
 
 test('resets monthly counter when month changes', () => {
-  const existing = { follow: { hourly: 1, daily: 1, monthly: 20, total: 20, hour: new Date().getHours(), day: new Date().getDate(), month: 0 } };
+  const existing = { follow: { hourly: 1, daily: 1, monthly: 20, total: 20, hour: new Date().getHours(), day: new Date().getDate(), month: new Date().getMonth() === 0 ? 1 : 0 } };
   const result = incrementUsage(existing, 'follow');
   assert.strictEqual(result.follow.monthly, 1);
 });
