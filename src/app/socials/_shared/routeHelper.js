@@ -277,8 +277,18 @@ export function sanitizeGoogleCookiesForHeadless(cookies) {
  * @param {string} headless - Headless mode ("new", false, etc.)
  * @param {object} options - Optional: { userDataDir: string, identity: object } to use a persistent profile + matching fingerprint
  */
-export async function launchBrowserWithSession(cookieJSON, headless = isDev ? false : "new", options = {}) {
+export async function launchBrowserWithSession(cookieJSON, headless = undefined, options = {}) {
     try {
+        // Respect app/browser visibility like emails cookie login
+        if (headless === undefined || headless === null) {
+            if (process.env.SHOW_BROWSER === 'true' || process.env.BROWSER_VISIBLE === 'true' || process.env.VISUAL === 'true' || process.env.HEADLESS === 'false') {
+                headless = false;
+            } else if (isDev) {
+                headless = false;
+            } else {
+                headless = "new";
+            }
+        }
         const launchOptions = {
             headless,
             executablePath: isDev ? localExecutablePath : fullChromiumExecutablePath,
@@ -457,7 +467,16 @@ export async function launchBrowserWithSession(cookieJSON, headless = isDev ? fa
  * @param {boolean} headless - Headless mode (default: "new")
  * @returns {Promise<{ browser, page, profileDir?: string }>}
  */
-export async function resolveShootSession(browserId, headless = isDev ? false : "new") {
+export async function resolveShootSession(browserId, headless = undefined) {
+    if (headless === undefined || headless === null) {
+        if (process.env.SHOW_BROWSER === 'true' || process.env.BROWSER_VISIBLE === 'true' || process.env.VISUAL === 'true' || process.env.HEADLESS === 'false') {
+            headless = false;
+        } else if (isDev) {
+            headless = false;
+        } else {
+            headless = "new";
+        }
+    }
     let profileDir = null;
     try {
         // 1. Read hub sheet for this browserId
@@ -535,7 +554,16 @@ export async function resolveShootSession(browserId, headless = isDev ? false : 
  * @param {boolean} headless - Headless mode (default: "new")
  * @returns {Promise<{ browser, page, profileDir?: string }>}
  */
-export async function resolveSocialSession(profile, headless = isDev ? false : "new", options = {}) {
+export async function resolveSocialSession(profile, headless = undefined, options = {}) {
+    if (headless === undefined || headless === null) {
+        if (process.env.SHOW_BROWSER === 'true' || process.env.BROWSER_VISIBLE === 'true' || process.env.VISUAL === 'true' || process.env.HEADLESS === 'false') {
+            headless = false;
+        } else if (isDev) {
+            headless = false;
+        } else {
+            headless = "new";
+        }
+    }
     const cookieJSON = profile.cookies || '';
     const browserIdentity = profile.browserIdentity || null;
     const driveUrl = profile.driveUrl || '';

@@ -370,7 +370,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
 
         let platformBrowser = null;
         try {
-          platformBrowser = await launchBrowser({ headless: true });
+          platformBrowser = await launchBrowser({ headless: process.env.SHOW_BROWSER === 'true' || process.env.BROWSER_VISIBLE === 'true' || process.env.VISUAL === 'true' ? false : (process.env.HEADLESS === 'false' ? false : "new") });
           const page = (await platformBrowser.pages())[0] || await platformBrowser.newPage();
 
           for (const row of batch) {
@@ -571,7 +571,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
 
         let platformBrowser = null;
         try {
-          platformBrowser = await launchBrowser({ headless: true });
+          platformBrowser = await launchBrowser({ headless: process.env.SHOW_BROWSER === 'true' || process.env.BROWSER_VISIBLE === 'true' || process.env.VISUAL === 'true' ? false : (process.env.HEADLESS === 'false' ? false : "new") });
           const page = (await platformBrowser.pages())[0] || await platformBrowser.newPage();
 
           for (const { row } of batch) {

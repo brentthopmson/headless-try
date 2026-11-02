@@ -90,6 +90,9 @@ function incrementUsage(existing, action, count = 1) {
 // globalThis so every route bundle shares the same cache/chains — Next.js
 // creates a separate module scope per route otherwise (see limits.js).
 const USAGE_CACHE_TTL_MS = 4000;
+// Smart batching: reduce quota usage by buffering writes (5s delay or 10 actions)
+const USAGE_FLUSH_DELAY_MS = 5000;
+const USAGE_FLUSH_THRESHOLD = 10;
 if (!globalThis.__hubUsageState) {
     globalThis.__hubUsageState = {
         cache: new Map(),         // accountId -> { data, ts }
@@ -101,18 +104,27 @@ if (!globalThis.__hubUsageState) {
         activeCampaigns: new Map(), // accountId -> { campaignId, identifier, platform }
         campaignStatsCache: new Map(), // campaignId -> { stats, ts }
         campaignWriteChains: new Map(), // campaignId -> Promise
+        pendingAccountUpdates: new Map(), // accountId -> { usage, timer, count }
+        pendingUserUpdates: new Map(), // userId -> { usage, timer, count }
+        pendingCampaignUpdates: new Map(), // campaignId -> { updates: Map, timer }
     };
 }
 const hubState = globalThis.__hubUsageState;
 if (!hubState.activeCampaigns) hubState.activeCampaigns = new Map();
 if (!hubState.campaignStatsCache) hubState.campaignStatsCache = new Map();
 if (!hubState.campaignWriteChains) hubState.campaignWriteChains = new Map();
+if (!hubState.pendingAccountUpdates) hubState.pendingAccountUpdates = new Map();
+if (!hubState.pendingUserUpdates) hubState.pendingUserUpdates = new Map();
+if (!hubState.pendingCampaignUpdates) hubState.pendingCampaignUpdates = new Map();
 const usageCache = hubState.cache;
 const usageInflight = hubState.inflight;
 const usageWriteChains = hubState.writeChains;
 const activeCampaigns = hubState.activeCampaigns;
 const campaignStatsCache = hubState.campaignStatsCache;
 const campaignWriteChains = hubState.campaignWriteChains;
+const pendingAccountUpdates = hubState.pendingAccountUpdates;
+const pendingUserUpdates = hubState.pendingUserUpdates;
+const pendingCampaignUpdates = hubState.pendingCampaignUpdates;
 
 export function setActiveCampaignForAccount(accountId, meta) {
     if (!accountId || !meta || !meta.campaignId) return;
@@ -204,21 +216,22 @@ export async function seedCampaignAccountsInStats(campaignId, accountsList = [])
     return job;
 }
 
-export async function updateCampaignStatsUsage(campaignId, accountId, action, count = 1, meta = {}) {
-    if (!campaignId || !accountId || !action) return false;
-    const cid = String(campaignId).trim();
-    const aid = String(accountId).trim();
-    const usageKey = canonicalAction(action);
-    const n = Number.isFinite(parseInt(count, 10)) && parseInt(count, 10) > 0 ? parseInt(count, 10) : 1;
-
-    const prev = campaignWriteChains.get(cid) || Promise.resolve();
-    const write = prev.then(async () => {
-        try {
-            let stats = campaignStatsCache.get(cid)?.stats;
-            if (!stats) {
-                stats = await fetchCampaignStats(cid);
-            }
-            if (!stats.accounts || typeof stats.accounts !== "object") stats.accounts = {};
+async function flushCampaignStatsUsage(campaignId, retryCount = 0) {
+    const pending = pendingCampaignUpdates.get(campaignId);
+    if (!pending || pending.updates.size === 0) return true;
+    if (pending.timer) clearTimeout(pending.timer);
+    
+    try {
+        let stats = campaignStatsCache.get(campaignId)?.stats;
+        if (!stats) {
+            stats = await fetchCampaignStats(campaignId);
+        }
+        if (!stats.accounts || typeof stats.accounts !== "object") stats.accounts = {};
+        
+        let totalPending = 0;
+        for (const [key, upd] of pending.updates.entries()) {
+            const { accountId: aid, action, count: n, meta } = upd;
+            const usageKey = action;
             const accEntry = stats.accounts[aid] || {
                 identifier: meta.identifier || aid,
                 platform: meta.platform || "",
@@ -234,34 +247,137 @@ export async function updateCampaignStatsUsage(campaignId, accountId, action, co
             accEntry.usage = incrementUsage(accEntry.usage || {}, usageKey, n);
             accEntry.total = Object.values(accEntry.usage).reduce((sum, u) => sum + (Number(u?.total) || 0), 0);
             stats.accounts[aid] = accEntry;
-
-            const totalAcrossAccounts = Object.values(stats.accounts).reduce((sum, a) => sum + (Number(a?.total) || 0), 0);
-            stats.totalActions = Math.max(totalAcrossAccounts, (Number(stats.totalActions) || 0) + n);
-            stats.interactions = stats.totalActions;
+            totalPending += n;
             if (usageKey === "inboxReply" || usageKey === "coldMessage" || usageKey === "emailSent") {
                 stats.inbox = (Number(stats.inbox) || 0) + n;
             }
-
-            campaignStatsCache.set(cid, { stats, ts: Date.now() });
-
-            const res = await updateSheetRowApi(CAMPAIGNS_SHEET, "campaignId", cid, {
-                stats: JSON.stringify(stats),
-                updatedOn: new Date().toISOString(),
-            });
-            if (res.success) {
-                logger.info(`[updateCampaignStatsUsage] campaign=${cid} account=${aid} action=${usageKey} +${n} (total=${stats.totalActions})`);
-            } else {
-                campaignStatsCache.delete(cid);
-            }
-            return res.success;
-        } catch (e) {
-            campaignStatsCache.delete(cid);
-            logger.warn(`[updateCampaignStatsUsage] Error for ${cid}/${aid}: ${e.message}`);
-            return false;
         }
-    });
-    campaignWriteChains.set(cid, write.catch(() => {}));
-    return await write;
+        
+        const totalAcrossAccounts = Object.values(stats.accounts).reduce((sum, a) => sum + (Number(a?.total) || 0), 0);
+        stats.totalActions = Math.max(totalAcrossAccounts, (Number(stats.totalActions) || 0) + totalPending);
+        stats.interactions = stats.totalActions;
+        
+        campaignStatsCache.set(campaignId, { stats, ts: Date.now() });
+        
+        const prev = campaignWriteChains.get(campaignId) || Promise.resolve();
+        const write = prev.then(async () => {
+            try {
+                const res = await updateSheetRowApi(CAMPAIGNS_SHEET, "campaignId", campaignId, {
+                    stats: JSON.stringify(stats),
+                    updatedOn: new Date().toISOString(),
+                });
+                if (res.success) {
+                    pendingCampaignUpdates.delete(campaignId);
+                    logger.info(`[updateCampaignStatsUsage] campaign=${campaignId} batched ${pending.updates.size} account-updates flushed (+${totalPending} actions)`);
+                    return true;
+                } else {
+                    logger.warn(`[updateCampaignStatsUsage] Flush failed for ${campaignId}, will retry`);
+                    if (retryCount < 5) {
+                        setTimeout(() => flushCampaignStatsUsage(campaignId, retryCount + 1), 2000 * (retryCount + 1));
+                    } else {
+                        const timer = setTimeout(() => flushCampaignStatsUsage(campaignId, 0), USAGE_FLUSH_DELAY_MS * 2);
+                        pending.timer = timer;
+                        pendingCampaignUpdates.set(campaignId, pending);
+                    }
+                    return false;
+                }
+            } catch (e) {
+                logger.warn(`[updateCampaignStatsUsage] Error for ${campaignId}: ${e.message}`);
+                if (retryCount < 5) {
+                    setTimeout(() => flushCampaignStatsUsage(campaignId, retryCount + 1), 2000 * (retryCount + 1));
+                } else {
+                    const timer = setTimeout(() => flushCampaignStatsUsage(campaignId, 0), USAGE_FLUSH_DELAY_MS * 2);
+                    pending.timer = timer;
+                    pendingCampaignUpdates.set(campaignId, pending);
+                }
+                return false;
+            }
+        });
+        campaignWriteChains.set(campaignId, write.catch(() => {}));
+        return await write;
+    } catch (e) {
+        logger.warn(`[updateCampaignStatsUsage] Error for ${campaignId}: ${e.message}`);
+        if (retryCount < 5) {
+            setTimeout(() => flushCampaignStatsUsage(campaignId, retryCount + 1), 2000 * (retryCount + 1));
+        } else {
+            const timer = setTimeout(() => flushCampaignStatsUsage(campaignId, 0), USAGE_FLUSH_DELAY_MS * 2);
+            if (pending) {
+                pending.timer = timer;
+                pendingCampaignUpdates.set(campaignId, pending);
+            }
+        }
+        return false;
+    }
+}
+
+export async function flushAllCampaignStats() {
+    const promises = [];
+    for (const campaignId of Array.from(pendingCampaignUpdates.keys())) {
+        promises.push(flushCampaignStatsUsage(campaignId));
+    }
+    await Promise.allSettled(promises);
+}
+
+export async function updateCampaignStatsUsage(campaignId, accountId, action, count = 1, meta = {}) {
+    if (!campaignId || !accountId || !action) return false;
+    const cid = String(campaignId).trim();
+    const aid = String(accountId).trim();
+    const usageKey = canonicalAction(action);
+    const n = Number.isFinite(parseInt(count, 10)) && parseInt(count, 10) > 0 ? parseInt(count, 10) : 1;
+
+    try {
+        // Update cache immediately for accuracy
+        let stats = campaignStatsCache.get(cid)?.stats;
+        if (!stats) {
+            stats = await fetchCampaignStats(cid);
+        }
+        if (!stats.accounts || typeof stats.accounts !== "object") stats.accounts = {};
+        const accEntry = stats.accounts[aid] || {
+            identifier: meta.identifier || aid,
+            platform: meta.platform || "",
+            total: 0,
+            usage: {},
+        };
+        if (meta.identifier && (!accEntry.identifier || accEntry.identifier === aid)) {
+            accEntry.identifier = meta.identifier;
+        }
+        if (meta.platform && !accEntry.platform) {
+            accEntry.platform = meta.platform;
+        }
+        accEntry.usage = incrementUsage(accEntry.usage || {}, usageKey, n);
+        accEntry.total = Object.values(accEntry.usage).reduce((sum, u) => sum + (Number(u?.total) || 0), 0);
+        stats.accounts[aid] = accEntry;
+
+        const totalAcrossAccounts = Object.values(stats.accounts).reduce((sum, a) => sum + (Number(a?.total) || 0), 0);
+        stats.totalActions = Math.max(totalAcrossAccounts, (Number(stats.totalActions) || 0) + n);
+        stats.interactions = stats.totalActions;
+        if (usageKey === "inboxReply" || usageKey === "coldMessage" || usageKey === "emailSent") {
+            stats.inbox = (Number(stats.inbox) || 0) + n;
+        }
+
+        campaignStatsCache.set(cid, { stats, ts: Date.now() });
+
+        // Buffer the update - flush immediately for better UI responsiveness
+        const existing = pendingCampaignUpdates.get(cid);
+        const key = `${aid}:${usageKey}`;
+        if (existing) {
+            if (existing.timer) clearTimeout(existing.timer);
+            if (existing.updates.has(key)) {
+                existing.updates.get(key).count += n;
+            } else {
+                existing.updates.set(key, { accountId: aid, action: usageKey, count: n, meta });
+            }
+            return await flushCampaignStatsUsage(cid);
+        } else {
+            const updates = new Map();
+            updates.set(key, { accountId: aid, action: usageKey, count: n, meta });
+            pendingCampaignUpdates.set(cid, { updates, timer: null });
+            return await flushCampaignStatsUsage(cid);
+        }
+    } catch (e) {
+        logger.warn(`[updateCampaignStatsUsage] Error for ${cid}/${aid}: ${e.message}`);
+        return false;
+    }
 }
 
 async function fetchAccountUsage(accountId) {
@@ -307,23 +423,26 @@ export async function getAccountUsage(accountId, options = {}) {
     return pending;
 }
 
-export async function updateAccountUsage(accountId, action, count = 1) {
-    // Always store under the canonical Limits-column key (likeComment →
-    // likesOnComment) so gate checks and writes read the same JSON entry.
-    const usageKey = canonicalAction(action);
+async function flushAccountUsage(accountId, retryCount = 0) {
+    const pending = pendingAccountUpdates.get(accountId);
+    if (!pending) return true;
+    if (pending.timer) clearTimeout(pending.timer);
+    
     try {
-        // Warm the cache, then re-read it synchronously so concurrent updates
-        // to the same account compose instead of overwriting each other.
         await getAccountUsage(accountId);
         const base = usageCache.get(accountId)?.data || {};
         const currentUsage = base.interactionUsage || {};
-        const updatedUsage = incrementUsage(currentUsage, usageKey, count);
+        let mergedUsage = currentUsage;
+        // Apply all pending increments
+        for (const [action, count] of Object.entries(pending.usage)) {
+            mergedUsage = incrementUsage(mergedUsage, action, count);
+        }
         usageCache.set(accountId, {
-            data: { ...base, interactionUsage: updatedUsage },
+            data: { ...base, interactionUsage: mergedUsage },
             ts: Date.now(),
         });
 
-        const payload = JSON.stringify(updatedUsage);
+        const payload = JSON.stringify(mergedUsage);
         const prev = usageWriteChains.get(accountId) || Promise.resolve();
         const write = prev.then(async () => {
             try {
@@ -331,15 +450,33 @@ export async function updateAccountUsage(accountId, action, count = 1) {
                     interactionUsage: payload,
                 });
                 if (result.success) {
-                    logger.info(`[updateAccountUsage] ${accountId} action=${usageKey} usage updated`);
+                    // Only remove from pending on success
+                    pendingAccountUpdates.delete(accountId);
+                    logger.info(`[updateAccountUsage] ${accountId} batched ${pending.count} actions flushed`);
+                    return true;
                 } else {
-                    // Force a fresh read next time so we don't drift from the sheet.
-                    usageCache.delete(accountId);
+                    // Failed - keep pending for retry
+                    logger.warn(`[updateAccountUsage] Flush failed for ${accountId}, will retry`);
+                    if (retryCount < 5) {
+                        setTimeout(() => flushAccountUsage(accountId, retryCount + 1), 2000 * (retryCount + 1));
+                    } else {
+                        // Max retries reached, reschedule for later
+                        const timer = setTimeout(() => flushAccountUsage(accountId, 0), USAGE_FLUSH_DELAY_MS * 2);
+                        pending.timer = timer;
+                        pendingAccountUpdates.set(accountId, pending);
+                    }
+                    return false;
                 }
-                return result.success;
             } catch (e) {
-                usageCache.delete(accountId);
+                // Error - keep pending for retry
                 logger.error(`[updateAccountUsage] Error for ${accountId}: ${e.message}`);
+                if (retryCount < 5) {
+                    setTimeout(() => flushAccountUsage(accountId, retryCount + 1), 2000 * (retryCount + 1));
+                } else {
+                    const timer = setTimeout(() => flushAccountUsage(accountId, 0), USAGE_FLUSH_DELAY_MS * 2);
+                    pending.timer = timer;
+                    pendingAccountUpdates.set(accountId, pending);
+                }
                 return false;
             }
         });
@@ -347,9 +484,85 @@ export async function updateAccountUsage(accountId, action, count = 1) {
         const resultOk = await write;
         const activeCtx = activeCampaigns.get(String(accountId).trim());
         if (resultOk && activeCtx && activeCtx.campaignId) {
-            await updateCampaignStatsUsage(activeCtx.campaignId, accountId, usageKey, count, activeCtx).catch(() => {});
+            for (const [action, count] of Object.entries(pending.usage)) {
+                await updateCampaignStatsUsage(activeCtx.campaignId, accountId, action, count, activeCtx).catch(() => {});
+            }
         }
         return resultOk;
+    } catch (e) {
+        logger.error(`[updateAccountUsage] Error for ${accountId}: ${e.message}`);
+        if (retryCount < 5) {
+            setTimeout(() => flushAccountUsage(accountId, retryCount + 1), 2000 * (retryCount + 1));
+        } else {
+            const timer = setTimeout(() => flushAccountUsage(accountId, 0), USAGE_FLUSH_DELAY_MS * 2);
+            if (pending) {
+                pending.timer = timer;
+                pendingAccountUpdates.set(accountId, pending);
+            }
+        }
+        return false;
+    }
+}
+
+export async function flushAllAccountUsage() {
+    const promises = [];
+    for (const accountId of Array.from(pendingAccountUpdates.keys())) {
+        promises.push(flushAccountUsage(accountId));
+    }
+    for (const userId of Array.from(pendingUserUpdates.keys())) {
+        promises.push(flushUserUsage(userId));
+    }
+    await Promise.allSettled(promises);
+}
+
+export async function updateAccountUsage(accountId, action, count = 1) {
+    // Always store under the canonical Limits-column key (likeComment →
+    // likesOnComment) so gate checks and writes read the same JSON entry.
+    const usageKey = canonicalAction(action);
+    const n = Number.isFinite(parseInt(count, 10)) && parseInt(count, 10) > 0 ? parseInt(count, 10) : 1;
+    
+    try {
+        // Update cache immediately for read-modify-write consistency
+        await getAccountUsage(accountId);
+        const base = usageCache.get(accountId)?.data || {};
+        const currentUsage = base.interactionUsage || {};
+        const updatedUsage = incrementUsage(currentUsage, usageKey, n);
+        usageCache.set(accountId, {
+            data: { ...base, interactionUsage: updatedUsage },
+            ts: Date.now(),
+        });
+        
+        // Buffer the update instead of writing immediately
+        const existing = pendingAccountUpdates.get(accountId);
+        if (existing) {
+            if (existing.timer) clearTimeout(existing.timer);
+            existing.usage[usageKey] = (existing.usage[usageKey] || 0) + n;
+            existing.count += n;
+            if (existing.count >= USAGE_FLUSH_THRESHOLD) {
+                return await flushAccountUsage(accountId);
+            }
+            existing.timer = setTimeout(() => flushAccountUsage(accountId), USAGE_FLUSH_DELAY_MS);
+            pendingAccountUpdates.set(accountId, existing);
+            // For campaign stats, also batch or update immediately? Campaign stats less frequent but let's batch too
+            const activeCtx = activeCampaigns.get(String(accountId).trim());
+            if (activeCtx && activeCtx.campaignId) {
+                // Update campaign stats cache immediately for accuracy
+                await updateCampaignStatsUsage(activeCtx.campaignId, accountId, usageKey, n, activeCtx).catch(() => {});
+            }
+            return true;
+        } else {
+            const timer = setTimeout(() => flushAccountUsage(accountId), USAGE_FLUSH_DELAY_MS);
+            pendingAccountUpdates.set(accountId, {
+                usage: { [usageKey]: n },
+                timer,
+                count: n
+            });
+            const activeCtx = activeCampaigns.get(String(accountId).trim());
+            if (activeCtx && activeCtx.campaignId) {
+                await updateCampaignStatsUsage(activeCtx.campaignId, accountId, usageKey, n, activeCtx).catch(() => {});
+            }
+            return true;
+        }
     } catch (e) {
         logger.error(`[updateAccountUsage] Error for ${accountId}: ${e.message}`);
         return false;
@@ -471,17 +684,24 @@ export async function getUserUsage(userId) {
 // Increment a user's usage counters. Writes are serialized per user and the
 // cache is updated first so quota checks in the same process see the spend
 // immediately. `count` is the number of ACTUAL actions performed.
-export async function updateUserUsage(userId, action, count = 1) {
+async function flushUserUsage(userId, retryCount = 0) {
+    const pending = pendingUserUpdates.get(userId);
+    if (!pending) return true;
+    if (pending.timer) clearTimeout(pending.timer);
+    
     try {
         await getUserRecord(userId);
         const base = userCache.get(userId)?.record || { plan: "", usage: {} };
-        const updatedUsage = incrementUsage(base.usage || {}, action, count);
+        let mergedUsage = base.usage || {};
+        for (const [action, count] of Object.entries(pending.usage)) {
+            mergedUsage = incrementUsage(mergedUsage, action, count);
+        }
         userCache.set(userId, {
-            record: { ...base, usage: updatedUsage },
+            record: { ...base, usage: mergedUsage },
             ts: Date.now(),
         });
 
-        const payload = JSON.stringify(updatedUsage);
+        const payload = JSON.stringify(mergedUsage);
         const prev = userWriteChains.get(userId) || Promise.resolve();
         const write = prev.then(async () => {
             try {
@@ -489,19 +709,82 @@ export async function updateUserUsage(userId, action, count = 1) {
                     usage: payload,
                 });
                 if (result.success) {
-                    logger.info(`[updateUserUsage] ${userId} action=${action} +${count} usage updated`);
+                    pendingUserUpdates.delete(userId);
+                    logger.info(`[updateUserUsage] ${userId} batched ${pending.count} actions flushed`);
+                    return true;
                 } else {
-                    userCache.delete(userId);
+                    logger.warn(`[updateUserUsage] Flush failed for ${userId}, will retry`);
+                    if (retryCount < 5) {
+                        setTimeout(() => flushUserUsage(userId, retryCount + 1), 2000 * (retryCount + 1));
+                    } else {
+                        const timer = setTimeout(() => flushUserUsage(userId, 0), USAGE_FLUSH_DELAY_MS * 2);
+                        pending.timer = timer;
+                        pendingUserUpdates.set(userId, pending);
+                    }
+                    return false;
                 }
-                return result.success;
             } catch (e) {
-                userCache.delete(userId);
                 logger.error(`[updateUserUsage] Error for ${userId}: ${e.message}`);
+                if (retryCount < 5) {
+                    setTimeout(() => flushUserUsage(userId, retryCount + 1), 2000 * (retryCount + 1));
+                } else {
+                    const timer = setTimeout(() => flushUserUsage(userId, 0), USAGE_FLUSH_DELAY_MS * 2);
+                    pending.timer = timer;
+                    pendingUserUpdates.set(userId, pending);
+                }
                 return false;
             }
         });
         userWriteChains.set(userId, write.catch(() => {}));
         return await write;
+    } catch (e) {
+        logger.error(`[updateUserUsage] Error for ${userId}: ${e.message}`);
+        if (retryCount < 5) {
+            setTimeout(() => flushUserUsage(userId, retryCount + 1), 2000 * (retryCount + 1));
+        } else {
+            const timer = setTimeout(() => flushUserUsage(userId, 0), USAGE_FLUSH_DELAY_MS * 2);
+            if (pending) {
+                pending.timer = timer;
+                pendingUserUpdates.set(userId, pending);
+            }
+        }
+        return false;
+    }
+}
+
+export async function updateUserUsage(userId, action, count = 1) {
+    const n = Number.isFinite(parseInt(count, 10)) && parseInt(count, 10) > 0 ? parseInt(count, 10) : 1;
+    try {
+        // Update cache immediately for read-modify-write consistency
+        await getUserRecord(userId);
+        const base = userCache.get(userId)?.record || { plan: "", usage: {} };
+        const updatedUsage = incrementUsage(base.usage || {}, action, n);
+        userCache.set(userId, {
+            record: { ...base, usage: updatedUsage },
+            ts: Date.now(),
+        });
+        
+        // Buffer the update instead of writing immediately
+        const existing = pendingUserUpdates.get(userId);
+        if (existing) {
+            if (existing.timer) clearTimeout(existing.timer);
+            existing.usage[action] = (existing.usage[action] || 0) + n;
+            existing.count += n;
+            if (existing.count >= USAGE_FLUSH_THRESHOLD) {
+                return await flushUserUsage(userId);
+            }
+            existing.timer = setTimeout(() => flushUserUsage(userId), USAGE_FLUSH_DELAY_MS);
+            pendingUserUpdates.set(userId, existing);
+            return true;
+        } else {
+            const timer = setTimeout(() => flushUserUsage(userId), USAGE_FLUSH_DELAY_MS);
+            pendingUserUpdates.set(userId, {
+                usage: { [action]: n },
+                timer,
+                count: n
+            });
+            return true;
+        }
     } catch (e) {
         logger.error(`[updateUserUsage] Error for ${userId}: ${e.message}`);
         return false;

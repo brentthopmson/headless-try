@@ -12,7 +12,7 @@ import { processActivitiesInteractTask } from "../../socials/activities-interact
 import { processSendMessages } from "../../shooting/social/dm.js";
 import { platformConfigs as sendPlatformConfigs } from "../../shooting/social/platforms.js";
 import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
-import { updateUserUsage, setActiveCampaignForAccount, clearActiveCampaignForAccount, seedCampaignAccountsInStats, updateCampaignStatsUsage } from "../../socials/_shared/hubUpdater.js";
+import { updateUserUsage, setActiveCampaignForAccount, clearActiveCampaignForAccount, seedCampaignAccountsInStats, updateCampaignStatsUsage, flushAllAccountUsage } from "../../socials/_shared/hubUpdater.js";
 import { resolveAccountGate, isLimitSkipError } from "../../socials/_shared/accountGate.js";
 import workflowOps from "../../socials/_shared/workflowOps.js";
 
@@ -1662,6 +1662,9 @@ export async function POST(request) {
     });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   } finally {
+    // Flush pending usage writes to reduce quota
+    try { await flushAllAccountUsage(); } catch (e) {}
+    try { const { flushAllCampaignStats } = await import("../../socials/_shared/hubUpdater.js"); await flushAllCampaignStats(); } catch (e) {}
     // Only the run that claimed the slot releases it. A skipped duplicate
     // returns before claiming, so it never touches the set here.
     if (_isExecuting && campaignId) _executingCampaigns.delete(campaignId);
