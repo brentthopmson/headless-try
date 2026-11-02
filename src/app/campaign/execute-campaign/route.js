@@ -19,7 +19,7 @@ import workflowOps from "../../socials/_shared/workflowOps.js";
 const { resolveSocialMessage } = workflowOps;
 import { requireFeature } from "../../../utils/featureGate.js";
 import { getSetting } from "../../../utils/settingsCache.js";
-import { getMaxConcurrentTasks } from "../../../utils/campaignConcurrency.js";
+import { getMaxConcurrentTasks, checkUserConcurrentCampaigns } from "../../../utils/campaignConcurrency.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { dispatchToServers } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getFirestickEmails, getPerformancePresets, updateCampaignSettings, getCampaignSettings, getAccountTagStatuses } from "../_shared/pipelineUtils.js";
@@ -446,6 +446,30 @@ export async function POST(request) {
         completed: true,
         durationExpired: true
       });
+    }
+
+    // Per-user concurrent campaign cap (SETTINGS campaignConcurrentLimit).
+    // Exclude this campaign — the caller already marked it 'running'. Reject
+    // and revert to 'paused' so a blocked start never sits as a zombie
+    // 'running' row with nothing dispatched; 'paused' stays resumable once
+    // a slot frees.
+    if (userId) {
+      const concurrentCheck = await checkUserConcurrentCampaigns(String(userId).trim(), campaignId);
+      if (!concurrentCheck.allowed) {
+        log.warn(` [concurrent-limit] Campaign ${campaignId} blocked: user already at ${concurrentCheck.current}/${concurrentCheck.limit} running campaigns.`);
+        await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+          status: "paused",
+          updatedOn: new Date().toISOString(),
+        }).catch(() => {});
+        await updateCampaignSettings(campaignId, { status: "paused" }).catch(() => {});
+        return NextResponse.json({
+          success: false,
+          error: `Concurrent campaign limit reached (${concurrentCheck.current}/${concurrentCheck.limit} running). Pause or complete a campaign to free a slot.`,
+          concurrentLimit: true,
+          current: concurrentCheck.current,
+          limit: concurrentCheck.limit,
+        }, { status: 429 });
+      }
     }
 
     // Gate maximum accounts per campaign (from SETTINGS sheet maxAccountsPerCampaign, default 1)

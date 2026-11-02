@@ -4,7 +4,7 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import { getSelfUrl, getSelfUrlWithFallback, getSelfId, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignSettings, updateCampaignSettings, isCampaignPaused, classifyStageFailure, recordStageError, clearStageError, getRetryBudget } from "../_shared/pipelineUtils.js";
 import { acquireCampaignLock, releaseCampaignLock } from "../../../utils/campaignLock.js";
-import { getCampaignLimits } from "../../socials/_shared/limits.js";
+import { checkUserConcurrentCampaigns } from "../../../utils/campaignConcurrency.js";
 import { getSheetDataApi, updateSheetRowApi } from "../../api/googlesheets.js";
 import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
 
@@ -78,53 +78,11 @@ function resolveCurrentStage(settings) {
 }
 
 /**
- * Check if the user has exceeded their concurrent campaign limit.
- * The campaign being polled is excluded from the count — GAS marks it
- * 'running' before dispatching, so counting it would make capacity
- * limit-1 and permanently 429-block a campaign when limit=1.
- * @param {string} userId
- * @param {string} [excludeCampaignId]
- * @returns {Promise<{ allowed: boolean, current: number, limit: number }>}
+ * Concurrent campaign limit — shared implementation lives in
+ * utils/campaignConcurrency.js (checkUserConcurrentCampaigns) so GAS
+ * pre-checks, execute-campaign and this orchestrator all count the same
+ * active statuses and read the same SETTINGS campaignConcurrentLimit key.
  */
-async function checkConcurrentLimit(userId, excludeCampaignId) {
-  if (!userId) return { allowed: true, current: 0, limit: 3 };
-
-  try {
-    const limits = await getCampaignLimits();
-    const concurrentLimit = limits.campaignConcurrentLimit || 1;
-
-    const campaignsResult = await getSheetDataApi("campaigns");
-    if (!campaignsResult.success) return { allowed: true, current: 0, limit: concurrentLimit };
-
-    const headers = campaignsResult.headers;
-    const userIdIdx = headers.indexOf("userId");
-    const statusIdx = headers.indexOf("status");
-    const campaignIdIdx = headers.indexOf("campaignId");
-
-    if (userIdIdx === -1) return { allowed: true, current: 0, limit: concurrentLimit };
-
-    const excludeId = excludeCampaignId ? String(excludeCampaignId).trim() : null;
-    // Count active campaigns for this user (running, processing, or staged)
-    const activeStatuses = ["running", "processing", "staged"];
-    const activeCampaigns = campaignsResult.data.filter(r => {
-      const rCampaignId = campaignIdIdx !== -1 ? String(r[campaignIdIdx] || "").trim() : "";
-      if (excludeId && rCampaignId === excludeId) return false;
-      const rUserId = String(r[userIdIdx] || "").trim();
-      const rStatus = String(r[statusIdx] || "").trim().toLowerCase();
-      return rUserId === String(userId).trim() && activeStatuses.includes(rStatus);
-    });
-
-    const current = activeCampaigns.length;
-    return {
-      allowed: current < concurrentLimit,
-      current,
-      limit: concurrentLimit,
-    };
-  } catch (err) {
-    logger.warn(`[Pipeline Orchestrator] Failed to check concurrent limit: ${err.message}`);
-    return { allowed: true, current: 0, limit: 3 };
-  }
-}
 
 async function triggerStage(campaignId, stage, settings, scope) {
   const config = STAGE_CONFIG[stage];
@@ -365,12 +323,20 @@ export async function POST(request) {
     // Check concurrent campaign limit per user (exclude this campaign)
     const userId = settings.userId || body.userId;
     if (userId) {
-      const concurrentCheck = await checkConcurrentLimit(userId, campaignId);
+      const concurrentCheck = await checkUserConcurrentCampaigns(userId, campaignId);
       if (!concurrentCheck.allowed) {
         log.info(`User ${userId} exceeded concurrent limit: ${concurrentCheck.current}/${concurrentCheck.limit}`);
+        // GAS marked this campaign 'running' before dispatching — revert so a
+        // rejected start never sits as a zombie 'running' row with nothing
+        // dispatched. 'paused' keeps it resumable once a slot frees.
+        await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+          status: "paused",
+          updatedOn: new Date().toISOString(),
+        }).catch(() => {});
+        await updateCampaignSettings(campaignId, { status: "paused" }).catch(() => {});
         return NextResponse.json({
           success: false,
-          error: `Concurrent campaign limit reached (${concurrentCheck.current}/${concurrentCheck.limit})`,
+          error: `Concurrent campaign limit reached (${concurrentCheck.current}/${concurrentCheck.limit} running). Pause or complete a campaign to free a slot.`,
           concurrentLimit: true,
           current: concurrentCheck.current,
           limit: concurrentCheck.limit,
