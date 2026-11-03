@@ -234,17 +234,17 @@ Once an account has completed its First Launch on a machine:
    - Preserves all fresh tokens, 2FA grants, and local state without overwriting them with older database copies.
 
 ### Pillar 3: Tab 1 Pacing & Anti-Thrashing
-Opening 3 Google tabs simultaneously can trigger concurrent SSO handshakes against `accounts.google.com/CheckCookie`, causing token race conditions.
-1. **Sequential Tab Creation**: Tab 1 is navigated first. Tabs 2 and 3 are created sequentially via CDP `Target.createTarget` with a 3000ms delay between each.
+Opening multiple Google tabs simultaneously can trigger concurrent SSO handshakes against `accounts.google.com/CheckCookie`, causing token race conditions.
+1. **Sequential Tab Creation**: Tab 1 is navigated first. Tabs 2 through 8 are created sequentially via CDP `Target.createTarget` with a 3000ms delay between each.
 2. **Settling Window**: Tab 1 is given an 8000ms undisturbed settling window to allow Google service workers and authentication handshakes to conclude.
 3. **No Hard Reloads**: Disruptive page reloads (`window.location.reload(true)`) are prohibited, ensuring in-flight OAuth handshakes are never interrupted.
 4. **Foreground Focus**: `Page.bringToFront` is issued on Tab 1 so the primary inbox is visually foregrounded for the user.
 
 ### Pillar 4: 3-Tier Cookie Resolution Waterfall
 When ingesting cookies, the launcher evaluates candidate token sets in priority order:
-1. **Tier 1 (`driveCookieJSON` - 26 cookies)**: Comprehensive cross-service bundle containing tokens for `.google.com`, `mail.google.com`, `myaccount.google.com`, and `drive.google.com`.
-2. **Tier 2 (`accountCookieJSON` - 22 cookies)**: Multi-service bundle containing root auth, mail, and Google account management.
-3. **Tier 3 (`cookieJSON` / `formattedCookie` - 20 cookies)**: Initial authentication tokens harvested at login.
+1. **Tier 1 (`driveCookieJSON`)**: Comprehensive multi-service ecosystem bundle containing root auth and service tokens for `.google.com`, `mail.google.com`, `myaccount.google.com`, `drive.google.com`, `.youtube.com`, `docs.google.com`, and `gemini.google.com`.
+2. **Tier 2 (`accountCookieJSON`)**: Multi-service bundle containing root auth, mail, and Google account management.
+3. **Tier 3 (`cookieJSON` / `formattedCookie`)**: Initial authentication tokens harvested at login.
 
 ---
 
@@ -288,7 +288,7 @@ Launcher (Node.js) ─── Spawn Chrome ───> Chrome Process (--remote-de
 CDP Client (WebSocket) <─────────────── ws://127.0.0.1:<port>/devtools/page/<id>
        │
        ├── 1. Network.setCookies    (Injects sanitized plaintext cookies)
-       ├── 2. Target.createTarget   (Opens Tab 2 & Tab 3 sequentially)
+       ├── 2. Target.createTarget   (Opens Tabs 2 through 8 sequentially)
        ├── 3. Page.bringToFront     (Focuses Tab 1)
        └── 4. Network.getCookies    (Recurring background sync)
 ```

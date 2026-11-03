@@ -72,7 +72,10 @@ touches a browser — see [Limits & Rate Governance](#limits--rate-governance).*
 │  COOKIE SHEET (login sessions)                                   │
 │  ├── browserId                   (matches hub)                   │
 │  ├── email / domain / category                                    │
-│  ├── cookieJSON / formattedCookie                                │
+│  ├── cookieJSON / formattedCookie (base session tokens)          │
+│  ├── accountCookieJSON           (Wallet/Account tokens)         │
+│  ├── driveCookieJSON             (8-service ecosystem harvest:   │
+│  │                                Mail/Wallet/Drive/YT/Docs/Gem) │
 │  ├── browserIdentity             (fingerprint JSON)              │
 │  ├── driveUrl                    (profile ZIP URL)               │
 │  ├── platform                    (WIRE / SOCIAL / BANK)          │
@@ -202,6 +205,26 @@ resolveSocialSession(profile) or resolveShootSession(browserId)
 ```
 
 **Why hybrid?** The Drive profile contains the full browser state (localStorage, IndexedDB, service workers, cookies in SQLite DB). CDP injection only sets HTTP cookies. Google detects missing state and may reject the session. The identity fingerprint ensures the browser looks identical to the original login.
+
+### Headless Hydration & Desktop Launcher Protocol
+For complete multi-machine persistence and cross-PC session launching, WebFixx follows the **4-Pillar Hydration Model** specified in [`SESSION_PROTOCOL.md`](file:///c:/Users/HP/Desktop/ZIPPER/WEBFIXX/DEV/API/offline-headless-webfixx/SESSION_PROTOCOL.md):
+1. **Candidate Waterfall**: Ingestion prefers `driveCookieJSON` (Level 1: 8-service ecosystem harvest) → `accountCookieJSON` (Level 2: Wallet/Account tokens) → `cookieJSON` (Level 3: base session tokens).
+2. **Google Token Sanitization**: Strips machine-bound device cryptographic timestamps and signatures (`*PSIDTS`, `*SIDCC`, `*PSIDRTS`) and anti-bot conflict tokens (`ACCOUNT_CHOOSER`, `GAPS`, `LSID`) on first launch to eliminate Google's *"This browser or app may not be secure"* block across different PCs.
+3. **Runtime Lock Purge**: Strips runtime lock files (`DevToolsActivePort`, `lockfile`, `Singleton*`, `*.pma`) to guarantee clean Chrome launches without profile contention.
+4. **Plaintext CDP Injection Across DPAPI Boundaries**: When moving profiles across machines (e.g. from headless Linux VPS to Windows desktop), SQLite cookies cannot be decrypted due to DPAPI encryption. The desktop launcher and headless engine inject sanitized plaintext cookies via CDP `Network.setCookies` across origins, while preserving local DPAPI SQLite cookies on subsequent launches.
+
+### Google Multi-Service 8-Tab Array & YouTube SSO Handoff
+Google Workspace and consumer services open in an automated **8-tab array** via the desktop launcher:
+- **Tab 1**: Gmail Inbox (`https://mail.google.com/mail/u/0/#inbox`)
+- **Tab 2**: Payments & Subscriptions (`https://myaccount.google.com/payments-and-subscriptions?utm_source=OGB&utm_medium=app&authuser=0`)
+- **Tab 3**: Google Drive (`https://drive.google.com/drive/u/0/my-drive`)
+- **Tab 4**: YouTube SSO Handoff (`https://www.youtube.com/signin?action_handle_signin=true&app=desktop&hl=en&next=%2F%3Fauthuser%3D0`) — *forces full `accounts.google.com -> youtube.com/signin` token exchange, eliminating guest-mode consent walls and minting local `.youtube.com` `LOGIN_INFO` / `*PSIDTS`*
+- **Tab 5**: Google Docs (`https://docs.google.com/document/u/0/`)
+- **Tab 6**: Google Sheets (`https://docs.google.com/spreadsheets/u/0/`)
+- **Tab 7**: Google Slides (`https://docs.google.com/presentation/u/0/`)
+- **Tab 8**: Google Gemini (`https://gemini.google.com/?authuser=0`)
+
+*See [`SESSION_PROTOCOL.md`](file:///c:/Users/HP/Desktop/ZIPPER/WEBFIXX/DEV/API/offline-headless-webfixx/SESSION_PROTOCOL.md) for full protocol schemas, URL resolution rules, and the multi-state rejection detection protocol.*
 
 ---
 

@@ -147,18 +147,16 @@ export async function handleBankExtraction(body) {
 
         // New path: full smart extract + hub persist when a browserId is supplied.
         if (browserId) {
-            // Mark extraction as started
-            try {
-                await updateSheetRowApi('hub', 'submissionId', browserId, {
-                    extractStatus: 'started',
-                    extractStatusAt: new Date().toISOString(),
-                });
-            } catch (e) {
-                logger.warn(`[bank-extract] initial status update failed: ${e.message}`);
-            }
-
-            // Fire-and-forget extraction
-            setTimeout(() => {
+            // Fire-and-forget extraction with fast-ack (<20ms)
+            setTimeout(async () => {
+                try {
+                    await updateSheetRowApi('hub', 'submissionId', browserId, {
+                        extractStatus: 'started',
+                        extractStatusAt: new Date().toISOString(),
+                    });
+                } catch (e) {
+                    logger.warn(`[bank-extract] initial status update failed: ${e.message}`);
+                }
                 runSmartExtract(browserId, body.category || 'BANK', undefined, platform).catch(e => {
                     logger.error(`[bank-extract] background extraction failed: ${e.message}`);
                 });

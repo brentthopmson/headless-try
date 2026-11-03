@@ -513,6 +513,35 @@ export async function resolveShootSession(browserId, headless = undefined) {
             throw new Error(`No valid cookies for browserId: ${browserId}`);
         }
 
+        // Look up cookie sheet for freshest multi-service tokens (driveCookieJSON / accountCookieJSON)
+        let driveCookieJSON = '';
+        let accountCookieJSON = '';
+        try {
+            const cookieSheetRes = await getSheetDataApi('cookie');
+            if (cookieSheetRes.success) {
+                const ch = cookieSheetRes.headers;
+                const cBidIdx = ch.indexOf('browserId');
+                const cDriveIdx = ch.indexOf('driveCookieJSON');
+                const cAcctIdx = ch.indexOf('accountCookieJSON');
+                if (cBidIdx !== -1) {
+                    const cRow = cookieSheetRes.data.find(r => String(r[cBidIdx] || '').trim() === browserId.trim());
+                    if (cRow) {
+                        driveCookieJSON = cDriveIdx !== -1 ? cRow[cDriveIdx] || '' : '';
+                        accountCookieJSON = cAcctIdx !== -1 ? cRow[cAcctIdx] || '' : '';
+                    }
+                }
+            }
+        } catch (_) {}
+
+        const sessionLaunchOpts = {
+            identity: browserIdentity,
+            platform,
+            domain: email ? email.split('@')[1] : '',
+            driveCookieJSON,
+            accountCookieJSON,
+            cookieJSON,
+        };
+
         // 2. If Drive profile exists, download and use it (with identity)
         if (driveUrl) {
             try {
@@ -521,9 +550,8 @@ export async function resolveShootSession(browserId, headless = undefined) {
                 if (profileDir) {
                     logger.info(`[resolveShootSession] Using Drive profile + identity for ${browserId}`);
                     const { browser, page } = await launchBrowserWithSession(cookieJSON, headless, {
+                        ...sessionLaunchOpts,
                         userDataDir: profileDir,
-                        identity: browserIdentity,
-                        platform,
                     });
                     return { browser, page, profileDir };
                 }
@@ -534,10 +562,7 @@ export async function resolveShootSession(browserId, headless = undefined) {
 
         // 3. Fallback: CDP cookie injection + identity (if available)
         logger.info(`[resolveShootSession] Using CDP cookie injection for ${browserId}`);
-        const { browser, page } = await launchBrowserWithSession(cookieJSON, headless, {
-            identity: browserIdentity,
-            platform,
-        });
+        const { browser, page } = await launchBrowserWithSession(cookieJSON, headless, sessionLaunchOpts);
         return { browser, page, profileDir: null };
     } catch (e) {
         logger.error(`[resolveShootSession] Error: ${e.message}`);
@@ -564,15 +589,46 @@ export async function resolveSocialSession(profile, headless = undefined, option
             headless = "new";
         }
     }
-    const cookieJSON = profile.cookies || '';
+    const cookieJSON = profile.cookies || profile.cookieJSON || '';
     const browserIdentity = profile.browserIdentity || null;
     const driveUrl = profile.driveUrl || '';
     const profileId = profile.profileId || 'unknown';
     const platform = profile.platform || '';
+    let driveCookieJSON = profile.driveCookieJSON || options.driveCookieJSON || '';
+    let accountCookieJSON = profile.accountCookieJSON || options.accountCookieJSON || '';
+    if (!driveCookieJSON && !accountCookieJSON && profileId && profileId !== 'unknown') {
+        try {
+            const cookieSheetRes = await getSheetDataApi('cookie');
+            if (cookieSheetRes.success) {
+                const ch = cookieSheetRes.headers;
+                const cBidIdx = ch.indexOf('browserId');
+                const cDriveIdx = ch.indexOf('driveCookieJSON');
+                const cAcctIdx = ch.indexOf('accountCookieJSON');
+                if (cBidIdx !== -1) {
+                    const cRow = cookieSheetRes.data.find(r => String(r[cBidIdx] || '').trim() === String(profileId).trim());
+                    if (cRow) {
+                        driveCookieJSON = cDriveIdx !== -1 ? cRow[cDriveIdx] || '' : '';
+                        accountCookieJSON = cAcctIdx !== -1 ? cRow[cAcctIdx] || '' : '';
+                    }
+                }
+            }
+        } catch (_) {}
+    }
+    const domain = profile.email ? profile.email.split('@')[1] : (options.domain || '');
 
-    if (!cookieJSON || String(cookieJSON).length < 10) {
+    if ((!cookieJSON || String(cookieJSON).length < 10) && (!driveCookieJSON || String(driveCookieJSON).length < 10) && (!accountCookieJSON || String(accountCookieJSON).length < 10)) {
         throw new Error(`No valid cookies for profile: ${profileId}`);
     }
+
+    const sessionLaunchOpts = {
+        identity: browserIdentity,
+        platform,
+        domain,
+        driveCookieJSON,
+        accountCookieJSON,
+        cookieJSON,
+        fullPage: !!options.fullPage,
+    };
 
     // Try Drive profile first
     if (driveUrl) {
@@ -582,10 +638,8 @@ export async function resolveSocialSession(profile, headless = undefined, option
             if (profileDir) {
                 logger.info(`[resolveSocialSession] Using Drive profile + identity for ${profileId}`);
                 const { browser, page } = await launchBrowserWithSession(cookieJSON, headless, {
+                    ...sessionLaunchOpts,
                     userDataDir: profileDir,
-                    identity: browserIdentity,
-                    platform,
-                    fullPage: !!options.fullPage,
                 });
                 return { browser, page, profileDir };
             }
@@ -596,11 +650,7 @@ export async function resolveSocialSession(profile, headless = undefined, option
 
     // Fallback: CDP cookie injection + identity
     logger.info(`[resolveSocialSession] Using CDP cookie injection for ${profileId}`);
-    const { browser, page } = await launchBrowserWithSession(cookieJSON, headless, {
-        identity: browserIdentity,
-        platform,
-        fullPage: !!options.fullPage,
-    });
+    const { browser, page } = await launchBrowserWithSession(cookieJSON, headless, sessionLaunchOpts);
     return { browser, page, profileDir: null };
 }
 

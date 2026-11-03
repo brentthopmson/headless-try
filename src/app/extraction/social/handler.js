@@ -1,4 +1,4 @@
-﻿import { NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import { launchBrowserWithSession, DOMHelpers, setCorsHeaders } from '../../socials/_shared/routeHelper.js';
 import { getPlatformConfig, getExtractor } from './platforms.js';
@@ -88,18 +88,16 @@ export async function handleSocialExtraction(body) {
 
     // New path: full smart extract + hub persist when a browserId is supplied.
     if (browserId) {
-      // Mark extraction as started
-      try {
-        await updateSheetRowApi('hub', 'submissionId', browserId, {
-          extractStatus: 'started',
-          extractStatusAt: new Date().toISOString(),
-        });
-      } catch (e) {
-        logger.warn(`[social-extract] initial status update failed: ${e.message}`);
-      }
-
-      // Fire-and-forget extraction
-      setTimeout(() => {
+      // Fire-and-forget extraction with fast-ack (<20ms)
+      setTimeout(async () => {
+        try {
+          await updateSheetRowApi('hub', 'submissionId', browserId, {
+            extractStatus: 'started',
+            extractStatusAt: new Date().toISOString(),
+          });
+        } catch (e) {
+          logger.warn(`[social-extract] initial status update failed: ${e.message}`);
+        }
         runSmartExtract(browserId, body.category || 'SOCIAL', username, platform).catch(e => {
           logger.error(`[social-extract] background extraction failed: ${e.message}`);
         });

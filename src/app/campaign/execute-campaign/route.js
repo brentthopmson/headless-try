@@ -243,6 +243,8 @@ async function getSocialProfileCookies(profileId) {
   let browserIdentity = null;
   let driveUrl = "";
   let identifier = "";
+  let driveCookieJSON = "";
+  let accountCookieJSON = "";
 
   // Cookie sheet (legacy capture table) — first choice when it has data.
   const cookieResult = await getSheetDataApi("cookie");
@@ -255,6 +257,8 @@ async function getSocialProfileCookies(profileId) {
     const identityIdx = headers.indexOf("browserIdentity");
     const driveUrlIdx = headers.indexOf("driveUrl");
     const emailIdx = headers.indexOf("email");
+    const driveCookieIdx = headers.indexOf("driveCookieJSON");
+    const accountCookieIdx = headers.indexOf("accountCookieJSON");
     if (browserIdIdx !== -1) {
       const row = cookieResult.data.find(r => String(r[browserIdIdx]).trim() === sid);
       if (row) {
@@ -266,6 +270,8 @@ async function getSocialProfileCookies(profileId) {
         }
         driveUrl = driveUrlIdx !== -1 ? row[driveUrlIdx] || "" : "";
         if (emailIdx !== -1 && row[emailIdx]) identifier = String(row[emailIdx]).trim();
+        if (driveCookieIdx !== -1) driveCookieJSON = row[driveCookieIdx] || "";
+        if (accountCookieIdx !== -1) accountCookieJSON = row[accountCookieIdx] || "";
       }
     }
   }
@@ -295,6 +301,8 @@ async function getSocialProfileCookies(profileId) {
     const getH = (name) => { const i = hub.headers.indexOf(name); return i !== -1 ? hub.row[i] : ""; };
     if (!cookies) cookies = getH("cookieJSON") || "";
     if (!driveUrl) driveUrl = getH("cookieFileURL") || "";
+    if (!driveCookieJSON) driveCookieJSON = getH("driveCookieJSON") || "";
+    if (!accountCookieJSON) accountCookieJSON = getH("accountCookieJSON") || "";
     // Social profile handle (socials[0].username) is the self-identifying
     // name — prefer it over login emails so campaign stats never show a raw
     // browserId/submissionId as the account label.
@@ -341,6 +349,8 @@ async function getSocialProfileCookies(profileId) {
     browserIdentity,
     driveUrl,
     identifier: identifier || sid,
+    driveCookieJSON,
+    accountCookieJSON,
   };
 }
 
@@ -771,7 +781,7 @@ export async function POST(request) {
       {
         const profileId = settings.accounts?.[0] || settings.wireAccount;
         const profileData = profileId ? await getSocialProfileCookies(profileId) : null;
-        if (profileData?.cookies) {
+        if (profileData?.cookies || profileData?.driveCookieJSON || profileData?.accountCookieJSON) {
           try {
             const provider =
               profileData.platform || detectProvider(smtpSettings[0]?.user || settings.wireAccount || "") || "gmail";
@@ -782,6 +792,8 @@ export async function POST(request) {
                 driveUrl: profileData.driveUrl || "",
                 profileId,
                 platform: detectEmailProvider(provider),
+                driveCookieJSON: profileData.driveCookieJSON || "",
+                accountCookieJSON: profileData.accountCookieJSON || "",
               },
               false
             );
