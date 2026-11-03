@@ -341,7 +341,7 @@ function evaluateUserQuota(usageBlob, planLimits, checks) {
     return { tier: "user", allowed: true, reason: "ok" };
 }
 
-module.exports = {
+const limitsCoreExports = {
     USER_LIMIT_COLUMNS,
     BASE_LIMIT_ACTION_MAP,
     LIMIT_TO_BASE_ALIASES,
@@ -363,3 +363,31 @@ module.exports = {
     canonicalAction,
     resolveUsageEntry,
 };
+
+export default limitsCoreExports;
+export {
+    USER_LIMIT_COLUMNS,
+    BASE_LIMIT_ACTION_MAP,
+    LIMIT_TO_BASE_ALIASES,
+    BASE_TO_LIMIT_ALIASES,
+    READ_OPERATIONS,
+    RAW_OP_ACTIONS,
+    toInt,
+    pickLimitNumber,
+    normalizePolicy,
+    normalizeUsage,
+    parseLimitCell,
+    evaluateActionPolicy,
+    operationConsumes,
+    baseActionsForOperation,
+    actionsForExecutedKeys,
+    toLimitActions,
+    parsePlanRow,
+    evaluateUserQuota,
+    canonicalAction,
+    resolveUsageEntry,
+};
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = limitsCoreExports;
+}

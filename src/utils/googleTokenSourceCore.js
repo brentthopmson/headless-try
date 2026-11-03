@@ -54,10 +54,21 @@ function chooseRefreshToken({ sheet = null, stale = null, env = null } = {}) {
     return null;
 }
 
-module.exports = {
+const coreExports = {
     SETTINGS_SHEET_NAME,
     SETTINGS_KEY,
     extractRefreshToken,
     parseExpiryFromValue2,
     chooseRefreshToken,
 };
+export default coreExports;
+export {
+    SETTINGS_SHEET_NAME,
+    SETTINGS_KEY,
+    extractRefreshToken,
+    parseExpiryFromValue2,
+    chooseRefreshToken,
+};
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = coreExports;
+}

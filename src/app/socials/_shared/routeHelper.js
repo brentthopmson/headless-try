@@ -353,6 +353,26 @@ export async function launchBrowserWithSession(cookieJSON, headless = undefined,
             }
         }
 
+        // Google session resilience (Pillar 1): purge machine-bound / stale SQLite cookie files
+        // so Chromium starts with a clean slate and relies 100% on plaintext CDP injection (matching desktop launcher).
+        const isGooglePlatform = (options.platform || '').toLowerCase() === 'gmail' || (options.platform || '').toLowerCase() === 'google' || (options.domain || '').toLowerCase().includes('gmail') || (options.domain || '').toLowerCase().includes('google');
+        if (options.userDataDir && isGooglePlatform) {
+            const machineBoundFiles = [
+                path.join(options.userDataDir, 'Default', 'Network', 'Cookies'),
+                path.join(options.userDataDir, 'Default', 'Network', 'Cookies-journal'),
+                path.join(options.userDataDir, 'Default', 'Network', 'Cookies-wal'),
+                path.join(options.userDataDir, 'Default', 'Network', 'Cookies-shm'),
+                path.join(options.userDataDir, 'Default', 'Cookies'),
+                path.join(options.userDataDir, 'Default', 'Cookies-journal'),
+                path.join(options.userDataDir, 'Default', 'Cookies-wal'),
+                path.join(options.userDataDir, 'Default', 'Cookies-shm'),
+            ];
+            for (const p of machineBoundFiles) {
+                try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch (_) {}
+            }
+            logger.info(`[launchBrowserWithSession] Purged machine-bound SQLite cookie files from ${options.userDataDir} for Google session resilience`);
+        }
+
         const browser = await launchBrowser(launchOptions);
 
         const page = await browser.newPage();
@@ -447,6 +467,11 @@ export async function launchBrowserWithSession(cookieJSON, headless = undefined,
 
             await page.setCookie(...formattedCookies);
             logger.info(`[launchBrowserWithSession] Injected ${formattedCookies.length} cookies via CDP (platform=${platform || 'unknown'}, userDataDir=${!!options.userDataDir})`);
+
+            // Pillar 4: 3-second post-injection warm-up settling pause for Google token stabilization
+            if (isGoogleAuth) {
+                await new Promise(r => setTimeout(r, 3000));
+            }
         } else if (options.userDataDir) {
             logger.info(`[launchBrowserWithSession] Using persistent userDataDir profile cookies & session storage (skipping CDP cookie injection for platform=${platform})`);
         }
