@@ -434,8 +434,8 @@ export async function POST(request) {
       settings._parseError = settingsParseError;
     }
 
-    const channel = settings.channel || "email";
-    const userId = settings.userId || null;
+    const cUserIdIndex = cHeaders.indexOf("userId");
+    const userId = (cUserIdIndex !== -1 ? String(campaignRow[cUserIdIndex] || '').trim() : '') || settings.userId || null;
 
     // Check Campaign Duration Window (immutable per-campaign durationDays stored at creation)
     const cCreatedOnIndex = cHeaders.indexOf("createdOn");

@@ -130,6 +130,7 @@ export function setActiveCampaignForAccount(accountId, meta) {
     if (!accountId || !meta || !meta.campaignId) return;
     activeCampaigns.set(String(accountId).trim(), {
         campaignId: String(meta.campaignId).trim(),
+        userId: meta.userId ? String(meta.userId).trim() : "",
         identifier: meta.identifier || String(accountId).trim(),
         platform: meta.platform || "",
     });
