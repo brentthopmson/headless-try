@@ -509,6 +509,19 @@ export async function POST(request) {
           });
         }
 
+      // execute-campaign returns 202 {accepted,processing} and runs in background to
+      // avoid client/proxy aborts. Treat as in-flight: do NOT mark completed or
+      // auto-advance; completion/limit status is persisted to the sheet by the bg task.
+      if (result?.accepted && result?.processing) {
+        return NextResponse.json({
+          success: true,
+          message: result.message || `${config.label} started in background`,
+          waitingStage: stage,
+          processing: true,
+          accepted: true,
+        });
+      }
+
         const kind = classifyStageFailure(result?.error || result?.message || result);
         if (kind === 'limit' || result?.limitReached) {
           await clearStageError(campaignId);

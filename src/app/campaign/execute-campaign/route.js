@@ -359,6 +359,8 @@ export async function POST(request) {
   // True only when THIS invocation claimed the re-entrancy slot. A skipped
   // duplicate request must NOT delete the other run's slot in finally.
   let _isExecuting = false;
+  // True when execution was handed to a background task (POST already acked).
+  let _backgroundHandedOff = false;
   let settings = {};
   try {
     await identifySelfFromHost(request.headers.get('host'));
@@ -555,1155 +557,1154 @@ export async function POST(request) {
       updatedOn: new Date().toISOString()
     });
 
-    if (channel === "email") {
-      // ===== EMAIL CAMPAIGN EXECUTION =====
-      const fileUrl = settings.fileUrl || campaignRow[cHeaders.indexOf("fileUrl")];
-      const interactionOnly = !fileUrl && (settings.campaignMode === "interactions-only" || settings.interactionStaged === true);
 
-      if (!fileUrl && !interactionOnly) {
-        throw new Error("No CSV contact list fileUrl configured for email campaign");
-      }
+    // ACK immediately so callers/proxies (orchestrator 600s timeout, Cloudflare quick tunnel)
+    // do not abort the HTTP connection while execution runs. Progress/completion is persisted
+    // to sheets; the orchestrator treats execute as still-running and resolves by status.
+    const _ackResponse = NextResponse.json({ success: true, accepted: true, processing: true, campaignId, channel }, { status: 202 });
+    _backgroundHandedOff = true;
+    const _bgTask = (async () => {
+      try {
+      if (channel === "email") {
+        // ===== EMAIL CAMPAIGN EXECUTION =====
+        const fileUrl = settings.fileUrl || campaignRow[cHeaders.indexOf("fileUrl")];
+        const interactionOnly = !fileUrl && (settings.campaignMode === "interactions-only" || settings.interactionStaged === true);
 
-      if (interactionOnly) {
-        // ===== EMAIL INTERACTIONS-ONLY MODE (no contact list) =====
-        // The AI inbox watcher (interact-inbox) handles keyword discovery and
-        // AI replies against the selected hub email accounts. Nothing to send here.
-        log.info(` Interaction-only email campaign (no contact list) — marking execute complete, AI inbox watcher will drive interactions`);
-        if (isScopedRun) {
-          // Fan-out sibling scopes may still be finalizing — coverage-gated flip.
-          const { allDone } = await finalizeScopedRun(campaignId, serverScope, (settings.accounts || []).map(String), "completed");
-          if (allDone) {
+        if (!fileUrl && !interactionOnly) {
+          throw new Error("No CSV contact list fileUrl configured for email campaign");
+        }
+
+        if (interactionOnly) {
+          // ===== EMAIL INTERACTIONS-ONLY MODE (no contact list) =====
+          // The AI inbox watcher (interact-inbox) handles keyword discovery and
+          // AI replies against the selected hub email accounts. Nothing to send here.
+          log.info(` Interaction-only email campaign (no contact list) — marking execute complete, AI inbox watcher will drive interactions`);
+          if (isScopedRun) {
+            // Fan-out sibling scopes may still be finalizing — coverage-gated flip.
+            const { allDone } = await finalizeScopedRun(campaignId, serverScope, (settings.accounts || []).map(String), "completed");
+            if (allDone) {
+              await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+                status: "completed",
+                updatedOn: new Date().toISOString()
+              });
+            }
+          } else {
             await updateSheetRowApi("campaigns", "campaignId", campaignId, {
               status: "completed",
               updatedOn: new Date().toISOString()
             });
           }
-        } else {
-          await updateSheetRowApi("campaigns", "campaignId", campaignId, {
-            status: "completed",
-            updatedOn: new Date().toISOString()
+          await updateCampaignSettings(campaignId, {
+            executionStatus: "completed",
+            campaignMode: "interactions-only",
+            targetLink: settings.targetLink || "",
+            interactionStatus: settings.interactionStatus || "idle",
+            interactionStartedAt: settings.interactionStartedAt || ""
           });
-        }
-        await updateCampaignSettings(campaignId, {
-          executionStatus: "completed",
-          campaignMode: "interactions-only",
-          targetLink: settings.targetLink || "",
-          interactionStatus: settings.interactionStatus || "idle",
-          interactionStartedAt: settings.interactionStartedAt || ""
-        });
-        return NextResponse.json({
-          success: true,
-          message: "Interaction-only email campaign: no send phase. AI inbox interactions will be driven by the interact stage.",
-          interactionOnly: true
-        });
-      }
-
-      const fileId = extractFileId(fileUrl);
-      if (!fileId) {
-        throw new Error("Invalid CSV contact list fileUrl");
-      }
-
-      log.info(` Downloading CSV file for campaign sending: ${fileId}`);
-      const dl = await downloadCsvText(fileId);
-      if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
-      const csvContent = dl.content;
-
-      // Step 3a: Normalize CSV to 88-column boilerplate
-      const normalizedRows = normalizeAndMapCSV(csvContent, STANDARD_88_COLUMNS);
-      if (normalizedRows.length <= 1) {
-        throw new Error("CSV file is empty or contains no recipients after normalization");
-      }
-
-      const dataRows = normalizedRows.slice(1);
-
-      const nHeaders = normalizedRows[0];
-      const emailColIdx = nHeaders.indexOf("EMAIL");
-      const nameColIdx = nHeaders.indexOf("FIRSTNAME");
-      const companyColIdx = nHeaders.indexOf("BUSINESSNAME");
-      const sendDateIdx = nHeaders.indexOf("sendDate");
-      const sendTimeIdx = nHeaders.indexOf("sendTime");
-      const sendStampIdx = nHeaders.indexOf("sendStamp");
-      const validationIdx = nHeaders.indexOf("validation");
-      const providerMXIdx = nHeaders.indexOf("providerMXResult");
-      const enhancedSubjectIdx = nHeaders.indexOf("enhancedSubject");
-      const enhancedBodyIdx = nHeaders.indexOf("enhancedBody");
-      const emailSubjectIdx = nHeaders.indexOf("emailSubject");
-      const emailBodyIdx = nHeaders.indexOf("emailBody");
-      const executionStatusIdx = nHeaders.findIndex(h => h.toLowerCase().trim() === "executionstatus");
-
-      if (emailColIdx === -1) {
-        throw new Error("EMAIL column not found in 88-column schema");
-      }
-
-      const deliveryMethod = settings.deliveryMethod || "smtp";
-      const smtpSettings = settings.smtpSettings || [];
-
-      if (deliveryMethod === "smtp" || deliveryMethod === "mixed") {
-        // USER tier — monthly smtpChecker budget counts one full run's SMTP
-        // config validation pass (Q6=B). Gated before any validation work.
-        if (userId) {
-          const scQuota = await checkUserQuota(userId, { keys: ["smtpCheckerUsage"] });
-          if (!scQuota.allowed) {
-            log.info(` [user-limit] ${scQuota.reason} — blocking SMTP validation for campaign ${campaignId}.`);
-            await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "Limit Reached" });
-            return NextResponse.json({
-              success: true,
-              message: `Execution blocked: ${scQuota.reason}`,
-              limitReached: true,
-              userMonthlyLimit: true,
-            });
-          }
-        }
-        validateSmtpConfigs(smtpSettings);
-        if (userId) {
-          try {
-            await updateUserUsage(userId, "smtpCheckerUsage");
-          } catch (uErr) {
-            log.warn(` [user-limit] smtpCheckerUsage increment failed: ${uErr.message}`);
-          }
-        }
-      }
-
-      // Step 3b: Fetch the per-run email cap from SETTINGS (shootingBatchLimit)
-      let shootCampaignLimit = 0;
-      let accountSendPerRunLimit = 0;
-      try {
-        const campaignLimits = await getCampaignLimits();
-        shootCampaignLimit = campaignLimits.shootCampaignLimit;
-        accountSendPerRunLimit = parseInt(campaignLimits.accountSendPerRunLimit, 10) || 0;
-      } catch (limitErr) {
-        log.warn(` Failed to fetch limits, blocking: ${limitErr.message}`);
-      }
-
-      if (shootCampaignLimit <= 0) {
-        log.info(` shootingBatchLimit is 0 or unavailable, blocking execution - set shootingBatchLimit in the SETTINGS sheet`);
-        await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "Limit Reached" });
-        return NextResponse.json({ success: true, message: "Execution blocked: shootingBatchLimit is 0 - set it in the SETTINGS sheet", limitReached: true });
-      }
-
-      // Load firestick emails if warm-up is enabled
-      const firestickEnabled = settings.firestickEnabled === true;
-      let firestickList = [];
-      if (firestickEnabled) {
-        firestickList = await getFirestickEmails();
-        if (firestickList.length > 0) {
-          shootCampaignLimit = Math.floor(shootCampaignLimit / 2);
-          log.info(` Firestick warm-up enabled: ${firestickList.length} firestick emails loaded, limit halved to ${shootCampaignLimit}`);
-        } else {
-          log.warn(` Firestick warm-up enabled but no firestick emails found in SETTINGS, proceeding without warm-up`);
-        }
-      }
-
-      let sentCount = 0;
-      let deliveredCount = 0;
-      let failedCount = 0;
-      let limitReached = false;
-      const failureDetails = [];
-
-      // Step 3c: Deduplicate recipients by email address
-      const uniqueEmails = new Set();
-      const deduplicatedRows = [];
-      let duplicateCount = 0;
-
-      for (const row of dataRows) {
-        const email = row[emailColIdx]?.trim().toLowerCase();
-        if (!email) {
-          // Keep empty rows to preserve row count in CSV
-          deduplicatedRows.push(row);
-          continue;
-        }
-
-        if (uniqueEmails.has(email)) {
-          log.warn(` Skipping duplicate email: ${email}`);
-          duplicateCount++;
-          continue; // Skip duplicate
-        }
-
-        uniqueEmails.add(email);
-        deduplicatedRows.push(row);
-      }
-
-      if (duplicateCount > 0) {
-        log.info(` Removed ${duplicateCount} duplicate email(s) from recipient list`);
-      }
-
-      // ─── MULTI-SERVER DISPATCH ────────────────────────────────────
-      if (MULTI_SERVER_ENABLED) {
-        const dispatchResult = await dispatchToServers(campaignId, 'execute', fileUrl, deduplicatedRows.length);
-        if (dispatchResult) {
           return NextResponse.json({
             success: true,
-            message: `Email campaign distributed across ${dispatchResult.servers.length} servers`,
-            dispatched: true,
-            servers: dispatchResult.servers,
+            message: "Interaction-only email campaign: no send phase. AI inbox interactions will be driven by the interact stage.",
+            interactionOnly: true
           });
         }
-      }
 
-      // ─── SINGLE-SERVER FALLBACK ────────────────────────────────────
-      // Step 3d: Check for checkpoint to resume partial execution
-      const lastProcessedRow = settings.lastProcessedRow || 0;
-      if (lastProcessedRow > 0) {
-        log.info(` Resuming from checkpoint row ${lastProcessedRow} (previously processed ${lastProcessedRow} rows)`);
-      }
-
-      const startIndex = Math.max(0, lastProcessedRow);
-      const maxToProcess = Math.min(deduplicatedRows.length, shootCampaignLimit, SHOOTING_BATCH_SIZE);
-      log.info(` Sending emails: limit=${shootCampaignLimit === Infinity ? 'unlimited' : shootCampaignLimit}, batch=${maxToProcess} contacts (after dedup: ${deduplicatedRows.length}/${dataRows.length})`);
-
-      // ACCOUNT tier — the wire profile may be CANCELLED or RATE_LIMITED when
-      // this stage starts (or was flipped by a previous stage). Decision: skip
-      // the account, continue the campaign with other stages — the email run
-      // stops with limitReached, never FAILED.
-      const wireProfileId = settings.accounts?.[0] || settings.wireAccount;
-      if (wireProfileId) {
-        const wireData = await getSocialProfileCookies(wireProfileId).catch(() => null);
-        const wirePlatform = String(wireData?.platform || detectProvider(smtpSettings[0]?.user || wireProfileId) || "").trim();
-        const wireGate = await resolveAccountGate(wireProfileId, wirePlatform);
-        if (wireGate.blocked) {
-          log.warn(` [account-limit] Wire profile ${wireProfileId} blocked (${wireGate.reason}) — stopping email run.`);
-          limitReached = true;
-          return NextResponse.json({
-            success: true,
-            message: `Email run stopped by account limits: ${wireGate.reason}`,
-            limitReached: true,
-            accountBlocked: true,
-            skippedAccount: wireProfileId,
-          });
-        }
-      }
-
-      // ─── REPLY FILTER (campaign hygiene) ────────────────────────────
-      // Every campaign subject carries '[campaignId]' (embedCampaignIdentifier)
-      // — install ONE filter per run so inbound replies are moved out of the
-      // normal inbox into the reply folder (campaign setup, default
-      // 'Campaign-Replies'). Own short-lived session via the wire account;
-      // best-effort — a failure never blocks sends (STEALTH-SENDING-PLAN.MD).
-      const replyFolder = String(settings.replyFolder || "").trim() || "Campaign-Replies";
-      {
-        const profileId = settings.accounts?.[0] || settings.wireAccount;
-        const profileData = profileId ? await getSocialProfileCookies(profileId) : null;
-        if (profileData?.cookies || profileData?.driveCookieJSON || profileData?.accountCookieJSON) {
-          try {
-            const provider =
-              profileData.platform || detectProvider(smtpSettings[0]?.user || settings.wireAccount || "") || "gmail";
-            const { browser, page, profileDir } = await resolveSocialSession(
-              {
-                cookies: profileData.cookies,
-                browserIdentity: profileData.browserIdentity || null,
-                driveUrl: profileData.driveUrl || "",
-                profileId,
-                platform: detectEmailProvider(provider),
-                driveCookieJSON: profileData.driveCookieJSON || "",
-                accountCookieJSON: profileData.accountCookieJSON || "",
-              },
-              false
-            );
-            try {
-              const res = await ensureReplyFilter(page, provider, campaignId, replyFolder, log);
-              log.info(
-                ` Reply filter: ${res.status}${res.reason ? ` (${res.reason})` : ""} → '${replyFolder}' (identifier=${campaignId})`
-              );
-            } finally {
-              await page.close().catch(() => {});
-              await browser.close().catch(() => {});
-              if (profileDir) {
-                const fs = await import("fs-extra");
-                await fs.remove(profileDir).catch(() => {});
-              }
-            }
-          } catch (filterErr) {
-            log.warn(` Reply filter setup failed (continuing with sends): ${filterErr.message}`);
-          }
-        } else {
-          log.warn(` Reply filter skipped — no browser session for profile ${profileId || "none"}`);
-        }
-      }
-
-      // Step 3e: Processing loop over deduplicated rows with checkpointing
-      let pausedByAdmin = false;
-      let durationExpiredMidRun = false;
-      let firestickIndex = 0;
-      // Per-run send cap per SMTP account (plan cell accountSendPerRunLimit,
-      // campaign default 5, 0 = off): rotate across accounts; when every
-      // account hit its cap, stop the run with limitReached.
-      const smtpCap = createSmtpSendCap({ smtpSettings, accountSendPerRunLimit });
-      const pickSmtpWithinCap = smtpCap.pick;
-      const noteSmtpSend = smtpCap.note;
-      for (let i = startIndex; i < deduplicatedRows.length; i++) {
-        if (isDurationElapsed()) {
-          durationExpiredMidRun = true;
-          log.info(` [campaign-duration] Campaign ${campaignId} duration elapsed mid-run at row ${i}. Stopping and completing.`);
-          break;
-        }
-        if (await isCampaignPaused(campaignId)) {
-          pausedByAdmin = true;
-          log.info(` Campaign ${campaignId} was paused during run. Stopping at row ${i}.`);
-          break;
-        }
-        // USER tier — monthly shootCampaign budget re-checked per row so a
-        // campaign stops mid-run as soon as the user's budget is exhausted.
-        if (userId) {
-          const uq = await checkUserQuota(userId, { keys: ["shootCampaignUsage"] });
-          if (!uq.allowed) {
-            limitReached = true;
-            log.info(` [user-limit] ${uq.reason} — stopping email run at row ${i}.`);
-            break;
-          }
-        }
-        if (sentCount >= shootCampaignLimit) {
-          limitReached = true;
-          log.info(` shootCampaignLimit (${shootCampaignLimit}) reached, stopping.`);
-          break;
-        }
-        if (sentCount >= 30) {
-          log.info(` Vercel timeout safety cap (30) reached, stopping.`);
-          break;
+        const fileId = extractFileId(fileUrl);
+        if (!fileId) {
+          throw new Error("Invalid CSV contact list fileUrl");
         }
 
-        const row = deduplicatedRows[i];
-        const email = row[emailColIdx]?.trim();
-        if (!email) continue;
+        log.info(` Downloading CSV file for campaign sending: ${fileId}`);
+        const dl = await downloadCsvText(fileId);
+        if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
+        const csvContent = dl.content;
 
-        const firstName = nameColIdx !== -1 && row[nameColIdx] ? row[nameColIdx] : "";
-        const company = companyColIdx !== -1 && row[companyColIdx] ? row[companyColIdx] : "";
-
-        // Priority: AI personalized > merged template > campaign settings > default
-        let subject = (enhancedSubjectIdx !== -1 && row[enhancedSubjectIdx]?.trim())
-          || (emailSubjectIdx !== -1 && row[emailSubjectIdx]?.trim())
-          || settings.subject
-          || "";
-        let message = (enhancedBodyIdx !== -1 && row[enhancedBodyIdx]?.trim())
-          || (emailBodyIdx !== -1 && row[emailBodyIdx]?.trim())
-          || settings.body
-          || "";
-
-        // Embed campaign identifier for interaction tracking
-        const tagged = embedCampaignIdentifier(subject, message, campaignId);
-        subject = tagged.subject;
-        message = tagged.body;
-
-        let smtpPick = pickSmtpWithinCap(sentCount);
-        if (!smtpPick && accountSendPerRunLimit > 0 && smtpSettings.length > 0) {
-          limitReached = true;
-          log.info(` accountSendPerRunLimit (${accountSendPerRunLimit}) reached on every SMTP account, stopping email run.`);
-          break;
-        }
-        const { config: smtp } = smtpPick || {};
-        const now = new Date();
-        let senderHost = "WIRE";
-        const isSchedule = settings.sendMode === "schedule";
-
-        // Firestick warm-up: send to familiar inbox before the actual lead
-        if (firestickEnabled && firestickList.length > 0) {
-          try {
-            const firestick = firestickList[firestickIndex % firestickList.length];
-            firestickIndex++;
-            await sendWarmupEmail({
-              email: firestick.email,
-              subject,
-              message,
-              seed: sentCount,
-              pickSmtp: pickSmtpWithinCap,
-              noteSmtp: noteSmtpSend,
-            });
-            log.info(` Firestick warm-up sent to ${firestick.email}`);
-            // Small delay between firestick and lead send
-            await new Promise(r => setTimeout(r, 500));
-          } catch (firestickErr) {
-            log.warn(` Firestick warm-up failed: ${firestickErr.message}, continuing with lead send`);
-          }
+        // Step 3a: Normalize CSV to 88-column boilerplate
+        const normalizedRows = normalizeAndMapCSV(csvContent, STANDARD_88_COLUMNS);
+        if (normalizedRows.length <= 1) {
+          throw new Error("CSV file is empty or contains no recipients after normalization");
         }
 
-        try {
-          const needsBrowser = isSchedule || deliveryMethod === "wire" || deliveryMethod === "mixed";
-          const profileId = needsBrowser ? (settings.accounts?.[0] || settings.wireAccount) : null;
-          const profileData = profileId ? await getSocialProfileCookies(profileId) : null;
+        const dataRows = normalizedRows.slice(1);
 
-          let scheduleTime = null;
-          if (isSchedule) {
-            // Use per-row sendDate/sendTime if available, else use scheduleStartTime
-            const rowSendDate = sendDateIdx !== -1 ? row[sendDateIdx] : "";
-            const rowSendTime = sendTimeIdx !== -1 ? row[sendTimeIdx] : "";
-            if (rowSendDate && rowSendTime) {
-              scheduleTime = new Date(`${rowSendDate} ${rowSendTime}`);
-            } else if (settings.scheduleStartTime) {
-              scheduleTime = new Date(settings.scheduleStartTime);
-              // Offset by sentCount * 1 minute to space out
-              scheduleTime = new Date(scheduleTime.getTime() + sentCount * 60000);
-            } else {
-              scheduleTime = new Date(now.getTime() + sentCount * 60000);
+        const nHeaders = normalizedRows[0];
+        const emailColIdx = nHeaders.indexOf("EMAIL");
+        const nameColIdx = nHeaders.indexOf("FIRSTNAME");
+        const companyColIdx = nHeaders.indexOf("BUSINESSNAME");
+        const sendDateIdx = nHeaders.indexOf("sendDate");
+        const sendTimeIdx = nHeaders.indexOf("sendTime");
+        const sendStampIdx = nHeaders.indexOf("sendStamp");
+        const validationIdx = nHeaders.indexOf("validation");
+        const providerMXIdx = nHeaders.indexOf("providerMXResult");
+        const enhancedSubjectIdx = nHeaders.indexOf("enhancedSubject");
+        const enhancedBodyIdx = nHeaders.indexOf("enhancedBody");
+        const emailSubjectIdx = nHeaders.indexOf("emailSubject");
+        const emailBodyIdx = nHeaders.indexOf("emailBody");
+        const executionStatusIdx = nHeaders.findIndex(h => h.toLowerCase().trim() === "executionstatus");
+
+        if (emailColIdx === -1) {
+          throw new Error("EMAIL column not found in 88-column schema");
+        }
+
+        const deliveryMethod = settings.deliveryMethod || "smtp";
+        const smtpSettings = settings.smtpSettings || [];
+
+        if (deliveryMethod === "smtp" || deliveryMethod === "mixed") {
+          // USER tier — monthly smtpChecker budget counts one full run's SMTP
+          // config validation pass (Q6=B). Gated before any validation work.
+          if (userId) {
+            const scQuota = await checkUserQuota(userId, { keys: ["smtpCheckerUsage"] });
+            if (!scQuota.allowed) {
+              log.info(` [user-limit] ${scQuota.reason} — blocking SMTP validation for campaign ${campaignId}.`);
+              await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "Limit Reached" });
+              return NextResponse.json({
+                success: true,
+                message: `Execution blocked: ${scQuota.reason}`,
+                limitReached: true,
+                userMonthlyLimit: true,
+              });
             }
           }
-
-          const sendResult = await sendCampaignEmail({
-            email,
-            subject,
-            message,
-            smtp,
-            isSchedule,
-            deliveryMethod,
-            profileId,
-            profileData,
-            scheduleTime: scheduleTime ? scheduleTime.toISOString() : null,
-            noteSmtp: noteSmtpSend,
-            log,
-          });
-          senderHost = sendResult.senderHost;
-          deliveredCount += sendResult.delivered;
-
-          sentCount++;
-          await updateCampaignStatsUsage(campaignId, profileId || senderHost, "emailSent", 1, {
-            identifier: profileData?.identifier || senderHost,
-            platform: "email",
-          }).catch(() => {});
+          validateSmtpConfigs(smtpSettings);
           if (userId) {
             try {
-              await updateUserUsage(userId, "shootCampaignUsage");
+              await updateUserUsage(userId, "smtpCheckerUsage");
             } catch (uErr) {
-              log.warn(` [user-limit] usage increment failed: ${uErr.message}`);
+              log.warn(` [user-limit] smtpCheckerUsage increment failed: ${uErr.message}`);
             }
           }
-          log.info(`[Row ${isSchedule ? "schedule" : "send"}] ${email}: ${isSchedule ? "scheduled" : "sent"} via ${senderHost} (${sentCount}/${maxToProcess})`);
-
-          if (isSchedule) {
-            // For schedule mode, write the scheduled time back to CSV
-            const scheduleTime = settings.scheduleStartTime || new Date().toISOString();
-            if (sendDateIdx !== -1) row[sendDateIdx] = new Date(scheduleTime).toLocaleDateString();
-            if (sendTimeIdx !== -1) row[sendTimeIdx] = new Date(scheduleTime).toLocaleTimeString();
-            if (sendStampIdx !== -1) row[sendStampIdx] = new Date(scheduleTime).toISOString();
-          } else {
-            if (sendDateIdx !== -1) row[sendDateIdx] = now.toLocaleDateString();
-            if (sendTimeIdx !== -1) row[sendTimeIdx] = now.toLocaleTimeString();
-            if (sendStampIdx !== -1) row[sendStampIdx] = now.toISOString();
-          }
-          if (executionStatusIdx !== -1) row[executionStatusIdx] = isSchedule ? "scheduled" : "sent";
-          if (providerMXIdx !== -1) row[providerMXIdx] = senderHost;
-        } catch (err) {
-          log.error(` Failed to send to ${email} via ${senderHost}: ${err.message}`);
-          failedCount++;
-          sentCount++;
-          failureDetails.push({ email, error: err.message, host: senderHost });
-
-          if (executionStatusIdx !== -1) row[executionStatusIdx] = "failed";
-          if (providerMXIdx !== -1) row[providerMXIdx] = err.message;
         }
 
-        // Inter-email delay to prevent SMTP rate limiting
-        if (INTER_BATCH_DELAY > 0) {
-          await new Promise(r => setTimeout(r, INTER_BATCH_DELAY));
-        }
-
-        // Checkpoint: save progress every N rows (configurable from SETTINGS)
-        if ((i + 1) % CHECKPOINT_INTERVAL === 0) {
-          log.info(` Checkpoint at row ${i + 1}/${deduplicatedRows.length}`);
-          try {
-            settings.lastProcessedRow = i + 1;
-            await updateSheetRowApi("campaigns", "campaignId", campaignId, {
-              settings: JSON.stringify(settings),
-              updatedOn: new Date().toISOString()
-            });
-          } catch (cpErr) {
-            log.warn(` Checkpoint save failed at row ${i + 1}: ${cpErr.message}`);
-          }
-          // Live-progress flush: overwrite the Drive CSV so the file view reflects
-          // progress mid-run. Uses the Drive API directly (no Apps Script), so the
-          // backend/AppScript cache and quota are untouched.
-          try {
-            await drive.files.update({
-              fileId,
-              media: { mimeType: "text/csv", body: stringifyCSV(normalizedRows) }
-            });
-          } catch (flushErr) {
-            log.warn(` Live CSV flush failed at row ${i + 1}: ${flushErr.message}`);
-          }
-        }
-      }
-
-      // Step 3d: Single-flush Drive save — rebuild CSV and overwrite file
-      log.info(` Flushing updated CSV back to Drive: ${fileId}`);
-      const updatedCSVContent = stringifyCSV(normalizedRows);
-      await drive.files.update({
-        fileId: fileId,
-        media: {
-          mimeType: "text/csv",
-          body: updatedCSVContent
-        }
-      });
-
-      // Step 3e: Single campaign status update
-      const finalStatus = (durationExpiredMidRun || isDurationElapsed())
-        ? "completed"
-        : (pausedByAdmin ? "paused" : (limitReached ? "Limit Reached" : "completed"));
-      const analytics = {
-        totalRows: dataRows.length,
-        sent: sentCount,
-        delivered: deliveredCount,
-        failed: failedCount,
-        limitReached,
-        paused: pausedByAdmin,
-        failureDetails: failureDetails.slice(0, 20),
-        server: getSelfUrl(),
-        batchConfig: { shootingBatchSize: SHOOTING_BATCH_SIZE, checkpointInterval: CHECKPOINT_INTERVAL }
-      };
-
-      settings.analytics = analytics;
-      // Scoped runs: capture this server's account subset, restore the full
-      // account list before persisting settings (settings.accounts was
-      // narrowed to this server's subset in-memory only). _fullAccounts stays
-      // persisted so sibling scopes can compute coverage; finalizeScopedRun
-      // clears it once every account is covered.
-      const scopedRunAccounts = isScopedRun ? (settings.accounts || []).map(String) : null;
-      if (isScopedRun) {
-        settings.accounts = settings._fullAccounts || settings.accounts;
-      }
-      if (isScopedRun) {
-        // Merge-write (preserves sibling scopes' _scopedCompleted records —
-        // a full settings blob overwrite would wipe them).
-        const scopedUpdate = { analytics, accounts: settings.accounts };
-        if (pausedByAdmin) {
-          // Preserve checkpoint so resume continues from where the pause interrupted.
-          scopedUpdate.lastProcessedRow = startIndex + sentCount;
-          await updateCampaignSettings(campaignId, scopedUpdate);
-          await updateSheetRowApi("campaigns", "campaignId", campaignId, {
-            status: "paused",
-            updatedOn: new Date().toISOString()
-          });
-        } else {
-          // lastProcessedRow: undefined → key dropped by JSON.stringify.
-          scopedUpdate.lastProcessedRow = undefined;
-          await updateCampaignSettings(campaignId, scopedUpdate);
-          // Status flips only once every account in the full list is covered.
-          await finalizeScopedRun(campaignId, serverScope, scopedRunAccounts, finalStatus);
-        }
-      } else {
-        const statusUpdate = {
-          settings: JSON.stringify(settings),
-          updatedOn: new Date().toISOString()
-        };
-        if (!pausedByAdmin) {
-          delete settings.lastProcessedRow;
-          statusUpdate.settings = JSON.stringify(settings);
-          statusUpdate.status = finalStatus;
-        } else {
-          // Preserve checkpoint so resume continues from where the pause interrupted.
-          settings.lastProcessedRow = startIndex + sentCount;
-          statusUpdate.settings = JSON.stringify(settings);
-          statusUpdate.status = "paused";
-        }
-        await updateSheetRowApi("campaigns", "campaignId", campaignId, statusUpdate);
-      }
-
-      return NextResponse.json({
-        success: true,
-        message: `Email campaign executed successfully (${finalStatus})`,
-        analytics
-      });
-
-    } else if (channel === "social") {
-      // ===== SOCIAL CAMPAIGN EXECUTION =====
-      const activeProfiles = settings.accounts || [];
-      const interactionTypes = settings.socialInteractionTypes || ["search"];
-      const keywords = settings.socialKeywords || [];
-      const engagementMode = settings.engagementMode === true || String(settings.engagementMode || "").toLowerCase() === "true";
-      if (engagementMode) log.info(" engagementMode enabled — tasks will run engagement workflows instead of read/scrape only.");
-
-      if (activeProfiles.length === 0) {
-        throw new Error("No active SOCIAL profiles selected for social campaign");
-      }
-      // Target validation happens AFTER the CSV load below: campaigns driven
-      // purely by an uploaded CSV (SOCIALUSERNAME column) or inbox-only
-      // campaigns (no list required) are valid and must not be rejected here.
-
-      // Step 4a: Optionally normalize CSV if fileUrl is present
-      const socialFileUrl = settings.fileUrl || settings.csvFileUrl;
-      let socialCsvRows = null;
-      let drive = null;
-      let socialFileId = null;
-      if (socialFileUrl) {
-        socialFileId = extractFileId(socialFileUrl);
-        if (socialFileId) {
-          log.info(` Downloading social CSV file: ${socialFileId}`);
-          const sdl = await downloadCsvText(socialFileId);
-          if (sdl.success && typeof sdl.content === "string") {
-            const normalized = normalizeAndMapCSV(sdl.content, STANDARD_88_COLUMNS);
-            if (normalized.length > 1) socialCsvRows = normalized;
-          }
-        }
-      }
-
-      // Step 4a2: Resolve campaign-wide targets. CSV handles (SOCIALUSERNAME)
-      // override the campaign-level keyword chips when a CSV is present.
-      const csvHandleIdx = socialCsvRows ? socialCsvRows[0].indexOf("SOCIALUSERNAME") : -1;
-      const csvPlatformIdx = socialCsvRows ? socialCsvRows[0].indexOf("SOCIALPLATFORM") : -1;
-      let csvHandles = [];
-      if (socialCsvRows && csvHandleIdx !== -1) {
-        csvHandles = socialCsvRows.slice(1).map(r => String(r[csvHandleIdx] || "").trim()).filter(Boolean);
-      }
-      const effectiveKeywords = csvHandles.length > 0 ? csvHandles : keywords;
-      const inboxHookEnabled = interactionTypes.includes("inbox");
-      if (effectiveKeywords.length === 0 && !inboxHookEnabled) {
-        throw new Error("No targets configured: add targeting keywords, upload a CSV with a SOCIALUSERNAME column, or enable an interaction hook (inbox works without a list)");
-      }
-
-      // Step 4b: Fetch interactionLimit (the social per-run cap) from the
-      // SETTINGS sheet (interactionBatchLimit). Strict fail-closed: unset/empty/
-      // 0 blocks — the admin must set interactionBatchLimit in the SETTINGS
-      // sheet. shootCampaignLimit/shootingBatchLimit is email-only ("Campaign
-      // sends") and must never gate social runs. Monthly spend stays gated by
-      // checkUserQuota(interactionUsage) per task; platform actions stay gated
-      // by the Limits platform rows vs per-account hub usage.
-      // Step 4b: interactionLimit from SETTINGS (interactionBatchLimit)
-      // Removed fail-closed blocking: social interaction tasks run without artificial batch gates;
-      // quotas are strictly governed by platform limits and user monthly quota.
-      let interactionLimit = Infinity;
-      try {
-        const campaignLimits = await getCampaignLimits();
-        if (campaignLimits.interactionLimit > 0) {
-          interactionLimit = campaignLimits.interactionLimit;
-        }
-      } catch (limitErr) {
-        log.warn(` Failed to fetch social limits (using unlimited batch): ${limitErr.message}`);
-      }
-
-      log.info(` Queueing social tasks for ${activeProfiles.length} profiles (interactionLimit=${interactionLimit})...`);
-
-      // Step 4c: Accumulate all tasks in-memory with priority ordering
-      const PRIORITY_MAP = { "inbox-interact": 0, "page-interact": 1, "search-interact": 2, "activities-interact": 3 };
-      const pendingSocialTasks = [];
-      const profilePlatforms = {};
-      // Batch engagement settings from campaign settings JSON (safe defaults).
-      const maxResultsPerKeyword = Math.max(1, parseInt(settings.maxResultsPerKeyword, 10) || 5);
-
-      // Batch task: ONE task per profile per operation, carrying ALL target
-      // keywords/queries in searchQueries[]. The route opens the browser once
-      // and loops the queries inside the single session (no per-keyword
-      // browser reopen). searchQuery is kept as the first query for CSV
-      // flush compatibility.
-      const queueSocialTask = (operation, queries, platform, profileData, profileId) => {
-        if (pendingSocialTasks.some(t => t.profileId === profileId && t.operation === operation)) {
-          return;
-        }
-        const queryList = Array.isArray(queries) ? queries : [queries];
-        pendingSocialTasks.push({
-          taskId: "task-" + Math.random().toString(36).substring(2, 11),
-          campaignId,
-          platform,
-          operation,
-          priority: PRIORITY_MAP[operation] !== undefined ? PRIORITY_MAP[operation] : 99,
-          engagementMode,
-          searchQuery: queryList[0] || "",
-          searchQueries: queryList,
-          maxResultsPerKeyword,
-          cookieJSON: typeof profileData.cookies === "string" ? profileData.cookies : JSON.stringify(profileData.cookies),
-          browserIdentity: profileData.browserIdentity || null,
-          driveUrl: profileData.driveUrl || "",
-          profileId,
-          // AI context: strategy + target link so messages are crafted with the destination in mind
-          targetLink: settings.targetLink || "",
-          socialStrategyPrompt: settings.socialStrategyPrompt || "",
-          campaignMode: settings.campaignMode || "",
-          // Campaign direct-execute tasks have no row in the social-tasks
-          // sheet — the route skips updateTaskRow for these (avoids
-          // "Unable to parse range: social-tasks!1:1" + GAS Invalid action).
-          directExecute: true,
-          status: "PENDING",
-          createdAt: new Date().toISOString()
-        });
-      };
-
-      const seededAccounts = [];
-      for (const profileId of activeProfiles) {
-        const profileData = await getSocialProfileCookies(profileId);
-        if (!profileData || !profileData.cookies) {
-          log.warn(` No cookies found for active profile: ${profileId}`);
-          continue;
-        }
-
-        const platform = profileData.platform || normalizeSocialPlatform(settings.platform) || "twitter";
-        profilePlatforms[profileId] = platform;
-        setActiveCampaignForAccount(profileId, {
-          campaignId,
-          userId,
-          identifier: profileData.identifier || profileId,
-          platform,
-        });
-        seededAccounts.push({
-          accountId: profileId,
-          identifier: profileData.identifier || profileId,
-          platform,
-        });
-
-        // ACCOUNT-tier status gate — skip blocked profiles entirely (no tasks
-        // queued for them); the rest of the campaign continues normally.
+        // Step 3b: Fetch the per-run email cap from SETTINGS (shootingBatchLimit)
+        let shootCampaignLimit = 0;
+        let accountSendPerRunLimit = 0;
         try {
-          const profileGate = await resolveAccountGate(profileId, platform);
-          if (profileGate.blocked) {
-            log.warn(` [account-limit] skipped profile ${profileId}: ${profileGate.reason}`);
+          const campaignLimits = await getCampaignLimits();
+          shootCampaignLimit = campaignLimits.shootCampaignLimit;
+          accountSendPerRunLimit = parseInt(campaignLimits.accountSendPerRunLimit, 10) || 0;
+        } catch (limitErr) {
+          log.warn(` Failed to fetch limits, blocking: ${limitErr.message}`);
+        }
+
+        if (shootCampaignLimit <= 0) {
+          log.info(` shootingBatchLimit is 0 or unavailable, blocking execution - set shootingBatchLimit in the SETTINGS sheet`);
+          await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "Limit Reached" });
+          return NextResponse.json({ success: true, message: "Execution blocked: shootingBatchLimit is 0 - set it in the SETTINGS sheet", limitReached: true });
+        }
+
+        // Load firestick emails if warm-up is enabled
+        const firestickEnabled = settings.firestickEnabled === true;
+        let firestickList = [];
+        if (firestickEnabled) {
+          firestickList = await getFirestickEmails();
+          if (firestickList.length > 0) {
+            shootCampaignLimit = Math.floor(shootCampaignLimit / 2);
+            log.info(` Firestick warm-up enabled: ${firestickList.length} firestick emails loaded, limit halved to ${shootCampaignLimit}`);
+          } else {
+            log.warn(` Firestick warm-up enabled but no firestick emails found in SETTINGS, proceeding without warm-up`);
+          }
+        }
+
+        let sentCount = 0;
+        let deliveredCount = 0;
+        let failedCount = 0;
+        let limitReached = false;
+        const failureDetails = [];
+
+        // Step 3c: Deduplicate recipients by email address
+        const uniqueEmails = new Set();
+        const deduplicatedRows = [];
+        let duplicateCount = 0;
+
+        for (const row of dataRows) {
+          const email = row[emailColIdx]?.trim().toLowerCase();
+          if (!email) {
+            // Keep empty rows to preserve row count in CSV
+            deduplicatedRows.push(row);
             continue;
           }
-        } catch (gateErr) {
-          log.warn(` Account gate check failed for ${profileId} (continuing): ${gateErr.message}`);
+
+          if (uniqueEmails.has(email)) {
+            log.warn(` Skipping duplicate email: ${email}`);
+            duplicateCount++;
+            continue; // Skip duplicate
+          }
+
+          uniqueEmails.add(email);
+          deduplicatedRows.push(row);
         }
 
-        // Per-profile targets. CSV rows carrying a SOCIALPLATFORM value only
-        // feed accounts of that platform (rows without a platform match every
-        // account); campaign keywords are the fallback when no CSV handles exist.
-        let profileKeywords;
-        if (csvHandles.length > 0 && socialCsvRows && csvPlatformIdx !== -1) {
-          profileKeywords = socialCsvRows.slice(1)
-            .filter(r => {
-              const handle = String(r[csvHandleIdx] || "").trim();
-              if (!handle) return false;
-              const rowPlatform = normalizeSocialPlatform(String(r[csvPlatformIdx] || ""));
-              return !rowPlatform || rowPlatform === platform;
-            })
-            .map(r => String(r[csvHandleIdx] || "").trim());
-        } else {
-          profileKeywords = effectiveKeywords;
+        if (duplicateCount > 0) {
+          log.info(` Removed ${duplicateCount} duplicate email(s) from recipient list`);
         }
 
-        // Inbox hook: exactly ONE task per profile — it monitors/answers DMs
-        // and needs no per-keyword fan-out (previously it was duplicated once
-        // per keyword, and queued zero tasks when no keywords existed).
-        if (inboxHookEnabled && pendingSocialTasks.length < interactionLimit) {
-          queueSocialTask("inbox-interact", [""], platform, profileData, profileId);
+        // ─── MULTI-SERVER DISPATCH ────────────────────────────────────
+        if (MULTI_SERVER_ENABLED) {
+          const dispatchResult = await dispatchToServers(campaignId, 'execute', fileUrl, deduplicatedRows.length);
+          if (dispatchResult) {
+            return NextResponse.json({
+              success: true,
+              message: `Email campaign distributed across ${dispatchResult.servers.length} servers`,
+              dispatched: true,
+              servers: dispatchResult.servers,
+            });
+          }
         }
 
-        // ONE batch task per profile per operation — searchQueries carries
-        // ALL keywords. The route opens the browser once and loops inside a
-        // single session (no per-keyword browser reopen). interactionLimit
-        // now caps task count = profile×operation combos (not keyword count).
-        const filterPageKeywords = (kws) => kws.filter(kw =>
-          // page-interact opens /<handle> directly — hashtags, search phrases
-          // and URLs would produce broken profile URLs, so only handle-shaped
-          // targets are queued for it.
-          /^[A-Za-z0-9._-]+$/.test(kw.replace(/^@+/, ""))
-        );
+        // ─── SINGLE-SERVER FALLBACK ────────────────────────────────────
+        // Step 3d: Check for checkpoint to resume partial execution
+        const lastProcessedRow = settings.lastProcessedRow || 0;
+        if (lastProcessedRow > 0) {
+          log.info(` Resuming from checkpoint row ${lastProcessedRow} (previously processed ${lastProcessedRow} rows)`);
+        }
 
-        let queuedForProfile = 0;
-        for (const op of interactionTypes) {
-          if (pendingSocialTasks.length >= interactionLimit) break;
-          if (op === "inbox") continue; // queued once per profile above
+        const startIndex = Math.max(0, lastProcessedRow);
+        const maxToProcess = Math.min(deduplicatedRows.length, shootCampaignLimit, SHOOTING_BATCH_SIZE);
+        log.info(` Sending emails: limit=${shootCampaignLimit === Infinity ? 'unlimited' : shootCampaignLimit}, batch=${maxToProcess} contacts (after dedup: ${deduplicatedRows.length}/${dataRows.length})`);
 
-          const operation = op === "search" ? "search-interact"
-            : op === "activities" ? "activities-interact"
-            : "page-interact";
-          let opQueries = operation === "page-interact" ? filterPageKeywords(profileKeywords) : profileKeywords;
-          // Tag resume: skip tags already marked done for this account (set
-          // after an hourly-limit stop) so a resumed run only processes the
-          // still-pending tags.
-          if (operation === "search-interact") {
-            const doneTags = getAccountTagStatuses(settings, profileId);
-            const accountPosts = (settings.postStatus && settings.postStatus[String(profileId)]) || {};
-            const totalEngagedPosts = Object.keys(accountPosts).length;
+        // ACCOUNT tier — the wire profile may be CANCELLED or RATE_LIMITED when
+        // this stage starts (or was flipped by a previous stage). Decision: skip
+        // the account, continue the campaign with other stages — the email run
+        // stops with limitReached, never FAILED.
+        const wireProfileId = settings.accounts?.[0] || settings.wireAccount;
+        if (wireProfileId) {
+          const wireData = await getSocialProfileCookies(wireProfileId).catch(() => null);
+          const wirePlatform = String(wireData?.platform || detectProvider(smtpSettings[0]?.user || wireProfileId) || "").trim();
+          const wireGate = await resolveAccountGate(wireProfileId, wirePlatform);
+          if (wireGate.blocked) {
+            log.warn(` [account-limit] Wire profile ${wireProfileId} blocked (${wireGate.reason}) — stopping email run.`);
+            limitReached = true;
+            return NextResponse.json({
+              success: true,
+              message: `Email run stopped by account limits: ${wireGate.reason}`,
+              limitReached: true,
+              accountBlocked: true,
+              skippedAccount: wireProfileId,
+            });
+          }
+        }
 
-            // Stale doneTags recovery: If an account has doneTags recorded, but 0 posts
-            // were ever engaged for this account, those tags were marked done by the prior
-            // failed navigation bug. Clear them so the newly fixed navigation can run them!
-            if (totalEngagedPosts === 0 && Object.keys(doneTags).length > 0) {
-              log.info(` [tag-resume] profile ${profileId}: 0 posts ever engaged for this profile — clearing stale done tags to allow clean run.`);
-              opQueries = profileKeywords;
-            } else {
-              opQueries = opQueries.filter(k => doneTags[String(k).trim()] !== "done");
+        // ─── REPLY FILTER (campaign hygiene) ────────────────────────────
+        // Every campaign subject carries '[campaignId]' (embedCampaignIdentifier)
+        // — install ONE filter per run so inbound replies are moved out of the
+        // normal inbox into the reply folder (campaign setup, default
+        // 'Campaign-Replies'). Own short-lived session via the wire account;
+        // best-effort — a failure never blocks sends (STEALTH-SENDING-PLAN.MD).
+        const replyFolder = String(settings.replyFolder || "").trim() || "Campaign-Replies";
+        {
+          const profileId = settings.accounts?.[0] || settings.wireAccount;
+          const profileData = profileId ? await getSocialProfileCookies(profileId) : null;
+          if (profileData?.cookies || profileData?.driveCookieJSON || profileData?.accountCookieJSON) {
+            try {
+              const provider =
+                profileData.platform || detectProvider(smtpSettings[0]?.user || settings.wireAccount || "") || "gmail";
+              const { browser, page, profileDir } = await resolveSocialSession(
+                {
+                  cookies: profileData.cookies,
+                  browserIdentity: profileData.browserIdentity || null,
+                  driveUrl: profileData.driveUrl || "",
+                  profileId,
+                  platform: detectEmailProvider(provider),
+                  driveCookieJSON: profileData.driveCookieJSON || "",
+                  accountCookieJSON: profileData.accountCookieJSON || "",
+                },
+                false
+              );
+              try {
+                const res = await ensureReplyFilter(page, provider, campaignId, replyFolder, log);
+                log.info(
+                  ` Reply filter: ${res.status}${res.reason ? ` (${res.reason})` : ""} → '${replyFolder}' (identifier=${campaignId})`
+                );
+              } finally {
+                await page.close().catch(() => {});
+                await browser.close().catch(() => {});
+                if (profileDir) {
+                  const fs = await import("fs-extra");
+                  await fs.remove(profileDir).catch(() => {});
+                }
+              }
+            } catch (filterErr) {
+              log.warn(` Reply filter setup failed (continuing with sends): ${filterErr.message}`);
             }
-
-            if (opQueries.length === 0) {
-              log.info(` [tag-resume] profile ${profileId}: all search tags already done — queueing activities-interact fallback`);
-              queueSocialTask("activities-interact", [""], platform, profileData, profileId);
-              queuedForProfile++;
-              continue;
-            }
-          }
-          if (opQueries.length === 0) continue;
-          queueSocialTask(operation, opQueries, platform, profileData, profileId);
-          queuedForProfile++;
-        }
-
-        // Automatic fallback: if no tasks were queued for this active profile (e.g. all search tags completed),
-        // trigger activities-interact so the profile continues engaging (notifications, follower interactions, FYP)
-        if (queuedForProfile === 0 && pendingSocialTasks.length < interactionLimit) {
-          log.info(` [activities-fallback] profile ${profileId}: no pending tag tasks — queueing activities-interact`);
-          queueSocialTask("activities-interact", [""], platform, profileData, profileId);
-        }
-        if (pendingSocialTasks.length >= interactionLimit) break;
-      }
-
-      // Step 4d: Sort tasks by priority (inbox > activities > page > search)
-      pendingSocialTasks.sort((a, b) => a.priority - b.priority);
-
-      // Step 4e: Execute tasks directly via social route handlers.
-      // pendingSocialTasks is already capped at interactionLimit during
-      // queueing (Step 4c) — no second cap.
-      const tasksToExecute = pendingSocialTasks;
-      const executionResults = [];
-      let executedCount = 0;
-      let failedCount = 0;
-
-      const ROUTE_MAP = {
-        "search-interact": processSearchInteractTask,
-        "page-interact": processPageInteractTask,
-        "inbox-interact": processInboxInteractTask,
-        "activities-interact": processActivitiesInteractTask,
-      };
-
-      // Build SOCIALUSERNAME → enhancedSocialMessage lookup for per-row DM personalization
-      const socialMessageMap = {};
-      if (socialCsvRows) {
-        const h = socialCsvRows[0];
-        const uidIdx = h.indexOf("SOCIALUSERNAME");
-        const msgIdx = h.indexOf("enhancedSocialMessage");
-        if (uidIdx !== -1 && msgIdx !== -1) {
-          for (let r = 1; r < socialCsvRows.length; r++) {
-            const uid = String(socialCsvRows[r][uidIdx] || "").trim();
-            const msg = String(socialCsvRows[r][msgIdx] || "").trim();
-            if (uid && msg) socialMessageMap[uid] = msg;
-          }
-        }
-      }
-
-      // Live-progress CSV flush: writes per-row interaction outcomes back to Drive
-      // (Drive API only, no Apps Script) so the file view updates mid-run.
-      let csvUpdated = false;
-      const flushSocialCsv = async () => {
-        if (!socialCsvRows || !socialFileId || !drive) return;
-        const nHeaders = socialCsvRows[0];
-        for (let i = 1; i < socialCsvRows.length; i++) {
-          const row = socialCsvRows[i];
-          const username = row[nHeaders.indexOf("SOCIALUSERNAME")] || "";
-          // Batch tasks carry searchQueries[] — match when username is in the
-          // array OR equals the legacy single searchQuery field.
-          const relatedResults = executionResults.filter(r => r.taskId && tasksToExecute.find(t => {
-            if (t.taskId !== r.taskId) return false;
-            if (Array.isArray(t.searchQueries) && t.searchQueries.includes(username)) return true;
-            return t.searchQuery === username;
-          }));
-          if (relatedResults.length > 0) {
-            const searchKeysIdx = nHeaders.indexOf("searchKeys");
-            const searchStatusIdx = nHeaders.indexOf("searchStatus");
-            const searchStampIdx = nHeaders.indexOf("searchStamp");
-            const interactStatusIdx = nHeaders.indexOf("interactStatus");
-            const interactStampIdx = nHeaders.indexOf("interactStamp");
-          const anyFailed = relatedResults.some(r => r.status === "FAILED");
-          const anySkipped = relatedResults.some(r => r.status === "SKIPPED");
-          const outcome = anyFailed ? "failed" : (anySkipped ? "skipped" : "executed");
-            if (searchKeysIdx !== -1) row[searchKeysIdx] = relatedResults.map(r => r.status).join("; ");
-            if (searchStatusIdx !== -1) row[searchStatusIdx] = outcome;
-            if (searchStampIdx !== -1) row[searchStampIdx] = new Date().toISOString();
-            if (interactStatusIdx !== -1) row[interactStatusIdx] = outcome;
-            if (interactStampIdx !== -1) row[interactStampIdx] = new Date().toISOString();
-          }
-        }
-        const updatedCSV = stringifyCSV(socialCsvRows);
-        await drive.files.update({
-          fileId: socialFileId,
-          media: { mimeType: "text/csv", body: updatedCSV }
-        });
-        csvUpdated = true;
-      };
-
-      if (seededAccounts.length > 0) {
-        await seedCampaignAccountsInStats(campaignId, seededAccounts).catch(() => {});
-      }
-
-      let pausedByAdmin = false;
-      let durationExpiredMidRun = false;
-      let skippedLimitCount = 0;
-      let quotaStopped = false;
-
-      // Concurrency governor: run up to MAX_CONCURRENT_TASKS social tasks in
-      // parallel (SETTINGS key, read via campaignConcurrency). Previously this
-      // loop was serial, so N accounts never overlapped.
-      const maxConcurrentSocial = Math.max(1, await getMaxConcurrentTasks());
-
-      // updateUserUsage is an unguarded read-modify-write and flushSocialCsv
-      // rewrites the whole Drive CSV — serialize both so parallel tasks can't
-      // clobber each other.
-      let usageChain = Promise.resolve();
-      // `count` = number of ACTIONS the task actually verified (success-only).
-      const incrementInteractionUsage = (uid, count = 1) => {
-        const n = Number(count) || 0;
-        if (n <= 0) return usageChain;
-        usageChain = usageChain
-          .then(() => updateUserUsage(uid, "interactionUsage", n))
-          .catch((uErr) => { log.warn(` [user-limit] usage increment failed: ${uErr.message}`); });
-        return usageChain;
-      };
-      let flushChain = Promise.resolve();
-      const flushSocialCsvSafe = (label) => {
-        flushChain = flushChain
-          .then(() => flushSocialCsv())
-          .catch((flushErr) => { log.warn(` Social CSV flush failed after ${label}: ${flushErr.message}`); });
-        return flushChain;
-      };
-
-      const runSocialTask = async (task) => {
-        if (isDurationElapsed()) {
-          durationExpiredMidRun = true;
-          log.info(` [campaign-duration] Campaign ${campaignId} duration elapsed mid-run. Stopping social tasks.`);
-          return;
-        }
-        if (await isCampaignPaused(campaignId)) {
-          pausedByAdmin = true;
-          log.info(` Campaign ${campaignId} was paused during social run. Stopping.`);
-          return;
-        }
-        // USER tier — daily action quota re-checked before every task
-        if (userId) {
-          const uq = await checkUserQuota(userId, { keys: ["interactionUsage"] });
-          if (!uq.allowed) {
-            log.info(` [user-limit] ${uq.reason} — stopping social run.`);
-            quotaStopped = true;
-            return;
-          }
-        }
-        const handler = ROUTE_MAP[task.operation];
-        if (!handler) {
-          log.warn(` No handler for operation: ${task.operation}`);
-          failedCount++;
-          return;
-        }
-
-        try {
-          log.info(` Executing ${task.operation} task: ${task.taskId}`);
-
-          // Enrich task payload with campaign context
-          const perRowMessage = socialMessageMap[task.searchQuery] || "";
-          const taskPayload = {
-            ...task,
-            targetProfileId: task.searchQuery || null,
-            socialStrategyPrompt: settings.socialStrategyPrompt || null,
-            projectId: settings.projectId || null,
-            messageText: resolveSocialMessage(perRowMessage, settings),
-          };
-
-          const result = await handler(taskPayload);
-          executionResults.push(result);
-          executedCount++;
-          // Verified action count from the handler. DMs (coldMessage/message)
-          // stay on senderUsage, so they are excluded from the user-level
-          // interaction usage. Legacy handlers with no tally keep the previous
-          // 1-per-task behaviour.
-          const actionCount = interactionActionsFromQuota(result?.quota);
-          if (userId) await incrementInteractionUsage(userId, actionCount);
-          log.info(` Task ${task.taskId} completed: ${result.status} (actions=${actionCount})`);
-
-          // Live-progress CSV flush after each task so the file view advances mid-run
-          await flushSocialCsvSafe(`task ${task.taskId}`);
-        } catch (taskError) {
-          // Actions performed before the error are still real spend.
-          const partial = taskError?.quota?.total;
-          if (userId && Number.isFinite(partial) && partial > 0) {
-            await incrementInteractionUsage(userId, partial);
-            log.info(` Task ${task.taskId} failed after ${partial} actions — counted.`);
-          }
-          // Limit-type errors are SKIPS (account over quota / account blocked),
-          // not failures — the campaign moves on to the next account/task.
-          if (isLimitSkipError(taskError.message)) {
-            skippedLimitCount++;
-            executionResults.push({ taskId: task.taskId, status: "SKIPPED", error: taskError.message });
-            log.warn(` [account-limit] Task ${task.taskId} skipped: ${taskError.message}`);
           } else {
-            log.error(` Task ${task.taskId} failed: ${taskError.message}`);
-            executionResults.push({ taskId: task.taskId, status: "FAILED", error: taskError.message });
-            failedCount++;
+            log.warn(` Reply filter skipped — no browser session for profile ${profileId || "none"}`);
           }
-
-          // Live-progress CSV flush after a failure so the row is marked failed
-          await flushSocialCsvSafe(`failed task ${task.taskId}`);
         }
 
-        // Inter-task delay for rate limiting
-        await new Promise(res => setTimeout(res, 500));
-      };
-
-      const socialQueue = tasksToExecute.slice();
-      log.info(` Social dispatch: ${socialQueue.length} task(s), concurrency ${maxConcurrentSocial}`);
-      const socialRunners = Array.from(
-        { length: Math.min(maxConcurrentSocial, socialQueue.length) },
-        async () => {
-          while (!pausedByAdmin && !quotaStopped && !durationExpiredMidRun) {
-            if (isDurationElapsed()) {
-              durationExpiredMidRun = true;
+        // Step 3e: Processing loop over deduplicated rows with checkpointing
+        let pausedByAdmin = false;
+        let durationExpiredMidRun = false;
+        let firestickIndex = 0;
+        // Per-run send cap per SMTP account (plan cell accountSendPerRunLimit,
+        // campaign default 5, 0 = off): rotate across accounts; when every
+        // account hit its cap, stop the run with limitReached.
+        const smtpCap = createSmtpSendCap({ smtpSettings, accountSendPerRunLimit });
+        const pickSmtpWithinCap = smtpCap.pick;
+        const noteSmtpSend = smtpCap.note;
+        for (let i = startIndex; i < deduplicatedRows.length; i++) {
+          if (isDurationElapsed()) {
+            durationExpiredMidRun = true;
+            log.info(` [campaign-duration] Campaign ${campaignId} duration elapsed mid-run at row ${i}. Stopping and completing.`);
+            break;
+          }
+          if (await isCampaignPaused(campaignId)) {
+            pausedByAdmin = true;
+            log.info(` Campaign ${campaignId} was paused during run. Stopping at row ${i}.`);
+            break;
+          }
+          // USER tier — monthly shootCampaign budget re-checked per row so a
+          // campaign stops mid-run as soon as the user's budget is exhausted.
+          if (userId) {
+            const uq = await checkUserQuota(userId, { keys: ["shootCampaignUsage"] });
+            if (!uq.allowed) {
+              limitReached = true;
+              log.info(` [user-limit] ${uq.reason} — stopping email run at row ${i}.`);
               break;
             }
-            const task = socialQueue.shift();
-            if (!task) break;
-            await runSocialTask(task);
           }
-        }
-      );
-      await Promise.all(socialRunners);
+          if (sentCount >= shootCampaignLimit) {
+            limitReached = true;
+            log.info(` shootCampaignLimit (${shootCampaignLimit}) reached, stopping.`);
+            break;
+          }
+          if (sentCount >= 30) {
+            log.info(` Vercel timeout safety cap (30) reached, stopping.`);
+            break;
+          }
 
-      // Step 4f: Send direct messages to all social profiles in CSV if enabled
-      const shouldSendMessage = settings.shouldSendMessage === true || settings.shouldSendMessage === "true" || settings.sendToAll === true;
-      if (shouldSendMessage && socialFileUrl && !durationExpiredMidRun && !isDurationElapsed() && !pausedByAdmin) {
-        const dmAccounts = activeProfiles.filter(id => {
-          const p = profilePlatforms[id];
-          return p && sendPlatformConfigs[p];
-        });
-        if (dmAccounts.length < activeProfiles.length) {
-          log.warn(` Skipping DM step for ${activeProfiles.length - dmAccounts.length} account(s) whose platform has no send-message support.`);
-        }
-        if (dmAccounts.length > 0) {
-          log.info(` sendToAll enabled — sending DMs to ${dmAccounts.length} CSV social profile(s)`);
+          const row = deduplicatedRows[i];
+          const email = row[emailColIdx]?.trim();
+          if (!email) continue;
+
+          const firstName = nameColIdx !== -1 && row[nameColIdx] ? row[nameColIdx] : "";
+          const company = companyColIdx !== -1 && row[companyColIdx] ? row[companyColIdx] : "";
+
+          // Priority: AI personalized > merged template > campaign settings > default
+          let subject = (enhancedSubjectIdx !== -1 && row[enhancedSubjectIdx]?.trim())
+            || (emailSubjectIdx !== -1 && row[emailSubjectIdx]?.trim())
+            || settings.subject
+            || "";
+          let message = (enhancedBodyIdx !== -1 && row[enhancedBodyIdx]?.trim())
+            || (emailBodyIdx !== -1 && row[emailBodyIdx]?.trim())
+            || settings.body
+            || "";
+
+          // Embed campaign identifier for interaction tracking
+          const tagged = embedCampaignIdentifier(subject, message, campaignId);
+          subject = tagged.subject;
+          message = tagged.body;
+
+          let smtpPick = pickSmtpWithinCap(sentCount);
+          if (!smtpPick && accountSendPerRunLimit > 0 && smtpSettings.length > 0) {
+            limitReached = true;
+            log.info(` accountSendPerRunLimit (${accountSendPerRunLimit}) reached on every SMTP account, stopping email run.`);
+            break;
+          }
+          const { config: smtp } = smtpPick || {};
+          const now = new Date();
+          let senderHost = "WIRE";
+          const isSchedule = settings.sendMode === "schedule";
+
+          // Firestick warm-up: send to familiar inbox before the actual lead
+          if (firestickEnabled && firestickList.length > 0) {
+            try {
+              const firestick = firestickList[firestickIndex % firestickList.length];
+              firestickIndex++;
+              await sendWarmupEmail({
+                email: firestick.email,
+                subject,
+                message,
+                seed: sentCount,
+                pickSmtp: pickSmtpWithinCap,
+                noteSmtp: noteSmtpSend,
+              });
+              log.info(` Firestick warm-up sent to ${firestick.email}`);
+              // Small delay between firestick and lead send
+              await new Promise(r => setTimeout(r, 500));
+            } catch (firestickErr) {
+              log.warn(` Firestick warm-up failed: ${firestickErr.message}, continuing with lead send`);
+            }
+          }
+
           try {
-            const dmResponse = await processSendMessages({
-              campaignId,
-              userId: userId || null,
-              platform: "",
-              messageText: resolveSocialMessage(null, settings),
-              sendToAll: true,
-              accountIds: dmAccounts,
+            const needsBrowser = isSchedule || deliveryMethod === "wire" || deliveryMethod === "mixed";
+            const profileId = needsBrowser ? (settings.accounts?.[0] || settings.wireAccount) : null;
+            const profileData = profileId ? await getSocialProfileCookies(profileId) : null;
+
+            let scheduleTime = null;
+            if (isSchedule) {
+              // Use per-row sendDate/sendTime if available, else use scheduleStartTime
+              const rowSendDate = sendDateIdx !== -1 ? row[sendDateIdx] : "";
+              const rowSendTime = sendTimeIdx !== -1 ? row[sendTimeIdx] : "";
+              if (rowSendDate && rowSendTime) {
+                scheduleTime = new Date(`${rowSendDate} ${rowSendTime}`);
+              } else if (settings.scheduleStartTime) {
+                scheduleTime = new Date(settings.scheduleStartTime);
+                // Offset by sentCount * 1 minute to space out
+                scheduleTime = new Date(scheduleTime.getTime() + sentCount * 60000);
+              } else {
+                scheduleTime = new Date(now.getTime() + sentCount * 60000);
+              }
+            }
+
+            const sendResult = await sendCampaignEmail({
+              email,
+              subject,
+              message,
+              smtp,
+              isSchedule,
+              deliveryMethod,
+              profileId,
+              profileData,
+              scheduleTime: scheduleTime ? scheduleTime.toISOString() : null,
+              noteSmtp: noteSmtpSend,
+              log,
             });
-            const dmResult = await dmResponse.json();
-            log.info(` send-message result: ${dmResult.message}`);
-            settings.dmResults = dmResult;
-          } catch (dmErr) {
-            log.error(` send-message failed: ${dmErr.message}`);
-            settings.dmResults = { error: dmErr.message };
+            senderHost = sendResult.senderHost;
+            deliveredCount += sendResult.delivered;
+
+            sentCount++;
+            await updateCampaignStatsUsage(campaignId, profileId || senderHost, "emailSent", 1, {
+              identifier: profileData?.identifier || senderHost,
+              platform: "email",
+            }).catch(() => {});
+            if (userId) {
+              try {
+                await updateUserUsage(userId, "shootCampaignUsage");
+              } catch (uErr) {
+                log.warn(` [user-limit] usage increment failed: ${uErr.message}`);
+              }
+            }
+            log.info(`[Row ${isSchedule ? "schedule" : "send"}] ${email}: ${isSchedule ? "scheduled" : "sent"} via ${senderHost} (${sentCount}/${maxToProcess})`);
+
+            if (isSchedule) {
+              // For schedule mode, write the scheduled time back to CSV
+              const scheduleTime = settings.scheduleStartTime || new Date().toISOString();
+              if (sendDateIdx !== -1) row[sendDateIdx] = new Date(scheduleTime).toLocaleDateString();
+              if (sendTimeIdx !== -1) row[sendTimeIdx] = new Date(scheduleTime).toLocaleTimeString();
+              if (sendStampIdx !== -1) row[sendStampIdx] = new Date(scheduleTime).toISOString();
+            } else {
+              if (sendDateIdx !== -1) row[sendDateIdx] = now.toLocaleDateString();
+              if (sendTimeIdx !== -1) row[sendTimeIdx] = now.toLocaleTimeString();
+              if (sendStampIdx !== -1) row[sendStampIdx] = now.toISOString();
+            }
+            if (executionStatusIdx !== -1) row[executionStatusIdx] = isSchedule ? "scheduled" : "sent";
+            if (providerMXIdx !== -1) row[providerMXIdx] = senderHost;
+          } catch (err) {
+            log.error(` Failed to send to ${email} via ${senderHost}: ${err.message}`);
+            failedCount++;
+            sentCount++;
+            failureDetails.push({ email, error: err.message, host: senderHost });
+
+            if (executionStatusIdx !== -1) row[executionStatusIdx] = "failed";
+            if (providerMXIdx !== -1) row[providerMXIdx] = err.message;
+          }
+
+          // Inter-email delay to prevent SMTP rate limiting
+          if (INTER_BATCH_DELAY > 0) {
+            await new Promise(r => setTimeout(r, INTER_BATCH_DELAY));
+          }
+
+          // Checkpoint: save progress every N rows (configurable from SETTINGS)
+          if ((i + 1) % CHECKPOINT_INTERVAL === 0) {
+            log.info(` Checkpoint at row ${i + 1}/${deduplicatedRows.length}`);
+            try {
+              settings.lastProcessedRow = i + 1;
+              await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+                settings: JSON.stringify(settings),
+                updatedOn: new Date().toISOString()
+              });
+            } catch (cpErr) {
+              log.warn(` Checkpoint save failed at row ${i + 1}: ${cpErr.message}`);
+            }
+            // Live-progress flush: overwrite the Drive CSV so the file view reflects
+            // progress mid-run. Uses the Drive API directly (no Apps Script), so the
+            // backend/AppScript cache and quota are untouched.
+            try {
+              await drive.files.update({
+                fileId,
+                media: { mimeType: "text/csv", body: stringifyCSV(normalizedRows) }
+              });
+            } catch (flushErr) {
+              log.warn(` Live CSV flush failed at row ${i + 1}: ${flushErr.message}`);
+            }
+          }
+        }
+
+        // Step 3d: Single-flush Drive save — rebuild CSV and overwrite file
+        log.info(` Flushing updated CSV back to Drive: ${fileId}`);
+        const updatedCSVContent = stringifyCSV(normalizedRows);
+        await drive.files.update({
+          fileId: fileId,
+          media: {
+            mimeType: "text/csv",
+            body: updatedCSVContent
+          }
+        });
+
+        // Step 3e: Single campaign status update
+        const finalStatus = (durationExpiredMidRun || isDurationElapsed())
+          ? "completed"
+          : (pausedByAdmin ? "paused" : (limitReached ? "Limit Reached" : "completed"));
+        const analytics = {
+          totalRows: dataRows.length,
+          sent: sentCount,
+          delivered: deliveredCount,
+          failed: failedCount,
+          limitReached,
+          paused: pausedByAdmin,
+          failureDetails: failureDetails.slice(0, 20),
+          server: getSelfUrl(),
+          batchConfig: { shootingBatchSize: SHOOTING_BATCH_SIZE, checkpointInterval: CHECKPOINT_INTERVAL }
+        };
+
+        settings.analytics = analytics;
+        // Scoped runs: capture this server's account subset, restore the full
+        // account list before persisting settings (settings.accounts was
+        // narrowed to this server's subset in-memory only). _fullAccounts stays
+        // persisted so sibling scopes can compute coverage; finalizeScopedRun
+        // clears it once every account is covered.
+        const scopedRunAccounts = isScopedRun ? (settings.accounts || []).map(String) : null;
+        if (isScopedRun) {
+          settings.accounts = settings._fullAccounts || settings.accounts;
+        }
+        if (isScopedRun) {
+          // Merge-write (preserves sibling scopes' _scopedCompleted records —
+          // a full settings blob overwrite would wipe them).
+          const scopedUpdate = { analytics, accounts: settings.accounts };
+          if (pausedByAdmin) {
+            // Preserve checkpoint so resume continues from where the pause interrupted.
+            scopedUpdate.lastProcessedRow = startIndex + sentCount;
+            await updateCampaignSettings(campaignId, scopedUpdate);
+            await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+              status: "paused",
+              updatedOn: new Date().toISOString()
+            });
+          } else {
+            // lastProcessedRow: undefined → key dropped by JSON.stringify.
+            scopedUpdate.lastProcessedRow = undefined;
+            await updateCampaignSettings(campaignId, scopedUpdate);
+            // Status flips only once every account in the full list is covered.
+            await finalizeScopedRun(campaignId, serverScope, scopedRunAccounts, finalStatus);
           }
         } else {
-          log.warn(" sendToAll enabled but no account supports send-message — skipping DM step.");
+          const statusUpdate = {
+            settings: JSON.stringify(settings),
+            updatedOn: new Date().toISOString()
+          };
+          if (!pausedByAdmin) {
+            delete settings.lastProcessedRow;
+            statusUpdate.settings = JSON.stringify(settings);
+            statusUpdate.status = finalStatus;
+          } else {
+            // Preserve checkpoint so resume continues from where the pause interrupted.
+            settings.lastProcessedRow = startIndex + sentCount;
+            statusUpdate.settings = JSON.stringify(settings);
+            statusUpdate.status = "paused";
+          }
+          await updateSheetRowApi("campaigns", "campaignId", campaignId, statusUpdate);
         }
-      }
 
-      // Step 4g: Single campaign status update
-      const hasHourlyRateLimits = executionResults.some(r => r.status === 'COMPLETED' && (r.results || []).some(sub => sub.status === 'rate_limited' || sub.resumedNextCycle));
-      const hasNetworkErrors = executionResults.some(r =>
-        r.status === 'NETWORK_ERROR' ||
-        (r.results || []).some(sub => sub.status === 'network_error' || sub.status === 'nav_failed')
-      );
-      if (hasHourlyRateLimits) {
-        settings.restUntil = Date.now() + 3600000; // 1-hour rest before auto-resume
-        log.info(` [campaign-rest] Hourly rate limit hit — resting campaign ${campaignId} until ${new Date(settings.restUntil).toISOString()}`);
-      } else if (hasNetworkErrors) {
-        settings.restUntil = Date.now() + 15 * 60 * 1000; // 15-minute network cooldown rest
-        log.warn(` [campaign-rest] Network/navigation error detected — resting campaign ${campaignId} for 15m until ${new Date(settings.restUntil).toISOString()}`);
-      }
+          log.info("Email campaign execution completed (background)");
+          return;
 
-      const totalActions = executionResults.reduce((acc, r) => acc + interactionActionsFromQuota(r?.quota), 0);
-      const isZeroActionTransientFailure = totalActions === 0 && (hasNetworkErrors || failedCount > 0);
-      const shouldRest = hasHourlyRateLimits || hasNetworkErrors || isZeroActionTransientFailure;
+      } else if (channel === "social") {
+        // ===== SOCIAL CAMPAIGN EXECUTION =====
+        const activeProfiles = settings.accounts || [];
+        const interactionTypes = settings.socialInteractionTypes || ["search"];
+        const keywords = settings.socialKeywords || [];
+        const engagementMode = settings.engagementMode === true || String(settings.engagementMode || "").toLowerCase() === "true";
+        if (engagementMode) log.info(" engagementMode enabled — tasks will run engagement workflows instead of read/scrape only.");
 
-      if (isZeroActionTransientFailure && !settings.restUntil) {
-        settings.restUntil = Date.now() + 15 * 60 * 1000;
-        log.warn(` [campaign-rest] Zero actions completed with errors — resting campaign ${campaignId} for 15m cooldown`);
-      }
+        if (activeProfiles.length === 0) {
+          throw new Error("No active SOCIAL profiles selected for social campaign");
+        }
+        // Target validation happens AFTER the CSV load below: campaigns driven
+        // purely by an uploaded CSV (SOCIALUSERNAME column) or inbox-only
+        // campaigns (no list required) are valid and must not be rejected here.
 
-      for (const pid of activeProfiles) {
-        clearActiveCampaignForAccount(pid, campaignId);
-      }
+        // Step 4a: Optionally normalize CSV if fileUrl is present
+        const socialFileUrl = settings.fileUrl || settings.csvFileUrl;
+        let socialCsvRows = null;
+        let drive = null;
+        let socialFileId = null;
+        if (socialFileUrl) {
+          socialFileId = extractFileId(socialFileUrl);
+          if (socialFileId) {
+            log.info(` Downloading social CSV file: ${socialFileId}`);
+            const sdl = await downloadCsvText(socialFileId);
+            if (sdl.success && typeof sdl.content === "string") {
+              const normalized = normalizeAndMapCSV(sdl.content, STANDARD_88_COLUMNS);
+              if (normalized.length > 1) socialCsvRows = normalized;
+            }
+          }
+        }
 
-      const isNowExpired = durationExpiredMidRun || isDurationElapsed();
-      if (isNowExpired) {
-        delete settings.restUntil;
-      }
+        // Step 4a2: Resolve campaign-wide targets. CSV handles (SOCIALUSERNAME)
+        // override the campaign-level keyword chips when a CSV is present.
+        const csvHandleIdx = socialCsvRows ? socialCsvRows[0].indexOf("SOCIALUSERNAME") : -1;
+        const csvPlatformIdx = socialCsvRows ? socialCsvRows[0].indexOf("SOCIALPLATFORM") : -1;
+        let csvHandles = [];
+        if (socialCsvRows && csvHandleIdx !== -1) {
+          csvHandles = socialCsvRows.slice(1).map(r => String(r[csvHandleIdx] || "").trim()).filter(Boolean);
+        }
+        const effectiveKeywords = csvHandles.length > 0 ? csvHandles : keywords;
+        const inboxHookEnabled = interactionTypes.includes("inbox");
+        if (effectiveKeywords.length === 0 && !inboxHookEnabled) {
+          throw new Error("No targets configured: add targeting keywords, upload a CSV with a SOCIALUSERNAME column, or enable an interaction hook (inbox works without a list)");
+        }
 
-      const limitReached = executedCount < pendingSocialTasks.length || (interactionLimit !== Infinity && executedCount >= interactionLimit) || hasHourlyRateLimits;
-      const finalStatus = isNowExpired
-        ? "completed"
-        : (pausedByAdmin ? "paused" : (shouldRest ? "resting" : (limitReached ? "Limit Reached" : "completed")));
-      const analytics = {
-        totalRows: tasksToExecute.length,
-        sent: executedCount,
-        delivered: executedCount - failedCount,
-        failed: failedCount,
-        skippedLimit: skippedLimitCount,
-        limitReached,
-        paused: pausedByAdmin,
-        csvUpdated,
-        executionResults,
-      };
+        // Step 4b: Fetch interactionLimit (the social per-run cap) from the
+        // SETTINGS sheet (interactionBatchLimit). Strict fail-closed: unset/empty/
+        // 0 blocks — the admin must set interactionBatchLimit in the SETTINGS
+        // sheet. shootCampaignLimit/shootingBatchLimit is email-only ("Campaign
+        // sends") and must never gate social runs. Monthly spend stays gated by
+        // checkUserQuota(interactionUsage) per task; platform actions stay gated
+        // by the Limits platform rows vs per-account hub usage.
+        // Step 4b: interactionLimit from SETTINGS (interactionBatchLimit)
+        // Removed fail-closed blocking: social interaction tasks run without artificial batch gates;
+        // quotas are strictly governed by platform limits and user monthly quota.
+        let interactionLimit = Infinity;
+        try {
+          const campaignLimits = await getCampaignLimits();
+          if (campaignLimits.interactionLimit > 0) {
+            interactionLimit = campaignLimits.interactionLimit;
+          }
+        } catch (limitErr) {
+          log.warn(` Failed to fetch social limits (using unlimited batch): ${limitErr.message}`);
+        }
 
-      // Alert the admin when the campaign run had any failed tasks (debug sheet + Telegram).
-      if (failedCount > 0) {
-        await notifyCampaignFailure({
-          campaignId,
-          stage: 'execute',
-          channelType: 'social',
-          failedCount,
-          reason: analytics.limitReached ? 'Some social tasks failed during run' : `${failedCount} social task(s) failed during run`,
-          details: { status: finalStatus, executedCount, totalRows: tasksToExecute.length, executionResults },
-        });
-      }
+        log.info(` Queueing social tasks for ${activeProfiles.length} profiles (interactionLimit=${interactionLimit})...`);
 
-      settings.analytics = analytics;
-      // Scoped runs: capture this server's subset, restore the full account
-      // list before persisting (same pattern as the email path above).
-      const scopedRunAccounts = isScopedRun ? (settings.accounts || []).map(String) : null;
-      if (isScopedRun) {
-        settings.accounts = settings._fullAccounts || settings.accounts;
-      }
-      if (isScopedRun && !pausedByAdmin) {
-        // Merge-write (preserves sibling scopes' _scopedCompleted records —
-        // a full settings blob overwrite would wipe them). Status flips only
-        // once every account in the full list is covered.
-        await updateCampaignSettings(campaignId, {
-          analytics,
-          accounts: settings.accounts,
-        });
-        await finalizeScopedRun(campaignId, serverScope, scopedRunAccounts, finalStatus);
-      } else {
-        const socialStatusUpdate = {
-          settings: JSON.stringify(settings),
-          status: finalStatus,
-          updatedOn: new Date().toISOString()
+        // Step 4c: Accumulate all tasks in-memory with priority ordering
+        const PRIORITY_MAP = { "inbox-interact": 0, "page-interact": 1, "search-interact": 2, "activities-interact": 3 };
+        const pendingSocialTasks = [];
+        const profilePlatforms = {};
+        // Batch engagement settings from campaign settings JSON (safe defaults).
+        const maxResultsPerKeyword = Math.max(1, parseInt(settings.maxResultsPerKeyword, 10) || 5);
+
+        // Batch task: ONE task per profile per operation, carrying ALL target
+        // keywords/queries in searchQueries[]. The route opens the browser once
+        // and loops the queries inside the single session (no per-keyword
+        // browser reopen). searchQuery is kept as the first query for CSV
+        // flush compatibility.
+        const queueSocialTask = (operation, queries, platform, profileData, profileId) => {
+          if (pendingSocialTasks.some(t => t.profileId === profileId && t.operation === operation)) {
+            return;
+          }
+          const queryList = Array.isArray(queries) ? queries : [queries];
+          pendingSocialTasks.push({
+            taskId: "task-" + Math.random().toString(36).substring(2, 11),
+            campaignId,
+            platform,
+            operation,
+            priority: PRIORITY_MAP[operation] !== undefined ? PRIORITY_MAP[operation] : 99,
+            engagementMode,
+            searchQuery: queryList[0] || "",
+            searchQueries: queryList,
+            maxResultsPerKeyword,
+            cookieJSON: typeof profileData.cookies === "string" ? profileData.cookies : JSON.stringify(profileData.cookies),
+            browserIdentity: profileData.browserIdentity || null,
+            driveUrl: profileData.driveUrl || "",
+            profileId,
+            // AI context: strategy + target link so messages are crafted with the destination in mind
+            targetLink: settings.targetLink || "",
+            socialStrategyPrompt: settings.socialStrategyPrompt || "",
+            campaignMode: settings.campaignMode || "",
+            // Campaign direct-execute tasks have no row in the social-tasks
+            // sheet — the route skips updateTaskRow for these (avoids
+            // "Unable to parse range: social-tasks!1:1" + GAS Invalid action).
+            directExecute: true,
+            status: "PENDING",
+            createdAt: new Date().toISOString()
+          });
         };
-        await updateSheetRowApi("campaigns", "campaignId", campaignId, socialStatusUpdate);
-      }
 
-      return NextResponse.json({
-        success: true,
-        message: `Social campaign executed (${finalStatus})`,
-        queuedTasks: tasksToExecute.length,
-        executed: executedCount,
-        failed: failedCount,
-        skippedLimit: skippedLimitCount,
-        analytics
-      });
-    }
+        const seededAccounts = [];
+        for (const profileId of activeProfiles) {
+          const profileData = await getSocialProfileCookies(profileId);
+          if (!profileData || !profileData.cookies) {
+            log.warn(` No cookies found for active profile: ${profileId}`);
+            continue;
+          }
 
-    return NextResponse.json({ success: false, error: "Invalid channel type" }, { status: 400 });
+          const platform = profileData.platform || normalizeSocialPlatform(settings.platform) || "twitter";
+          profilePlatforms[profileId] = platform;
+          setActiveCampaignForAccount(profileId, {
+            campaignId,
+            userId,
+            identifier: profileData.identifier || profileId,
+            platform,
+          });
+          seededAccounts.push({
+            accountId: profileId,
+            identifier: profileData.identifier || profileId,
+            platform,
+          });
 
-  } catch (error) {
-    logger.error(` Error executing campaign: ${error.message}`, { stack: error.stack });
-    if (campaignId && error.message !== 'aborted') {
-      await notifyCampaignFailure({
-        campaignId: campaignId,
-        stage: 'execute',
-        channelType: 'campaign',
-        failedCount: 1,
-        error: error.message,
-        details: { stack: error.stack },
-      });
-      try {
-        let pauseSettings = {};
-        if (typeof settings === 'object' && settings !== null) {
-          pauseSettings = { ...settings, pauseReason: error.message };
-        } else {
-          pauseSettings = { pauseReason: error.message };
+          // ACCOUNT-tier status gate — skip blocked profiles entirely (no tasks
+          // queued for them); the rest of the campaign continues normally.
+          try {
+            const profileGate = await resolveAccountGate(profileId, platform);
+            if (profileGate.blocked) {
+              log.warn(` [account-limit] skipped profile ${profileId}: ${profileGate.reason}`);
+              continue;
+            }
+          } catch (gateErr) {
+            log.warn(` Account gate check failed for ${profileId} (continuing): ${gateErr.message}`);
+          }
+
+          // Per-profile targets. CSV rows carrying a SOCIALPLATFORM value only
+          // feed accounts of that platform (rows without a platform match every
+          // account); campaign keywords are the fallback when no CSV handles exist.
+          let profileKeywords;
+          if (csvHandles.length > 0 && socialCsvRows && csvPlatformIdx !== -1) {
+            profileKeywords = socialCsvRows.slice(1)
+              .filter(r => {
+                const handle = String(r[csvHandleIdx] || "").trim();
+                if (!handle) return false;
+                const rowPlatform = normalizeSocialPlatform(String(r[csvPlatformIdx] || ""));
+                return !rowPlatform || rowPlatform === platform;
+              })
+              .map(r => String(r[csvHandleIdx] || "").trim());
+          } else {
+            profileKeywords = effectiveKeywords;
+          }
+
+          // Inbox hook: exactly ONE task per profile — it monitors/answers DMs
+          // and needs no per-keyword fan-out (previously it was duplicated once
+          // per keyword, and queued zero tasks when no keywords existed).
+          if (inboxHookEnabled && pendingSocialTasks.length < interactionLimit) {
+            queueSocialTask("inbox-interact", [""], platform, profileData, profileId);
+          }
+
+          // ONE batch task per profile per operation — searchQueries carries
+          // ALL keywords. The route opens the browser once and loops inside a
+          // single session (no per-keyword browser reopen). interactionLimit
+          // now caps task count = profile×operation combos (not keyword count).
+          const filterPageKeywords = (kws) => kws.filter(kw =>
+            // page-interact opens /<handle> directly — hashtags, search phrases
+            // and URLs would produce broken profile URLs, so only handle-shaped
+            // targets are queued for it.
+            /^[A-Za-z0-9._-]+$/.test(kw.replace(/^@+/, ""))
+          );
+
+          let queuedForProfile = 0;
+          for (const op of interactionTypes) {
+            if (pendingSocialTasks.length >= interactionLimit) break;
+            if (op === "inbox") continue; // queued once per profile above
+
+            const operation = op === "search" ? "search-interact"
+              : op === "activities" ? "activities-interact"
+              : "page-interact";
+            let opQueries = operation === "page-interact" ? filterPageKeywords(profileKeywords) : profileKeywords;
+            // Tag resume: skip tags already marked done for this account (set
+            // after an hourly-limit stop) so a resumed run only processes the
+            // still-pending tags.
+            if (operation === "search-interact") {
+              const doneTags = getAccountTagStatuses(settings, profileId);
+              const accountPosts = (settings.postStatus && settings.postStatus[String(profileId)]) || {};
+              const totalEngagedPosts = Object.keys(accountPosts).length;
+
+              // Stale doneTags recovery: If an account has doneTags recorded, but 0 posts
+              // were ever engaged for this account, those tags were marked done by the prior
+              // failed navigation bug. Clear them so the newly fixed navigation can run them!
+              if (totalEngagedPosts === 0 && Object.keys(doneTags).length > 0) {
+                log.info(` [tag-resume] profile ${profileId}: 0 posts ever engaged for this profile — clearing stale done tags to allow clean run.`);
+                opQueries = profileKeywords;
+              } else {
+                opQueries = opQueries.filter(k => doneTags[String(k).trim()] !== "done");
+              }
+
+              if (opQueries.length === 0) {
+                log.info(` [tag-resume] profile ${profileId}: all search tags already done — queueing activities-interact fallback`);
+                queueSocialTask("activities-interact", [""], platform, profileData, profileId);
+                queuedForProfile++;
+                continue;
+              }
+            }
+            if (opQueries.length === 0) continue;
+            queueSocialTask(operation, opQueries, platform, profileData, profileId);
+            queuedForProfile++;
+          }
+
+          // Automatic fallback: if no tasks were queued for this active profile (e.g. all search tags completed),
+          // trigger activities-interact so the profile continues engaging (notifications, follower interactions, FYP)
+          if (queuedForProfile === 0 && pendingSocialTasks.length < interactionLimit) {
+            log.info(` [activities-fallback] profile ${profileId}: no pending tag tasks — queueing activities-interact`);
+            queueSocialTask("activities-interact", [""], platform, profileData, profileId);
+          }
+          if (pendingSocialTasks.length >= interactionLimit) break;
         }
-        await updateSheetRowApi("campaigns", "campaignId", campaignId, {
-          status: "paused",
-          settings: JSON.stringify(pauseSettings),
-          updatedOn: new Date().toISOString(),
-        });
-        logger.info(` Paused campaign ${campaignId} due to execution error: ${error.message}`);
-      } catch (sheetErr) {
-        logger.error(` Failed to update campaign ${campaignId} status to paused: ${sheetErr.message}`);
+
+        // Step 4d: Sort tasks by priority (inbox > activities > page > search)
+        pendingSocialTasks.sort((a, b) => a.priority - b.priority);
+
+        // Step 4e: Execute tasks directly via social route handlers.
+        // pendingSocialTasks is already capped at interactionLimit during
+        // queueing (Step 4c) — no second cap.
+        const tasksToExecute = pendingSocialTasks;
+        const executionResults = [];
+        let executedCount = 0;
+        let failedCount = 0;
+
+        const ROUTE_MAP = {
+          "search-interact": processSearchInteractTask,
+          "page-interact": processPageInteractTask,
+          "inbox-interact": processInboxInteractTask,
+          "activities-interact": processActivitiesInteractTask,
+        };
+
+        // Build SOCIALUSERNAME → enhancedSocialMessage lookup for per-row DM personalization
+        const socialMessageMap = {};
+        if (socialCsvRows) {
+          const h = socialCsvRows[0];
+          const uidIdx = h.indexOf("SOCIALUSERNAME");
+          const msgIdx = h.indexOf("enhancedSocialMessage");
+          if (uidIdx !== -1 && msgIdx !== -1) {
+            for (let r = 1; r < socialCsvRows.length; r++) {
+              const uid = String(socialCsvRows[r][uidIdx] || "").trim();
+              const msg = String(socialCsvRows[r][msgIdx] || "").trim();
+              if (uid && msg) socialMessageMap[uid] = msg;
+            }
+          }
+        }
+
+        // Live-progress CSV flush: writes per-row interaction outcomes back to Drive
+        // (Drive API only, no Apps Script) so the file view updates mid-run.
+        let csvUpdated = false;
+        const flushSocialCsv = async () => {
+          if (!socialCsvRows || !socialFileId || !drive) return;
+          const nHeaders = socialCsvRows[0];
+          for (let i = 1; i < socialCsvRows.length; i++) {
+            const row = socialCsvRows[i];
+            const username = row[nHeaders.indexOf("SOCIALUSERNAME")] || "";
+            // Batch tasks carry searchQueries[] — match when username is in the
+            // array OR equals the legacy single searchQuery field.
+            const relatedResults = executionResults.filter(r => r.taskId && tasksToExecute.find(t => {
+              if (t.taskId !== r.taskId) return false;
+              if (Array.isArray(t.searchQueries) && t.searchQueries.includes(username)) return true;
+              return t.searchQuery === username;
+            }));
+            if (relatedResults.length > 0) {
+              const searchKeysIdx = nHeaders.indexOf("searchKeys");
+              const searchStatusIdx = nHeaders.indexOf("searchStatus");
+              const searchStampIdx = nHeaders.indexOf("searchStamp");
+              const interactStatusIdx = nHeaders.indexOf("interactStatus");
+              const interactStampIdx = nHeaders.indexOf("interactStamp");
+            const anyFailed = relatedResults.some(r => r.status === "FAILED");
+            const anySkipped = relatedResults.some(r => r.status === "SKIPPED");
+            const outcome = anyFailed ? "failed" : (anySkipped ? "skipped" : "executed");
+              if (searchKeysIdx !== -1) row[searchKeysIdx] = relatedResults.map(r => r.status).join("; ");
+              if (searchStatusIdx !== -1) row[searchStatusIdx] = outcome;
+              if (searchStampIdx !== -1) row[searchStampIdx] = new Date().toISOString();
+              if (interactStatusIdx !== -1) row[interactStatusIdx] = outcome;
+              if (interactStampIdx !== -1) row[interactStampIdx] = new Date().toISOString();
+            }
+          }
+          const updatedCSV = stringifyCSV(socialCsvRows);
+          await drive.files.update({
+            fileId: socialFileId,
+            media: { mimeType: "text/csv", body: updatedCSV }
+          });
+          csvUpdated = true;
+        };
+
+        if (seededAccounts.length > 0) {
+          await seedCampaignAccountsInStats(campaignId, seededAccounts).catch(() => {});
+        }
+
+        let pausedByAdmin = false;
+        let durationExpiredMidRun = false;
+        let skippedLimitCount = 0;
+        let quotaStopped = false;
+
+        // Concurrency governor: run up to MAX_CONCURRENT_TASKS social tasks in
+        // parallel (SETTINGS key, read via campaignConcurrency). Previously this
+        // loop was serial, so N accounts never overlapped.
+        const maxConcurrentSocial = Math.max(1, await getMaxConcurrentTasks());
+
+        // updateUserUsage is an unguarded read-modify-write and flushSocialCsv
+        // rewrites the whole Drive CSV — serialize both so parallel tasks can't
+        // clobber each other.
+        let usageChain = Promise.resolve();
+        // `count` = number of ACTIONS the task actually verified (success-only).
+        const incrementInteractionUsage = (uid, count = 1) => {
+          const n = Number(count) || 0;
+          if (n <= 0) return usageChain;
+          usageChain = usageChain
+            .then(() => updateUserUsage(uid, "interactionUsage", n))
+            .catch((uErr) => { log.warn(` [user-limit] usage increment failed: ${uErr.message}`); });
+          return usageChain;
+        };
+        let flushChain = Promise.resolve();
+        const flushSocialCsvSafe = (label) => {
+          flushChain = flushChain
+            .then(() => flushSocialCsv())
+            .catch((flushErr) => { log.warn(` Social CSV flush failed after ${label}: ${flushErr.message}`); });
+          return flushChain;
+        };
+
+        const runSocialTask = async (task) => {
+          if (isDurationElapsed()) {
+            durationExpiredMidRun = true;
+            log.info(` [campaign-duration] Campaign ${campaignId} duration elapsed mid-run. Stopping social tasks.`);
+            return;
+          }
+          if (await isCampaignPaused(campaignId)) {
+            pausedByAdmin = true;
+            log.info(` Campaign ${campaignId} was paused during social run. Stopping.`);
+            return;
+          }
+          // USER tier — daily action quota re-checked before every task
+          if (userId) {
+            const uq = await checkUserQuota(userId, { keys: ["interactionUsage"] });
+            if (!uq.allowed) {
+              log.info(` [user-limit] ${uq.reason} — stopping social run.`);
+              quotaStopped = true;
+              return;
+            }
+          }
+          const handler = ROUTE_MAP[task.operation];
+          if (!handler) {
+            log.warn(` No handler for operation: ${task.operation}`);
+            failedCount++;
+            return;
+          }
+
+          try {
+            log.info(` Executing ${task.operation} task: ${task.taskId}`);
+
+            // Enrich task payload with campaign context
+            const perRowMessage = socialMessageMap[task.searchQuery] || "";
+            const taskPayload = {
+              ...task,
+              targetProfileId: task.searchQuery || null,
+              socialStrategyPrompt: settings.socialStrategyPrompt || null,
+              projectId: settings.projectId || null,
+              messageText: resolveSocialMessage(perRowMessage, settings),
+            };
+
+            const result = await handler(taskPayload);
+            executionResults.push(result);
+            executedCount++;
+            // Verified action count from the handler. DMs (coldMessage/message)
+            // stay on senderUsage, so they are excluded from the user-level
+            // interaction usage. Legacy handlers with no tally keep the previous
+            // 1-per-task behaviour.
+            const actionCount = interactionActionsFromQuota(result?.quota);
+            if (userId) await incrementInteractionUsage(userId, actionCount);
+            log.info(` Task ${task.taskId} completed: ${result.status} (actions=${actionCount})`);
+
+            // Live-progress CSV flush after each task so the file view advances mid-run
+            await flushSocialCsvSafe(`task ${task.taskId}`);
+          } catch (taskError) {
+            // Actions performed before the error are still real spend.
+            const partial = taskError?.quota?.total;
+            if (userId && Number.isFinite(partial) && partial > 0) {
+              await incrementInteractionUsage(userId, partial);
+              log.info(` Task ${task.taskId} failed after ${partial} actions — counted.`);
+            }
+            // Limit-type errors are SKIPS (account over quota / account blocked),
+            // not failures — the campaign moves on to the next account/task.
+            if (isLimitSkipError(taskError.message)) {
+              skippedLimitCount++;
+              executionResults.push({ taskId: task.taskId, status: "SKIPPED", error: taskError.message });
+              log.warn(` [account-limit] Task ${task.taskId} skipped: ${taskError.message}`);
+            } else {
+              log.error(` Task ${task.taskId} failed: ${taskError.message}`);
+              executionResults.push({ taskId: task.taskId, status: "FAILED", error: taskError.message });
+              failedCount++;
+            }
+
+            // Live-progress CSV flush after a failure so the row is marked failed
+            await flushSocialCsvSafe(`failed task ${task.taskId}`);
+          }
+
+          // Inter-task delay for rate limiting
+          await new Promise(res => setTimeout(res, 500));
+        };
+
+        const socialQueue = tasksToExecute.slice();
+        log.info(` Social dispatch: ${socialQueue.length} task(s), concurrency ${maxConcurrentSocial}`);
+        const socialRunners = Array.from(
+          { length: Math.min(maxConcurrentSocial, socialQueue.length) },
+          async () => {
+            while (!pausedByAdmin && !quotaStopped && !durationExpiredMidRun) {
+              if (isDurationElapsed()) {
+                durationExpiredMidRun = true;
+                break;
+              }
+              const task = socialQueue.shift();
+              if (!task) break;
+              await runSocialTask(task);
+            }
+          }
+        );
+        await Promise.all(socialRunners);
+
+        // Step 4f: Send direct messages to all social profiles in CSV if enabled
+        const shouldSendMessage = settings.shouldSendMessage === true || settings.shouldSendMessage === "true" || settings.sendToAll === true;
+        if (shouldSendMessage && socialFileUrl && !durationExpiredMidRun && !isDurationElapsed() && !pausedByAdmin) {
+          const dmAccounts = activeProfiles.filter(id => {
+            const p = profilePlatforms[id];
+            return p && sendPlatformConfigs[p];
+          });
+          if (dmAccounts.length < activeProfiles.length) {
+            log.warn(` Skipping DM step for ${activeProfiles.length - dmAccounts.length} account(s) whose platform has no send-message support.`);
+          }
+          if (dmAccounts.length > 0) {
+            log.info(` sendToAll enabled — sending DMs to ${dmAccounts.length} CSV social profile(s)`);
+            try {
+              const dmResponse = await processSendMessages({
+                campaignId,
+                userId: userId || null,
+                platform: "",
+                messageText: resolveSocialMessage(null, settings),
+                sendToAll: true,
+                accountIds: dmAccounts,
+              });
+              const dmResult = await dmResponse.json();
+              log.info(` send-message result: ${dmResult.message}`);
+              settings.dmResults = dmResult;
+            } catch (dmErr) {
+              log.error(` send-message failed: ${dmErr.message}`);
+              settings.dmResults = { error: dmErr.message };
+            }
+          } else {
+            log.warn(" sendToAll enabled but no account supports send-message — skipping DM step.");
+          }
+        }
+
+        // Step 4g: Single campaign status update
+        const hasHourlyRateLimits = executionResults.some(r => r.status === 'COMPLETED' && (r.results || []).some(sub => sub.status === 'rate_limited' || sub.resumedNextCycle));
+        const hasNetworkErrors = executionResults.some(r =>
+          r.status === 'NETWORK_ERROR' ||
+          (r.results || []).some(sub => sub.status === 'network_error' || sub.status === 'nav_failed')
+        );
+        if (hasHourlyRateLimits) {
+          settings.restUntil = Date.now() + 3600000; // 1-hour rest before auto-resume
+          log.info(` [campaign-rest] Hourly rate limit hit — resting campaign ${campaignId} until ${new Date(settings.restUntil).toISOString()}`);
+        } else if (hasNetworkErrors) {
+          settings.restUntil = Date.now() + 15 * 60 * 1000; // 15-minute network cooldown rest
+          log.warn(` [campaign-rest] Network/navigation error detected — resting campaign ${campaignId} for 15m until ${new Date(settings.restUntil).toISOString()}`);
+        }
+
+        const totalActions = executionResults.reduce((acc, r) => acc + interactionActionsFromQuota(r?.quota), 0);
+        const isZeroActionTransientFailure = totalActions === 0 && (hasNetworkErrors || failedCount > 0);
+        const shouldRest = hasHourlyRateLimits || hasNetworkErrors || isZeroActionTransientFailure;
+
+        if (isZeroActionTransientFailure && !settings.restUntil) {
+          settings.restUntil = Date.now() + 15 * 60 * 1000;
+          log.warn(` [campaign-rest] Zero actions completed with errors — resting campaign ${campaignId} for 15m cooldown`);
+        }
+
+        for (const pid of activeProfiles) {
+          clearActiveCampaignForAccount(pid, campaignId);
+        }
+
+        const isNowExpired = durationExpiredMidRun || isDurationElapsed();
+        if (isNowExpired) {
+          delete settings.restUntil;
+        }
+
+        const limitReached = executedCount < pendingSocialTasks.length || (interactionLimit !== Infinity && executedCount >= interactionLimit) || hasHourlyRateLimits;
+        const finalStatus = isNowExpired
+          ? "completed"
+          : (pausedByAdmin ? "paused" : (shouldRest ? "resting" : (limitReached ? "Limit Reached" : "completed")));
+        const analytics = {
+          totalRows: tasksToExecute.length,
+          sent: executedCount,
+          delivered: executedCount - failedCount,
+          failed: failedCount,
+          skippedLimit: skippedLimitCount,
+          limitReached,
+          paused: pausedByAdmin,
+          csvUpdated,
+          executionResults,
+        };
+
+        // Alert the admin when the campaign run had any failed tasks (debug sheet + Telegram).
+        if (failedCount > 0) {
+          await notifyCampaignFailure({
+            campaignId,
+            stage: 'execute',
+            channelType: 'social',
+            failedCount,
+            reason: analytics.limitReached ? 'Some social tasks failed during run' : `${failedCount} social task(s) failed during run`,
+            details: { status: finalStatus, executedCount, totalRows: tasksToExecute.length, executionResults },
+          });
+        }
+
+        settings.analytics = analytics;
+        // Scoped runs: capture this server's subset, restore the full account
+        // list before persisting (same pattern as the email path above).
+        const scopedRunAccounts = isScopedRun ? (settings.accounts || []).map(String) : null;
+        if (isScopedRun) {
+          settings.accounts = settings._fullAccounts || settings.accounts;
+        }
+        if (isScopedRun && !pausedByAdmin) {
+          // Merge-write (preserves sibling scopes' _scopedCompleted records —
+          // a full settings blob overwrite would wipe them). Status flips only
+          // once every account in the full list is covered.
+          await updateCampaignSettings(campaignId, {
+            analytics,
+            accounts: settings.accounts,
+          });
+          await finalizeScopedRun(campaignId, serverScope, scopedRunAccounts, finalStatus);
+        } else {
+          const socialStatusUpdate = {
+            settings: JSON.stringify(settings),
+            status: finalStatus,
+            updatedOn: new Date().toISOString()
+          };
+          await updateSheetRowApi("campaigns", "campaignId", campaignId, socialStatusUpdate);
+        }
+
+          log.info("Social campaign execution completed (background)");
+          return;
       }
+
+          log.warn("Invalid channel type in background execution");
+          return;
+
+      } catch (error) {
+        const _aborted = !!(error && (error.message === "aborted" || error.name === "AbortError" || error.code === "ECONNRESET"));
+        logger.error(` Error executing campaign (background): ${error && error.message}`, { stack: error && error.stack, campaignId, aborted: _aborted });
+        if (campaignId && !_aborted) {
+          try { await notifyCampaignFailure({ campaignId, stage: "execute", channelType: "campaign", failedCount: 1, error: error.message, details: { stack: error.stack } }); } catch {}
+          try {
+            let pauseSettings = {};
+            if (typeof settings === "object" && settings !== null) pauseSettings = { ...settings, pauseReason: error.message };
+            else pauseSettings = { pauseReason: error.message };
+            await updateSheetRowApi("campaigns", "campaignId", campaignId, { status: "failed", settings: JSON.stringify(pauseSettings) });
+          } catch (statusError) { logger.error(` Failed to update campaign status after background error: ${statusError.message}`); }
+        }
+      } finally {
+        try { await flushAllAccountUsage(); } catch (e) {}
+        try { const { flushAllCampaignStats } = await import("../../socials/_shared/hubUpdater.js"); await flushAllCampaignStats(); } catch (e) {}
+        if (campaignId) {
+          _executingCampaigns.delete(campaignId);
+          unregisterActiveCampaignRun(campaignId, "execute");
+        }
+      }
+    })();
+    _bgTask.catch(e => { try { logger.error(`[execute-bg] unhandled: ${e && e.message}`, { campaignId }); } catch {} });
+    return _ackResponse;
+  } catch (error) {
+    const _aborted = !!(error && (error.message === "aborted" || error.name === "AbortError" || error.code === "ECONNRESET" || error.code === "ERR_STREAM_PREMATURE_CLOSE"));
+    if (_aborted) {
+      // Client/proxy disconnected before execution started (often during body read over a flaky tunnel).
+      // No state was persisted and the caller is gone, so don't treat this as a campaign failure.
+      logger.warn(`[execute-campaign] preflight aborted (client disconnected): ${error && error.message}`, { campaignId });
+      return new Response(null, { status: 499 });
     }
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    logger.error(` Error executing campaign (preflight): ${error && error.message}`, { stack: error && error.stack, campaignId });
+    return NextResponse.json({ success: false, error: (error && error.message) || "Execution failed" }, { status: 500 });
   } finally {
-    // Flush pending usage writes to reduce quota
-    try { await flushAllAccountUsage(); } catch (e) {}
-    try { const { flushAllCampaignStats } = await import("../../socials/_shared/hubUpdater.js"); await flushAllCampaignStats(); } catch (e) {}
-    // Only the run that claimed the slot releases it. A skipped duplicate
-    // returns before claiming, so it never touches the set here.
-    if (_isExecuting && campaignId) {
+    // Release lock only if execution was NOT handed to background (background owns it).
+    if (_isExecuting && campaignId && !_backgroundHandedOff) {
       _executingCampaigns.delete(campaignId);
-      unregisterActiveCampaignRun(campaignId, 'execute');
+      unregisterActiveCampaignRun(campaignId, "execute");
     }
   }
 }

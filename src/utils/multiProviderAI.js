@@ -504,18 +504,276 @@ class MultiProviderAI {
     }
 
     // ==================== OPENCODE ====================
+    // opencode serve (tunnel/local, Basic auth opencode:<password>, session+message API).
+    // Configured mode when SETTINGS aiBaseUrl is set and aiKey = OPENCODE_SERVER_PASSWORD.
+    // Intra-provider waterfall: tries multiple opencode models before falling to next aiSn row.
+    // Zen cloud (Bearer) fallback only when no serve aiBaseUrl is configured.
+
+    _opencodeAuthHeader(password) {
+        return `Basic ${Buffer.from(`opencode:${String(password || '')}`).toString('base64')}`;
+    }
+
+    _flattenMessagesToPrompt(messages) {
+        if (!Array.isArray(messages)) return String(messages || '');
+        const parts = [];
+        for (const m of messages) {
+            if (!m) continue;
+            const role = m.role || 'user';
+            const c = m.content;
+            let text = '';
+            if (typeof c === 'string') text = c;
+            else if (Array.isArray(c)) text = c.map(p => (p && p.type === 'text' ? p.text : '')).filter(Boolean).join('\n');
+            else if (c && typeof c === 'object') text = c.text || c.content || '';
+            if (text) parts.push(`${role}: ${text}`);
+        }
+        return parts.join('\n\n').trim();
+    }
+
+    _opencodeErr(message, status, extra = {}) {
+        const e = new Error(String(message || 'opencode_error'));
+        if (status != null) e.status = status;
+        Object.assign(e, extra);
+        return e;
+    }
+
+    async _opencodeFetchJson(baseUrl, path, { method = 'GET', headers, body, timeoutMs = 15000, signal } = {}) {
+        const base = String(baseUrl || '').replace(/\/+$/, '');
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const res = await fetch(`${base}${path}`, {
+                method,
+                headers,
+                body: body != null ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined,
+                signal: signal || controller.signal,
+            });
+            const ct = String(res.headers.get('content-type') || '').toLowerCase();
+            let json = null;
+            if (ct.includes('application/json')) { try { json = await res.json(); } catch {} }
+            else { try { const txt = await res.text(); if (txt) json = { _text: txt.slice(0, 300) }; } catch {} }
+            return { ok: res.ok, status: res.status, json, ct };
+        } catch (e) {
+            if (e?.name === 'AbortError') throw this._opencodeErr('opencode_timeout', 408, { retryableModel: true });
+            throw this._opencodeErr(e?.message || 'opencode_network_error', null, { retryableModel: true, code: e?.code });
+        } finally {
+            clearTimeout(t);
+        }
+    }
+
+    async _discoverOpencodeModels(baseUrl, password, timeoutMs = 12000) {
+        const cache = (this._opencodeModelCache = this._opencodeModelCache || new Map());
+        const key = String(baseUrl || '');
+        const hit = cache.get(key);
+        if (hit && (Date.now() - hit.at) < 120000) return hit.models;
+        const headers = { Authorization: this._opencodeAuthHeader(password), Accept: 'application/json' };
+        const models = [];
+        const seen = new Set();
+        const add = (id, meta = {}) => {
+            const v = String(id || '').trim();
+            if (!v || seen.has(v)) return;
+            seen.add(v);
+            models.push({ id: v, ...meta });
+        };
+        let authFail = null;
+        for (const path of ['/provider', '/config/providers']) {
+            try {
+                const r = await this._opencodeFetchJson(baseUrl, path, { headers, timeoutMs });
+                if (this._isOpencodeAuthError(null, r.status)) { authFail = this._opencodeErr(r.json?.message || 'opencode_auth_failed', r.status); continue; }
+                if (!r.ok || !r.json) continue;
+                const providers = Array.isArray(r.json?.all) ? r.json.all
+                    : Array.isArray(r.json?.providers) ? r.json.providers
+                    : Array.isArray(r.json) ? r.json : [];
+                for (const p of providers) {
+                    const pid = String(p?.id || p?.providerID || '').trim();
+                    const m = p?.models;
+                    if (m && typeof m === 'object' && !Array.isArray(m)) {
+                        for (const [mid, mv] of Object.entries(m)) {
+                            const id = String(mv?.id || mid || '').trim();
+                            if (!id) continue;
+                            add(id, { providerID: pid || mv?.providerID });
+                            if (pid) add(`${pid}/${id}`, { providerID: pid, modelID: id });
+                        }
+                    } else if (Array.isArray(m)) {
+                        for (const mv of m) {
+                            const id = String(mv?.id || mv?.modelID || mv?.name || '').trim();
+                            if (!id) continue;
+                            add(id, { providerID: pid || mv?.providerID });
+                            if (pid) add(`${pid}/${id}`, { providerID: pid, modelID: id });
+                        }
+                    }
+                }
+                if (models.length) break; // got usable discovery
+            } catch (e) { if (this._isOpencodeAuthError(e, e?.status)) authFail = e; }
+        }
+        if (!models.length && authFail) throw authFail;
+        cache.set(key, { at: Date.now(), models });
+        return models;
+    }
+
+    _buildOpencodeCandidates(configuredModel, discovered) {
+        const out = [];
+        const seen = new Set();
+        const push = (id) => { const v = String(id || '').trim(); if (!v || seen.has(v)) return; seen.add(v); out.push(v); };
+        push(configuredModel);
+        // Prefer free/flash/fast/community models from discovery after the configured one.
+        const scored = (discovered || []).map(m => {
+            const id = String(m.id || '');
+            const l = id.toLower();
+            let s = 0;
+            if (l.includes('free')) s += 5;
+            if (l.includes('flash')) s += 3;
+            if (l.includes('mini') || l.includes('fast') || l.includes('lite')) s += 2;
+            if (l.includes('preview')) s -= 1;
+            return { id, s };
+        }).sort((a, b) => b.s - a.s || a.id.localeCompare(b.id));
+        for (const m of scored) push(m.id);
+        // Safe hints (tried only if present/accepted; 404 just moves on)
+        for (const hint of ['opencode-go/iceman-contributor-free','opencode-go/beam-free','opencode-go/deepseek-v4.1-flash','opencode-go/glm-5.3-flash','big-pickle','mimo-v2.5-free']) push(hint);
+        return out;
+    }
+
+    _isOpencodeAuthError(err, status) {
+        const s = status ?? err?.status;
+        if (s === 401 || s === 403) return true;
+        const m = String(err?.message || '').toLowerCase();
+        return m.includes('unauthorized') || m.includes('authentication required') || m.includes('_tag":"unauthorizederror');
+    }
+
+    _isOpencodeModelRetryable(err, status) {
+        if (err?.retryableModel) return true;
+        const s = status ?? err?.status;
+        if ([404,408,409,425,429,500,502,503,504].includes(Number(s))) return true;
+        const m = String(err?.message || '').toLowerCase();
+        return /rate.?limit|quota|too many|overload|high demand|unavailable|model.?not.?found|unknown.?model|no such model|not supported|timeout|temporar|try again|capacity|opencode_serve_http_5|opencode_timeout/.test(m);
+    }
+
+    async _callOpenCodeServe(baseUrl, password, model, prompt, timeoutMs) {
+        const headers = {
+            Authorization: this._opencodeAuthHeader(password),
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+        };
+        // 1) create session
+        const cs = await this._opencodeFetchJson(baseUrl, '/api/session', { method: 'POST', headers, body: {}, timeoutMs: Math.min(15000, timeoutMs || 15000) });
+        if (!cs.ok) throw this._opencodeErr(cs.json?.message || `opencode_serve_http_${cs.status}`, cs.status, { phase: 'session', retryableModel: cs.status >= 500 || cs.status === 429 || cs.status === 408 });
+        const sid = cs.json?.data?.id || cs.json?.id;
+        if (!sid) throw this._opencodeErr('opencode_no_session_id', 502, { retryableModel: true });
+        // 2) send message (try a couple of model shapes for compatibility)
+        const modelPayloads = [];
+        if (model && typeof model === 'object') modelPayloads.push(model);
+        else if (model) {
+            modelPayloads.push(String(model));
+            if (String(model).includes('/')) {
+                const [providerID, ...rest] = String(model).split('/');
+                const id = rest.join('/');
+                if (providerID && id) modelPayloads.push({ providerID, id });
+            }
+        } else modelPayloads.push(undefined);
+        let last = null;
+        for (const mp of modelPayloads) {
+            const msgBody = { parts: [{ type: 'text', text: String(prompt || '') }], ...(mp ? { model: mp } : {}) };
+            for (const path of [`/session/${sid}/message`, `/api/session/${sid}/message`]) {
+                const mr = await this._opencodeFetchJson(baseUrl, path, { method: 'POST', headers, body: msgBody, timeoutMs: timeoutMs || 120000 });
+                if (this._isOpencodeAuthError(null, mr.status)) throw this._opencodeErr('opencode_auth_failed', mr.status);
+                if (!mr.ok) { last = this._opencodeErr(mr.json?.message || mr.json?._text || `opencode_msg_http_${mr.status}`, mr.status, { retryableModel: this._isOpencodeModelRetryable(null, mr.status) }); continue; }
+                const mj = mr.json || {};
+                const apiErr = mj?.info?.error || mj?.error;
+                if (apiErr && typeof apiErr === 'object') {
+                    const msg = apiErr?.data?.message || apiErr?.message || apiErr?.name || 'opencode_api_error';
+                    const rs = Number(apiErr?.status) || ( /not.?found|unknown.?model/i.test(String(msg)) ? 404 : (/rate|quota/i.test(String(msg)) ? 429 : 502) );
+                    last = this._opencodeErr(msg, rs, { retryableModel: this._isOpencodeModelRetryable({ message: msg, status: rs }, rs), apiError: apiErr });
+                    continue;
+                }
+                if (Array.isArray(mj?.parts)) {
+                    const text = mj.parts.filter(p => p && p.type === 'text' && typeof p.text === 'string').map(p => p.text).join('').trim();
+                    if (text) return text;
+                }
+                const direct = mj?.text || mj?.content || mj?.response;
+                if (typeof direct === 'string' && direct.trim()) return direct.trim();
+                return '';
+            }
+        }
+        throw last || this._opencodeErr('opencode_no_response', 502, { retryableModel: true });
+    }
 
     async _callOpenCode(provider, messages, temperature, maxTokens, timeoutMs = null) {
-        const { model, key } = provider;
+        const { model, key, baseUrl } = provider;
+        const prompt = this._flattenMessagesToPrompt(messages);
+        const pwd = String(key || '').trim();
+        const perModelTimeoutMs = Math.min(Math.max(parseInt(timeoutMs || provider?.timeoutMs || 45000, 10) || 45000, 15000), 90000);
+
+        const serveBases = [];
+        if (baseUrl && /^https?:\/\//i.test(String(baseUrl))) serveBases.push(String(baseUrl).replace(/\/+$/, ''));
+        serveBases.push('http://127.0.0.1:4096');
+
+        if (pwd) {
+            // Resolve a working serve endpoint first (tunnel -> local).
+            let activeBase = null;
+            let authErr = null;
+            for (const base of serveBases) {
+                try {
+                    // cheap auth/connectivity probe; discovery doubles as probe
+                    const discovered = await this._discoverOpencodeModels(base, pwd, 12000);
+                    activeBase = base;
+                    // proceed with waterfall on this base
+                    var _discovered = discovered; // eslint-disable-line no-var
+                    break;
+                } catch (e) {
+                    if (this._isOpencodeAuthError(e, e?.status)) { authErr = e; logger.warn(`[MultiProviderAI] opencode serve auth failed at ${base}: ${e.message}`); }
+                    else { logger.warn(`[MultiProviderAI] opencode serve probe failed at ${base}: ${e.message}`); }
+                }
+            }
+            // If discovery-based probe didn't select (e.g. discovery threw network but endpoint may still take sessions), still try bases.
+            const basesToTry = activeBase ? [activeBase] : serveBases;
+            if (!activeBase && authErr && baseUrl && /^https?:\/\//i.test(String(baseUrl))) {
+                throw authErr; // explicit serve config with auth failure -> don't misroute to Zen
+            }
+
+            const candidates = this._buildOpencodeCandidates(model, typeof _discovered !== 'undefined' ? _discovered : []);
+            const limitedCandidates = candidates.slice(0, 8);
+            let lastErr = null;
+            let sawAuthErr = null;
+            for (const base of basesToTry) {
+                // refresh discovery per base if not already
+                let discovered = (base === activeBase && typeof _discovered !== 'undefined') ? _discovered : null;
+                if (!discovered) { try { discovered = await this._discoverOpencodeModels(base, pwd, 10000); } catch {} }
+                const cands = base === activeBase ? limitedCandidates : this._buildOpencodeCandidates(model, discovered).slice(0, 8);
+                for (let i = 0; i < cands.length; i++) {
+                    const cm = cands[i];
+                    try {
+                        logger.info(`[MultiProviderAI] opencode serve trying model ${cm} (${i + 1}/${cands.length}) via ${base}`);
+                        const text = await this._callOpenCodeServe(base, pwd, cm, prompt, perModelTimeoutMs);
+                        logger.info(`[MultiProviderAI] opencode serve success with model ${cm} via ${base}`);
+                        return text;
+                    } catch (e) {
+                        lastErr = e;
+                        if (this._isOpencodeAuthError(e, e?.status)) { sawAuthErr = e; logger.warn(`[MultiProviderAI] opencode serve auth error via ${base} (model ${cm}): ${e.message}`); break; }
+                        if (this._isOpencodeModelRetryable(e, e?.status) && i < cands.length - 1) {
+                            logger.warn(`[MultiProviderAI] opencode model ${cm} failed (${e.message}) — trying next opencode model`);
+                            continue;
+                        }
+                        if (!this._isOpencodeModelRetryable(e, e?.status)) {
+                            // non-retryable for this model; still try next model unless it's clearly fatal config
+                            logger.warn(`[MultiProviderAI] opencode model ${cm} error (${e.message}) — trying next candidate`);
+                            continue;
+                        }
+                    }
+                }
+                if (sawAuthErr) break; // auth won't improve across models on same auth base; try next base? fall through
+            }
+            if (sawAuthErr && baseUrl && /^https?:\/\//i.test(String(baseUrl))) throw sawAuthErr;
+            if (lastErr) throw lastErr;
+            throw new Error('opencode serve: no models available');
+        }
+
+        // Zen cloud fallback (Bearer API key) — only when no serve password/path applies.
         const response = await axios.post('https://opencode.ai/zen/v1/chat/completions', {
             model, messages, temperature, max_tokens: maxTokens
         }, {
             headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
             timeout: timeoutMs || 60000
         });
-        if (response.data?.choices?.[0]?.message?.content) {
-            return response.data.choices[0].message.content;
-        }
+        if (response.data?.choices?.[0]?.message?.content) return response.data.choices[0].message.content;
         throw new Error(`Invalid OpenCode response: ${JSON.stringify(response.data).substring(0, 200)}`);
     }
 
