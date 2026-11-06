@@ -5,7 +5,7 @@ import { DOMHelpers, checkGate, consumeAction, capturePostFrame, postCommentVeri
 import { updateAccountStatus } from '../_shared/hubUpdater.js';
 import limitsCore from '../_shared/limitsCore.js';
 import { isTikTokCaptchaVisible, solveTikTokAudioCaptcha, isTikTokLoggedOut, navigateAndWait, ensureCommentsVisible, isPostLiked, isConfidentlyUnliked, readCommentsPanelCount, dismissCookieBanner } from './platformHelper/TikTokHelpers.js';
-import { getAccountPostStatuses, markPostEngaged, getCampaignSettings } from '../../campaign/_shared/pipelineUtils.js';
+import { getAccountPostStatuses, markPostEngaged, getCampaignSettings, isPostInteracted } from '../../campaign/_shared/pipelineUtils.js';
 
 // Re-like the POST after this many successful comment replies (only when the
 // heart is confidently unliked — never toggle a liked post off).
@@ -230,10 +230,33 @@ export async function runSearchInteractEngagement(page, opts) {
         }
         return ok;
     };
-    let stopType = null;          // 'hourly' | 'daily' | 'monthly' | 'cap'
+    let stopType = null;          // 'hourly' | 'daily' | 'monthly' | 'yearly' | 'cap' | 'time' | 'captcha' | 'logged_out' | 'network_error'
     let stopReason = null;
     let captchaFailed = false;
     const startedAt = Date.now();
+
+    // Per-action quota exhaustion (actions are independent; none stop others).
+    // Run stops only when no permitted actions remain. Hourly => rest/RATE_LIMITED (if it forces stop); daily/monthly/yearly/cap => terminal for window.
+    const actionExhausted = { like: null, comment: null, likeComment: null, commentComment: null };
+    const markActionExhausted = (action, type, reason) => {
+        if (!actionExhausted[action]) {
+            actionExhausted[action] = { type: type || 'limit', reason: reason || '' };
+            logger.info(`[engage:${taskId}] Action '${action}' quota exhausted (${actionExhausted[action].type}: ${actionExhausted[action].reason}) — skipping '${action}' only, continuing other actions.`);
+        }
+    };
+    const anyPermittedActionRemains = () => !actionExhausted.like || !actionExhausted.comment || !actionExhausted.likeComment || !actionExhausted.commentComment;
+    const stopIfNoPermittedActionsRemain = () => {
+        if (stopType || anyPermittedActionRemains()) return false;
+        const tiers = Object.values(actionExhausted).filter(Boolean).map(x => x.type);
+        const hasHourly = tiers.includes('hourly');
+        if (hasHourly) { stopType = 'hourly'; stopReason = 'all_actions_hourly_exhausted'; }
+        else if (tiers.includes('daily')) { stopType = 'daily'; stopReason = 'all_actions_exhausted'; }
+        else if (tiers.includes('monthly')) { stopType = 'monthly'; stopReason = 'all_actions_exhausted'; }
+        else if (tiers.includes('yearly')) { stopType = 'yearly'; stopReason = 'all_actions_exhausted'; }
+        else { stopType = 'cap'; stopReason = 'all_actions_exhausted'; }
+        logger.info(`[engage:${taskId}] No permitted actions remain — stopping run (rest: ${stopType}).`);
+        return true;
+    };
     // Tags fully iterated this run (no stop hit mid-keyword). The caller marks
     // these 'done' so a resumed run only processes still-pending tags.
     const completedKeywords = [];
@@ -510,16 +533,16 @@ export async function runSearchInteractEngagement(page, opts) {
             // Deduplicate against already-engaged posts for this account
             const freshVideos = resultsWithUrl.filter(v => {
                 const id = (String(v.url || '').match(/\/(\d{15,})/) || [])[1] || null;
-                if (id && accountPostStatuses[id]) return false;
+                if (id && (isPostInteracted(accountPostStatuses, id) || isPostInteracted(accountPostStatuses, `tiktok:${id}`))) return false;
                 return true;
             });
             const skippedDueToPostStatus = resultsWithUrl.length - freshVideos.length;
             if (skippedDueToPostStatus > 0) {
-                logger.info(`[engage:${taskId}] Skipped ${skippedDueToPostStatus} post(s) already engaged by account ${profileId}`);
+                logger.info(`[engage:${taskId}] Skipped ${skippedDueToPostStatus} post(s) already engaged/interacted by account ${profileId}`);
             }
             const toProcess = freshVideos.slice(0, maxResultsPerKeyword);
             if (toProcess.length === 0 && resultsWithUrl.length > 0) {
-                logger.info(`[engage:${taskId}] All ${resultsWithUrl.length} posts for keyword "${keyword}" already engaged by account ${profileId} — completing keyword.`);
+                logger.info(`[engage:${taskId}] All ${resultsWithUrl.length} posts for keyword "${keyword}" already engaged/interacted by account ${profileId} — completing keyword.`);
             }
             for (let rIdx = 0; rIdx < toProcess.length; rIdx++) {
                 if (stopType) break;
@@ -528,8 +551,8 @@ export async function runSearchInteractEngagement(page, opts) {
                 // Aweme id for URL-drift guard: if TikTok SPA-navigates to a
                 // different post mid-processing, skip the comment/loop entirely.
                 const awemeId = (String(video.url || '').match(/\/(\d{15,})/) || [])[1] || null;
-                if (awemeId && accountPostStatuses[awemeId]) {
-                    logger.info(`[engage:${taskId}] Post ${awemeId} already engaged by account ${profileId} — skipping.`);
+                if (awemeId && (isPostInteracted(accountPostStatuses, awemeId) || isPostInteracted(accountPostStatuses, `tiktok:${awemeId}`))) {
+                    logger.info(`[engage:${taskId}] Post ${awemeId} already engaged/interacted by account ${profileId} — skipping.`);
                     continue;
                 }
                 const stillOnTarget = () => {
@@ -589,55 +612,69 @@ export async function runSearchInteractEngagement(page, opts) {
                     await dismissCookieBanner(page, `[engage:${taskId}]`);
 
                     // ---- Like the post ----
-                    // (Action-bar comment count is read AFTER the like settles —
-                    // see below. Reading it here raced slow photo-post hydration
-                    // and misread 0, flipping ensureCommentsVisible into lenient
-                    // mode and bypassing the comments_not_loaded guard.)
-                    const likeGate = await checkGate(platform, profileId, 'like');
-                    if (!likeGate.allowed) {
-                        stopType = likeGate.stopType;
-                        stopReason = likeGate.reason;
-                        logger.info(`[engage:${taskId}] Like blocked (${stopReason}) — stopping run.`);
-                        break;
-                    }
-                    // Pre-check: clicking a heart that is ALREADY liked would
-                    // unlike it (cross-run re-engagement of the same post).
+                    // DOM main-like check is independent of post-like quota: if already liked, skip the
+                    // ENTIRE post (no like toggle, no comments/AI/replies). Post-like quota exhaustion
+                    // disables only the like action; it must NOT stop the run or block other actions.
                     diggConfirmedLike = false; // reset per post
                     diggPending = false;
                     let postLikePerformed = false;
                     let postLikeAlready = false;
+                    let likeSig = null;
                     const preSig = await isPostLiked(page, s);
                     if (preSig && preSig.state === true) {
-                        logger.info(`[engage:${taskId}] Post already liked (${preSig.why}) — skipping like click.`);
-                        diggConfirmedLike = true; // already liked server-side; never toggle it off
-                        postLikeAlready = true;
-                    } else {
-                        diggPending = true; // next digg response is OUR click
-                        const likeClicked = await DOMHelpers.humanClick(page, s.likeButton, { timeout: 5000 }).catch(() => false);
-                        postLikePerformed = likeClicked;
-                        logger.info(`[engage:${taskId}] Like ${likeClicked ? 'clicked' : 'NOT found'}.`);
+                        const resolvedPostId = awemeId || (String(page.url() || video.url || '').match(/\/(\d{15,})/) || [])[1] || null;
+                        logger.info(`[engage:${taskId}] Main post already liked (${preSig.why}) — already interacted, skipping post (no comment/AI). id=${resolvedPostId || 'n/a'}`);
+                        if (resolvedPostId) {
+                            accountPostStatuses[resolvedPostId] = 'already_liked';
+                            markPostEngaged(campaignId, profileId, resolvedPostId, 'already_liked').catch(err => {
+                                logger.warn(`[engage:${taskId}] Failed to mark post ${resolvedPostId} already_liked: ${err.message}`);
+                            });
+                        }
+                        results.push({
+                            keyword,
+                            url: video.url,
+                            author: video.author,
+                            caption: (video.caption || '').substring(0, 120),
+                            status: 'already_liked',
+                            reason: 'main_post_already_liked',
+                            likeState: preSig.why,
+                        });
+                        const closedSkip = await DOMHelpers.humanClick(page, s.browseClose, { timeout: 3000 }).catch(() => false);
+                        if (!closedSkip && keyword && platformConfig.searchUrl) {
+                            await page.goto(`${platformConfig.searchUrl}?q=${encodeURIComponent(keyword)}`, { waitUntil: 'domcontentloaded', timeout: 12000 }).catch(() => {});
+                        }
+                        await pause(1000, 1800);
+                        continue;
                     }
-                    // ---- Like settle (fire-and-forget per user directive) ----
-                    // USER DIRECTIVE: like once, wait briefly for the digg
-                    // response, log the outcome, and MOVE ON — even if TikTok
-                    // toggled it back off. Never re-click the heart (re-clicking
-                    // a toggle is what caused the like/unlike flaps). The digg
-                    // observer above logs is_digg as ground truth.
-                    await pause(2000, 3000); // let the digg response land in the observer
-                    const likeSig = await isPostLiked(page, s);
-                    if (likeSig && likeSig.state === true) {
-                        logger.info(`[engage:${taskId}] Post ${rIdx + 1}: like settled (aria-pressed=true, why=${likeSig.why}).`);
-                    } else if (diggConfirmedLike) {
-                        logger.info(`[engage:${taskId}] Post ${rIdx + 1}: digg-api confirmed like (DOM why=${likeSig?.why ?? 'unconfirmed'}) — proceeding.`);
+                    // Not already liked: attempt post like only if that action still has quota.
+                    if (actionExhausted.like) {
+                        logger.info(`[engage:${taskId}] Post-like action exhausted (${actionExhausted.like.type}) — skipping like only, continuing with other actions.`);
                     } else {
-                        logger.info(`[engage:${taskId}] Post ${rIdx + 1}: like state after settle: DOM=${likeSig?.why ?? 'missing'}, digg=${diggConfirmedLike} — fire-and-forget, proceeding to comments.`);
-                    }
-                    // Success-only accounting: count the post like only when our
-                    // click was confirmed (DOM or digg API). Already-liked posts
-                    // are not a new action.
-                    const likeConfirmed = (likeSig && likeSig.state === true) || diggConfirmedLike;
-                    if (!postLikeAlready && postLikePerformed && likeConfirmed) {
-                        await countAction('like');
+                        const likeGate = await checkGate(platform, profileId, 'like');
+                        if (!likeGate.allowed) {
+                            markActionExhausted('like', likeGate.stopType, likeGate.reason);
+                            if (stopIfNoPermittedActionsRemain()) break;
+                            logger.info(`[engage:${taskId}] Post-like quota reached — skipping like only, continuing with other actions.`);
+                        } else {
+                            diggPending = true; // next digg response is OUR click
+                            const likeClicked = await DOMHelpers.humanClick(page, s.likeButton, { timeout: 5000 }).catch(() => false);
+                            postLikePerformed = likeClicked;
+                            logger.info(`[engage:${taskId}] Like ${likeClicked ? 'clicked' : 'NOT found'}.`);
+                            // ---- Like settle (fire-and-forget) ----
+                            await pause(2000, 3000);
+                            likeSig = await isPostLiked(page, s);
+                            if (likeSig && likeSig.state === true) {
+                                logger.info(`[engage:${taskId}] Post ${rIdx + 1}: like settled (aria-pressed=true, why=${likeSig.why}).`);
+                            } else if (diggConfirmedLike) {
+                                logger.info(`[engage:${taskId}] Post ${rIdx + 1}: digg-api confirmed like (DOM why=${likeSig?.why ?? 'unconfirmed'}) — proceeding.`);
+                            } else {
+                                logger.info(`[engage:${taskId}] Post ${rIdx + 1}: like state after settle: DOM=${likeSig?.why ?? 'missing'}, digg=${diggConfirmedLike} — fire-and-forget, proceeding.`);
+                            }
+                            const likeConfirmed = (likeSig && likeSig.state === true) || diggConfirmedLike;
+                            if (!postLikeAlready && postLikePerformed && likeConfirmed) {
+                                await countAction('like');
+                            }
+                        }
                     }
 
                     // ---- Action-bar comment count (read AFTER the like settles) ----
@@ -794,15 +831,22 @@ export async function runSearchInteractEngagement(page, opts) {
                     logger.info(`[engage:${taskId}] AI analysis ready (mode=${analysisMode}, caption ${caption ? 'yes' : 'no'}, ${aiComments.length} comments in context).`);
 
                     // ---- Generate + post contextual comment ----
+                    // Post comment is independent: if exhausted, skip only the main comment and continue
+                    // (comment-like/reply waves on existing comments may still run if permitted).
                     let generatedComment = '';
-                    const commentGate = await checkGate(platform, profileId, 'comment');
-                    if (!commentGate.allowed) {
-                        stopType = commentGate.stopType;
-                        stopReason = commentGate.reason;
-                        logger.info(`[engage:${taskId}] Comment blocked (${stopReason}) — stopping run.`);
-                        break;
+                    let skipMainCommentAction = !!actionExhausted.comment;
+                    if (skipMainCommentAction) {
+                        logger.info(`[engage:${taskId}] Post-comment action exhausted (${actionExhausted.comment.type}) — skipping main comment only.`);
+                    } else {
+                        const commentGate = await checkGate(platform, profileId, 'comment');
+                        if (!commentGate.allowed) {
+                            markActionExhausted('comment', commentGate.stopType, commentGate.reason);
+                            if (stopIfNoPermittedActionsRemain()) break;
+                            skipMainCommentAction = true;
+                            logger.info(`[engage:${taskId}] Post-comment quota reached — skipping main comment only, continuing other actions.`);
+                        }
                     }
-                    try {
+                    if (!skipMainCommentAction) try {
                         const recentLines = aiComments.filter(c => c.text).slice(0, 5).map(c => `- ${c.text}`).join('\n');
                         // Keyword must appear in the comment (user directive: like
                         // competing comments "Teamwork ifb" — carry the topic).
@@ -818,7 +862,7 @@ export async function runSearchInteractEngagement(page, opts) {
                     // verbatim instead of a generic "Nice share!". Pick the longest
                     // substantive comment already on the post. Strip @mentions —
                     // typing them opens the mention popup and hijacks input.
-                    if (!generatedComment) {
+                    if (!skipMainCommentAction && !generatedComment) {
                         const seed = aiComments
                             .filter(c => c.text && c.text.length >= 8 && c.text.length <= 150)
                             .map(c => stripMentions(String(c.text).trim()).slice(0, 150))
@@ -835,7 +879,7 @@ export async function runSearchInteractEngagement(page, opts) {
                         generatedComment = `${generatedComment} ${EMOJIS[Math.floor(Math.random() * EMOJIS.length)]}`.slice(0, 160);
                         logger.info(`[engage:${taskId}] AI-off: final comment with emoji: "${generatedComment.substring(0, 60)}..."`);
                     }
-                    if (generatedComment) {
+                    if (!skipMainCommentAction && generatedComment) {
                         // URL-drift guard: never comment on a post the SPA
                         // silently navigated away from.
                         if (!stillOnTarget()) {
@@ -1171,12 +1215,17 @@ export async function runSearchInteractEngagement(page, opts) {
                             continue;
                         }
 
-                        // ---- 1. LIKE the comment ----
-                        let skipLikeComment = false;
-                        const likeCGate = await checkGate(platform, profileId, 'likeComment');
-                        if (!likeCGate.allowed) {
-                            skipLikeComment = true;
-                            logger.info(`[engage:${taskId}] Comment-like quota reached (${likeCGate.reason}) — skipping comment like.`);
+                        // ---- 1. LIKE the comment ---- (independent action; never stops other actions)
+                        let skipLikeComment = !!actionExhausted.likeComment;
+                        if (!skipLikeComment) {
+                            const likeCGate = await checkGate(platform, profileId, 'likeComment');
+                            if (!likeCGate.allowed) {
+                                skipLikeComment = true;
+                                markActionExhausted('likeComment', likeCGate.stopType, likeCGate.reason);
+                                if (stopIfNoPermittedActionsRemain()) break;
+                            }
+                        } else if (actionExhausted.likeComment && !stopType) {
+                            // already exhausted (quiet)
                         }
                         if (!skipLikeComment) {
                         try {
@@ -1261,14 +1310,17 @@ export async function runSearchInteractEngagement(page, opts) {
                         }
 
                         // ---- 2. REPLY to the comment ----
-                        let skipReplyComment = false;
-                        const replyGate = await checkGate(platform, profileId, 'commentComment');
-                        if (!replyGate.allowed) {
-                            skipReplyComment = true;
-                            logger.info(`[engage:${taskId}] Comment-reply quota reached (${replyGate.reason}) — skipping comment reply.`);
+                        let skipReplyComment = !!actionExhausted.commentComment;
+                        if (!skipReplyComment) {
+                            const replyGate = await checkGate(platform, profileId, 'commentComment');
+                            if (!replyGate.allowed) {
+                                skipReplyComment = true;
+                                markActionExhausted('commentComment', replyGate.stopType, replyGate.reason);
+                                if (stopIfNoPermittedActionsRemain()) break;
+                            }
                         }
                         if (skipLikeComment && skipReplyComment) {
-                            logger.info(`[engage:${taskId}] Both comment-like and comment-reply quotas reached — ending comment wave loop on this post.`);
+                            if (!stopType) logger.info(`[engage:${taskId}] Comment-like and comment-reply actions exhausted/unavailable — ending comment wave loop on this post.`);
                             break;
                         }
                         if (!skipReplyComment) {
@@ -1502,7 +1554,7 @@ export async function runSearchInteractEngagement(page, opts) {
         logger.info(`[engage:${taskId}] Hourly limit hit — account ${profileId} marked RATE_LIMITED. Resume next hour-cycle.`);
     } else if (stopType === 'logged_out') {
         logger.warn(`[engage:${taskId}] Account ${profileId} was logged out — skipped immediately (${stopReason}).`);
-    } else if ((stopType === 'daily' || stopType === 'monthly' || stopType === 'cap') && profileId) {
+    } else if ((stopType === 'daily' || stopType === 'monthly' || stopType === 'yearly' || stopType === 'cap') && profileId) {
         logger.info(`[engage:${taskId}] Permanent limit hit (${stopType}: ${stopReason}) — stopping run for account ${profileId}.`);
     } else if (captchaFailed) {
         logger.warn(`[engage:${taskId}] Captcha solve failed — account ${profileId} set WAITING.`);

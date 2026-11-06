@@ -108,6 +108,7 @@ function normalizePolicy(policy) {
         hourly: toInt(p.hourly, 0),
         daily: toInt(p.daily, 0),
         monthly: toInt(p.monthly, 0),
+        yearly: toInt(p.yearly, 0),
         cap: capRaw ? (toInt(capRaw, 0) || null) : null,
     };
 }
@@ -118,6 +119,7 @@ function normalizeUsage(usage) {
         hourly: toInt(u.hourly, 0),
         daily: toInt(u.daily, 0),
         monthly: toInt(u.monthly, 0),
+        yearly: toInt(u.yearly, 0),
         total: toInt(u.total, 0),
     };
 }
@@ -162,10 +164,15 @@ function sameMonth(a, b) {
     return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
 }
 
+function sameYear(a, b) {
+    return a && b && a.getFullYear() === b.getFullYear();
+}
+
 // Read counters for a limit action, merging the canonical key with any legacy
 // base-name key. Counters are summed per window, but only entries from the
-// CURRENT window count — a stale hourly counter from yesterday can't inflate
-// today's hourly total. `total` is always summed (lifetime).
+// CURRENT window count — a stale hourly/daily/monthly/yearly counter from a
+// prior window can't inflate the current window. `total` is always summed (lifetime).
+// Authoritative window timestamp = `lastAction` (ISO); legacy hour/day/month/year fields are fallback.
 function resolveUsageEntry(accountUsage, action) {
     if (!accountUsage || typeof accountUsage !== "object") return {};
     const keys = [action];
@@ -182,12 +189,14 @@ function resolveUsageEntry(accountUsage, action) {
         const hoursMatch = sameHour(when, now);
         const daysMatch = sameDay(when, now);
         const monthsMatch = sameMonth(when, now);
+        const yearsMatch = sameYear(when, now);
 
         if (!out) {
             out = {
                 hourly: hoursMatch ? toInt(entry.hourly, 0) : 0,
                 daily: daysMatch ? toInt(entry.daily, 0) : 0,
                 monthly: monthsMatch ? toInt(entry.monthly, 0) : 0,
+                yearly: yearsMatch ? toInt(entry.yearly, 0) : 0,
                 total: toInt(entry.total, 0),
                 lastAction: entry.lastAction || null,
             };
@@ -196,6 +205,7 @@ function resolveUsageEntry(accountUsage, action) {
         if (hoursMatch) out.hourly += toInt(entry.hourly, 0);
         if (daysMatch) out.daily += toInt(entry.daily, 0);
         if (monthsMatch) out.monthly += toInt(entry.monthly, 0);
+        if (yearsMatch) out.yearly = (out.yearly || 0) + toInt(entry.yearly, 0);
         out.total += toInt(entry.total, 0);
         if (entry.lastAction && (!out.lastAction || entry.lastAction > out.lastAction)) {
             out.lastAction = entry.lastAction;
@@ -207,24 +217,29 @@ function resolveUsageEntry(accountUsage, action) {
 // Core of checkActionAllowed(): evaluate a platform policy against account usage.
 // Semantics: zero/undefined window = no limit for that window; all-zero policy
 // = "no_limits_defined" → allowed (platform tier is fail-open by design).
+// Window reset is implicit (calendar, server `now` vs per-action `lastAction`):
+// hourly/daily/monthly/yearly are current-window counters; `cap` is lifetime (`total`).
 function evaluateActionPolicy(policy, usage) {
     if (!policy) return { allowed: true, reason: "no_limits_configured", tier: "platform" };
     const p = normalizePolicy(policy);
-    if (!p.hourly && !p.daily && !p.monthly && !p.cap) {
+    if (!p.hourly && !p.daily && !p.monthly && !p.yearly && !p.cap) {
         return { allowed: true, reason: "no_limits_defined", tier: "platform" };
     }
     const u = normalizeUsage(usage);
     if (p.cap !== null && u.total >= p.cap) {
         return { allowed: false, reason: `cap_reached: ${u.total}/${p.cap}`, tier: "platform" };
     }
-    if (p.hourly && u.hourly >= p.hourly) {
-        return { allowed: false, reason: `hourly_limit: ${u.hourly}/${p.hourly}`, tier: "platform" };
+    if (p.yearly && u.yearly >= p.yearly) {
+        return { allowed: false, reason: `yearly_limit: ${u.yearly}/${p.yearly}`, tier: "platform" };
+    }
+    if (p.monthly && u.monthly >= p.monthly) {
+        return { allowed: false, reason: `monthly_limit: ${u.monthly}/${p.monthly}`, tier: "platform" };
     }
     if (p.daily && u.daily >= p.daily) {
         return { allowed: false, reason: `daily_limit: ${u.daily}/${p.daily}`, tier: "platform" };
     }
-    if (p.monthly && u.monthly >= p.monthly) {
-        return { allowed: false, reason: `monthly_limit: ${u.monthly}/${p.monthly}`, tier: "platform" };
+    if (p.hourly && u.hourly >= p.hourly) {
+        return { allowed: false, reason: `hourly_limit: ${u.hourly}/${p.hourly}`, tier: "platform" };
     }
     return { allowed: true, reason: "ok", tier: "platform" };
 }

@@ -109,12 +109,18 @@ class MultiProviderAI {
             const aiLimitRetryIdx = headers.indexOf('aiLimitRetry');
             const aiBaseUrlIdx = headers.indexOf('aiBaseUrl');
             const aiTimeoutMsIdx = headers.indexOf('aiTimeoutMs');
+            // Tolerant match: aiSeverlessId (sample spelling) / aiServerlessId / variants
+            const aiServerlessIdIdx = headers.findIndex((h) => {
+                const s = String(h || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                return s === 'aiseverlessid' || s === 'aiserverlessid' || s === 'aiserverlessid';
+            });
 
             if (aiSnIdx === -1 || aiProviderIdx === -1 || aiModelIdx === -1 || aiKeyIdx === -1) {
                 logger.warn('[MultiProviderAI] SETTINGS missing required columns (aiSn, aiProvider, aiModel, aiKey)');
                 return this.settingsCache || [];
             }
 
+            const serverlessId = getServerlessId();
             const providers = [];
 
             for (const row of result.data) {
@@ -128,6 +134,29 @@ class MultiProviderAI {
                 const limitRetryHours = aiLimitRetryIdx !== -1 ? parseInt(row[aiLimitRetryIdx]) || 0 : 0;
                 const baseUrl = aiBaseUrlIdx !== -1 ? (row[aiBaseUrlIdx] || '').trim() : '';
                 const timeoutMs = aiTimeoutMsIdx !== -1 ? parseInt(row[aiTimeoutMsIdx]) || 0 : 0;
+                const aiServerlessIdVal = aiServerlessIdIdx !== -1 ? String(row[aiServerlessIdIdx] || '').trim() : '';
+
+                // Server-scope opencode rows: each server uses only its matching opencode row
+                // (aiProvider=opencode AND aiSeverlessId/aiServerlessId == SERVERLESS_ID).
+                // Never use another server's opencode row (prevents tunnel/key contention).
+                if (provider === 'opencode') {
+                    if (serverlessId) {
+                        if (aiServerlessIdVal) {
+                            if (aiServerlessIdVal.toLowerCase() !== serverlessId.toLowerCase()) continue; // other server's row
+                        } else {
+                            // Unscoped opencode row: allow only when it's the sole opencode row (compat)
+                            const opRows = (result.data || []).filter((rr) => String(rr[aiProviderIdx] || '').toLowerCase().trim() === 'opencode');
+                            if (opRows.length !== 1) continue;
+                        }
+                    }
+                    // No SERVERLESS_ID env: don't enforce scoping (legacy/single-server). If multiple
+                    // scoped opencode rows exist, prefer unscoped rows to avoid ambiguity.
+                    else {
+                        const opRows = (result.data || []).filter((rr) => String(rr[aiProviderIdx] || '').toLowerCase().trim() === 'opencode');
+                        const scopedOpRows = aiServerlessIdIdx !== -1 ? opRows.filter((rr) => String(rr[aiServerlessIdIdx] || '').trim()) : [];
+                        if (scopedOpRows.length > 0 && aiServerlessIdVal) continue; // ambiguous multi-server sheet without env: skip scoped
+                    }
+                }
 
                 const isLocalProvider = ['ollama', 'local', 'lmstudio', 'llamacpp', 'vllm'].includes(provider);
                 // Keyless only allowed for local/ollama providers

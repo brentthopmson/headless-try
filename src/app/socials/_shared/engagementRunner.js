@@ -23,12 +23,41 @@ export function createRunContext(options = {}) {
         engaged: 0,
         failed: 0,
         startedAt,
+        actionExhausted: {},
 
         stop(type, reason) {
             if (ctx.stopType) return ctx.stopType;
             ctx.stopType = type || "limit";
             ctx.stopReason = reason || type || "limit";
             return ctx.stopType;
+        },
+
+        markActionExhausted(baseAction, type, reason) {
+            if (!ctx.actionExhausted[baseAction]) {
+                ctx.actionExhausted[baseAction] = { type: type || "limit", reason: reason || "" };
+                log.info(`[${taskId}] Action '${baseAction}' exhausted (${ctx.actionExhausted[baseAction].type}) — skipping '${baseAction}' only.`);
+            }
+            return ctx.actionExhausted[baseAction];
+        },
+
+        isActionExhausted(baseAction) {
+            return !!ctx.actionExhausted[baseAction];
+        },
+
+        stopIfNoPermittedActions(actions) {
+            if (ctx.stopped()) return true;
+            const list = Array.isArray(actions) ? actions.filter(Boolean) : [];
+            if (!list.length) return false;
+            if (!list.every(a => ctx.actionExhausted[a])) return false;
+            const tiers = list.map(a => ctx.actionExhausted[a] && ctx.actionExhausted[a].type).filter(Boolean);
+            const hasHourly = tiers.includes("hourly");
+            if (hasHourly) ctx.stop("hourly", "all_actions_hourly_exhausted");
+            else if (tiers.includes("daily")) ctx.stop("daily", "all_actions_exhausted");
+            else if (tiers.includes("monthly")) ctx.stop("monthly", "all_actions_exhausted");
+            else if (tiers.includes("yearly")) ctx.stop("yearly", "all_actions_exhausted");
+            else ctx.stop("cap", "all_actions_exhausted");
+            log.info(`[${taskId}] No permitted actions remain (${list.join(",")}) — stopping run (${ctx.stopType}).`);
+            return true;
         },
 
         stopped() {
@@ -49,6 +78,7 @@ export function createRunContext(options = {}) {
             return true;
         },
 
+        // Legacy: blocks the WHOLE run on quota. Prefer checkSoft + stopIfNoPermittedActions for isolation.
         async check(baseAction) {
             if (ctx.stopped()) return false;
             const gate = await checkGate(platform, profileId, baseAction);
@@ -56,6 +86,17 @@ export function createRunContext(options = {}) {
             const type = gate.stopType || classifyStop(gate.reason) || "limit";
             ctx.stop(type, gate.reason);
             log.info(`[${taskId}] ${baseAction} blocked (${gate.reason}) - stopping run.`);
+            return false;
+        },
+
+        // Per-action isolation: marks only this action exhausted (does not stop run).
+        async checkSoft(baseAction) {
+            if (ctx.stopped()) return false;
+            if (ctx.actionExhausted[baseAction]) return false;
+            const gate = await checkGate(platform, profileId, baseAction);
+            if (gate.allowed) return true;
+            const type = gate.stopType || classifyStop(gate.reason) || "limit";
+            ctx.markActionExhausted(baseAction, type, gate.reason);
             return false;
         },
 
@@ -97,7 +138,7 @@ export function createRunContext(options = {}) {
                 log.info(`[${taskId}] Hourly limit hit - account ${profileId || "unknown"} marked RATE_LIMITED.`);
             } else if (ctx.stopType === "captcha") {
                 await updateAccountStatus(profileId, "WAITING").catch(() => {});
-            } else if (ctx.stopType === "daily" || ctx.stopType === "monthly" || ctx.stopType === "cap") {
+            } else if (ctx.stopType === "daily" || ctx.stopType === "monthly" || ctx.stopType === "yearly" || ctx.stopType === "cap") {
                 log.info(`[${taskId}] ${ctx.stopType} limit reached - stopping this run.`);
             }
         },

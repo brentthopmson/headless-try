@@ -133,6 +133,7 @@ async function processTask(taskPayload) {
                     page,
                     platform,
                     profileId,
+                    campaignId: taskPayload.campaignId || taskPayload.campaign || null,
                     taskId,
                     handles: [kw],
                     operation: operationRaw,

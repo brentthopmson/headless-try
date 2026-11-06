@@ -1,8 +1,8 @@
 import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
-import axios from "axios";
 import { execSync } from "child_process";
+import { syncOpencodeRowForServer, getServerlessId } from "./opencodeSettings.js";
 
 const LOG_FILE = path.resolve(process.cwd(), "cloudflared.log");
 
@@ -66,24 +66,15 @@ async function syncOpencodeFromSheet() {
       return;
     }
 
-    const params = new URLSearchParams({
-      action: "setMultipleCellDataByColumnSearch",
-      sheetName: "SETTINGS",
-      searchColumn: "aiProvider",
-      searchValue: "opencode",
-      key: key,
-      data: JSON.stringify({ aiBaseUrl: baseUrl, aiStatus: "ACTIVE" }),
-    });
-
-    const res = await axios.post(url, params, {
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      timeout: 30000,
-    });
-
-    if (res.data && res.data.success) {
-      console.log("[opencode-tunnel] Synced " + baseUrl + " -> OK (row " + res.data.rowNumber + ")");
-    } else {
-      console.warn("[opencode-tunnel] Sync failed: " + (res.data && res.data.error || "unknown"));
+    const serverlessId = getServerlessId();
+    // Sync to the opencode row matching this server (aiSeverlessId/aiServerlessId==SERVERLESS_ID),
+    // resolved to aiSn for GAS single-column update. Never touches another server's row.
+    const r = await syncOpencodeRowForServer(
+      { aiBaseUrl: baseUrl, aiStatus: "ACTIVE" },
+      { scriptUrl: url, scriptKey: key, serverlessId, label: "opencode-tunnel" }
+    );
+    if (!r.ok) {
+      console.warn(`[opencode-tunnel] Sync skipped for SERVERLESS_ID='${serverlessId || "(unset)"}': ${r.error || "unknown"} (set aiSeverlessId/aiServerlessId on this server's opencode row)`);
     }
   } catch (e) {
     console.warn("[opencode-tunnel] sync skipped:", e.message);

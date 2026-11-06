@@ -282,20 +282,85 @@ export async function markTagsDone(campaignId, profileId, tags) {
 }
 
 // ==================== Per-account post deduplication state ====================
-// Post IDs that an account has already interacted with (e.g. status: 'engaged').
-// Shape: settings.postStatus[profileId][postId] = 'engaged'.
-// Writes are serialized (read-merge-write) so parallel accounts or rapid consecutive
-// post engagements never clobber each other's map.
+// IMPORTANT: interacted POST IDs are NOT persisted to campaign/settings (Google Sheet cell
+// limit ~50k chars; long campaigns bloat). Cross-run dedup relies on DOM main-like check
+// ("already liked" => already interacted, skip whole post) + in-run memory. Tags ARE still
+// persisted (see tagStatus above).
 let _postStatusChain = Promise.resolve();
+
+/** Statuses that mean "do not reprocess this post for this account" (in-run/semantic). */
+export const INTERACTED_POST_STATUSES = new Set(['engaged', 'already_liked', 'already_interacted', 'liked']);
+
+export function isPostInteracted(statusOrMap, postId = null) {
+  if (postId != null && statusOrMap && typeof statusOrMap === 'object' && !Array.isArray(statusOrMap)) {
+    return isPostInteracted(statusOrMap[String(postId)]);
+  }
+  const s = String(statusOrMap || '').trim().toLowerCase();
+  return !!s && INTERACTED_POST_STATUSES.has(s);
+}
+
+/**
+ * Resolve a stable post identifier from a URL (platform-aware). Used for in-run/dedup keys.
+ * Returns null when no stable id can be derived (DOM-only guard should still apply).
+ */
+export function getStablePostId(platform, url) {
+  const p = String(platform || '').toLowerCase().trim();
+  const u = String(url || '');
+  if (!u) return null;
+  try {
+    const mTikTok = u.match(/\/(?:video|photo)\/(\d{15,})/) || u.match(/\/(\d{15,})(?:[/?#]|$)/);
+    if (p === 'tiktok' || /tiktok\.com/i.test(u)) return mTikTok ? `tiktok:${mTikTok[1]}` : null;
+    if (p === 'instagram' || /instagram\.com/i.test(u)) {
+      const m = u.match(/\/(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/);
+      return m ? `instagram:${m[1]}` : null;
+    }
+    if (p === 'twitter' || p === 'x' || /(?:twitter|x)\.com/i.test(u)) {
+      const m = u.match(/\/status\/(\d+)/);
+      return m ? `twitter:${m[1]}` : null;
+    }
+    if (p === 'youtube' || /youtu\.?be/i.test(u)) {
+      const m = u.match(/[?&]v=([A-Za-z0-9_-]{6,})/) || u.match(/\/shorts\/([A-Za-z0-9_-]{6,})/) || u.match(/youtu\.be\/([A-Za-z0-9_-]{6,})/);
+      return m ? `youtube:${m[1]}` : null;
+    }
+    if (p === 'facebook' || /facebook\.com/i.test(u)) {
+      const m = u.match(/\/(?:posts|reel|videos|watch\/?\?v=)\/([A-Za-z0-9_-]+)/) || u.match(/[?&](?:story_fbid|fbid|v)=(\d+)/) || u.match(/\/permalink\/(\d+)/);
+      return m ? `facebook:${m[1]}` : null;
+    }
+    if (p === 'linkedin' || /linkedin\.com/i.test(u)) {
+      const m = u.match(/activity[:-](\d+)/) || u.match(/ugcPost[:-](\d+)/);
+      return m ? `linkedin:${m[1]}` : null;
+    }
+    if (p === 'reddit' || /reddit\.com/i.test(u)) {
+      const m = u.match(/\/comments\/([a-z0-9]+)/i);
+      return m ? `reddit:${m[1]}` : null;
+    }
+    if (p === 'threads' || /threads\.(?:net|com)/i.test(u)) {
+      const m = u.match(/\/post\/([A-Za-z0-9_-]+)/);
+      return m ? `threads:${m[1]}` : null;
+    }
+    // Generic fallback: stable path fragment for known hosts only when it looks like a post id
+    const g = u.match(/\/(\d{8,})(?:[/?#]|$)/);
+    return g ? `${p || 'web'}:${g[1]}` : null;
+  } catch { return null; }
+}
 
 /**
  * @param {object} settings - campaign settings object
  * @param {string} profileId
- * @returns {Record<string,string>} post IDs already interacted with for this account
+ * @returns {Record<string,string>} persisted post IDs (intentionally empty: post dedup not sheet-persisted)
  */
 export function getAccountPostStatuses(settings, profileId) {
-  const all = (settings && settings.postStatus) || {};
-  return all[String(profileId)] || {};
+  // Do not read settings.postStatus (can bloat sheet to 50k/cell). Rely on DOM main-like check.
+  return {};
+}
+
+/**
+ * Post interaction marker — NO-OP for sheet persistence (avoids 50k/cell bloat).
+ * Callers maintain in-run memory; cross-run protection comes from DOM "main post already liked" check.
+ */
+export async function markPostEngaged(campaignId, profileId, postId, status = 'engaged') {
+  // Intentionally not persisted to sheet/settings.postStatus.
+  return _postStatusChain;
 }
 
 /**

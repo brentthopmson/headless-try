@@ -1,8 +1,8 @@
 import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
-import axios from "axios";
 import net from "net";
+import { syncOpencodeRowForServer, getServerlessId } from "./opencodeSettings.js";
 
 const LOG_FILE = path.resolve(process.cwd(), "opencode-serve.log");
 
@@ -64,25 +64,17 @@ async function syncPasswordToAiSettings(password) {
   }
 
   try {
-    const params = new URLSearchParams({
-      action: "setMultipleCellDataByColumnSearch",
-      sheetName: "SETTINGS",
-      searchColumn: "aiProvider",
-      searchValue: "opencode",
-      key: key,
-      data: JSON.stringify({ aiKey: password }),
-    });
-
-    const res = await axios.post(url, params, {
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      timeout: 30000,
-    });
-
-    if (res.data && res.data.success) {
-      console.log("[opencode-serve] Password synced to SETTINGS.aiKey -> OK (row " + res.data.rowNumber + ")");
+    const serverlessId = getServerlessId();
+    // Sync password to the opencode row matching this server (aiSeverlessId/aiServerlessId==SERVERLESS_ID)
+    // via resolved aiSn. Never touches another server's row.
+    const r = await syncOpencodeRowForServer(
+      { aiKey: password },
+      { scriptUrl: url, scriptKey: key, serverlessId, label: "opencode-serve" }
+    );
+    if (r.ok) {
       synced = true;
     } else {
-      console.warn("[opencode-serve] Password sync failed: " + (res.data && res.data.error || "unknown"));
+      console.warn(`[opencode-serve] Password sync skipped for SERVERLESS_ID='${serverlessId || "(unset)"}': ${r.error || "unknown"}`);
     }
   } catch (e) {
     console.warn("[opencode-serve] password sync skipped:", e.message);

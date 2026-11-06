@@ -1591,6 +1591,7 @@ export function classifyStop(reason) {
     if (reason.startsWith('hourly_limit')) return 'hourly';
     if (reason.startsWith('daily_limit')) return 'daily';
     if (reason.startsWith('monthly_limit')) return 'monthly';
+    if (reason.startsWith('yearly_limit')) return 'yearly';
     if (reason.startsWith('cap_reached')) return 'cap';
     return null;
 }

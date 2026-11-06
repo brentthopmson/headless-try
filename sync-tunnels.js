@@ -101,9 +101,23 @@ function waitForUrl(logFile, ms, opts = {}) {
     slUrl = null;
   }
 
+  // Resolve this server's opencode SETTINGS row (aiProvider=opencode AND aiSeverlessId/aiServerlessId==SERVERLESS_ID)
+  // then update by unique aiSn — avoids cross-server contention (GAS search is single-column).
+  let opTarget = null;
+  try {
+    const { resolveOpencodeTargetForServer } = await import('./src/utils/opencodeSettings.js');
+    opTarget = await resolveOpencodeTargetForServer({ serverlessId, label: 'sync-tunnels' });
+  } catch (e) {
+    console.warn(`[sync-tunnels] Failed to resolve opencode row for SERVERLESS_ID='${serverlessId}': ${e.message}`);
+  }
+
   if (opUrl) {
     console.log(`[sync-tunnels] opencode tunnel (4096): ${opUrl}`);
-    await sync('SETTINGS', 'aiProvider', 'opencode', { aiBaseUrl: opUrl, aiStatus: 'ACTIVE' }, 'SETTINGS.aiProvider=opencode aiBaseUrl');
+    if (opTarget && opTarget.ok && opTarget.aiSn) {
+      await sync('SETTINGS', opTarget.aiSnHeader || 'aiSn', String(opTarget.aiSn), { aiBaseUrl: opUrl, aiStatus: 'ACTIVE' }, `SETTINGS.aiSn=${opTarget.aiSn} (SERVERLESS_ID=${serverlessId}) aiBaseUrl`);
+    } else {
+      console.warn(`[sync-tunnels] No matching opencode SETTINGS row for SERVERLESS_ID='${serverlessId}' — NOT writing aiBaseUrl (avoids cross-server contention).`);
+    }
   } else {
     console.warn('[sync-tunnels] No opencode tunnel URL found in cloudflared.log');
   }
@@ -114,6 +128,12 @@ function waitForUrl(logFile, ms, opts = {}) {
     console.warn(`[sync-tunnels] No DISTINCT serverless tunnel URL found in ${slLog} - NOT updating links.${serverlessId} (collision or missing).`);
   }
   const pwd = (process.env.OPENCODE_SERVER_PASSWORD || '').trim();
-  if (pwd) await sync('SETTINGS', 'aiProvider', 'opencode', { aiKey: pwd }, 'SETTINGS.aiProvider=opencode aiKey');
+  if (pwd) {
+    if (opTarget && opTarget.ok && opTarget.aiSn) {
+      await sync('SETTINGS', opTarget.aiSnHeader || 'aiSn', String(opTarget.aiSn), { aiKey: pwd }, `SETTINGS.aiSn=${opTarget.aiSn} (SERVERLESS_ID=${serverlessId}) aiKey`);
+    } else {
+      console.warn(`[sync-tunnels] No matching opencode SETTINGS row for SERVERLESS_ID='${serverlessId}' — NOT writing aiKey (avoids cross-server contention).`);
+    }
+  }
   console.log('[sync-tunnels] done');
 })();

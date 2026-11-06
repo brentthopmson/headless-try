@@ -1,4 +1,5 @@
 import axios from "axios";
+import { getServerlessId, findMatchingOpencodeNormalizedRow } from "../../../utils/opencodeSettings.js";
 
 function getAuthHeader(password) {
   const token = Buffer.from(`opencode:${password}`).toString("base64");
@@ -64,10 +65,17 @@ async function checkOpencodeUp(baseUrl, password, timeoutMs = 2500) {
 
 export async function getOpencodeConfig() {
   const aiList = await getAiSettingsRows();
-  let opRow = Array.isArray(aiList) ? aiList.find((r) => {
-    const p = r.aiprovider || r.provider || r["ai_provider"];
-    return String(p || "").toLowerCase() === "opencode";
-  }) : null;
+  const serverlessId = getServerlessId();
+  // Pick the opencode row scoped to this server (aiSeverlessId/aiServerlessId == SERVERLESS_ID)
+  // so multi-server deployments never contend on one row. Never pick another server's row.
+  const match = findMatchingOpencodeNormalizedRow(aiList, serverlessId);
+  let opRow = match ? match.row : null;
+  if (!opRow) {
+    const opRows = Array.isArray(aiList) ? aiList.filter((r) => String(r.aiprovider || r.provider || "").toLowerCase() === "opencode") : [];
+    if (opRows.length) console.warn(`[opencode] No SETTINGS opencode row matches SERVERLESS_ID='${serverlessId || "(unset)"}' (opencode rows=${opRows.length}) — set aiSeverlessId/aiServerlessId on the correct row; not using another server's row.`);
+  } else {
+    console.log(`[opencode] Using opencode row aiSn=${match.aiSn || "?"} (SERVERLESS_ID='${serverlessId || "(unset)"}', match=${match.matchedBy})`);
+  }
 
   let password = opRow?.aikey || opRow?.key || opRow?.apikey || opRow?.password;
   let tunnelUrl = opRow?.aibaseurl || opRow?.baseurl || opRow?.url || opRow?.endpoint;

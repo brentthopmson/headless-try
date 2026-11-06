@@ -52,8 +52,10 @@ function lastUsageDate(entry) {
 function incrementUsage(existing, action, count = 1) {
     const now = new Date();
     const n = Number.isFinite(parseInt(count, 10)) && parseInt(count, 10) > 0 ? parseInt(count, 10) : 1;
-    const current = existing[action] || { hourly: 0, daily: 0, monthly: 0, total: 0 };
+    const current = existing[action] || { hourly: 0, daily: 0, monthly: 0, yearly: 0, total: 0 };
 
+    // Authoritative window reset: compare full calendar windows against `lastAction` (ISO),
+    // falling back to legacy hour/day/month/year fields. `lastAction` is always written.
     const last = lastUsageDate(current);
     const sameHour = !!last
         && last.getFullYear() === now.getFullYear() && last.getMonth() === now.getMonth()
@@ -63,6 +65,7 @@ function incrementUsage(existing, action, count = 1) {
         && last.getDate() === now.getDate();
     const sameMonth = !!last
         && last.getFullYear() === now.getFullYear() && last.getMonth() === now.getMonth();
+    const sameYear = !!last && last.getFullYear() === now.getFullYear();
 
     return {
         ...existing,
@@ -70,6 +73,7 @@ function incrementUsage(existing, action, count = 1) {
             hourly: sameHour ? (current.hourly || 0) + n : n,
             daily: sameDay ? (current.daily || 0) + n : n,
             monthly: sameMonth ? (current.monthly || 0) + n : n,
+            yearly: sameYear ? (current.yearly || 0) + n : n,
             total: (current.total || 0) + n,
             lastAction: now.toISOString(),
             hour: now.getHours(),

@@ -215,7 +215,7 @@ async function processTask(taskRow, columnIndexes) {
                 finalStatus = "COMPLETED";
                 results.push({ status: 'rate_limited', reason: engagementSummary.stopReason, resumedNextCycle: true });
                 logger.info(`[processTask] ${taskId}: hourly limit — stopping this run, account resumes next hour-cycle.`);
-            } else if (engagementSummary.stopType === 'daily' || engagementSummary.stopType === 'monthly' || engagementSummary.stopType === 'cap') {
+            } else if (engagementSummary.stopType === 'daily' || engagementSummary.stopType === 'monthly' || engagementSummary.stopType === 'yearly' || engagementSummary.stopType === 'cap') {
                 finalStatus = "COMPLETED";
                 results.push({ status: 'limit_reached', reason: engagementSummary.stopReason });
             } else if (engagementSummary.captchaFailed) {
