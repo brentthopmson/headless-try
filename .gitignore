@@ -43,6 +43,7 @@ bun.lockb
 appscripts
 docs
 .github
+.vscode/tasks.json
 
 package-lock.json
 
@@ -53,8 +54,12 @@ package-lock.json
 engine.log
 dev-restart.log
 opencode-serve.log
+opencode-serve.out.log
+opencode-serve.err.log
 cloudflared.log
 serverless-cloudflared.log
+server-silent.out.log
+server-silent.err.log
 app-start.log
 upd_settings.js
 update_refresh.js
