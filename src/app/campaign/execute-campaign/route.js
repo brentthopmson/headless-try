@@ -359,6 +359,7 @@ export async function POST(request) {
   // True only when THIS invocation claimed the re-entrancy slot. A skipped
   // duplicate request must NOT delete the other run's slot in finally.
   let _isExecuting = false;
+  let settings = {};
   try {
     await identifySelfFromHost(request.headers.get('host'));
     const gate = await requireFeature('allowShooting', 'campaign shooting');
@@ -411,7 +412,7 @@ export async function POST(request) {
     }
 
     const settingsStr = campaignRow[cSettingsIndex];
-    let settings = {};
+    settings = {};
     let settingsParseError = null;
     try {
       if (typeof settingsStr === "string") {
@@ -436,6 +437,7 @@ export async function POST(request) {
 
     const cUserIdIndex = cHeaders.indexOf("userId");
     const userId = (cUserIdIndex !== -1 ? String(campaignRow[cUserIdIndex] || '').trim() : '') || settings.userId || null;
+    const channel = settings.channel || "email";
 
     // Check Campaign Duration Window (immutable per-campaign durationDays stored at creation)
     const cCreatedOnIndex = cHeaders.indexOf("createdOn");
@@ -1222,6 +1224,7 @@ export async function POST(request) {
         profilePlatforms[profileId] = platform;
         setActiveCampaignForAccount(profileId, {
           campaignId,
+          userId,
           identifier: profileData.identifier || profileId,
           platform,
         });
@@ -1665,14 +1668,32 @@ export async function POST(request) {
 
   } catch (error) {
     logger.error(` Error executing campaign: ${error.message}`, { stack: error.stack });
-    await notifyCampaignFailure({
-      campaignId: campaignId,
-      stage: 'execute',
-      channelType: 'campaign',
-      failedCount: 1,
-      error: error.message,
-      details: { stack: error.stack },
-    });
+    if (campaignId && error.message !== 'aborted') {
+      await notifyCampaignFailure({
+        campaignId: campaignId,
+        stage: 'execute',
+        channelType: 'campaign',
+        failedCount: 1,
+        error: error.message,
+        details: { stack: error.stack },
+      });
+      try {
+        let pauseSettings = {};
+        if (typeof settings === 'object' && settings !== null) {
+          pauseSettings = { ...settings, pauseReason: error.message };
+        } else {
+          pauseSettings = { pauseReason: error.message };
+        }
+        await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+          status: "paused",
+          settings: JSON.stringify(pauseSettings),
+          updatedOn: new Date().toISOString(),
+        });
+        logger.info(` Paused campaign ${campaignId} due to execution error: ${error.message}`);
+      } catch (sheetErr) {
+        logger.error(` Failed to update campaign ${campaignId} status to paused: ${sheetErr.message}`);
+      }
+    }
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   } finally {
     // Flush pending usage writes to reduce quota

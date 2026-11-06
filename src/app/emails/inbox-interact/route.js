@@ -321,6 +321,7 @@ export async function processInboxInteract(body) {
       if (await isCampaignPaused(campaignId)) break;
       setActiveCampaignForAccount(account.accountId, {
         campaignId,
+        userId,
         identifier: account.identifier || account.accountId,
         platform: account.platform || account.provider || "email",
       });

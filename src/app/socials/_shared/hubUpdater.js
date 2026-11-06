@@ -521,6 +521,9 @@ export async function updateAccountUsage(accountId, action, count = 1) {
                 // Update campaign stats cache immediately for accuracy
                 await updateCampaignStatsUsage(activeCtx.campaignId, accountId, usageKey, n, activeCtx).catch(() => {});
             }
+            if (activeCtx && activeCtx.userId) {
+                updateUserUsage(activeCtx.userId, "interactionUsage", n).catch(() => {});
+            }
             return true;
         } else {
             const timer = setTimeout(() => flushAccountUsage(accountId), USAGE_FLUSH_DELAY_MS);
@@ -532,6 +535,9 @@ export async function updateAccountUsage(accountId, action, count = 1) {
             const activeCtx = activeCampaigns.get(String(accountId).trim());
             if (activeCtx && activeCtx.campaignId) {
                 await updateCampaignStatsUsage(activeCtx.campaignId, accountId, usageKey, n, activeCtx).catch(() => {});
+            }
+            if (activeCtx && activeCtx.userId) {
+                updateUserUsage(activeCtx.userId, "interactionUsage", n).catch(() => {});
             }
             return true;
         }

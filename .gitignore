@@ -52,4 +52,10 @@ package-lock.json
 
 engine.log
 dev-restart.log
+opencode-serve.log
+cloudflared.log
+serverless-cloudflared.log
+app-start.log
+upd_settings.js
+update_refresh.js
 scratch/

@@ -4,6 +4,7 @@ const nextConfig = {
     ignoreDuringBuilds: true,
   },
   experimental: {
+    instrumentationHook: true,
     serverComponentsExternalPackages: [
       'puppeteer-core',
       '@sparticuz/chromium-min',

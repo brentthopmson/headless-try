@@ -1,0 +1,119 @@
+﻿const fs = require('fs');
+const path = require('path');
+const axios = require('axios');
+
+// Load .env
+try {
+  const env = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
+  for (const line of env.split(/\r?\n/)) {
+    const m = line.match(/^\s*([^#][^=]+)=(.*)$/);
+    if (m && !process.env[m[1].trim()]) process.env[m[1].trim()] = m[2].trim();
+  }
+} catch {}
+
+function getTryCfUrl(logFile) {
+  try {
+    if (!fs.existsSync(logFile)) return null;
+    const log = fs.readFileSync(logFile, 'utf8');
+    const re = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/gi;
+    // Ignore env-dump lines (e.g. OPENCODE_TUNNEL_URL / "Environmental variables") which
+    // can contain stale trycloudflare URLs and cause 4096/3001 collisions.
+    const valid = [];
+    for (const line of log.split(/\r?\n/)) {
+      if (/Environmental variables|OPENCODE_TUNNEL_URL|TUNNEL_URL\s*[:=]/i.test(line) && /map\[|env/i.test(line)) continue;
+      if (/OPENCODE_TUNNEL_URL/i.test(line)) continue;
+      let m;
+      while ((m = re.exec(line)) !== null) valid.push(m[0].replace(/\/$/, ''));
+      re.lastIndex = 0;
+    }
+    return valid.length ? valid[valid.length - 1] : null;
+  } catch { return null; }
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+async function sync(sheetName, searchColumn, searchValue, data, label) {
+  const url = (process.env.SCRIPT_URL || '').trim().replace(/\/+$/, '');
+  const key = (process.env.SCRIPT_KEY || '').trim();
+  if (!url || !key) { console.error('[sync] Missing SCRIPT_URL/SCRIPT_KEY'); return false; }
+  const params = new URLSearchParams({ action: 'setMultipleCellDataByColumnSearch', sheetName, searchColumn, searchValue, key, data: JSON.stringify(data) });
+
+  let attempt = 0;
+  let delayMs = 5000;
+  const maxDelayMs = 60000;
+  while (true) {
+    attempt++;
+    try {
+      const res = await axios.post(url, params, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 30000 });
+      if (res.data && res.data.success) {
+        console.log(`[sync] ${label} -> OK (row ${res.data.rowNumber})${attempt > 1 ? ` [after ${attempt} attempts]` : ''}`);
+        return true;
+      }
+      // Application-level failure from GAS: retry (network/config on GAS side may be transient)
+      console.warn(`[sync] ${label} -> FAIL (attempt ${attempt}): ${JSON.stringify(res.data)} ; retrying in ${Math.round(delayMs/1000)}s...`);
+    } catch (e) {
+      // Network/DNS/timeout errors (e.g. ENOTFOUND script.google.com): retry until it sends/succeeds
+      console.warn(`[sync] ${label} -> ERROR (attempt ${attempt}): ${e.message} ; retrying in ${Math.round(delayMs/1000)}s...`);
+    }
+    await sleep(delayMs);
+    delayMs = Math.min(maxDelayMs, Math.round(delayMs * 1.5));
+  }
+}
+
+function waitForUrl(logFile, ms, opts = {}) {
+  const end = Date.now() + ms;
+  const rejectUrl = opts.notEqualTo || null;
+  const label = opts.label || logFile;
+  return new Promise(resolve => {
+    const t = setInterval(() => {
+      const u = getTryCfUrl(logFile);
+      if (u) {
+        if (rejectUrl && u === rejectUrl) {
+          // collision: same URL as the other tunnel; keep waiting for a distinct one
+          if (!waitForUrl._warned) waitForUrl._warned = {};
+          if (!waitForUrl._warned[label]) {
+            console.warn(`[sync-tunnels] WARNING: ${label} has same URL as other tunnel (${u}) - waiting for a distinct URL...`);
+            waitForUrl._warned[label] = true;
+          }
+        } else {
+          clearInterval(t); resolve(u); return;
+        }
+      }
+      if (Date.now() > end) { clearInterval(t); resolve(getTryCfUrl(logFile)); }
+    }, 2000);
+  });
+}
+
+(async () => {
+  const serverlessId = (process.env.SERVERLESS_ID || 'serverless4').trim();
+  console.log(`[sync-tunnels] SERVERLESS_ID=${serverlessId}`);
+  const opLog = path.join(__dirname, 'cloudflared.log');
+  const slLog = path.join(__dirname, 'serverless-cloudflared.log');
+
+  // Resolve opencode (4096) tunnel first, then resolve serverless (3001) tunnel
+  // ensuring it is DISTINCT (prevents routing 4096/3001 to the same quick-tunnel URL).
+  const opUrl = await waitForUrl(opLog, 90000, { label: 'cloudflared.log(4096)' });
+  let slUrl = await waitForUrl(slLog, 90000, { label: 'serverless-cloudflared.log(3001)', notEqualTo: opUrl });
+
+  if (opUrl && slUrl && opUrl === slUrl) {
+    console.error(`[sync-tunnels] ERROR: tunnel URL collision (${opUrl}). Refusing to sync same URL to both targets.`);
+    console.error('[sync-tunnels] HINT: ensure two separate cloudflared processes are running (4096->cloudflared.log, 3001->serverless-cloudflared.log).');
+    slUrl = null;
+  }
+
+  if (opUrl) {
+    console.log(`[sync-tunnels] opencode tunnel (4096): ${opUrl}`);
+    await sync('SETTINGS', 'aiProvider', 'opencode', { aiBaseUrl: opUrl, aiStatus: 'ACTIVE' }, 'SETTINGS.aiProvider=opencode aiBaseUrl');
+  } else {
+    console.warn('[sync-tunnels] No opencode tunnel URL found in cloudflared.log');
+  }
+  if (slUrl) {
+    console.log(`[sync-tunnels] serverless tunnel (3001, ${serverlessId}): ${slUrl}`);
+    await sync('links', 'severlessId', serverlessId, { severlessURL: slUrl + '/', severlessStatus: 'ACTIVE' }, `links.${serverlessId} severlessURL`);
+  } else {
+    console.warn(`[sync-tunnels] No DISTINCT serverless tunnel URL found in ${slLog} - NOT updating links.${serverlessId} (collision or missing).`);
+  }
+  const pwd = (process.env.OPENCODE_SERVER_PASSWORD || '').trim();
+  if (pwd) await sync('SETTINGS', 'aiProvider', 'opencode', { aiKey: pwd }, 'SETTINGS.aiProvider=opencode aiKey');
+  console.log('[sync-tunnels] done');
+})();

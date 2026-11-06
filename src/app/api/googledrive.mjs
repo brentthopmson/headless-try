@@ -85,7 +85,7 @@ function refreshTokenPresent() {
   return !!getCachedRefreshToken();
 }
 
-async function authenticate() {
+export async function authenticate() {
   // Sheet-first token resolution; rebuild the cached client whenever the
   // resolved token changes so a SETTINGS rotation applies without a restart.
   const refreshToken = await resolveRefreshToken();
