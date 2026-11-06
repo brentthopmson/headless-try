@@ -105,7 +105,7 @@ function waitForUrl(logFile, ms, opts = {}) {
   // then update by unique aiSn — avoids cross-server contention (GAS search is single-column).
   let opTarget = null;
   try {
-    const { resolveOpencodeTargetForServer } = await import('./src/utils/opencodeSettings.js');
+    const { resolveOpencodeTargetForServer } = require('./src/utils/opencodeSettings');
     opTarget = await resolveOpencodeTargetForServer({ serverlessId, label: 'sync-tunnels' });
   } catch (e) {
     console.warn(`[sync-tunnels] Failed to resolve opencode row for SERVERLESS_ID='${serverlessId}': ${e.message}`);

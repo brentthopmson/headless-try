@@ -4,6 +4,7 @@ import { updateSheetRowApi } from '../app/api/googlesheets.js';
 import { getSettingsSheet, invalidateSettings } from './settingsCache.js';
 import aiCore from './multiProviderAICore.js';
 import { callOllama } from './localAIClient.js';
+import { getServerlessId } from './opencodeSettings.js';
 
 const {
     TRANSIENT_MAX_ATTEMPTS,

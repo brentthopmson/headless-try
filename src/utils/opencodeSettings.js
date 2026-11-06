@@ -1,7 +1,7 @@
-import axios from "axios";
+const axios = require("axios");
 
 /**
- * Server-scoped opencode SETTINGS resolution.
+ * Server-scoped opencode SETTINGS resolution (CJS for Node launcher + Next bundler interop).
  *
  * SETTINGS AI rows can include multiple opencode entries, one per server,
  * distinguished by `aiSeverlessId` (sample spelling) / `aiServerlessId`.
@@ -16,14 +16,13 @@ import axios from "axios";
 const SERVERLESS_ID_KEYS = [
   "aiseverlessid",
   "aiserverlessid",
-  "aiserverlessid",
   "ai_severless_id",
   "ai_serverless_id",
   "serverlessid",
   "severlessid",
 ];
 
-export function getServerlessId(env = process.env) {
+function getServerlessId(env = process.env) {
   return String(env?.SERVERLESS_ID || "").trim();
 }
 
@@ -39,12 +38,12 @@ function cell(v) {
   return String(v == null ? "" : v).trim();
 }
 
-export function isOpencodeProviderValue(v) {
+function isOpencodeProviderValue(v) {
   return norm(v) === "opencode";
 }
 
 /** Read serverless-id from a normalized row object (supports stripped/lower keys). */
-export function pickServerlessIdFromNormalizedRow(row) {
+function pickServerlessIdFromNormalizedRow(row) {
   if (!row || typeof row !== "object") return "";
   for (const k of SERVERLESS_ID_KEYS) {
     const v = row[k];
@@ -58,7 +57,7 @@ export function pickServerlessIdFromNormalizedRow(row) {
 }
 
 /** Read serverless-id from a raw GAS row array given headers. */
-export function pickServerlessIdFromRawRow(headers, rowArr) {
+function pickServerlessIdFromRawRow(headers, rowArr) {
   if (!Array.isArray(headers) || !Array.isArray(rowArr)) return "";
   for (let i = 0; i < headers.length; i++) {
     if (SERVERLESS_ID_KEYS.includes(stripKey(headers[i])) && cell(rowArr[i])) return cell(rowArr[i]);
@@ -89,7 +88,7 @@ function findHeaderActual(headers, strippedName) {
  * @param {string} serverlessId
  * @returns {{row:object, aiSn:string, matchedBy:string}|null}
  */
-export function findMatchingOpencodeNormalizedRow(rows, serverlessId) {
+function findMatchingOpencodeNormalizedRow(rows, serverlessId) {
   if (!Array.isArray(rows)) return null;
   const sid = cell(serverlessId);
   const opencodeRows = rows.filter((r) => isOpencodeProviderValue(r?.aiprovider ?? r?.ai_provider ?? r?.provider));
@@ -113,7 +112,7 @@ export function findMatchingOpencodeNormalizedRow(rows, serverlessId) {
 }
 
 /** Normalize GAS getData rows (headers + array rows) -> array of objects with lower+stripped keys. */
-export function normalizeSettingsRows(headers, dataRows) {
+function normalizeSettingsRows(headers, dataRows) {
   const hs = Array.isArray(headers) ? headers.map((h) => String(h || "")) : [];
   const rows = Array.isArray(dataRows) ? dataRows : [];
   return rows.map((r) => {
@@ -144,9 +143,9 @@ async function gasGetData(scriptUrl, scriptKey, sheetname = "SETTINGS", timeout 
 
 /**
  * Resolve the target opencode row's aiSn for this server (for GAS single-column updates).
- * Safe for both ESM callers and CJS callers (via dynamic import).
+ * Safe for both Node/CJS callers and bundled ESM callers.
  */
-export async function resolveOpencodeTargetForServer(opts = {}) {
+async function resolveOpencodeTargetForServer(opts = {}) {
   const scriptUrl = opts.scriptUrl || process.env.SCRIPT_URL || "";
   const scriptKey = opts.scriptKey || process.env.SCRIPT_KEY || "";
   const serverlessId = cell(opts.serverlessId || getServerlessId());
@@ -203,7 +202,7 @@ export async function resolveOpencodeTargetForServer(opts = {}) {
 }
 
 /** Update SETTINGS cells for the resolved opencode row by aiSn. */
-export async function setSettingsCellsByAiSn(opts = {}) {
+async function setSettingsCellsByAiSn(opts = {}) {
   const scriptUrl = String(opts.scriptUrl || process.env.SCRIPT_URL || "").trim().replace(/\/+$/, "");
   const scriptKey = String(opts.scriptKey || process.env.SCRIPT_KEY || "").trim();
   const { aiSn, aiSnHeader = "aiSn", data } = opts;
@@ -231,8 +230,20 @@ export async function setSettingsCellsByAiSn(opts = {}) {
 }
 
 /** Resolve + update in one go (convenience for managers). */
-export async function syncOpencodeRowForServer(data, opts = {}) {
+async function syncOpencodeRowForServer(data, opts = {}) {
   const target = await resolveOpencodeTargetForServer(opts);
   if (!target.ok) return target;
   return await setSettingsCellsByAiSn({ ...opts, aiSn: target.aiSn, aiSnHeader: target.aiSnHeader, data });
 }
+
+module.exports = {
+  getServerlessId,
+  isOpencodeProviderValue,
+  pickServerlessIdFromNormalizedRow,
+  pickServerlessIdFromRawRow,
+  findMatchingOpencodeNormalizedRow,
+  normalizeSettingsRows,
+  resolveOpencodeTargetForServer,
+  setSettingsCellsByAiSn,
+  syncOpencodeRowForServer,
+};

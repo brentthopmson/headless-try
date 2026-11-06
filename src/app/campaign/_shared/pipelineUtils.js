@@ -359,38 +359,8 @@ export function getAccountPostStatuses(settings, profileId) {
  * Callers maintain in-run memory; cross-run protection comes from DOM "main post already liked" check.
  */
 export async function markPostEngaged(campaignId, profileId, postId, status = 'engaged') {
-  // Intentionally not persisted to sheet/settings.postStatus.
-  return _postStatusChain;
-}
-
-/**
- * Marks a post as interacted/engaged for one account (per-account scope).
- * @param {string} campaignId
- * @param {string} profileId
- * @param {string} postId
- * @param {string} [status='engaged']
- * @returns {Promise<void>}
- */
-export async function markPostEngaged(campaignId, profileId, postId, status = 'engaged') {
-  if (!campaignId || !profileId || !postId) return;
-  const pid = String(profileId);
-  const pidKey = String(postId).trim();
-  if (!pidKey) return;
-  _postStatusChain = _postStatusChain
-    .then(async () => {
-      const fresh = await getCampaignSettings(campaignId);
-      if (!fresh) return;
-      const postStatus = fresh.settings.postStatus || {};
-      const acct = postStatus[pid] || {};
-      if (acct[pidKey] === status) return;
-      acct[pidKey] = status;
-      postStatus[pid] = acct;
-      await updateCampaignSettings(campaignId, { postStatus });
-      logger.info(`[postStatus] Marked post ${pidKey} (${status}) for ${campaignId}/${pid}`);
-    })
-    .catch((e) => {
-      logger.warn(`[postStatus] Failed to mark post ${pidKey} for ${campaignId}/${pid}: ${e.message}`);
-    });
+  // Intentionally not persisted to sheet/settings.postStatus (avoids 50k/cell bloat).
+  // Callers maintain in-run memory; cross-run protection comes from DOM "main post already liked".
   return _postStatusChain;
 }
 
