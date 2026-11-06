@@ -68,7 +68,7 @@ function Stop-ExpectedListener([int]$port, [string]$expectedCommand) {
 }
 
 Write-Host '[launcher] Checking managed listeners...'
-Stop-ExpectedListener 3001 'next.*--port\s+3001'
+Stop-ExpectedListener 3001 'next.*--port"?\s+"?3001"?'
 Stop-ExpectedListener 4096 'opencode.*serve'
 
 $managedTunnels = Get-CimInstance Win32_Process |
