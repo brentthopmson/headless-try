@@ -968,12 +968,17 @@ Per-hook fan-out (queued per profile):
   needs no list; it is NOT duplicated per keyword (it used to be — and queued
   zero tasks when no keywords existed).
 - `search` → one task per handle/keyword (search-box query).
-- `other` → `page-interact`, one task per **handle-shaped** target only
-  (`@handle` or bare handle; hashtags, multi-word phrases and URLs are
-  skipped — page-interact navigates to `/<handle>` directly). The route
-  strips a leading `@` so TikTok's `/@${keyword}` template never produces
-  `/@@handle`.
-- `activities` → one task per profile per keyword (notifications feed).
+- `other` → `page-interact`, `targets[]` = CSV handles, `tags[]`/`discoveryTags[]`
+  = search terms for People Search (tag-first, no CSV required). Keywords are
+  split handle-vs-tag by `splitPageKeywords`; hashtags/multi-word phrases go
+  to `tags` (discovery), not dropped. The engine runs
+  **List → Discovery → Activities** in that order (see route comments).
+- `activities` → one task per profile (notifications + For You feed sweep).
+
+Payload contract (front-end → engine, do not rename):
+`{ operation, targets: [handles], tags: [search terms], discoveryTags: [same as tags],
+discoveryMode, fallbackToDiscovery, fallbackToActivities }`. CSV is optional —
+a tags-only campaign is valid.
 
 A campaign fails the pre-flight only when it has no keyword chips, no CSV
 handles, and no inbox hook. DM sending (`shouldSendMessage` + CSV) runs as

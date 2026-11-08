@@ -126,10 +126,19 @@ Return a JSON array with one object per webpage (same order):
 
   try {
     const ai = new MultiProviderAI();
-    const text = await ai.generate(prompt, { maxTokens: 4000 });
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
+    const text = await ai.generate(prompt, { maxTokens: 4000, jsonMode: true });
+    const parsed = ai.parseAiJson(text);
+    if (Array.isArray(parsed)) {
+      const clean = parsed.map(r => r && typeof r === 'object'
+        ? { summary: ai.sanitizeAiPlainText(String(r.summary || ''), 2000), industry: ai.sanitizeAiPlainText(String(r.industry || ''), 200), services: ai.sanitizeAiPlainText(String(r.services || ''), 2000) }
+        : null).filter(r => r && (r.summary || r.industry || r.services));
+      if (clean.length) return clean;
+    }
+    if (typeof ai._salvageJsonArray === 'function') {
+      const salvaged = ai._salvageJsonArray(text);
+      if (Array.isArray(salvaged) && salvaged.length) {
+        return salvaged.map(r => ({ summary: ai.sanitizeAiPlainText(String(r.summary || ''), 2000), industry: ai.sanitizeAiPlainText(String(r.industry || ''), 200), services: ai.sanitizeAiPlainText(String(r.services || ''), 2000) })).filter(r => r.summary || r.industry || r.services);
+      }
     }
   } catch (err) {
     logger.warn(`[Enrich] Batch AI analysis failed: ${err.message}`);

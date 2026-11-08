@@ -88,11 +88,27 @@ async function processTask(taskPayload) {
             try {
                 const promptTemplate = platformConfig.aiPrompts?.generateColdMessage || "";
                 const targetLink = taskPayload.targetLink || "";
-                const fullPrompt = promptTemplate
+                const recipient = String(taskPayload.targetUsername || taskPayload.recipient || keyword || "a user on this platform").slice(0, 40);
+                // DM voice frame: first contact, recipient has never replied.
+                const dmFrame = [
+                    `VOICE (cold DM ${platform}, first message): you are opening a conversation with @${recipient}. They have NOT replied to you yet.`,
+                    'Do NOT act as if they wrote to you, thanked you, or answered a question. Do NOT thank them for following you, do NOT talk about your own follower count / hitting 1k, do NOT pretend you met before.',
+                    '"You" = the recipient. "I" = you, the sender. Open politely, give one personal reason to reply (strategy/keyword naturally), end with an easy question.',
+                ].join('\n');
+                const fullPrompt = `${dmFrame}\n\n${promptTemplate}`
                     .replace('{{socialStrategyPrompt}}', socialStrategyPrompt)
                     .replace('{context}', keyword || "a user on this platform")
                     + (targetLink ? `\nCampaign target link: ${targetLink} — reference this destination naturally in the message (plain URL, only if it fits the conversation).` : "");
-                finalMessageText = await MultiProviderAI.generate(fullPrompt);
+                const rawDm = await MultiProviderAI.generate(fullPrompt);
+                // DM text is typed into the platform composer — same typed-gate
+                // as TikTok comments (no HTML/controls, @-mention safe, no
+                // runaway length). The campaign target link is the ONE allowed
+                // real URL and is already embedded by the model from the prompt.
+                finalMessageText = (typeof MultiProviderAI.sanitizeAiPlainText === 'function'
+                    ? MultiProviderAI.sanitizeAiPlainText(String(rawDm || ''), 1000)
+                    : String(rawDm || '').replace(/<\/?\s*[A-Za-z][^>]*?>/g, ' ').replace(/[\x00-\x1F\x7F]/g, ' ').trim().slice(0, 1000));
+                finalMessageText = finalMessageText.replace(/@+[A-Za-z0-9._-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 1000);
+                if (!finalMessageText) throw new Error('empty DM');
                 logger.info(`[processTask] AI generated message for ${taskId}`);
             } catch (e) {
                 logger.warn(`[processTask] AI message generation failed: ${e.message}`);
@@ -116,8 +132,70 @@ async function processTask(taskPayload) {
             ({ browser, page } = await launchBrowserWithSession(cookieJSON));
         }
 
+        // Batch recipient list (CSV-driven cold DMs). Falls back to the
+        // single targetUsername for legacy tasks. Each recipient gets its
+        // own personalized DM (regenerated per recipient) so a single
+        // messageText template never blasts identical text.
+        const recipients = (() => {
+            const arr = [];
+            if (Array.isArray(taskPayload.recipients)) arr.push(...taskPayload.recipients);
+            if (Array.isArray(taskPayload.searchQueries)) arr.push(...taskPayload.searchQueries);
+            const single = taskPayload.targetUsername || taskPayload.recipient || keyword;
+            if (single && !arr.includes(single)) arr.push(single);
+            return [...new Set(arr.map(r => String(r || '').trim().replace(/^@+/, '')).filter(Boolean))];
+        })();
+
         const useRunner = supportsInboxRunner(platform) && !!inboxActionForOperation(operationRaw);
-        if (useRunner) {
+        if (useRunner && recipients.length > 1) {
+            for (const recipient of recipients) {
+                let dmText = finalMessageText;
+                if (socialStrategyPrompt) {
+                    try {
+                        const tmpl = platformConfig.aiPrompts?.generateColdMessage || "";
+                        const frame = `VOICE (cold DM ${platform}, first message): you are opening a conversation with @${recipient}. They have NOT replied to you yet. Do NOT act as if they wrote to you. "You" = recipient; "I" = sender.`;
+                        const prompt = `${frame}\n\n${tmpl}`.replace('{{socialStrategyPrompt}}', socialStrategyPrompt).replace('{context}', recipient);
+                        const raw = await MultiProviderAI.generate(prompt);
+                        const clean = (typeof MultiProviderAI.sanitizeAiPlainText === 'function' ? MultiProviderAI.sanitizeAiPlainText(String(raw || ''), 1000) : String(raw || '').trim()).replace(/@+[A-Za-z0-9._-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 1000);
+                        if (clean) dmText = clean;
+                    } catch (e) { logger.warn(`[processTask] DM gen for ${recipient} failed: ${e.message}`); }
+                }
+                const run = await runInboxInteract({
+                    page, platform, profileId, taskId,
+                    operation: operationRaw,
+                    recipient,
+                    messageText: dmText,
+                    stopAfterHours: Number(taskPayload.stopAfterHours) || 0,
+                    maxReplies: 1,
+                });
+                for (const [k, v] of Object.entries(run.quota || {})) { if (k !== "total") quota[k] = (quota[k] || 0) + (Number(v) || 0); }
+                results.push(...(run.results || []).map(r => ({ ...r, recipient })));
+                if (run.stopType) { logger.info(`[processTask] ${taskId}: runner stopped (${run.stopType})`); break; }
+                await new Promise(r => setTimeout(r, 800));
+            }
+            runnerAccounted = true;
+            // DM list exhausted → fall back to activities (same chain as page).
+            const fbDone = taskPayload.fallbackToActivities !== false && taskPayload.fallbackToActivities !== 'false';
+            if (fbDone) {
+                try {
+                    const actHelper = await import('../activities-interact/routeHelper.js');
+                    if (actHelper.supportsActivitiesRunner && actHelper.supportsActivitiesRunner(platform)) {
+                        logger.info(`[processTask] ${taskId}: DM list done — falling back to activities (notifications + feed)`);
+                        const actRun = await actHelper.runActivitiesInteract({
+                            page, platform, profileId,
+                            campaignId: taskPayload.campaignId || taskPayload.campaign || null,
+                            taskId: taskId + '-fallback',
+                            operation: 'engageWithNotifications',
+                            engagementMode: true,
+                            messageText: '',
+                            stopAfterHours: Number(taskPayload.stopAfterHours) || 0,
+                            maxEngagements: Number(taskPayload.maxEngagements) || 20,
+                        });
+                        for (const [k, v] of Object.entries(actRun.quota || {})) { if (k !== "total") quota[k] = (quota[k] || 0) + (Number(v) || 0); }
+                        results.push(...(actRun.results || []));
+                    }
+                } catch (e) { logger.warn(`[processTask] ${taskId}: activities fallback failed: ${e.message}`); }
+            }
+        } else if (useRunner) {
             const run = await runInboxInteract({
                 page,
                 platform,
@@ -136,6 +214,29 @@ async function processTask(taskPayload) {
             results.push(...(run.results || []));
             runnerAccounted = true;
             if (run.stopType) logger.info(`[processTask] ${taskId}: runner stopped (${run.stopType})`);
+            // Fallback chain: when the DM/CVS list is exhausted, keep the
+            // account engaging via notifications + For You feed (quota-walled).
+            const fallback = taskPayload.fallbackToActivities !== false && taskPayload.fallbackToActivities !== 'false';
+            if (fallback && !run.stopType && recipients.length >= 0) {
+                try {
+                    const actHelper = await import('../activities-interact/routeHelper.js');
+                    if (actHelper.supportsActivitiesRunner && actHelper.supportsActivitiesRunner(platform)) {
+                        logger.info(`[processTask] ${taskId}: DM list done — falling back to activities (notifications + feed)`);
+                        const actRun = await actHelper.runActivitiesInteract({
+                            page, platform, profileId,
+                            campaignId: taskPayload.campaignId || taskPayload.campaign || null,
+                            taskId: taskId + '-fallback',
+                            operation: 'engageWithNotifications',
+                            engagementMode: true,
+                            messageText: '',
+                            stopAfterHours: Number(taskPayload.stopAfterHours) || 0,
+                            maxEngagements: Number(taskPayload.maxEngagements) || 20,
+                        });
+                        for (const [k, v] of Object.entries(actRun.quota || {})) { if (k !== "total") quota[k] = (quota[k] || 0) + (Number(v) || 0); }
+                        results.push(...(actRun.results || []));
+                    }
+                } catch (e) { logger.warn(`[processTask] ${taskId}: activities fallback failed: ${e.message}`); }
+            }
         } else {
             const workflowKeys = resolveWorkflowOps(operationRaw, platformConfig.workflows);
             if (workflowKeys.length === 0) throw new Error(`No workflow resolved for operation: ${operationRaw}`);

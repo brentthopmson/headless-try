@@ -324,7 +324,7 @@ function buildComposePrompt(contactEmail, threads, senderIdentity, relationship,
       break;
   }
 
-  return `You are composing a new email to ${contactEmail}.
+  return `You are composing a new email to ${contactEmail} as the SENDER (${senderIdentity.firstName || ''} ${senderIdentity.lastName || ''}, ${senderIdentity.company || ''}). The recipient is the contact — they have NOT yet replied to this new email. Do not act as if they asked for this email or already responded. "You" (in the email) = the recipient; "I/we" = the sender.
 
 CONVERSATION HISTORY:
 ${threadHistory}
@@ -353,17 +353,13 @@ async function composeAIMessage(contactEmail, threads, senderIdentity, relations
   const prompt = buildComposePrompt(contactEmail, threads, senderIdentity, relationship, projectContext);
   try {
     const ai = new MultiProviderAI();
-    const response = await ai.generate(prompt);
-    if (!response) return null;
-
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) return null;
-
-    const parsed = JSON.parse(jsonMatch[0]);
-    return {
-      subject: parsed.subject || "",
-      body: parsed.body || "",
-    };
+    const response = await ai.generate(prompt, { jsonMode: true });
+    const parsed = ai.parseAiJson(response);
+    if (!parsed || typeof parsed !== 'object') return null;
+    const subject = ai.sanitizeAiPlainText(String(parsed.subject || ''), 100);
+    const body = ai.sanitizeAiPlainText(String(parsed.body || ''), 8000);
+    if (!subject && !body) return null;
+    return { subject, body };
   } catch (e) {
     logger.warn(`[compose-email] AI compose failed: ${e.message}`);
     return null;

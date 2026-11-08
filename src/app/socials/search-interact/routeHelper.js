@@ -1,11 +1,31 @@
 import axios from 'axios';
 import logger from "../../../utils/logger.js";
 import { getSheetDataApi, updateSheetRowApi, stripFormulaColumns } from '../../api/googlesheets.js';
-import { DOMHelpers, checkGate, consumeAction, capturePostFrame, postCommentVerified } from '../_shared/routeHelper.js';
+import { DOMHelpers, checkGate, consumeAction, capturePostFrame, capturePostFrames, postCommentVerified } from '../_shared/routeHelper.js';
+import { getPlatformLimits } from '../_shared/limits.js';
 import { updateAccountStatus } from '../_shared/hubUpdater.js';
 import limitsCore from '../_shared/limitsCore.js';
 import { isTikTokCaptchaVisible, solveTikTokAudioCaptcha, isTikTokLoggedOut, navigateAndWait, ensureCommentsVisible, isPostLiked, isConfidentlyUnliked, readCommentsPanelCount, dismissCookieBanner } from './platformHelper/TikTokHelpers.js';
 import { getAccountPostStatuses, markPostEngaged, getCampaignSettings, isPostInteracted } from '../../campaign/_shared/pipelineUtils.js';
+
+// Voice frame for search-interact (public-post engagement). The campaign
+// account is an OUTSIDER viewer joining someone else's post — never the post
+// author, never the recipient of an invitation, never the person being thanked
+// for following us. This fixes replies that treated the post/comment as if it
+// had been addressed to (and was FOR) the campaign account.
+const SEARCH_VOICE_MAIN = (author, keyword) => [
+    `WHO YOU ARE: an everyday TikTok viewer who just found this post (keyword: "${keyword || 'n/a'}"). You are NOT the post author and the post was NOT made for you.`,
+    `WHO YOU TALK TO: the post author @${author || 'author'} ("you" = the author) and the general audience reading the comments.`,
+    'RULES: react to what the AUTHOR made/shows. Never speak as the author, never thank anyone for inviting you, never talk about your own follower count / hitting 1k / a follow-for-follow pact unless the author\'s caption is explicitly about that. Never say "you (the commenter) followed me" in a main comment.',
+    'PRONOUNS: "you" (in your finished comment) = the author. "I/we" = you, the viewer.',
+].join('\n');
+
+const SEARCH_VOICE_REPLY = (commenter, author) => [
+    `WHO YOU ARE: the viewer who just posted the main comment on @${author || 'author'}'s post. You are NOT the author and NOT the commenter.`,
+    `WHO YOU TALK TO: @${commenter || 'a fellow viewer'} — another viewer who commented UNDER the same post. That comment was written to the post / author / general audience, NOT as a DM to you. It was not addressed to you (no @mention of you).`,
+    'RULES: reply peer-to-peer to another viewer. Never treat their comment as if it were sent to you or FOR you. Never thank them for following YOU, never assume "followed" means they followed you (it means they followed the AUTHOR / liked this post), never propose a follow-for-follow pact or ask about their follower count as if you are running a growth account. Do not defend the author as if you were them.',
+    'RULES (pronouns): "you" = @' + (commenter || 'the commenter') + '; "I" = you, the replier; "the author / OP" = @' + (author || 'author') + '. React to THEIR words + the video topic, briefly, like a fellow viewer in the comments.',
+].join('\n');
 
 // Re-like the POST after this many successful comment replies (only when the
 // heart is confidently unliked — never toggle a liked post off).
@@ -26,6 +46,27 @@ export function stripMentions(text) {
         .replace(/@+/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
+}
+
+// Final gate for any AI text that will be TYPED into TikTok (comment/reply):
+// HTML/script stripping + control removal + single-line collapse so model
+// markup/JSON garbage can never post verbatim. Returns '' when nothing
+// postable remains (caller falls back / skips).
+export function sanitizeTypedText(text, maxChars = 150) {
+    let s = String(text || '').replace(/<(script|style|iframe|object|embed)[^>]*>[\s\S]*?<\/\1>/gi, ' ');
+    s = s.replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/[\x00-\x1F\x7F]/g, ' ');
+    s = s.replace(/<\/?\s*[A-Za-z][^>]*?>/g, ' ');
+    if (/^<!doctype|^<html/i.test(s.trimStart().slice(0, 40))) return '';
+    const fenced = s.trim().match(/^```(?:json|text|markdown)?\s*\n([\s\S]*?)\n\s*```\s*$/i);
+    if (fenced) s = fenced[1];
+    s = s.replace(/^["']|["']$/g, '').trim().replace(/\n{2,}/g, ' ').trim();
+    s = stripMentions(s);
+    if (maxChars && s.length > maxChars) {
+        const cut = s.slice(0, maxChars);
+        const sp = cut.lastIndexOf(' ');
+        s = (sp > maxChars * 0.7 ? cut.slice(0, sp) : cut).trim();
+    }
+    return s;
 }
 
 // ==================== Data Fetching & Caching ====================
@@ -219,12 +260,25 @@ export async function runSearchInteractEngagement(page, opts) {
     // hub, tallied under canonical Limits-column keys for the campaign's
     // user-level monthly interaction quota.
     const quotaTally = {};
+    // Per-run caps = sheet HOURLY numbers. resolveUsageEntry advances the
+    // calendar-hour bucket, so a 9h run legitimately tallies 600+ at 200/hour
+    // across windows — the run itself needs its own ceiling so it RESTS and
+    // comes back instead of farming the daily 2000 in one go. Loaded once.
+    const runLimits = await getPlatformLimits(platform).catch(() => null);
+    // actionExhausted is defined below; countAction runs after it's initialized.
     const countAction = async (baseAction, count = 1) => {
         const key = canonicalAction(baseAction);
         const ok = await consumeAction(profileId, baseAction, count).catch(() => false);
         if (ok) {
             quotaTally[key] = (quotaTally[key] || 0) + count;
             logger.info(`[engage:${taskId}] quota: ${key} +${count} (run total ${quotaTally[key]})`);
+            // Per-run hourly cap: hourly in the sheet = how many this ONE run may do.
+            const hourly = Number(runLimits?.[key]?.hourly ?? 0) || 0;
+            if (hourly > 0 && quotaTally[key] >= hourly) {
+                const m = typeof markActionExhausted === 'function' ? markActionExhausted : null;
+                if (m) m(baseAction, 'hourly', `run_cap ${quotaTally[key]}/${hourly}`);
+                else logger.info(`[engage:${taskId}] Action '${baseAction}' hit per-run hourly cap (${quotaTally[key]}/${hourly})`);
+            }
         } else if (profileId) {
             logger.warn(`[engage:${taskId}] quota: ${key} x${count} verified but NOT counted (hub write failed)`);
         }
@@ -798,23 +852,33 @@ export async function runSearchInteractEngagement(page, opts) {
                     // or failed text → single vision fallback (frame + caption).
                     const textResult = String(analyzedVideo || '').trim();
                     const weakResult = (v) => v.length < 40
-                        || /^(could not analyze|ai not available|no ai providers)/i.test(v);
+                        || /^(could not analyze|ai not available|no ai providers)/i.test(v)
+                        || /can'?t view|can'?t see|cannot (view|see)|don'?t support image|no image input|image input (isn'?t|is not|not) supported/i.test(v);
                     const textGood = analysisMode !== 'text_failed' && !weakResult(textResult);
                     if (!textGood && ai) {
-                        logger.info(`[engage:${taskId}] Text analysis weak (${textResult.length} chars, ${analysisMode}) — trying vision fallback (frame + caption).`);
+                        logger.info(`[engage:${taskId}] Text analysis weak (${textResult.length} chars, ${analysisMode}) — trying vision fallback (video frames + caption).`);
                         try {
-                            const frame = await capturePostFrame(page);
-                            if (frame && ai) {
-                                const visionPrompt = `${platformConfig.aiPrompts?.analyzeVideo || 'Summarize this post.'}\n\nThis is a screenshot of the post itself (a video frame or a photo). Describe what is actually shown in it. Use the caption for context.\n\nCaption: ${caption || 'n/a'}\nAuthor: ${video.author || 'unknown'}`;
-                                const visionResult = String(await ai.generate(visionPrompt, { imageBase64: frame }) || '').trim();
+                            // Sample sequential frames so a TikTok *video* is
+                            // understood across time (single photo still works —
+                            // capturePostFrames falls back to one frame).
+                            const frames = (await capturePostFrames(page, { count: 4 }).catch(() => [])) || [];
+                            const frameList = frames.length ? frames : [];
+                            if (frameList.length && ai) {
+                                const multi = frameList.length > 1;
+                                const visionPrompt = `${platformConfig.aiPrompts?.analyzeVideo || 'Summarize this post.'}\n\n${multi ? `These are ${frameList.length} sequential frames sampled across the video, in order. Describe what happens across the frames — actions, objects, text, and the overall topic.` : 'This is a screenshot of the post itself (a video frame or a photo). Describe what is actually shown in it.'} Use the caption for context.\n\nCaption: ${caption || 'n/a'}\nAuthor: ${video.author || 'unknown'}`;
+                                // Vision is slower (e.g. crouton ~20s) — give it a real budget.
+                                const visionOpts = frameList.length === 1
+                                    ? { imageBase64: frameList[0], timeoutMs: 90000 }
+                                    : { frameBase64s: frameList, timeoutMs: 90000 };
+                                const visionResult = String(await ai.generate(visionPrompt, visionOpts) || '').trim();
                                 if (!weakResult(visionResult)) {
                                     analyzedVideo = visionResult;
-                                    analysisMode = 'vision';
+                                    analysisMode = multi ? 'vision_multiframe' : 'vision';
                                 } else {
                                     logger.warn(`[engage:${taskId}] Vision result weak — keeping text/caption fallback.`);
                                 }
-                            } else if (!frame) {
-                                logger.warn(`[engage:${taskId}] No post frame captured — keeping text/caption fallback.`);
+                            } else if (!frameList.length) {
+                                logger.warn(`[engage:${taskId}] No post frames captured — keeping text/caption fallback.`);
                             }
                         } catch (ve) {
                             logger.warn(`[engage:${taskId}] Vision fallback failed: ${ve.message}`);
@@ -825,6 +889,12 @@ export async function runSearchInteractEngagement(page, opts) {
                         // navigated photo posts away. Skip entirely.
                         logger.info(`[engage:${taskId}] Text analysis weak (${textResult.length} chars) — skipping vision fallback (no AI providers).`);
                     }
+                    // Cap analysis before it feeds comment/reply prompts (token guard).
+                    if (analyzedVideo && String(analyzedVideo).length > 2000) {
+                        analyzedVideo = String(analyzedVideo).slice(0, 2000).trim();
+                    }
+                    // Cap any echoed context too (untrusted page text can be huge).
+                    if (String(caption || '').length > 600) caption = String(caption).slice(0, 600);
                     if (!String(analyzedVideo || '').trim()) {
                         analyzedVideo = video.caption || '';
                     }
@@ -847,13 +917,13 @@ export async function runSearchInteractEngagement(page, opts) {
                         }
                     }
                     if (!skipMainCommentAction) try {
-                        const recentLines = aiComments.filter(c => c.text).slice(0, 5).map(c => `- ${c.text}`).join('\n');
+                        const recentLines = aiComments.filter(c => c.text).slice(0, 5).map(c => `- ${c.text.slice(0, 120)}`).join('\n');
                         // Keyword must appear in the comment (user directive: like
                         // competing comments "Teamwork ifb" — carry the topic).
                         // AI weaves it in naturally; do not copy raw + random letters.
-                        const genPrompt = `${platformConfig.aiPrompts?.generateComment || 'Write a natural comment.'}\n\n${socialStrategyPrompt ? 'Strategy: ' + socialStrategyPrompt + '\n' : ''}Topic/keyword that brought us here: "${keyword}" — work it into the comment naturally (related wording like teamwork, the product, etc. is fine); do NOT copy the raw string with random letters appended.\nPost analysis: ${analyzedVideo}${recentLines ? `\nExisting comments (so yours fits the conversation):\n${recentLines}` : ''}`;
-                        generatedComment = ai ? await ai.generate(genPrompt) : '';
-                        generatedComment = stripMentions(String(generatedComment || '').replace(/^["']|["']$/g, '').trim()).slice(0, 150);
+                        const _voiceMain = SEARCH_VOICE_MAIN(video.author || 'author', keyword);
+                        const genPrompt = `${_voiceMain}\n\n${platformConfig.aiPrompts?.generateComment || 'Write a natural comment.'}\n\n${socialStrategyPrompt ? 'Strategy (apply only within the voice rules above): ' + socialStrategyPrompt + '\n' : ''}Topic/keyword that brought us here: "${keyword}" — work it into the comment naturally (related wording like teamwork, the product, etc. is fine); do NOT copy the raw string with random letters appended.\n\nIf the video is not actually about "teamwork", do NOT force the raw keyword — react genuinely to the video instead.\n\nPost analysis (about the AUTHOR's post, not about you):\n${String(analyzedVideo || '').slice(0, 2000)}${recentLines ? `\nOther viewers' comments (tone context only — do not reply to them here):\n${recentLines}` : ''}`;
+                        generatedComment = ai ? sanitizeTypedText(await ai.generate(genPrompt), 150) : '';
                     } catch (e) {
                         logger.warn(`[engage:${taskId}] AI comment generation failed: ${e.message}`);
                         generatedComment = '';
@@ -1402,14 +1472,19 @@ export async function runSearchInteractEngagement(page, opts) {
                             let replyText = '';
                             const aiCoolingDown = Date.now() < aiReplyCooldownUntil;
                             try {
-                                const replyPrompt = `${platformConfig.aiPrompts?.replyToComment || 'Reply briefly.'}\n\nVideo analysis: ${analyzedVideo}\nYour comment: ${generatedComment}\nComment to reply to: ${comment.text}`;
+                                const safeAnalysis = String(analyzedVideo || '').slice(0, 1200);
+                                const commenter = String(comment.username || '').replace(/^@+/, '').slice(0, 40);
+                                const authorHandle = String(video.author || '').replace(/^@+/, '').slice(0, 40);
+                                const safeComment = String(comment.text || '').slice(0, 300);
+                                const _voiceReply = SEARCH_VOICE_REPLY(commenter, authorHandle);
+                                const replyPrompt = `${_voiceReply}\n\n${platformConfig.aiPrompts?.replyToComment || 'Reply briefly.'}\n\nPost author: @${authorHandle || 'author'} (not you)\nCommenter you are replying to: @${commenter || 'a fellow viewer'} (not you, not the author)\n\nVideo analysis (for topic context only): ${safeAnalysis}\nYour main comment on the post (as the viewer): ${generatedComment}\nTheir comment (posted to the author's post, not to you): "${safeComment}"\n\nReply peer-to-peer to @${commenter || 'them'} about their comment + the video. Do NOT thank them for following you and do NOT propose mutual following / hitting 1k.`;
                                 // Reply generation is on the per-comment critical
                                 // path: short cap + no transient retries, fall
                                 // back to one emoji instead of stalling.
-                                replyText = (ai && !aiCoolingDown)
-                                    ? await ai.generate(replyPrompt, { maxTokens: 60, timeoutMs: 15000, maxTransientAttempts: 1 })
+                                const rawReply = (ai && !aiCoolingDown)
+                                    ? await ai.generate(replyPrompt, { maxTokens: 80, timeoutMs: 25000, maxTransientAttempts: 1 })
                                     : '';
-                                replyText = stripMentions(String(replyText || '').replace(/^["']|["']$/g, '').trim()).slice(0, 120);
+                                replyText = sanitizeTypedText(rawReply, 120);
                                 if (!replyText && !aiCoolingDown) {
                                     aiReplyCooldownUntil = Date.now() + 20000;
                                     logger.warn(`[engage:${taskId}] Reply AI returned empty — emoji fallback for ~20s.`);

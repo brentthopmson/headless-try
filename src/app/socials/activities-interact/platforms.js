@@ -65,7 +65,11 @@ export const platformConfigs = {
         },
 
         aiPrompts: {
-            analyzeNotification: "Based on this notification, is it worth engaging with? Consider: relevance, engagement potential, authenticity. Respond with ONLY: yes or no",
+            // Activities channel: notifications describe actions toward YOUR
+            // account (someone liked/followed/mentioned you). The AI is the
+            // account owner reading their own feed — not a viewer on someone
+            // else's post. Never treat the notification as a public post.
+            analyzeNotification: "You are the owner of this account reading YOUR OWN notifications feed. The notification below describes an action toward you (someone liked, followed, or mentioned YOUR account). Based on this notification, is it worth engaging with? Consider: relevance, engagement potential, authenticity. Respond with ONLY: yes or no",
         },
 
         extractors: {
@@ -359,6 +363,123 @@ export const platformConfigs = {
         interactionRules: {
             maxLikesPerSession: 10,
         }
+    },
+
+    // ==================== REDDIT ====================
+    reddit: {
+        platform: "reddit",
+        homeUrl: "https://www.reddit.com",
+        notificationsUrl: "https://www.reddit.com/user-activity",
+        selectors: {
+            notificationsNav: "button[aria-label*='notifications' i]",
+            notificationItem: "article[data-testid='notification'], div[data-testid='notification']",
+            likeButton: "button[aria-label*='upvote' i]",
+            followBackButton: "button[data-testid='follow-button']",
+        },
+        timing: {
+            minDelayBetweenActions: 2000,
+            maxDelayBetweenActions: 5000,
+            notificationLoadDelay: 2500,
+            navigationTimeout: 20000,
+        },
+        workflows: {
+            readNotifications: {
+                name: "Read Reddit notifications",
+                steps: [
+                    { action: "navigate", url: "${notificationsUrl}", waitUntil: "networkidle0" },
+                    { action: "pause", duration: 2500 },
+                    { action: "capturePageContent", captureName: "notificationFeed" },
+                ],
+                extract: "notifications"
+            },
+            followBack: {
+                name: "Follow back on Reddit",
+                steps: [
+                    { action: "navigate", url: "${notificationsUrl}", waitUntil: "networkidle0" },
+                    { action: "pause", duration: 2500 },
+                    { action: "click", selector: "${selectors.followBackButton}" },
+                    { action: "pause", duration: 1500 },
+                ],
+            },
+        },
+        aiPrompts: {
+            // Notifications describe actions toward YOUR account.
+            analyzeNotification: "You are the owner of this account reading YOUR OWN notifications feed. The notification below describes an action toward you. Based on this notification, is it worth engaging with? Consider: relevance, engagement potential, authenticity. Respond with ONLY: yes or no",
+        },
+        extractors: {
+            notifications: {
+                selector: "article[data-testid='notification'], div[data-testid='notification']",
+                parseFunction: `(items) => {
+                    const out = [];
+                    items.forEach(item => {
+                        try {
+                            const el = item.querySelector('span');
+                            out.push({ text: (el?.textContent || item.textContent || '').trim().slice(0, 300) });
+                        } catch(e) {}
+                    });
+                    return out;
+                }`
+            },
+        },
+        interactionRules: { maxFollowBacksPerSession: 5, maxLikesPerSession: 10 }
+    },
+
+    // ==================== THREADS ====================
+    threads: {
+        platform: "threads",
+        homeUrl: "https://www.threads.net",
+        notificationsUrl: "https://www.threads.net/activity",
+        selectors: {
+            notificationsNav: "a[href='/activity']",
+            notificationItem: "div[data-testid='notification']",
+            likeButton: "button[aria-label*='Like']",
+            followBackButton: "button:has-text('Follow')",
+        },
+        timing: {
+            minDelayBetweenActions: 2000,
+            maxDelayBetweenActions: 5000,
+            notificationLoadDelay: 2500,
+            navigationTimeout: 20000,
+        },
+        workflows: {
+            readNotifications: {
+                name: "Read Threads notifications",
+                steps: [
+                    { action: "navigate", url: "${notificationsUrl}", waitUntil: "networkidle0" },
+                    { action: "pause", duration: 2500 },
+                    { action: "capturePageContent", captureName: "notificationFeed" },
+                ],
+                extract: "notifications"
+            },
+            followBack: {
+                name: "Follow back on Threads",
+                steps: [
+                    { action: "navigate", url: "${notificationsUrl}", waitUntil: "networkidle0" },
+                    { action: "pause", duration: 2500 },
+                    { action: "click", selector: "${selectors.followBackButton}" },
+                    { action: "pause", duration: 1500 },
+                ],
+            },
+        },
+        aiPrompts: {
+            analyzeNotification: "You are the owner of this account reading YOUR OWN notifications feed. The notification below describes an action toward you. Based on this notification, is it worth engaging with? Consider: relevance, engagement potential, authenticity. Respond with ONLY: yes or no",
+        },
+        extractors: {
+            notifications: {
+                selector: "div[data-testid='notification']",
+                parseFunction: `(items) => {
+                    const out = [];
+                    items.forEach(item => {
+                        try {
+                            const el = item.querySelector('span');
+                            out.push({ text: (el?.textContent || item.textContent || '').trim().slice(0, 300) });
+                        } catch(e) {}
+                    });
+                    return out;
+                }`
+            },
+        },
+        interactionRules: { maxFollowBacksPerSession: 5, maxLikesPerSession: 10 }
     },
 };
 

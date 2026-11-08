@@ -76,12 +76,14 @@ function buildReplyPrompt(item, settings) {
   const strategy = settings.emailStrategyPrompt || "";
   const targetLink = settings.targetLink || "";
   const keywords = (settings.emailKeywords || []).join(", ");
-  return `Write a brief, professional email reply for this campaign.
+  return `You are the account OWNER replying to an email that was sent TO you. The message below was written by the sender TO you (not a public post, not a cold message from you).
+
+Write a brief, professional email reply for this campaign.
 
 Campaign keywords: ${keywords}
 Campaign strategy: ${strategy || "General outreach engagement"}
 ${targetLink ? `Campaign target link: ${targetLink} — mention this destination naturally where it helps the conversation (show it as a plain URL).` : ""}
-Replying to:
+Replying to (sender wrote TO you):
 From: ${item.sender || "unknown"}
 Subject: ${item.subject || "no subject"}
 Message: ${(item.snippet || item.text).slice(0, 800)}
@@ -90,6 +92,7 @@ Rules:
 - Under 80 words
 - Professional, human, no placeholders
 - Stay on-campaign; do not invent facts
+- "You" (in the reply) = the sender; "I/we" = the account owner replying. Never act as if you sent the original email.
 
 Return ONLY the reply body text.`;
 }
@@ -98,7 +101,12 @@ async function aiGenerate(prompt, fallback = null) {
   try {
     const ai = new MultiProviderAI();
     const text = await ai.generate(prompt);
-    return text ? text.trim() : fallback;
+    if (!text) return fallback;
+    // AI text is typed straight into the inbox compose box — HTML/scripts/
+    // fences/controls must never reach the email body. Relevance JSON is
+    // parsed via parseAiJson (which re-sanitizes), so plain text here is safe.
+    const clean = ai.sanitizeAiPlainText(String(text), 4000);
+    return clean ? clean : fallback;
   } catch (err) {
     logger.warn(`[interact-inbox] AI generate failed: ${err.message}`);
     return fallback;
@@ -106,21 +114,17 @@ async function aiGenerate(prompt, fallback = null) {
 }
 
 async function aiSelectRelevant(itemList, settings) {
+  const ai = new MultiProviderAI();
   const raw = await aiGenerate(buildRelevancePrompt(itemList, settings));
   if (!raw) return [];
-  const jsonMatch = raw.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return [];
-  try {
-    const parsed = JSON.parse(jsonMatch[0]);
-    const out = [];
-    for (const entry of parsed.relevant || []) {
-      const idx = parseInt(entry.index, 10);
-      if (!isNaN(idx) && idx >= 0 && idx < itemList.length) out.push({ item: itemList[idx], reason: entry.reason || "" });
-    }
-    return out;
-  } catch {
-    return [];
+  const parsed = ai.parseAiJson(raw);
+  if (!parsed || !Array.isArray(parsed.relevant)) return [];
+  const out = [];
+  for (const entry of parsed.relevant) {
+    const idx = parseInt(entry.index, 10);
+    if (!isNaN(idx) && idx >= 0 && idx < itemList.length) out.push({ item: itemList[idx], reason: String(entry.reason || '').slice(0, 200) });
   }
+  return out;
 }
 
 function ledgerKey(item) {

@@ -24,7 +24,10 @@ export const platformConfigs = {
             replyButton: "button[aria-label*='reply']",
             replyTextBox: "div[contenteditable='true'][role='textbox']",
             replySubmit: "button:has-text('Post')",
-            closeModal: "button[aria-label='Close']"
+            closeModal: "button[aria-label='Close']",
+            commentItem: "article[data-testid='tweet']",
+            commentLikeButton: "button[aria-label*='like']",
+            commentReplyButton: "button[aria-label*='reply']",
         },
 
         timing: {
@@ -100,13 +103,14 @@ Keep response concise (2-3 sentences).`,
 3. What would be an appropriate response
 Keep response concise.`,
 
-            generateReply: `Based on the post content and comments, generate a natural, engaging Twitter reply that:
+            generateReply: `You are an outsider X/Twitter user who found this tweet — you are NOT the tweet author and the tweet was NOT made for you. Based on the post content and comments, generate a natural, engaging reply addressed to the AUTHOR (not to commenters and not about yourself):
 - Is 1-2 sentences
 - Adds value to the conversation
 - Matches the tone of the post
 - Is authentic and conversational
 - NO hashtags unless absolutely relevant
 - NO @mentions unless responding to someone
+- Never speak as the author, never thank anyone for following you, never talk about your own follower count unless the tweet is explicitly about that
 
 Post: {postContent}
 Comments analysis: {comments}
@@ -359,7 +363,7 @@ Keep to 2-3 sentences, be concise.`,
 5. What would be a fitting, natural response?
 Be concise, capture the vibe.`,
 
-            generateComment: `Generate a NATURAL, AUTHENTIC TikTok comment that:
+            generateComment: `You are an everyday TikTok viewer who found this post. The post author is someone else — the post was NOT made for you, and you are NOT the author. Write a NATURAL, AUTHENTIC TikTok comment that:
 - Is 1-2 sentences maximum
 - Matches the video's tone and vibe
 - Engages genuinely with the content
@@ -369,6 +373,7 @@ Be concise, capture the vibe.`,
 - NO @mentions unless it adds real value
 - NO generic phrases like "love this" or "so funny"
 - Should prompt engagement (ask a question or share a relatable thought)
+- "You" = the post author. Never speak as the author and never talk about hitting 1k / follow-for-follow unless the video is explicitly about that.
 
 Video vibe: {videoAnalysis}
 Comments context: {commentsContext}
@@ -382,16 +387,18 @@ YOUR COMMENT (only the comment text, no quotes, just the text):`,
 4. Is it spam, promotional, or low-quality?
 Respond with ONLY: like or skip`,
 
-            replyToComment: `Generate a NATURAL, SHORT reply to this TikTok comment on a video you just commented on:
+            replyToComment: `You are the viewer who just commented on this video. A different viewer (not you, not the author) left this comment UNDER the author's post — it was NOT sent to you and was NOT made for you. Generate a NATURAL, SHORT peer-to-peer reply to that fellow viewer:
 - 1 sentence maximum
 - Conversational, like a real person responding
 - Can include 1 emoji if natural
 - NO hashtags, NO @mentions
 - Adds to the conversation, not generic
+- Never thank them for following YOU, never assume "followed" means they followed you, never propose a follow-for-follow pact / hitting 1k, never speak as the author
+- "You" = the commenter; "I" = you, the replier
 
 Video context: {videoAnalysis}
-Original video comment you posted: {yourComment}
-Comment to reply to: {commentText}
+Original video comment you posted (as a fellow viewer): {yourComment}
+Commenter you reply to (their comment was posted to the author's post, not to you): {commentText}
 
 YOUR REPLY (only the reply text, no quotes):`
         },
@@ -488,6 +495,9 @@ YOUR REPLY (only the reply text, no quotes):`
             commentBox: "div[role='textbox']",
             commentSubmit: "button:has-text('Post')",
             shareButton: "button[aria-label*='Share']",
+            commentItem: "div[data-testid='comment']",
+            commentLikeButton: "button[aria-label*='Like']",
+            commentReplyButton: "div[role='button']:has-text('Reply')",
         },
 
         timing: {
@@ -525,7 +535,7 @@ YOUR REPLY (only the reply text, no quotes):`
 
         aiPrompts: {
             analyzePost: "Analyze this Facebook post. What's the main topic and sentiment?",
-            generateReply: "Generate a friendly, genuine Facebook comment. Keep it short and conversational.\nPost: {postContent}\nComment:",
+            generateReply: "You are an outsider Facebook user who found this post — you are NOT the post/page author and the post was NOT made for you. Generate a friendly, genuine comment addressed to the AUTHOR. Keep it short and conversational. Never speak as the author, never thank anyone for following you, never talk about your own follower count unless the post is explicitly about that.\nPost: {postContent}\nComment:",
         },
 
         extractors: {
@@ -533,17 +543,41 @@ YOUR REPLY (only the reply text, no quotes):`
                 selector: "div[data-testid='post']",
                 parseFunction: `(posts) => {
                     const items = [];
-                    posts.forEach(p => {
+                    posts.forEach((p, idx) => {
                         try {
                             const textEl = p.querySelector("div[data-testid='post_message']");
-                            if (textEl) items.push({ text: textEl.textContent.trim().slice(0, 300) });
+                            const linkEl = p.querySelector("a[href*='/posts/'], a[href*='/permalink/'], a[href*='/story.php'], a[href*='groups/']");
+                            const authorEl = p.querySelector("a[data-testid*='user'], a[href*='/profile.php'], span[dir='auto']");
+                            const text = textEl ? textEl.textContent.trim().slice(0, 300) : '';
+                            if (text || linkEl) items.push({ index: idx, text, caption: text, title: text, author: authorEl ? authorEl.textContent.trim() : 'unknown', url: linkEl ? linkEl.href : '' });
                         } catch(e) {}
                     });
                     return items;
                 }`
             },
+            comments: {
+                selector: "div[data-testid='comment']",
+                parseFunction: `(items) => {
+                    const out = [];
+                    items.forEach((el, idx) => {
+                        try {
+                            const textEl = el.querySelector("div[data-testid='comment_message']");
+                            const userEl = el.querySelector("a[href*='/profile']");
+                            const text = textEl ? textEl.textContent.trim() : '';
+                            if (text) out.push({ index: idx, text, username: userEl ? userEl.textContent.trim() : '' });
+                        } catch(e) {}
+                    });
+                    return out;
+                }`
+            },
+            // Per-comment like/reply targets (best-effort; waves skip when absent).
+            commentItem: "div[data-testid='comment']",
+            commentLike: "button[aria-label*='Like']",
+            commentReply: "div[role='button']:has-text('Reply')",
         },
 
+        // Per-comment selectors used by the generic runner's reply waves.
+        // (selector keys live alongside `selectors` for adapter convenience)
         interactionRules: {
             likeEveryPost: true,
             commentOnEveryPost: false,
@@ -568,6 +602,9 @@ YOUR REPLY (only the reply text, no quotes):`
             commentBox: "textarea[aria-label*='Add a comment']",
             commentSubmit: "button:has-text('Post')",
             followButton: "button:has-text('Follow')",
+            commentItem: "ul li div[role='button']",
+            commentLikeButton: "button[aria-label*='Like']",
+            commentReplyButton: "div[role='button']:has-text('Reply')",
         },
 
         timing: {
@@ -602,7 +639,7 @@ YOUR REPLY (only the reply text, no quotes):`
 
         aiPrompts: {
             analyzePost: "Analyze this Instagram post content. What's the vibe and topic?",
-            generateReply: "Write a short, genuine Instagram comment about this post. Be natural.\nPost: {postContent}\nComment:",
+            generateReply: "You are an outsider Instagram user who found this post — you are NOT the post author and the post was NOT made for you. Write a short, genuine comment about this post addressed to the AUTHOR. Be natural. Never speak as the author, never thank anyone for following you, never talk about your own follower count unless the post is explicitly about that.\nPost: {postContent}\nComment:",
         },
 
         extractors: {
@@ -610,13 +647,28 @@ YOUR REPLY (only the reply text, no quotes):`
                 selector: "article[role='presentation']",
                 parseFunction: `(articles) => {
                     const items = [];
-                    articles.forEach(a => {
+                    articles.forEach((a, idx) => {
                         try {
                             const capEl = a.querySelector("div[class*='caption']");
-                            if (capEl) items.push({ caption: capEl.textContent.trim().slice(0, 200) });
+                            const linkEl = a.querySelector("a[href*='/p/'], a[href*='/reel/']");
+                            const cap = capEl ? capEl.textContent.trim().slice(0, 200) : '';
+                            if (cap || linkEl) items.push({ index: idx, caption: cap, title: cap, text: cap, author: 'unknown', url: linkEl ? linkEl.href : '' });
                         } catch(e) {}
                     });
                     return items;
+                }`
+            },
+            comments: {
+                selector: "ul li div[role='button']",
+                parseFunction: `(items) => {
+                    const out = [];
+                    items.forEach((el, idx) => {
+                        try {
+                            const text = (el.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 300);
+                            if (text && !/Like|Reply/i.test(text)) out.push({ index: idx, text, username: '' });
+                        } catch(e) {}
+                    });
+                    return out.slice(0, 20);
                 }`
             },
         },
@@ -641,10 +693,16 @@ YOUR REPLY (only the reply text, no quotes):`
             postItem: "div[class*='qu-post']",
             postTitle: "a[class*='qu-title']",
             postContent: "div[class*='qu-content']",
+            likeButton: "button[aria-label*='Upvote']",
             upvoteButton: "button[aria-label*='Upvote']",
+            commentButton: "button:has-text('Add comment'), button[aria-label*='comment' i]",
             commentBox: "div[contenteditable='true'][role='textbox']",
             commentSubmit: "button:has-text('Add comment')",
             followButton: "button:has-text('Follow')",
+            // Per-comment waves (best-effort; skipped when absent).
+            commentItem: "div[class*='qu-comment']",
+            commentLikeButton: "button[aria-label*='Upvote']",
+            commentReplyButton: "button:has-text('Reply')",
         },
 
         timing: {
@@ -679,7 +737,7 @@ YOUR REPLY (only the reply text, no quotes):`
 
         aiPrompts: {
             analyzePost: "Analyze this Quora question or answer. What is it about?",
-            generateReply: "Write a helpful, genuine comment on this Quora content.\nContent: {postContent}\nComment:",
+            generateReply: "You are an outsider Quora user who found this question/answer — you are NOT the question asker/author and it was NOT written for you. Write a helpful, genuine comment addressed to the CONTENT author (not to other commenters, not about yourself).\nContent: {postContent}\nComment:",
         },
 
         extractors: {
@@ -687,13 +745,27 @@ YOUR REPLY (only the reply text, no quotes):`
                 selector: "div[class*='qu-post']",
                 parseFunction: `(posts) => {
                     const items = [];
-                    posts.forEach(p => {
+                    posts.forEach((p, idx) => {
                         try {
                             const titleEl = p.querySelector("a[class*='qu-title']");
-                            if (titleEl) items.push({ title: titleEl.textContent.trim().slice(0, 200) });
+                            const title = titleEl ? titleEl.textContent.trim().slice(0, 200) : '';
+                            if (title) items.push({ index: idx, title, caption: title, text: title, author: 'unknown', url: titleEl.href || '' });
                         } catch(e) {}
                     });
                     return items;
+                }`
+            },
+            comments: {
+                selector: "div[class*='qu-comment']",
+                parseFunction: `(items) => {
+                    const out = [];
+                    items.forEach((el, idx) => {
+                        try {
+                            const text = (el.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 300);
+                            if (text) out.push({ index: idx, text, username: '' });
+                        } catch(e) {}
+                    });
+                    return out.slice(0, 20);
                 }`
             },
         },
@@ -719,9 +791,14 @@ YOUR REPLY (only the reply text, no quotes):`
             videoTitle: "a#video-title",
             videoAuthor: "ytd-channel-name a",
             likeButton: "#segmented-like-button button, #like-button button, button[aria-label^='like this video']",
+            commentButton: "button:has-text('Add a comment')",
             commentBox: "ytd-comment-simple-box-renderer div[contenteditable='true']",
             commentSubmit: "ytd-comment-simple-box-renderer #submit-button button",
-            closeButton: "button[aria-label='Close']"
+            closeButton: "button[aria-label='Close']",
+            // Per-comment waves (best-effort).
+            commentItem: "ytd-comment-thread-renderer",
+            commentLikeButton: "ytd-comment-renderer #like-button button",
+            commentReplyButton: "ytd-comment-renderer #reply-button",
         },
 
         timing: {
@@ -782,12 +859,13 @@ Keep response concise (2-3 sentences).`,
 3. What would be an appropriate response
 Keep response concise.`,
 
-            generateReply: `Based on the video content and comments, generate a natural, engaging YouTube comment that:
+            generateReply: `You are an outsider YouTube viewer who found this video — you are NOT the channel/author and the video was NOT made for you. Based on the video content and comments, generate a natural, engaging comment addressed to the AUTHOR that:
 - Is 1-2 sentences
 - Adds value to the conversation
 - Sounds authentic and conversational
 - NO hashtags unless absolutely relevant
 - NO @mentions
+- Never speak as the author, never thank anyone for following you, never talk about your own follower count unless the video is explicitly about that
 
 Video: {postContent}
 Comments analysis: {comments}
@@ -825,7 +903,22 @@ Respond with ONLY: yes or no`
                     });
                     return videos;
                 }`
-            }
+            },
+            comments: {
+                selector: "ytd-comment-thread-renderer",
+                parseFunction: `(items) => {
+                    const out = [];
+                    items.forEach((el, idx) => {
+                        try {
+                            const textEl = el.querySelector("#content-text");
+                            const authorEl = el.querySelector("#author-text");
+                            const text = textEl ? textEl.textContent.trim() : '';
+                            if (text) out.push({ index: idx, text: text.slice(0, 300), username: authorEl ? authorEl.textContent.trim() : '' });
+                        } catch(e) {}
+                    });
+                    return out.slice(0, 20);
+                }`
+            },
         },
 
         interactionRules: {
@@ -835,6 +928,258 @@ Respond with ONLY: yes or no`
             likeComments: false,
             followUsers: false,
             retweetPosts: false
+        }
+    },
+
+    // ==================== REDDIT ====================
+    // Reddit search-interact differs sharply: search = r/subreddit listings,
+    // "like" = upvote, post = thread, comments = threaded replies, composer
+    // posts markdown (no hashtags/mentions). Voice: upvoter/commenter is an
+    // outsider joining someone else's thread — never the OP, never the poster.
+    reddit: {
+        platform: "reddit",
+        homeUrl: "https://www.reddit.com",
+        searchUrl: "https://www.reddit.com/search",
+        profileUrl: "https://www.reddit.com/user",
+
+        selectors: {
+            searchBox: "input[placeholder*='Search']",
+            searchSubmit: null,
+            searchResult: "a[data-testid='post-content']",
+            postItem: "article[data-testid='post-content']",
+            likeButton: "button[aria-label*='upvote' i]",
+            upvoteButton: "button[aria-label*='upvote' i]",
+            commentButton: "button:has-text('Comment')",
+            commentBox: "div[contenteditable='true'], textarea",
+            commentSubmit: "button:has-text('Comment'), button:has-text('Post')",
+            followButton: "button:has-text('Follow')",
+            // Per-comment waves (best-effort).
+            commentItem: "div[data-testid='comment']",
+            commentLikeButton: "button[aria-label*='upvote' i]",
+            commentReplyButton: "button:has-text('Reply')",
+        },
+
+        timing: {
+            minDelayBetweenActions: 3000,
+            maxDelayBetweenActions: 6000,
+            postLoadDelay: 3000,
+            scrollDelay: 2000,
+            navigationTimeout: 20000
+        },
+
+        workflows: {
+            search: {
+                name: "Search Reddit threads",
+                steps: [
+                    { action: "navigate", url: "${searchUrl}", waitUntil: "networkidle0" },
+                    { action: "pause", duration: 1500 },
+                    { action: "fillSearch", selector: "${selectors.searchBox}", value: "${keyword}" },
+                    { action: "submitSearch" },
+                    { action: "pause", duration: 3000 }
+                ],
+                extract: "posts"
+            },
+            interactWithPost: {
+                name: "Reddit engagement: open thread → upvote → comment",
+                steps: [
+                    { action: "clickPost", postIndex: "${postIndex}" },
+                    { action: "pause", duration: 2500 },
+                    { action: "capturePageContent" },
+                    { action: "aiAnalyzePost", prompt: "Summarize this Reddit thread in 1-2 sentences. What is it about?", resultKey: "analyzedPost" },
+                    { action: "click", selector: "${selectors.likeButton}" },
+                    { action: "pause", duration: 1500 },
+                    { action: "scroll", distance: 600 },
+                    { action: "pause", duration: 2000 },
+                    { action: "capturePageContent" },
+                    { action: "aiAnalyzeComments", prompt: "What are people saying in the Reddit thread comments? Summarize sentiment and main topics.", resultKey: "analyzedComments" },
+                    { action: "aiGenerateReply", postContent: "${analyzedPost}", comments: "${analyzedComments}", prompt: "${platformConfig.aiPrompts.generateReply}", resultKey: "generatedReply" },
+                    { action: "fillText", selector: "${selectors.commentBox}", value: "${generatedReply}" },
+                    { action: "pause", duration: 1000 },
+                    { action: "click", selector: "${selectors.commentSubmit}" },
+                    { action: "pause", duration: 2000 }
+                ]
+            }
+        },
+
+        aiPrompts: {
+            analyzePost: `Analyze this Reddit thread/post and provide:\n1. Main topic/theme\n2. Sentiment (positive/negative/neutral/mixed)\n3. Relevant keywords\nKeep response concise (2-3 sentences).`,
+            analyzeComments: `Analyze these Reddit thread comments and provide:\n1. General sentiment from commenters\n2. Main topics discussed\n3. What would be an appropriate response\nKeep response concise.`,
+            generateReply: `You are an outsider Reddit user who found this thread — you are NOT the original poster (OP) and the post was NOT made for you. Based on the post content and comments, generate a natural, on-topic Reddit comment addressed to the OP / community:
+- Is 1-3 sentences (Reddit allows fuller sentences than TikTok)
+- Adds value to the conversation, no hashtags, NO @mentions
+- Never speak as the OP, never thank anyone for following you, never talk about your own follower count / hitting 1k / mutual follows
+- Never write as if the post is inviting you personally
+
+Post: {postContent}
+Comments analysis: {comments}
+
+Comment (ONLY the comment text, nothing else):`,
+            shouldLikeComment: `Should this Reddit comment be upvoted? Consider:\n1. Is it relevant to the thread?\n2. Is it constructive/helpful?\n3. Is it spam or low quality?\nRespond with ONLY: yes or no`
+        },
+
+        extractors: {
+            posts: {
+                selector: "article[data-testid='post-content']",
+                parseFunction: `(items) => {
+                    const out = [];
+                    items.forEach((el, idx) => {
+                        try {
+                            const linkEl = el.querySelector("a[data-testid='post-content']");
+                            const titleEl = el.querySelector("h3, [data-testid='post-title']");
+                            const authorEl = el.querySelector("a[href*='/user/']");
+                            const url = linkEl ? linkEl.href : (el.querySelector("a[href*='/comments/']")?.href || '');
+                            const title = titleEl ? titleEl.textContent.trim().slice(0, 300) : '';
+                            if (url) out.push({ index: idx, title, caption: title, text: title, author: authorEl ? authorEl.textContent.trim() : 'unknown', url });
+                        } catch(e) {}
+                    });
+                    return out;
+                }`
+            },
+            comments: {
+                selector: "div[data-testid='comment']",
+                parseFunction: `(items) => {
+                    const out = [];
+                    items.forEach((el, idx) => {
+                        try {
+                            const textEl = el.querySelector("[data-testid='comment-content']");
+                            const authorEl = el.querySelector("a[href*='/user/']");
+                            const text = textEl ? textEl.textContent.trim() : '';
+                            if (text) out.push({ index: idx, text: text.slice(0, 300), username: authorEl ? authorEl.textContent.trim() : '' });
+                        } catch(e) {}
+                    });
+                    return out.slice(0, 20);
+                }`
+            },
+        },
+
+        interactionRules: {
+            likeEveryPost: true,
+            commentOnEveryPost: true,
+            maxCommentsPerPost: 1,
+            likeComments: true,
+            followUsers: false,
+        }
+    },
+
+    // ==================== THREADS ====================
+    // Threads (Meta) search-interact: post = thread, like = heart, comment =
+    // threaded reply. Composer is a lightweight post composer (no hashtags
+    // needed, max ~500 chars). Voice mirrors X: outsider → author.
+    threads: {
+        platform: "threads",
+        homeUrl: "https://www.threads.net",
+        searchUrl: "https://www.threads.net/search",
+        profileUrl: "https://www.threads.net",
+
+        selectors: {
+            searchBox: "input[placeholder*='Search']",
+            searchSubmit: null,
+            postItem: "div[data-testid='post']",
+            likeButton: "button[aria-label*='Like']",
+            commentButton: "button[aria-label*='Reply'], button[aria-label*='comment' i]",
+            commentBox: "div[contenteditable='true'][role='textbox'], textarea",
+            commentSubmit: "button:has-text('Post'), button:has-text('Reply')",
+            followButton: "button:has-text('Follow')",
+            commentItem: "div[data-testid='thread-comment'], article",
+            commentLikeButton: "button[aria-label*='Like']",
+            commentReplyButton: "button[aria-label*='Reply']",
+        },
+
+        timing: {
+            minDelayBetweenActions: 2000,
+            maxDelayBetweenActions: 5000,
+            postLoadDelay: 3000,
+            scrollDelay: 2000,
+            navigationTimeout: 20000
+        },
+
+        workflows: {
+            search: {
+                name: "Search Threads posts",
+                steps: [
+                    { action: "navigate", url: "${searchUrl}", waitUntil: "networkidle0" },
+                    { action: "pause", duration: 1500 },
+                    { action: "fillSearch", selector: "${selectors.searchBox}", value: "${keyword}" },
+                    { action: "submitSearch" },
+                    { action: "pause", duration: 3000 }
+                ],
+                extract: "posts"
+            },
+            interactWithPost: {
+                name: "Threads engagement: open thread → like → reply",
+                steps: [
+                    { action: "clickPost", postIndex: "${postIndex}" },
+                    { action: "pause", duration: 2000 },
+                    { action: "capturePageContent" },
+                    { action: "aiAnalyzePost", prompt: "Summarize this Threads post in 1-2 sentences. What is it about?", resultKey: "analyzedPost" },
+                    { action: "click", selector: "${selectors.likeButton}" },
+                    { action: "pause", duration: 1500 },
+                    { action: "scroll", distance: 400 },
+                    { action: "pause", duration: 2000 },
+                    { action: "capturePageContent" },
+                    { action: "aiAnalyzeComments", prompt: "What are people saying in the Threads replies? Summarize sentiment and main topics.", resultKey: "analyzedComments" },
+                    { action: "aiGenerateReply", postContent: "${analyzedPost}", comments: "${analyzedComments}", prompt: "${platformConfig.aiPrompts.generateReply}", resultKey: "generatedReply" },
+                    { action: "fillText", selector: "${selectors.commentBox}", value: "${generatedReply}" },
+                    { action: "pause", duration: 1000 },
+                    { action: "click", selector: "${selectors.commentSubmit}" },
+                    { action: "pause", duration: 2000 }
+                ]
+            }
+        },
+
+        aiPrompts: {
+            analyzePost: `Analyze this Threads post and provide:\n1. Main topic/theme\n2. Sentiment (positive/negative/neutral)\n3. Relevant keywords\nKeep response concise (2-3 sentences).`,
+            analyzeComments: `Analyze these Threads replies and provide:\n1. General sentiment from repliers\n2. Main topics discussed\n3. What would be an appropriate response\nKeep response concise.`,
+            generateReply: `You are an outsider Threads user who found this post — you are NOT the post author and the post was NOT made for you. Generate a natural, engaging reply addressed to the AUTHOR:
+- Is 1-2 sentences (Threads cap ~500 chars — stay well under)
+- Adds value to the conversation, casual and conversational
+- NO hashtags unless absolutely relevant, NO @mentions
+- Never speak as the author, never thank anyone for following you, never talk about your own follower count / hitting 1k unless the post is explicitly about that
+
+Post: {postContent}
+Replies analysis: {comments}
+
+Reply (ONLY the reply text, nothing else):`,
+            shouldLikeComment: `Should this Threads reply be liked? Consider:\n1. Is it relevant to the post?\n2. Is it constructive/helpful?\n3. Is it spam or low quality?\nRespond with ONLY: yes or no`
+        },
+
+        extractors: {
+            posts: {
+                selector: "div[data-testid='post']",
+                parseFunction: `(items) => {
+                    const out = [];
+                    items.forEach((el, idx) => {
+                        try {
+                            const linkEl = el.querySelector("a[href*='/@'], a[href*='/post/']");
+                            const textEl = el.querySelector("div[data-testid='post-text'], span");
+                            const text = textEl ? textEl.textContent.trim().slice(0, 300) : '';
+                            if (text) out.push({ index: idx, text, caption: text, title: text, author: linkEl ? linkEl.textContent.trim() : 'unknown', url: linkEl ? linkEl.href : '' });
+                        } catch(e) {}
+                    });
+                    return out;
+                }`
+            },
+            comments: {
+                selector: "div[data-testid='thread-comment'], article",
+                parseFunction: `(items) => {
+                    const out = [];
+                    items.forEach((el, idx) => {
+                        try {
+                            const text = (el.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 300);
+                            if (text) out.push({ index: idx, text, username: '' });
+                        } catch(e) {}
+                    });
+                    return out.slice(0, 20);
+                }`
+            },
+        },
+
+        interactionRules: {
+            likeEveryPost: true,
+            commentOnEveryPost: true,
+            maxCommentsPerPost: 1,
+            likeComments: true,
+            followUsers: false,
         }
     },
 };

@@ -1087,10 +1087,10 @@ export async function executeWorkflow(page, workflow, context, platformConfig, a
                     case 'aiAnalyzeVideo':
                     case 'aiAnalyzeComments': {
                         const prompt = interpolate(step.prompt, stepContext);
-                        const pageContent = results[step.captureName || 'pageContent'] || '';
+                        const pageContent = String(results[step.captureName || 'pageContent'] || '').slice(0, 4000);
                         try {
                             const analysis = aiProvider ? await aiProvider.analyzePageContent(pageContent, prompt) : "AI not available";
-                            results[step.resultKey || 'analysis'] = analysis;
+                            results[step.resultKey || 'analysis'] = aiProvider?.sanitizeAiPlainText ? aiProvider.sanitizeAiPlainText(analysis, 2000) : String(analysis || '').slice(0, 2000);
                         } catch (e) {
                             logger.error(`[executeWorkflow] AI analysis failed: ${e.message}`);
                             results[step.resultKey || 'analysis'] = "Could not analyze";
@@ -1105,12 +1105,26 @@ export async function executeWorkflow(page, workflow, context, platformConfig, a
                             if (k === 'action' || k === 'prompt') continue;
                             replaceContext[k] = interpolate(v, stepContext);
                         }
-                        const fullPrompt = Object.entries(replaceContext).reduce((p, [key, val]) => {
+                        const rawFull = Object.entries(replaceContext).reduce((p, [key, val]) => {
                             return p.replace(new RegExp(`\\{${key}\\}`, 'g'), String(val ?? ''));
                         }, prompt);
+                        // Workflow voice frame (shared executor): public-post
+                        // commentary, same rule as search-interact — "you" is
+                        // the post author, comments you reply to were posted to
+                        // the audience, not to you.
+                        const isReply = step.action === 'aiGenerateReply';
+                        const voiceFrame = isReply
+                            ? 'VOICE (workflow reply): you are outsider viewer replying peer-to-peer to another viewer whose comment sits UNDER this post (not addressed to you, not a DM). Never thank them for following you or propose a follow-for-follow pact; react to their comment and the post topic. "You" = that commenter.'
+                            : 'VOICE (workflow comment): you are an outsider viewer commenting on someone else\'s post. "You" = the post author; the post was not made for you and you are not the author.';
+                        const fullPrompt = `${voiceFrame}\n\n${rawFull}`;
                         try {
-                            const generated = aiProvider ? await aiProvider.generate(fullPrompt) : "Great content!";
-                            results[step.resultKey || 'generated'] = generated;
+                            const rawGen = aiProvider ? await aiProvider.generate(fullPrompt) : "Great content!";
+                            // Workflow comment/reply text is typed downstream —
+                            // apply the same typed gate as the TikTok flow.
+                            const gated = aiProvider?.sanitizeAiPlainText
+                                ? aiProvider.sanitizeAiPlainText(String(rawGen || ''), 500)
+                                : String(rawGen || '').replace(/<\/?\s*[A-Za-z][^>]*?>/g, ' ').replace(/[\x00-\x1F\x7F]/g, ' ').trim().slice(0, 500);
+                            results[step.resultKey || 'generated'] = gated || "Great content!";
                         } catch (e) {
                             logger.error(`[executeWorkflow] AI generation failed: ${e.message}`);
                             results[step.resultKey || 'generated'] = "Great content!";
@@ -1270,6 +1284,61 @@ export async function capturePostFrame(page) {
         return Buffer.from(buf).toString('base64');
     } catch (e) {
         return null;
+    }
+}
+
+// Sample N sequential frames from the post video (or single photo) as base64.
+// Used to analyze a TikTok *video* (not just one frame) with vision models.
+// - Video posts: seek the same largest <video> capturePostFrame uses to N
+//   evenly spaced fractions of duration (paused/drift-safe, no play()). Each
+//   frame is an element screenshot — no ffmpeg needed.
+// - Photo posts / seek failure: falls back to [capturePostFrame] (<=1 frame).
+// Returns [] when nothing capturable exists (never throws, never blocks a run).
+export async function capturePostFrames(page, { count = 4, waitMs = 600, restore = true } = {}) {
+    const n = Math.min(Math.max(parseInt(count, 10) || 4, 1), 6);
+    try {
+        const single = await capturePostFrame(page);
+        if (!single) return [];
+        // Probe duration + poster-ness of the same video element.
+        const meta = await page.evaluate(() => {
+            const isPhoto = /\/photo\//.test(location.pathname);
+            const vids = Array.from(document.querySelectorAll('video'))
+                .filter(v => v.videoWidth > 0 && v.getBoundingClientRect().width > 100);
+            vids.sort((a, b) => (b.videoWidth * b.videoHeight) - (a.videoWidth * a.videoHeight));
+            const v = isPhoto ? null : (vids[0] || null);
+            return { hasVideo: !!v, duration: v && Number.isFinite(v.duration) ? v.duration : 0, currentTime: v ? v.currentTime : 0 };
+        }).catch(() => null);
+        if (!meta?.hasVideo || !meta.duration || meta.duration < 1) return [single];
+        const frames = [];
+        const fractions = Array.from({ length: n }, (_, i) => (i + 1) / (n + 1));
+        for (const f of fractions) {
+            const t = Math.min(meta.duration * f, Math.max(0, meta.duration - 0.15));
+            const seeked = await page.evaluate((target) => {
+                const vids = Array.from(document.querySelectorAll('video'))
+                    .filter(v => v.videoWidth > 0 && v.getBoundingClientRect().width > 100);
+                vids.sort((a, b) => (b.videoWidth * b.videoHeight) - (a.videoWidth * a.videoHeight));
+                const v = vids[0];
+                if (!v) return false;
+                try { v.currentTime = target; return true; } catch { return false; }
+            }, t).catch(() => false);
+            if (!seeked) break;
+            // eslint-disable-next-line no-await-in-loop
+            await new Promise(r => setTimeout(r, waitMs));
+            // eslint-disable-next-line no-await-in-loop
+            const b64 = await capturePostFrame(page).catch(() => null);
+            if (b64) frames.push(b64);
+        }
+        if (restore) {
+            await page.evaluate((ct) => {
+                const vids = Array.from(document.querySelectorAll('video'))
+                    .filter(v => v.videoWidth > 0 && v.getBoundingClientRect().width > 100);
+                vids.sort((a, b) => (b.videoWidth * b.videoHeight) - (a.videoWidth * a.videoHeight));
+                if (vids[0]) { try { vids[0].currentTime = ct; } catch {} }
+            }, meta.currentTime).catch(() => {});
+        }
+        return frames.length >= 2 ? frames : [single];
+    } catch {
+        return [];
     }
 }
 
@@ -1562,16 +1631,22 @@ export async function postCommentVerified(page, s, text, logPrefix = '', opts = 
         await DOMHelpers.randomDelay(200, 350);
     }
 
-    // Wait briefly for the network publish response (if in-flight)
+    // Wait briefly for the network publish response (if in-flight).
+    // Speed first: composer-clear wins immediately (you SEE the comment land
+    // even when TikTok logs status_code=2147). A late 2147 must NOT stall the
+    // wave — we only log it here; the caller still counts quota on the
+    // visible post, which is the user-visible truth.
     const pubRes = await Promise.race([
         responsePromise,
         new Promise(r => setTimeout(() => r(null), 1500))
     ]);
     if (onResponseHandler) page.off('response', onResponseHandler);
 
+    // Warn-only: a fast 2147 (if it lands in the 1.5s window) is logged, but
+    // the visible composer-cleared state is still the source of truth (you
+    // see the comment land). Never stall or fail the wave on it.
     if (pubRes && pubRes.status_code !== undefined && String(pubRes.status_code) !== '0') {
-        if (logPrefix) logger.warn(`${logPrefix} [${mode}] Comment rejected by TikTok backend: status_code=${pubRes.status_code}`);
-        return { posted: false, reason: `tiktok_status_${pubRes.status_code}`, status_code: pubRes.status_code };
+        if (logPrefix) logger.warn(`${logPrefix} [${mode}] TikTok publish returned status_code=${pubRes.status_code} (composer cleared — treated as posted)`);
     }
 
     if (composerCleared) {

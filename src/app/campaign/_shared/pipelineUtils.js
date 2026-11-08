@@ -423,10 +423,18 @@ export function mergeTemplate(template, row, headers) {
  */
 export function sanitizeForCsv(value) {
   if (!value || typeof value !== "string") return value;
-  if (/<html|<head|<style|<body|<script|<link\s+rel/i.test(value)) {
-    return value.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 3000);
+  let out = value;
+  // Strip raw HTML (scraped / hallucinated) so markup never lands in CSV.
+  if (/<html|<head|<style|<body|<script|<link\s+rel|<img|<a\s+[^>]*href/i.test(out)) {
+    out = out.replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, " ").replace(/<\/?\s*[A-Za-z][^>]*?>/g, " ").replace(/\s+/g, " ").trim();
   }
-  return value;
+  // CSV/formula injection: spreadsheet formulas must never execute from AI text.
+  out = out.replace(/[\u200B-\u200D\uFEFF\x00-\x1F\x7F]/g, '');
+  const first = out.trimStart()[0];
+  if (first === '=' || first === '+' || first === '-' || first === '@' || first === '\t' || first === '\r') {
+    out = `'${out.trimStart()}`;
+  }
+  return out.slice(0, 3000);
 }
 
 /**

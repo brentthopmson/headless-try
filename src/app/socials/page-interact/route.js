@@ -39,6 +39,73 @@ const MAX_CONCURRENT_TASKS = getMaxConcurrentTasksSync();
 const activeTasks = new Map();
 logger.info(`[Page Interact] Concurrency limit: ${MAX_CONCURRENT_TASKS} (settings-driven)`);
 
+// ---- People Search discovery (tag-first, no CSV required) ----
+// Mirrors search-interact's searchResults: navigate to the platform people
+// search, type the tag, then collect profile handles via the platform
+// `people` extractor (falls back to generic link scan when the platform has
+// no extractor yet — e.g. FB/IG/Quora/YT/Reddit/Threads page configs).
+async function discoverPeopleHandles(page, platformConfig, tags, maxPerTag = 5) {
+    const s = platformConfig.selectors || {};
+    const found = new Map();
+    for (const tag of tags) {
+        const url = platformConfig.searchUrl || platformConfig.profileUrl;
+        if (!url) continue;
+        const q = String(tag || '').trim().replace(/^#/, '');
+        if (!q) continue;
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+        await new Promise(r => setTimeout(r, 1500));
+        if (s.searchBox) {
+            await page.click(s.searchBox, { timeout: 4000 }).catch(() => {});
+            await page.keyboard.down('Control').catch(() => {});
+            const keys = process.platform === 'darwin' ? 'Meta' : 'Control';
+            await page.keyboard.down(keys).catch(() => {});
+            await page.keyboard.press('a').catch(() => {});
+            await page.keyboard.up('Control').catch(() => {});
+            await page.keyboard.up(keys).catch(() => {});
+            await page.keyboard.type(q, { delay: 10 }).catch(() => {});
+        }
+        if (s.searchSubmit) await page.click(s.searchSubmit, { timeout: 2000 }).catch(() => {});
+        await page.keyboard.press('Enter').catch(() => {});
+        await new Promise(r => setTimeout(r, 2500));
+        // Prefer People/Users tab when available (TikTok/X/IG/FB expose it).
+        if (s.peopleTab) await page.click(s.peopleTab, { timeout: 2000 }).catch(() => {});
+        await new Promise(r => setTimeout(r, 1200));
+        let items = [];
+        const ext = platformConfig.extractors?.people;
+        if (ext?.selector && ext?.parseFunction) {
+            try {
+                const parseFunc = new Function('items', 'return (' + ext.parseFunction + '\n)(items);');
+                items = await page.$$eval(ext.selector, parseFunc).catch(() => []);
+            } catch (e) { logger.warn(`[discover] extractor failed (${q}): ${e.message}`); items = []; }
+        }
+        if (!items.length) {
+            // Generic fallback: scan visible profile-ish links for this platform.
+            items = await page.evaluate(() => {
+                const out = [];
+                const seen = new Set();
+                for (const a of document.querySelectorAll('a[href]')) {
+                    const href = a.getAttribute('href') || '';
+                    const u = href.match(/\/(?:@)?([A-Za-z0-9_.]+)\/?(?:\?.*)?$/);
+                    if (!u || /search|explore|notifications|home|login|signup/i.test(href)) continue;
+                    const handle = (u[1] || '').replace(/^@+/, '');
+                    if (!handle || seen.has(handle)) continue;
+                    seen.add(handle);
+                    out.push({ username: handle, url: a.href });
+                    if (out.length >= 30) break;
+                }
+                return out;
+            }).catch(() => []);
+        }
+        for (const it of (items || []).slice(0, maxPerTag)) {
+            const h = String(it?.username || it?.handle || '').trim().replace(/^@+/, '');
+            if (h && !found.has(h)) found.set(h, { username: h, url: it?.url || '', tag: q });
+            if (found.size >= 50) break;
+        }
+        logger.info(`[discover] tag "${q}": +${(items || []).length} people`);
+    }
+    return [...found.values()];
+}
+
 async function processTask(taskPayload) {
     let browser = null;
     let page = null;
@@ -54,25 +121,41 @@ async function processTask(taskPayload) {
         const platform = (taskPayload.platform || "").toLowerCase();
         const operationRaw = String(taskPayload.operation || "scrapeProfile");
         const operation = operationRaw.toLowerCase();
-        // Batch mode: searchQueries array carries ALL target handles for this
-        // profile. Falls back to the legacy single searchQuery/targetUsername.
+        // Batch mode: searchQueries array carries ALL target handles.
+        // People Search discovery (no CSV): `tags`/`discoveryTags`/
+        // `peopleTags`/`discoveryKeywords` carry tags to search people for.
+        // When present, handles list may be empty (front-end no-CSV path).
         let searchQueries = [];
-        if (Array.isArray(taskPayload.searchQueries) && taskPayload.searchQueries.length > 0) {
+        const discoveryMode = taskPayload.discoveryMode === true
+            || String(taskPayload.discoveryMode || '').toLowerCase() === 'true'
+            || !!taskPayload.tags || !!taskPayload.discoveryTags || !!taskPayload.peopleTags || !!taskPayload.discoveryKeywords;
+        let discoveryTags = [];
+        const rawTags = taskPayload.tags || taskPayload.discoveryTags || taskPayload.peopleTags || taskPayload.discoveryKeywords || [];
+        if (Array.isArray(rawTags) && rawTags.length > 0) discoveryTags = rawTags.map(q => String(q || '').trim()).filter(Boolean);
+        else if (discoveryMode && Array.isArray(taskPayload.searchQueries) && taskPayload.searchQueries.length > 0 && !taskPayload.targets) discoveryTags = taskPayload.searchQueries.map(q => String(q || '').trim()).filter(Boolean);
+        if (Array.isArray(taskPayload.targets) && taskPayload.targets.length > 0) {
+            searchQueries = taskPayload.targets.map(q => String(q || '').trim().replace(/^@+/, '')).filter(Boolean);
+        } else if (Array.isArray(taskPayload.searchQueries) && taskPayload.searchQueries.length > 0 && !discoveryTags.length) {
             searchQueries = taskPayload.searchQueries.map(q => String(q || '').trim().replace(/^@+/, '')).filter(Boolean);
         } else {
             const single = String(taskPayload.searchQuery || taskPayload.targetUsername || "").trim().replace(/^@+/, "");
-            if (single) searchQueries = [single];
+            if (single && !discoveryTags.length) searchQueries = [single];
         }
-        const keyword = searchQueries[0] || "";
+        // When discoveryTags cover the task (no CSV), searchQueries doubles as tags
+        // only if no explicit handle list was given.
+        if (!searchQueries.length && discoveryTags.length) {
+            // discovery populates handles below — keep searchQueries empty here.
+        }
+        const keyword = searchQueries[0] || discoveryTags[0] || "";
         const cookieJSON = taskPayload.cookieJSON;
         const profileId = taskPayload.profileId || taskPayload.accountId || null;
         const socialStrategyPrompt = taskPayload.socialStrategyPrompt || null;
 
-        logger.info(`[processTask] ${taskId}: ${platform}/${operation} keywords=${searchQueries.length} [${searchQueries.slice(0, 3).join(', ')}${searchQueries.length > 3 ? '...' : ''}]`);
+        logger.info(`[processTask] ${taskId}: ${platform}/${operation} handles=${searchQueries.length} discoveryTags=${discoveryTags.length} [${(searchQueries.length ? searchQueries : discoveryTags).slice(0, 3).join(', ')}${(searchQueries.length ? searchQueries : discoveryTags).length > 3 ? '...' : ''}]`);
 
         if (!platform) throw new Error("Platform not specified");
         if (!cookieJSON) throw new Error("No cookies provided");
-        if (searchQueries.length === 0) throw new Error("No target handles provided");
+        if (!searchQueries.length && !discoveryTags.length) throw new Error("No target handles or discovery tags provided");
 
         const engagementMode = taskPayload.engagementMode === true || String(taskPayload.engagementMode || "").toLowerCase() === "true";
         const platformConfig = getPlatformConfig(platform);
@@ -126,9 +209,29 @@ async function processTask(taskPayload) {
         const useRunner = supportsPageRunner(platform) && !!pageActionForOperation(operationRaw, engagementMode);
         let runnerStop = null;
 
+        // People Search discovery — populates handles when no CSV is given.
+        // Chain: list → discovery → activities (see fallback below).
+        const doDiscovery = async (exclude) => {
+            const discMax = Number(taskPayload.maxDiscoveryPerTag || taskPayload.maxResultsPerKeyword || 5);
+            const discovered = await discoverPeopleHandles(page, platformConfig, discoveryTags, discMax);
+            const fresh = discovered.filter(d => !exclude.has(d.username.toLowerCase()));
+            if (!fresh.length) { logger.info(`[processTask] ${taskId}: discovery found 0 new profiles for ${discoveryTags.length} tag(s)`); return []; }
+            logger.info(`[processTask] ${taskId}: discovery found ${fresh.length} profile(s) for ${discoveryTags.length} tag(s)`);
+            return fresh;
+        };
+        let effectiveHandles = searchQueries;
+        const discoveredHandlesRef = { discovered: [] };
+        if (useRunner && discoveryTags.length && !searchQueries.length) {
+            const fresh = await doDiscovery(new Set());
+            effectiveHandles = fresh.map(d => d.username);
+            discoveredHandlesRef.discovered = fresh;
+            logger.info(`[processTask] ${taskId}: discovery mode (no CSV) — ${effectiveHandles.length} handle(s) from People Search`);
+        }
+
         if (useRunner) {
             const messageText = taskPayload.messageText || taskPayload.commentText || taskPayload.comment || "";
-            for (const kw of searchQueries) {
+            const doneHandles = new Set();
+            for (const kw of effectiveHandles) {
                 const run = await runPageInteract({
                     page,
                     platform,
@@ -146,10 +249,67 @@ async function processTask(taskPayload) {
                     quota[k] = (quota[k] || 0) + (Number(v) || 0);
                 }
                 results.push(...(run.results || []).map(r => ({ ...r, keyword: kw })));
+                doneHandles.add(String(kw).toLowerCase());
                 if (run.stopType) { runnerStop = run.stopType; break; }
+            }
+            // List exhausted → People Search discovery (if tags provided) → then activities.
+            const doDiscoveryFallback = taskPayload.fallbackToDiscovery !== false && taskPayload.fallbackToDiscovery !== 'false';
+            if (!runnerStop && discoveryTags.length && doDiscoveryFallback) {
+                const fresh = await doDiscovery(doneHandles);
+                if (fresh.length) {
+                    logger.info(`[processTask] ${taskId}: list done — discovering ${fresh.length} via People Search tags`);
+                    for (const d of fresh) {
+                        const run = await runPageInteract({
+                            page,
+                            platform,
+                            profileId,
+                            campaignId: taskPayload.campaignId || taskPayload.campaign || null,
+                            taskId,
+                            handles: [d.username],
+                            operation: operationRaw,
+                            engagementMode,
+                            messageText,
+                            stopAfterHours: Number(taskPayload.stopAfterHours) || 0,
+                        });
+                        for (const [k, v] of Object.entries(run.quota || {})) { if (k === "total") continue; quota[k] = (quota[k] || 0) + (Number(v) || 0); }
+                        results.push(...(run.results || []).map(r => ({ ...r, keyword: d.username, discovered: true })));
+                        doneHandles.add(d.username.toLowerCase());
+                        if (run.stopType) { runnerStop = run.stopType; break; }
+                    }
+                }
             }
             if (runnerStop) logger.info(`[processTask] ${taskId}: runner stopped (${runnerStop})`);
             runnerAccounted = true;
+            // Fallback chain: when the profile list is exhausted, keep the
+            // account engaging via notifications + For You feed until quota or
+            // time stops it (no idle gaps while the campaign is running).
+            const fallback = taskPayload.fallbackToActivities !== false && taskPayload.fallbackToActivities !== 'false';
+            const anyRemaining = searchQueries.length > 0 || discoveredHandlesRef.discovered.length > 0;
+            if (fallback && anyRemaining && !runnerStop) {
+                try {
+                    const actHelper = await import('../activities-interact/routeHelper.js');
+                    if (actHelper.supportsActivitiesRunner && actHelper.supportsActivitiesRunner(platform)) {
+                        logger.info(`[processTask] ${taskId}: profile list done — falling back to activities (notifications + feed)`);
+                        const actRun = await actHelper.runActivitiesInteract({
+                            page, platform, profileId,
+                            campaignId: taskPayload.campaignId || taskPayload.campaign || null,
+                            taskId: taskId + '-fallback',
+                            operation: 'engageWithNotifications',
+                            engagementMode: true,
+                            messageText: taskPayload.messageText || taskPayload.commentText || '',
+                            stopAfterHours: Number(taskPayload.stopAfterHours) || 0,
+                            maxEngagements: Number(taskPayload.maxEngagements) || 20,
+                        });
+                        for (const [k, v] of Object.entries(actRun.quota || {})) {
+                            if (k === "total") continue;
+                            quota[k] = (quota[k] || 0) + (Number(v) || 0);
+                        }
+                        results.push(...(actRun.results || []).map(r => ({ ...r, via: 'activities-fallback' })));
+                    }
+                } catch (e) {
+                    logger.warn(`[processTask] ${taskId}: activities fallback failed: ${e.message}`);
+                }
+            }
         }
 
         let workflowKeys;
@@ -165,8 +325,19 @@ async function processTask(taskPayload) {
             if (workflowKeys.length === 0) throw new Error(`No workflow resolved for operation: ${operationRaw}`);
             const workflows = workflowKeys.map(key => getWorkflow(platform, key));
 
+            // People Search fallback for workflow-only platforms: discover handles
+            // from tags when no CSV list was given, then run them through workflows.
+            let workflowHandles = searchQueries;
+            if (!workflowHandles.length && discoveryTags.length) {
+                try {
+                    const fresh = await discoverPeopleHandles(page, platformConfig, discoveryTags, Number(taskPayload.maxDiscoveryPerTag || taskPayload.maxResultsPerKeyword || 5));
+                    workflowHandles = fresh.map(d => d.username);
+                    logger.info(`[processTask] ${taskId}: discovery (workflow) found ${workflowHandles.length} profile(s)`);
+                } catch (e) { logger.warn(`[processTask] ${taskId}: discovery failed: ${e.message}`); }
+            }
+
             // ---- Single-session batch: loop ALL target handles in ONE browser ----
-            for (const kw of searchQueries) {
+            for (const kw of workflowHandles) {
                 const context = {
                     platform,
                     operation,

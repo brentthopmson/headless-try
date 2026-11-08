@@ -24,6 +24,7 @@ import { checkActionAllowed, getPlatformLimits } from '../_shared/limits.js';
 import { resolveAccountGate, accountGateError } from '../_shared/accountGate.js';
 import { getAccountUsage, consumeAccountActions, updateAccountStatus } from '../_shared/hubUpdater.js';
 import { fetchTaskData, updateTaskRow, runSearchInteractEngagement } from './routeHelper.js';
+import { runGenericEngagement } from './platformHelper/genericRunner.js';
 import { requireFeature } from '../../../utils/featureGate.js';
 import { markTagsDone } from '../../campaign/_shared/pipelineUtils.js';
 import { getMaxConcurrentTasks, getMaxConcurrentTasksSync } from '../../../utils/campaignConcurrency.js';
@@ -138,9 +139,14 @@ async function processTask(taskRow, columnIndexes) {
         // In batch/engagement mode the per-action gate lives INSIDE the runner
         // (checked before every like/comment/reply), so a pre-flight block on
         // 'like' alone would wrongly kill a run that could still comment.
+        // --- Keith wiring (all non-TikTok platforms now verified-runner) ---
+        // YouTube + X/Twitter + Facebook + Instagram + Quora + Reddit + Threads:
+        // config-driven generic runner. TikTok keeps its custom runner.
+        const GENERIC_PLATFORMS = ['youtube', 'twitter', 'facebook', 'instagram', 'quora', 'reddit', 'threads'];
         const consumes = operationConsumes(operationRaw, engagementMode);
+        const useGenericRunner = consumes && engagementMode && GENERIC_PLATFORMS.includes(platform);
         useEngagementRunner = consumes && engagementMode && (platform === 'tiktok');
-        if (consumes && !useEngagementRunner) {
+        if (consumes && !useEngagementRunner && !useGenericRunner) {
             const baseActions = engagementMode
                 ? actionsForExecutedKeys([pickWorkflowKey(['interactWithVideo', 'interactWithPost'], platformConfig.workflows)].filter(Boolean), operationRaw)
                 : baseActionsForOperation(operationRaw);
@@ -233,6 +239,21 @@ async function processTask(taskRow, columnIndexes) {
                 finalStatus = "COMPLETED";
             }
 
+            logger.info(`[processTask] Task ${taskId} completed: engaged=${engagementSummary.engaged}, failed=${engagementSummary.failed}, stop=${engagementSummary.stopType || 'none'}`);
+        } else if (useGenericRunner) {
+            // ---- Generic engagement path (YouTube/X) — config-driven, verified ----
+            logger.info(`[processTask] ${taskId}: generic engagement batch (${platform}) — ${searchQueries.length} keyword(s), cap=${maxResultsPerKeyword}/kw`);
+            engagementSummary = await runGenericEngagement(page, {
+                platform, platformConfig, ai: MultiProviderAI, profileId, campaignId,
+                keywords: searchQueries, maxResultsPerKeyword,
+                stopAfterHours: interactionStopAfterHours, socialStrategyPrompt, taskId,
+            });
+            results = engagementSummary.results || [];
+            quotaSummary = engagementSummary.quota || {};
+            try { await markTagsDone(campaignId, profileId, engagementSummary.completedKeywords || []); } catch (e) { logger.warn(`[processTask] ${taskId}: tag status persist failed: ${e.message}`); }
+            if (engagementSummary.stopType === 'daily' || engagementSummary.stopType === 'monthly' || engagementSummary.stopType === 'yearly' || engagementSummary.stopType === 'cap') finalStatus = "COMPLETED";
+            else if (engagementSummary.engaged === 0 && engagementSummary.failed > 0 && (engagementSummary.completedKeywords || []).length === 0) { finalStatus = "FAILED"; results.push({ status: 'failed', reason: 'all_interactions_failed' }); }
+            else finalStatus = "COMPLETED";
             logger.info(`[processTask] Task ${taskId} completed: engaged=${engagementSummary.engaged}, failed=${engagementSummary.failed}, stop=${engagementSummary.stopType || 'none'}`);
         } else {
             // ---- Legacy linear workflow path (non-consuming or non-TikTok) ----

@@ -1930,7 +1930,9 @@ Or if nothing challenge-related is visible:
                     continue;
                 }
 
-                const parsed = JSON.parse(jsonMatch[0]);
+                let parsed = null;
+                try { parsed = aiService.parseAiJson ? aiService.parseAiJson(responseText) : JSON.parse(jsonMatch[0]); } catch { parsed = null; }
+                if (!parsed || typeof parsed !== 'object') { logger.warn(`[solveRecaptchaAI][${instanceId}] Unparsable AI JSON.`); continue; }
                 if (parsed.type === 'none' || parsed.type === 'unknown') {
                     logger.info(`[solveRecaptchaAI][${instanceId}] No challenge visible on page.`);
                     return false;
@@ -1938,14 +1940,17 @@ Or if nothing challenge-related is visible:
 
                 // If AI found a challenge, try to click it using frame_x_pct etc
                 if (parsed.frame_x_pct && parsed.frame_y_pct && parsed.cells && parsed.cells.length > 0) {
+                    const pct = (v, d) => { const n = Number(v); return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : d; };
+                    const gridSize = [3, 4].includes(parsed.grid_size) ? parsed.grid_size : 3;
+                    parsed.grid_size = gridSize;
+                    parsed.cells = (Array.isArray(parsed.cells) ? parsed.cells : []).filter(c => Array.isArray(c) && c.length === 2 && Number.isInteger(c[0]) && Number.isInteger(c[1]) && c[0] >= 1 && c[0] <= gridSize && c[1] >= 1 && c[1] <= gridSize).slice(0, gridSize * gridSize);
+                    if (!parsed.cells.length) { logger.warn(`[solveRecaptchaAI][${instanceId}] AI cells out of range — ignored.`); continue; }
                     const pageWidth = 1920;
                     const pageHeight = 1080;
-                    const frameX = pageWidth * parsed.frame_x_pct / 100;
-                    const frameY = pageHeight * parsed.frame_y_pct / 100;
-                    const frameW = pageWidth * (parsed.frame_width_pct || 20) / 100;
-                    const frameH = pageHeight * (parsed.frame_height_pct || 40) / 100;
-
-                    const gridSize = parsed.grid_size || 3;
+                    const frameX = pageWidth * pct(parsed.frame_x_pct, 0) / 100;
+                    const frameY = pageHeight * pct(parsed.frame_y_pct, 0) / 100;
+                    const frameW = pageWidth * pct(parsed.frame_width_pct, 20) / 100;
+                    const frameH = pageHeight * pct(parsed.frame_height_pct, 40) / 100;
                     const cellW = frameW / gridSize;
                     const cellH = frameH / gridSize;
 
@@ -2043,7 +2048,17 @@ Rules:
                 continue;
             }
 
-            const parsed = JSON.parse(jsonMatch[0]);
+            let parsed = null;
+            try { parsed = aiService.parseAiJson ? aiService.parseAiJson(responseText) : JSON.parse(jsonMatch[0]); } catch { parsed = null; }
+            if (!parsed || typeof parsed !== 'object') { logger.warn(`[solveRecaptchaAI][${instanceId}] Unparsable AI JSON.`); continue; }
+            // Normalize + bound everything the model may have hallucinated.
+            { const pct = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : null; };
+              const grid = [3, 4].includes(parsed.grid_size) ? parsed.grid_size : 3;
+              parsed.grid_size = grid;
+              if (Array.isArray(parsed.cells)) parsed.cells = parsed.cells.filter(c => Array.isArray(c) && c.length === 2 && Number.isInteger(c[0]) && Number.isInteger(c[1]) && c[0] >= 1 && c[0] <= grid && c[1] >= 1 && c[1] <= grid).slice(0, grid * grid);
+              if (Array.isArray(parsed.clicks)) parsed.clicks = parsed.clicks.filter(c => Array.isArray(c) && c.length === 2 && pct(c[0]) !== null && pct(c[1]) !== null).map(c => [pct(c[0]), pct(c[1])]).slice(0, 6);
+              if (Array.isArray(parsed.play_button_coords)) parsed.play_button_coords = parsed.play_button_coords.map(pct).filter(v => v !== null).slice(0, 2);
+            }
             logger.info(`[solveRecaptchaAI][${instanceId}] Parsed: type=${parsed.type}, cells=${JSON.stringify(parsed.cells || parsed.clicks || [])}`);
 
             if (parsed.type === 'none' || parsed.type === 'unknown') {

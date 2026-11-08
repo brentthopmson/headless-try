@@ -134,22 +134,48 @@ export async function runActivitiesInteract(options = {}) {
 
         if (notifications.length === 0 && ctx.shouldContinue() && ctx.engaged < maxEngagements) {
             log.info(`[${taskId}] No notifications found — navigating to FYP feed to interact`);
-            const feedUrl = String(platform).toLowerCase() === 'tiktok' ? 'https://www.tiktok.com/foryou' : 'https://www.tiktok.com/';
+            const FEED_URLS = {
+                tiktok: 'https://www.tiktok.com/foryou',
+                twitter: 'https://x.com/home',
+                facebook: 'https://www.facebook.com',
+                instagram: 'https://www.instagram.com',
+                youtube: 'https://www.youtube.com',
+                quora: 'https://www.quora.com',
+                reddit: 'https://www.reddit.com',
+                threads: 'https://www.threads.net',
+            };
+            const feedUrl = FEED_URLS[String(platform).toLowerCase()] || 'https://www.tiktok.com/';
             const ok = await page.goto(feedUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).then(() => true).catch(() => false);
             if (ok) {
                 await new Promise(r => setTimeout(r, 2500));
-                if (await ctx.check("like")) {
+                // Feed sweep: iterate posts (TikTok swipe = ArrowDown, others scroll)
+                // until maxEngagements or quotas exhaust — until all actions stop.
+                let feedSteps = 0;
+                while (ctx.shouldContinue() && ctx.engaged < maxEngagements && feedSteps < maxEngagements) {
+                    feedSteps += 1;
                     const gate = await skipIfAlreadyInteracted("like");
                     if (gate.skip) {
-                        results.push({ type: "fyp_like", status: "ALREADY_INTERACTED", reason: gate.reason, postId: gate.postId });
-                        log.info(`[${taskId}] FYP post already interacted — skipped`);
-                    } else {
+                        results.push({ type: "fyp_like", status: "ALREADY_INTERACTED", reason: gate.reason, postId: gate.postId, step: feedSteps });
+                        log.info(`[${taskId}] FYP step ${feedSteps}: post already interacted — skipping`);
+                    } else if (await ctx.check("like")) {
                         const outcome = await helper.like(page);
                         const isOk = !!(outcome && (outcome.verified || outcome.unverified));
                         const postId = gate.postId || getStablePostId(platform, page.url());
-                        if (outcome && outcome.already) { await markInteracted(postId, 'already_liked'); results.push({ type: "fyp_like", status: "ALREADY_INTERACTED", reason: 'main_post_already_liked' }); }
-                        else if (isOk) { await markInteracted(postId, 'engaged'); await ctx.record("like", 1); ctx.engaged += 1; results.push({ type: "fyp_like", status: "DONE" }); log.info(`[${taskId}] Interacted on FYP (liked video)`); }
+                        if (outcome && outcome.already) { await markInteracted(postId, 'already_liked'); results.push({ type: "fyp_like", status: "ALREADY_INTERACTED", reason: 'main_post_already_liked', postId, step: feedSteps }); }
+                        else if (isOk) { await markInteracted(postId, 'engaged'); await ctx.record("like", 1); ctx.engaged += 1; results.push({ type: "fyp_like", status: "DONE", postId, step: feedSteps }); log.info(`[${taskId}] Interacted on FYP step ${feedSteps} (liked)`); }
+                        else { ctx.failed += 1; results.push({ type: "fyp_like", status: "FAILED", reason: outcome?.reason, step: feedSteps }); }
+                    } else { break; }
+                    // Optional comment on the feed post (quota-gated, AI text if provided).
+                    if (messageText && await ctx.check("comment")) {
+                        const cOutcome = await helper.comment(page, messageText).catch(() => null);
+                        const cOk = !!(cOutcome && (cOutcome.verified || cOutcome.unverified));
+                        if (cOk) { await ctx.record("comment", 1); ctx.engaged += 1; results.push({ type: "fyp_comment", status: "DONE", step: feedSteps }); }
                     }
+                    await new Promise(r => setTimeout(r, 1200));
+                    // Advance feed: TikTok swipe-down; others scroll.
+                    if (String(platform).toLowerCase() === 'tiktok') { await page.keyboard.press('ArrowDown').catch(() => {}); await page.evaluate(() => window.scrollBy(0, 900)).catch(() => {}); }
+                    else { await page.evaluate(() => window.scrollBy(0, 900)).catch(() => {}); }
+                    await new Promise(r => setTimeout(r, 2000));
                 }
             }
         }

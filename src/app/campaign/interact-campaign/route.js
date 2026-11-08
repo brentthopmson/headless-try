@@ -12,24 +12,31 @@ export const maxDuration = 120;
 export const dynamic = "force-dynamic";
 
 async function classifyReply(replyBody) {
-  const prompt = `Classify this email reply into one of these categories:
+  const prompt = `Classify this email reply that was sent TO our campaign account (the contact wrote to us; we did not write it). The reply body below is FROM the contact TO us.
+
+Classify it into one of these categories:
 - positive: interested, wants to connect, scheduling meeting
 - negative: not interested, rejection, do not contact
 - neutral: questions, information request, acknowledgment
 - out_of_office: auto-reply, vacation, away message
 - unsubscribe: wants to be removed from mailing list
 
-Reply body:
+Reply body (from the contact, to us):
 ${replyBody.slice(0, 1000)}
 
 Return ONLY a JSON object: {"type": "category", "confidence": 0.0-1.0}`;
 
   try {
     const ai = new MultiProviderAI();
-    const text = await ai.generate(prompt);
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
+    const text = await ai.generate(prompt, { jsonMode: true });
+    const parsed = ai.parseAiJson(text);
+    if (parsed && typeof parsed === 'object') {
+      const ALLOWED = new Set(['positive', 'negative', 'neutral', 'out_of_office', 'unsubscribe']);
+      const type = ALLOWED.has(String(parsed.type || '').toLowerCase()) ? String(parsed.type).toLowerCase() : 'neutral';
+      let confidence = Number(parsed.confidence);
+      if (!Number.isFinite(confidence)) confidence = 0.5;
+      confidence = Math.min(1, Math.max(0, confidence));
+      return { type, confidence };
     }
   } catch (err) {
     log.warn(` Classification failed: ${err.message}`);
@@ -38,11 +45,11 @@ Return ONLY a JSON object: {"type": "category", "confidence": 0.0-1.0}`;
 }
 
 async function generateAutoReply(replyType, campaignContext, senderEmail) {
-  const prompt = `Generate a brief, professional auto-reply for an email campaign response.
+  const prompt = `Generate a brief, professional auto-reply that our campaign account sends back to a contact who emailed us. You are the account owner replying; the contact is the recipient of this reply.
 
-Response type: ${replyType}
+Response type (about the contact's email): ${replyType}
 Campaign context: ${campaignContext || "General outreach"}
-Sender: ${senderEmail}
+Contact (recipient of this reply): ${senderEmail}
 
 Rules:
 - Keep it under 50 words
@@ -51,13 +58,15 @@ Rules:
 - For neutral: provide helpful information
 - For negative: acknowledge and respect their decision
 - For out_of_office: no reply needed
+- "You" (in the reply) = the contact; "I/we" = us, the campaign account. Never act as if the contact already agreed to a meeting unless their email says so.
 
 Return ONLY the reply text, no JSON or formatting.`;
 
   try {
     const ai = new MultiProviderAI();
     const text = await ai.generate(prompt);
-    return text.trim();
+    const clean = ai.sanitizeAiPlainText(String(text || ''), 500);
+    return clean ? clean.charAt(0).toUpperCase() + clean.slice(1) : null;
   } catch (err) {
     log.warn(` Auto-reply generation failed: ${err.message}`);
   }

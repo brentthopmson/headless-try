@@ -12,6 +12,9 @@ export const platformConfigs = {
         profileUrl: "https://x.com",
 
         selectors: {
+            searchBox: "input[aria-label='Search post']",
+            searchSubmit: "button:has-text('Search')",
+            peopleTab: "button:has-text('People'), a:has-text('People')",
             profileNav: "a[aria-label='Profile']",
             followersCount: "a[href*='/followers'] span",
             followingCount: "a[href*='/following'] span",
@@ -94,11 +97,30 @@ export const platformConfigs = {
         },
 
         aiPrompts: {
-            analyzeProfile: "Analyze this profile. What is their main focus/niche? What kind of content do they post?",
-            shouldFollowBack: "Based on this profile description, should we follow them back? Respond with ONLY: yes or no",
+            // Profile channel: the profile below is the TARGET (another user) —
+            // never your own profile. "Should we follow" means should YOU (the
+            // campaign account) follow THEM.
+            analyzeProfile: "Analyze this TARGET profile (another user's profile, not yours). What is their main focus/niche? What kind of content do they post?",
+            shouldFollowBack: "Based on this TARGET profile description (another user), should we follow THEM back? Respond with ONLY: yes or no",
         },
 
         extractors: {
+            people: {
+                selector: "div[data-testid='UserCell']",
+                parseFunction: `(cells) => {
+                    const users = [];
+                    cells.forEach(cell => {
+                        try {
+                            const link = cell.querySelector("a[href*='/']");
+                            const u = link ? link.getAttribute('href') : '';
+                            const m = u && u.match(/\/([^\/]+)\/?$/);
+                            const username = m ? m[1] : link?.textContent.trim().replace(/^@+/, '');
+                            if (username) users.push({ username, url: link ? link.href : '' });
+                        } catch(e) {}
+                    });
+                    return users;
+                }`
+            },
             profileStats: {
                 selector: "main [role='region']",
                 parseFunction: `(container) => {
@@ -151,6 +173,9 @@ export const platformConfigs = {
         profileUrl: "https://www.tiktok.com",
 
         selectors: {
+            searchBox: "input[data-key-interaction='search_input'], input[data-e2e='search-user-input'], input[placeholder*='Search']",
+            searchSubmit: "button[data-e2e='search-box-button'], button[data-e2e='nav-search']",
+            peopleTab: "button:has-text('Users'), a:has-text('Users')",
             profileNav: "a[data-e2e='nav-profile']",
             followersCount: "div[data-e2e='followers-count'] strong",
             followingCount: "div[data-e2e='following-count'] strong",
@@ -220,11 +245,27 @@ export const platformConfigs = {
         },
 
         aiPrompts: {
-            analyzeProfile: "Analyze this TikTok profile. What type of content creator are they? What is their niche/audience?",
-            shouldFollowBack: "Based on this profile, should we follow them? Respond with ONLY: yes or no",
+            analyzeProfile: "Analyze this TARGET TikTok profile (another creator's profile, not yours). What type of content creator are they? What is their niche/audience?",
+            shouldFollowBack: "Based on this TARGET profile (another user), should we follow THEM? Respond with ONLY: yes or no",
         },
 
         extractors: {
+            people: {
+                selector: "div[data-e2e^='search-user']",
+                parseFunction: `(items) => {
+                    const users = [];
+                    items.forEach(item => {
+                        try {
+                            const link = item.querySelector("a[href*='/@']");
+                            const u = link ? link.getAttribute('href') : '';
+                            const m = u && u.match(/\/@([^\/]+)\/?$/);
+                            const username = m ? m[1] : (link?.textContent || '').trim().replace(/^@+/, '');
+                            if (username) users.push({ username, url: link ? link.href : '' });
+                        } catch(e) {}
+                    });
+                    return users;
+                }`
+            },
             profileStats: {
                 selector: "div[data-e2e='followers-count']",
                 parseFunction: `(elements) => {
@@ -258,8 +299,12 @@ export const platformConfigs = {
     facebook: {
         platform: "facebook",
         profileUrl: "https://www.facebook.com",
+        searchUrl: "https://www.facebook.com/search",
 
         selectors: {
+            searchBox: "input[placeholder*='Search']",
+            searchSubmit: "button[type='submit']",
+            peopleFilter: "button:has-text('People')",
             profileNav: "a[aria-label*='Profile']",
             followersCount: "a[href*='followers'] span",
             followingCount: "a[href*='following'] span",
@@ -316,8 +361,10 @@ export const platformConfigs = {
     instagram: {
         platform: "instagram",
         profileUrl: "https://www.instagram.com",
+        searchUrl: "https://www.instagram.com/explore/search",
 
         selectors: {
+            searchBox: "input[placeholder*='Search']",
             profileNav: "a[href*='instagram']",
             followersCount: "a[href*='followers'] span",
             followingCount: "a[href*='following'] span",
@@ -373,8 +420,10 @@ export const platformConfigs = {
     quora: {
         platform: "quora",
         profileUrl: "https://www.quora.com",
+        searchUrl: "https://www.quora.com/search",
 
         selectors: {
+            searchBox: "input[placeholder*='Search']",
             followButton: "button:has-text('Follow')",
             followingButton: "button:has-text('Following')",
             upvoteButton: "button[aria-label*='Upvote']",
@@ -418,8 +467,10 @@ export const platformConfigs = {
         platform: "youtube",
         homeUrl: "https://www.youtube.com",
         profileUrl: "https://www.youtube.com",
+        searchUrl: "https://www.youtube.com/results",
 
         selectors: {
+            searchBox: "input#search, input[name='search_query']",
             followButton: "#subscribe-button button, ytd-subscribe-button-renderer button",
             unfollowButton: "ytd-subscribe-button-renderer button:has-text('Subscribed')",
             postItem: "ytd-rich-item-renderer a#video-title, ytd-grid-video-renderer a#video-title",
@@ -478,8 +529,8 @@ export const platformConfigs = {
         },
 
         aiPrompts: {
-            analyzeProfile: "Analyze this YouTube channel. What is their main focus/niche? What kind of content do they post?",
-            shouldFollowBack: "Based on this channel description, should we subscribe back? Respond with ONLY: yes or no",
+            analyzeProfile: "Analyze this TARGET YouTube channel (another creator's channel, not yours). What is their main focus/niche? What kind of content do they post?",
+            shouldFollowBack: "Based on this TARGET channel description (another creator), should we subscribe to THEM? Respond with ONLY: yes or no",
         },
 
         extractors: {
@@ -508,6 +559,166 @@ export const platformConfigs = {
 
         interactionRules: {
             maxFollowsPerProfile: 5,
+            maxLikesPerProfile: 3,
+        }
+    },
+
+    // ==================== REDDIT ====================
+    // Page-interact on Reddit = profile read + follow/avatar follow.
+    // "Should we follow" = should YOU (campaign account) follow THIS user.
+    reddit: {
+        platform: "reddit",
+        homeUrl: "https://www.reddit.com",
+        searchUrl: "https://www.reddit.com/search",
+        profileUrl: "https://www.reddit.com/user",
+
+        selectors: {
+            searchBox: "input[placeholder*='Search']",
+            profileNav: "a[href='/new/']",
+            followersCount: "a[href*='karma'] span",
+            followButton: "button[data-testid='follow-button']",
+            followingButton: "button[data-testid='following-button']",
+            userAvatar: "div[data-testid='profile-header']",
+        },
+
+        timing: {
+            minDelayBetweenActions: 2000,
+            maxDelayBetweenActions: 5000,
+            followDelay: 1500,
+            navigationTimeout: 20000,
+        },
+
+        workflows: {
+            scrapeProfile: {
+                name: "Scrape Reddit profile",
+                steps: [
+                    { action: "navigate", url: "${profileUrl}/${keyword}", waitUntil: "networkidle0" },
+                    { action: "pause", duration: 2500 },
+                    { action: "capturePageContent", captureName: "profilePage" },
+                ],
+                extract: "profileStats"
+            },
+            followUser: {
+                name: "Follow a Reddit user",
+                steps: [
+                    { action: "navigate", url: "${profileUrl}/${keyword}", waitUntil: "networkidle0" },
+                    { action: "pause", duration: 2500 },
+                    { action: "click", selector: "${selectors.followButton}" },
+                    { action: "pause", duration: 1500 },
+                    { action: "capturePageContent", captureName: "followResult" },
+                ],
+                extract: "followResult"
+            },
+        },
+
+        aiPrompts: {
+            analyzeProfile: "Analyze this TARGET Reddit user profile (another user's profile, not yours). What is their main focus/niche? What kind of content do they post?",
+            shouldFollowBack: "Based on this TARGET Reddit profile (another user), should we follow THEM? Respond with ONLY: yes or no",
+        },
+
+        extractors: {
+            profileStats: {
+                selector: "div[data-testid='profile-header']",
+                parseFunction: `(container) => {
+                    const stats = {};
+                    try {
+                        const nameEl = container[0].querySelector('h1, a');
+                        if (nameEl) stats.name = nameEl.textContent.trim();
+                    } catch(e) {}
+                    return [stats];
+                }`
+            },
+            followResult: {
+                selector: "button[data-testid='follow-button']",
+                parseFunction: `(buttons) => { return [{ followed: buttons.length === 0 }]; }`
+            },
+        },
+
+        interactionRules: {
+            maxFollowsPerProfile: 5,
+            likeRecentPosts: true,
+            maxLikesPerProfile: 3,
+        }
+    },
+
+    // ==================== THREADS ====================
+    threads: {
+        platform: "threads",
+        homeUrl: "https://www.threads.net",
+        searchUrl: "https://www.threads.net/search",
+        profileUrl: "https://www.threads.net",
+
+        selectors: {
+            profileNav: "a[href='/']",
+            followersCount: "a[href*='followers'] span",
+            followingCount: "a[href*='following'] span",
+            followButton: "button:has-text('Follow')",
+            followingButton: "button:has-text('Following')",
+            postItem: "div[data-testid='post']",
+            likeButton: "button[aria-label*='Like']",
+        },
+
+        timing: {
+            minDelayBetweenActions: 2000,
+            maxDelayBetweenActions: 5000,
+            followDelay: 1500,
+            navigationTimeout: 20000,
+        },
+
+        workflows: {
+            scrapeProfile: {
+                name: "Scrape Threads profile",
+                steps: [
+                    { action: "navigate", url: "${profileUrl}/@${keyword}", waitUntil: "networkidle0" },
+                    { action: "pause", duration: 2500 },
+                    { action: "capturePageContent", captureName: "profilePage" },
+                ],
+                extract: "profileStats"
+            },
+            followUser: {
+                name: "Follow a Threads user",
+                steps: [
+                    { action: "navigate", url: "${profileUrl}/@${keyword}", waitUntil: "networkidle0" },
+                    { action: "pause", duration: 2500 },
+                    { action: "click", selector: "${selectors.followButton}" },
+                    { action: "pause", duration: 1500 },
+                ],
+            },
+            interactWithProfile: {
+                name: "Like recent Threads posts",
+                steps: [
+                    { action: "navigate", url: "${profileUrl}/@${keyword}", waitUntil: "networkidle0" },
+                    { action: "pause", duration: 2500 },
+                    { action: "scroll", distance: 400 },
+                    { action: "pause", duration: 1500 },
+                    { action: "click", selector: "${selectors.likeButton}" },
+                    { action: "pause", duration: 1000 },
+                ],
+            },
+        },
+
+        aiPrompts: {
+            analyzeProfile: "Analyze this TARGET Threads profile (another user's profile, not yours). What is their main focus/niche? What kind of posts do they share?",
+            shouldFollowBack: "Based on this TARGET Threads profile (another user), should we follow THEM? Respond with ONLY: yes or no",
+        },
+
+        extractors: {
+            profileStats: {
+                selector: "main",
+                parseFunction: `(container) => {
+                    const stats = {};
+                    try {
+                        const nameEl = container[0].querySelector('h1');
+                        if (nameEl) stats.name = nameEl.textContent.trim();
+                    } catch(e) {}
+                    return [stats];
+                }`
+            },
+        },
+
+        interactionRules: {
+            maxFollowsPerProfile: 5,
+            likeRecentPosts: true,
             maxLikesPerProfile: 3,
         }
     },

@@ -19,7 +19,7 @@ async function personalizeBatch(batch, personalizationPrompt, headers) {
     `${i + 1}. Name: ${contact.firstName}, Company: ${contact.company}, Email: ${contact.email}${contact.context ? `, Context: ${contact.context.slice(0, 200)}` : ""}`
   ).join("\n");
 
-  const prompt = `You are an expert personalized outreach copywriter. Generate highly tailored cold email subject lines and email bodies for these ${batch.length} recipients:
+  const prompt = `You are an expert personalized outreach copywriter writing as the SENDER (our campaign account). Generate highly tailored cold email subject lines and email bodies for these ${batch.length} recipients. Each recipient below is the person RECEIVING this email (they have never seen it) — never write as if they already replied or agreed to anything. "You" (in the email) = that recipient; "I/we" = the sender.
 
 ${batchDescription}
 
@@ -38,10 +38,21 @@ Rules:
 
   try {
     const ai = new MultiProviderAI();
-    const text = await ai.generate(prompt, { maxTokens: 4000 });
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
+    const text = await ai.generate(prompt, { maxTokens: 4000, jsonMode: true });
+    const parsed = ai.parseAiJson(text);
+    if (Array.isArray(parsed)) {
+      // Validate shape: only keep objects with string subject/body (bounded).
+      const clean = parsed.map(r => r && typeof r === 'object'
+        ? { subject: ai.sanitizeAiPlainText(String(r.subject || ''), 200), body: ai.sanitizeAiPlainText(String(r.body || ''), 4000) }
+        : null).filter(r => r && (r.subject || r.body));
+      if (clean.length) return clean;
+    }
+    // Truncated JSON array: salvage the complete objects that did arrive.
+    if (typeof ai._salvageJsonArray === 'function') {
+      const salvaged = ai._salvageJsonArray(text);
+      if (Array.isArray(salvaged) && salvaged.length) {
+        return salvaged.map(r => ({ subject: ai.sanitizeAiPlainText(String(r.subject || ''), 200), body: ai.sanitizeAiPlainText(String(r.body || ''), 4000) })).filter(r => r.subject || r.body);
+      }
     }
   } catch (err) {
     log.warn(` Batch AI failed: ${err.message}`);
@@ -56,7 +67,7 @@ async function personalizeSocialBatch(batch, personalizationPrompt) {
     `${i + 1}. Name: ${contact.firstName}, Platform: ${contact.platform}, Username: ${contact.username}${contact.context ? `, About: ${contact.context.slice(0, 200)}` : ""}`
   ).join("\n");
 
-  const prompt = `You are an expert social media outreach copywriter. Generate personalized DM messages for these ${batch.length} social media contacts:
+  const prompt = `You are an expert social media outreach copywriter writing as the SENDER opening a COLD first DM. Generate personalized DM messages for these ${batch.length} social media contacts. Each contact below RECEIVES this message for the first time (they have never replied) — never write as if they already responded. "You" = that contact; "I" = the sender.
 
 ${batchDescription}
 
@@ -74,10 +85,19 @@ Rules:
 
   try {
     const ai = new MultiProviderAI();
-    const text = await ai.generate(prompt, { maxTokens: 4000 });
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
+    const text = await ai.generate(prompt, { maxTokens: 4000, jsonMode: true });
+    const parsed = ai.parseAiJson(text);
+    if (Array.isArray(parsed)) {
+      const clean = parsed.map(r => r && typeof r === 'object'
+        ? { message: ai.sanitizeAiPlainText(String(r.message || ''), 2000) }
+        : null).filter(r => r && r.message);
+      if (clean.length) return clean;
+    }
+    if (typeof ai._salvageJsonArray === 'function') {
+      const salvaged = ai._salvageJsonArray(text);
+      if (Array.isArray(salvaged) && salvaged.length) {
+        return salvaged.map(r => ({ message: ai.sanitizeAiPlainText(String(r.message || ''), 2000) })).filter(r => r.message);
+      }
     }
   } catch (err) {
     log.warn(` Social batch AI failed: ${err.message}`);

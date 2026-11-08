@@ -79,12 +79,13 @@ export const platformConfigs = {
         },
 
         aiPrompts: {
-            generateColdMessage: `Generate a friendly, personalized cold message for a social media platform. The message should:
+            generateColdMessage: `Generate a friendly, personalized COLD first DM (this is your first message — the recipient has NOT replied yet). The message should:
 - Be 1-2 sentences maximum
 - Reference something relevant to the recipient
 - Be conversational and genuine (not salesy)
 - Not be generic or spammy
 - Feel like a real person reaching out
+- Do NOT act as if they wrote to you first or already replied. "You" = the recipient; "I" = you, the sender.
 {{socialStrategyPrompt}}
 Recipient context: "{context}"
 YOUR MESSAGE:`,
@@ -182,7 +183,7 @@ YOUR MESSAGE:`,
         },
 
         aiPrompts: {
-            generateColdMessage: `Generate a short, friendly message for TikTok. 
+            generateColdMessage: `Generate a short, friendly COLD first DM for TikTok (first message — recipient has NOT replied yet). Do NOT act as if they wrote first. "You" = recipient; "I" = sender.
 {{socialStrategyPrompt}}
 Recipient: "{context}"
 YOUR MESSAGE (1-2 sentences):`,
@@ -266,7 +267,7 @@ YOUR MESSAGE (1-2 sentences):`,
         },
 
         aiPrompts: {
-            generateColdMessage: `Generate a short, friendly Facebook message. Keep it natural and conversational.
+            generateColdMessage: `Generate a short, friendly COLD first Facebook message (first message — recipient has NOT replied yet). Keep it natural and conversational. Do NOT act as if they wrote first. "You" = recipient; "I" = sender.
 {{socialStrategyPrompt}}
 Recipient: "{context}"
 YOUR MESSAGE:`,
@@ -349,7 +350,7 @@ YOUR MESSAGE:`,
         },
 
         aiPrompts: {
-            generateColdMessage: `Write a casual Instagram DM. Very short and friendly.
+            generateColdMessage: `Write a casual COLD first Instagram DM (first message — recipient has NOT replied yet). Very short and friendly. Do NOT act as if they wrote first. "You" = recipient; "I" = sender.
 {{socialStrategyPrompt}}
 Recipient: "{context}"
 YOUR MESSAGE:`,
@@ -445,7 +446,7 @@ YOUR MESSAGE:`,
         },
 
         aiPrompts: {
-            generateColdMessage: `Generate a short, friendly WhatsApp message. Very casual and conversational.
+            generateColdMessage: `Generate a short, friendly COLD first WhatsApp message (first message — recipient has NOT replied yet). Very casual and conversational. Do NOT act as if they wrote first. "You" = recipient; "I" = sender.
 {{socialStrategyPrompt}}
 Recipient: "{context}"
 YOUR MESSAGE:`,
@@ -475,6 +476,152 @@ YOUR MESSAGE:`,
             },
         },
 
+        interactionRules: {
+            maxMessagesPerConversation: 1,
+            maxNewConversationsPerSession: 3,
+            allowColdMessages: true,
+        }
+    },
+
+    // ==================== REDDIT CHAT ====================
+    reddit: {
+        platform: "reddit",
+        homeUrl: "https://www.reddit.com",
+        messagesUrl: "https://www.reddit.com/chat",
+        profileUrl: "https://www.reddit.com/user",
+        selectors: {
+            messagesNav: "a[href='/chat']",
+            conversationItem: "div[data-testid='chat-room']",
+            messageInput: "div[contenteditable='true']",
+            sendButton: "button:has-text('Send')",
+            newMessageButton: "button:has-text('New chat')",
+            recipientInput: "input[placeholder*='user']",
+            messageText: "div[data-testid='message']",
+        },
+        timing: {
+            minDelayBetweenActions: 3000,
+            maxDelayBetweenActions: 6000,
+            messageCheckDelay: 3500,
+            navigationTimeout: 20000,
+        },
+        workflows: {
+            readInbox: {
+                name: "Read Reddit chat",
+                steps: [
+                    { action: "navigate", url: "${messagesUrl}", waitUntil: "networkidle0" },
+                    { action: "pause", duration: 3000 },
+                    { action: "capturePageContent", captureName: "inboxContent" },
+                ],
+                extract: "conversations"
+            },
+            sendMessage: {
+                name: "Send a Reddit chat message",
+                steps: [
+                    { action: "navigate", url: "${messagesUrl}", waitUntil: "networkidle0" },
+                    { action: "pause", duration: 3000 },
+                    { action: "click", selector: "${selectors.newMessageButton}" },
+                    { action: "pause", duration: 2000 },
+                    { action: "fillText", selector: "${selectors.recipientInput}", value: "${keyword}" },
+                    { action: "pause", duration: 2500 },
+                    { action: "click", selector: "${selectors.conversationItem}" },
+                    { action: "pause", duration: 1500 },
+                    { action: "click", selector: "${selectors.messageInput}" },
+                    { action: "fillText", selector: "${selectors.messageInput}", value: "${messageText}" },
+                    { action: "click", selector: "${selectors.sendButton}" },
+                    { action: "pause", duration: 2000 },
+                ],
+            },
+        },
+        aiPrompts: {
+            generateColdMessage: `Generate a short, friendly COLD first Reddit chat message (first message — recipient has NOT replied yet). Keep it natural and conversational. Do NOT act as if they wrote first. "You" = recipient; "I" = sender.
+{{socialStrategyPrompt}}
+Recipient: "{context}"
+YOUR MESSAGE:`,
+        },
+        extractors: {
+            conversations: {
+                selector: "div[data-testid='chat-room']",
+                parseFunction: `(items) => { const chats = []; items.forEach(item => { try { const n = item.querySelector('h4, span'); if (n) chats.push({ name: n.textContent.trim() }); } catch(e) {} }); return chats; }`
+            },
+            messages: {
+                selector: "div[data-testid='message']",
+                parseFunction: `(items) => { const msgs = []; items.forEach(item => msgs.push({ text: item.textContent.trim() })); return msgs; }`
+            },
+        },
+        interactionRules: {
+            maxMessagesPerConversation: 1,
+            maxNewConversationsPerSession: 3,
+            allowColdMessages: true,
+        }
+    },
+
+    // ==================== THREADS DM ====================
+    // Threads DMs live in the Instagram DM surface; selectors mirror IG with
+    // threads.net navigation. Cold-message voice is the DM frame (route-level).
+    threads: {
+        platform: "threads",
+        homeUrl: "https://www.threads.net",
+        messagesUrl: "https://www.threads.net/inbox",
+        profileUrl: "https://www.threads.net",
+        selectors: {
+            messagesNav: "a[href='/inbox']",
+            conversationItem: "div[role='link'][class*='conversation']",
+            messageInput: "textarea",
+            sendButton: "button:has-text('Send')",
+            newMessageButton: "button:has-text('New message')",
+            recipientInput: "input[placeholder*='search']",
+            messageText: "div[data-testid='messageText']",
+        },
+        timing: {
+            minDelayBetweenActions: 2500,
+            maxDelayBetweenActions: 6000,
+            messageCheckDelay: 3000,
+            navigationTimeout: 20000,
+        },
+        workflows: {
+            readInbox: {
+                name: "Read Threads inbox",
+                steps: [
+                    { action: "navigate", url: "${messagesUrl}", waitUntil: "networkidle0" },
+                    { action: "pause", duration: 3000 },
+                    { action: "capturePageContent", captureName: "inboxContent" },
+                ],
+                extract: "conversations"
+            },
+            sendMessage: {
+                name: "Send a Threads message",
+                steps: [
+                    { action: "navigate", url: "${messagesUrl}", waitUntil: "networkidle0" },
+                    { action: "pause", duration: 3000 },
+                    { action: "click", selector: "${selectors.newMessageButton}" },
+                    { action: "pause", duration: 2000 },
+                    { action: "fillText", selector: "${selectors.recipientInput}", value: "${keyword}" },
+                    { action: "pause", duration: 2500 },
+                    { action: "click", selector: "${selectors.conversationItem}" },
+                    { action: "pause", duration: 1500 },
+                    { action: "click", selector: "${selectors.messageInput}" },
+                    { action: "fillText", selector: "${selectors.messageInput}", value: "${messageText}" },
+                    { action: "click", selector: "${selectors.sendButton}" },
+                    { action: "pause", duration: 2000 },
+                ],
+            },
+        },
+        aiPrompts: {
+            generateColdMessage: `Write a casual COLD first Threads DM (first message — recipient has NOT replied yet). Very short and friendly. Do NOT act as if they wrote first. "You" = recipient; "I" = sender.
+{{socialStrategyPrompt}}
+Recipient: "{context}"
+YOUR MESSAGE:`,
+        },
+        extractors: {
+            conversations: {
+                selector: "div[role='link'][class*='conversation']",
+                parseFunction: `(items) => { const chats = []; items.forEach(item => { try { const n = item.querySelector('span'); if (n) chats.push({ name: n.textContent.trim() }); } catch(e) {} }); return chats; }`
+            },
+            messages: {
+                selector: "div[data-testid='messageText']",
+                parseFunction: `(items) => { const msgs = []; items.forEach(item => msgs.push({ text: item.textContent.trim() })); return msgs; }`
+            },
+        },
         interactionRules: {
             maxMessagesPerConversation: 1,
             maxNewConversationsPerSession: 3,
