@@ -41,14 +41,11 @@ export async function POST(request) {
     const subjectTemplate = settings.subject || "";
     const bodyTemplate = settings.body || "";
     const socialTemplate = settings.socialMessage || bodyTemplate;
+    const mlog = logger.child({ campaignId, stage: "mail-merge" });
+    mlog.info(`Mail-merge start (channel=${channel}, subject=${subjectTemplate ? 'yes' : 'no'}, body=${bodyTemplate ? 'yes' : 'no'}, personalizeLink=${!!settings.personalizeLink}, helperKeyword=${settings.helperKeyword ? 'yes' : 'no'})`);
 
     if (!subjectTemplate && !bodyTemplate && !socialTemplate) {
-      logger.info(`[Mail Merge] No templates for campaign ${campaignId}, skipping`);
-      return NextResponse.json({
-        success: true,
-        message: "No templates to merge",
-        processed: 0,
-      });
+      logger.info(`[Mail Merge] No templates for campaign ${campaignId} — skipping merge (link/helper still computed below)`);
     }
 
     const dl = await downloadCsvText(fileId);
@@ -121,6 +118,9 @@ export async function POST(request) {
 
       processed++;
     }
+
+    mlog.info(`Columns after merge-prep: [${rows[0].join(', ')}]`);
+    mlog.info(`link column: ${linkIdx === -1 ? 'not requested' : 'computed per row'}; helper column: ${helperIdx === -1 ? 'not requested' : 'stamped per row'}`);
 
     await drive.files.update({
       fileId,

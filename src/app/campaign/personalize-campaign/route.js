@@ -168,6 +168,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   const promptMaxCharsSetting = await getSetting('personalizationPromptMaxChars');
   const PROMPT_MAX_CHARS = parseInt(promptMaxCharsSetting?.value1) || 500;
   if (personalizationPrompt.length > PROMPT_MAX_CHARS) {
+    logger.warn(`[personalize] AI prompt truncated ${personalizationPrompt.length} -> ${PROMPT_MAX_CHARS} chars (personalizationPromptMaxChars) — strategy tail may be lost.`);
     personalizationPrompt = personalizationPrompt.slice(0, PROMPT_MAX_CHARS);
   }
 
@@ -450,6 +451,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
   const promptMaxCharsSetting = await getSetting('personalizationPromptMaxChars');
   const PROMPT_MAX_CHARS = parseInt(promptMaxCharsSetting?.value1) || 500;
   if (personalizationPrompt.length > PROMPT_MAX_CHARS) {
+    logger.warn(`[personalize] AI prompt truncated ${personalizationPrompt.length} -> ${PROMPT_MAX_CHARS} chars (personalizationPromptMaxChars) — strategy tail may be lost.`);
     personalizationPrompt = personalizationPrompt.slice(0, PROMPT_MAX_CHARS);
   }
 

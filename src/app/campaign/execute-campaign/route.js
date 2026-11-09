@@ -784,6 +784,7 @@ export async function POST(request) {
         }
 
         let sentCount = 0;
+        let skippedAlreadySent = 0;
         let deliveredCount = 0;
         let failedCount = 0;
         let limitReached = false;
@@ -954,6 +955,7 @@ export async function POST(request) {
           // never re-sent (prevents duplicates after checkpoint loss or a
           // re-triggered run on a completed campaign).
           if (executionStatusIdx !== -1 && ['sent', 'scheduled'].includes(String(row[executionStatusIdx] || '').trim().toLowerCase())) {
+            skippedAlreadySent++;
             continue;
           }
           const email = row[emailColIdx]?.trim();
@@ -1146,11 +1148,13 @@ export async function POST(request) {
         if (finalStatus === "completed" || finalStatus === "paused") {
           delete settings.restUntil; delete settings.restReason; delete settings.restSetAt;
         }
+        log.info(`[execute-email] Run summary: sent=${sentCount} delivered=${deliveredCount} failed=${failedCount} skippedAlreadySent=${skippedAlreadySent} limitReached=${limitReached} paused=${pausedByAdmin}`);
         const analytics = {
           totalRows: dataRows.length,
           sent: sentCount,
           delivered: deliveredCount,
           failed: failedCount,
+          skippedAlreadySent,
           limitReached,
           paused: pausedByAdmin,
           failureDetails: failureDetails.slice(0, 20),

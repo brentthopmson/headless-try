@@ -312,6 +312,7 @@ export async function processInboxInteract(body) {
 
     const interactionAccountIds = settings.interactionAccounts || [];
     const emailKeywords = settings.emailKeywords || [];
+    log.info(`Watcher start: accounts=${interactionAccountIds.length} keywords=[${emailKeywords.join(',')}] helperKeyword=${settings.helperKeyword || 'none'} linkAfterTurns=${settings.linkAfterTurns ?? 2} replyFolder=${settings.replyFolder || 'Campaign-Replies'}`);
     if (interactionAccountIds.length === 0) {
       return NextResponse.json({ success: false, error: "No interaction accounts selected for interactions-only campaign" }, { status: 400 });
     }
@@ -338,6 +339,7 @@ export async function processInboxInteract(body) {
       log.warn(` interactionBatchLimit read failed (${capErr.message}) — blocking pass (fail-closed).`);
       return NextResponse.json({ success: true, message: "Interact blocked: interactionBatchLimit unreadable", replies: 0 });
     }
+    log.info(`Watcher per-pass cap: ${planInteractionLimit} (interactionBatchLimit)`);
     if (!(planInteractionLimit > 0)) {
       log.info(` interactionBatchLimit is 0 or unavailable, blocking watcher - set interactionBatchLimit in the SETTINGS sheet`);
       return NextResponse.json({ success: true, message: "Interact blocked: interactionBatchLimit is 0 - set it in the SETTINGS sheet", replies: 0 });
@@ -545,6 +547,7 @@ export async function processInboxInteract(body) {
               seenKeys.add(key);
             }
           }
+          log.info(` [${account.identifier}] candidates: ${candidates.length} of ${liveItems.length} scanned (AI-relevant + keyword matches, automated senders excluded)`);
 
           for (const item of candidates) {
             const key = ledgerKey(item);

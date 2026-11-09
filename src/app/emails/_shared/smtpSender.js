@@ -32,13 +32,21 @@ export async function sendViaSMTP(recipient, subject, body, smtpConfig) {
   const fromName = smtpConfig.senderName || "Outreach Manager";
   const fromEmail = smtpConfig.user || smtpConfig.username;
 
-  const info = await transporter.sendMail({
-    from: `"${fromName}" <${fromEmail}>`,
-    to: recipient,
-    subject,
-    text: body,
-    html: body.replace(/\n/g, "<br>"),
-  });
+  logger.info(`[smtpSender] Attempting send to ${recipient} via ${smtpConfig.host}:${smtpConfig.port} as ${fromEmail} (subject ${String(subject || '').length} chars, body ${String(body || '').length} chars)`);
+  let info;
+  try {
+    info = await transporter.sendMail({
+      from: `"${fromName}" <${fromEmail}>`,
+      to: recipient,
+      subject,
+      text: body,
+      html: body.replace(/\n/g, "<br>"),
+    });
+  } catch (err) {
+    const code = (err && (err.code || err.responseCode)) || 'unknown';
+    logger.error(`[smtpSender] FAILED to ${recipient} via ${smtpConfig.host} (${code}): ${err.message}`);
+    throw err;
+  }
 
   // Increment counter after successful send
   incrementSendCount(platform, accountId);
