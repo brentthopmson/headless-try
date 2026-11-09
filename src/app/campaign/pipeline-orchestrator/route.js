@@ -275,7 +275,9 @@ export async function POST(request) {
     const { settings } = campaignData;
     settings._campaignStatus = campaignData.status;
 
-    // Expiry guard
+    // Expiry guard — INTERACTIONS ONLY. A campaign with a list (fileUrl)
+    // must shoot the list to completion regardless of elapsed days.
+    const durationGuardsInteractions = (settings.channel || 'email') === 'social' || !settings.fileUrl;
     try {
       const firstStartedAt = settings.firstStartedAt || settings.startedAt;
       let expiresAt = settings.expiresAt || null;
@@ -283,7 +285,7 @@ export async function POST(request) {
         const ms = new Date(firstStartedAt).getTime() + parseInt(settings.durationDays, 10) * 86400000;
         expiresAt = new Date(ms).toISOString();
       }
-      if (expiresAt && Date.now() >= new Date(expiresAt).getTime()) {
+      if (durationGuardsInteractions && expiresAt && Date.now() >= new Date(expiresAt).getTime()) {
         await updateSheetRowApi("campaigns", "campaignId", campaignId, {
           status: "completed",
           updatedOn: new Date().toISOString()
@@ -302,11 +304,12 @@ export async function POST(request) {
     } catch {}
 
     // Check Campaign Duration Window (immutable per-campaign durationDays stored at creation)
+    // — INTERACTIONS ONLY (see expiry guard above).
     const headers = campaignData.headers || [];
     const createdOnIdx = headers.indexOf("createdOn");
     const createdOnRaw = createdOnIdx !== -1 && campaignData.campaignRow ? campaignData.campaignRow[createdOnIdx] : null;
     const durationDays = Math.max(1, parseInt(settings.durationDays, 10) || 7);
-    if (createdOnRaw) {
+    if (durationGuardsInteractions && createdOnRaw) {
       const elapsedMs = Date.now() - new Date(createdOnRaw).getTime();
       const maxDurationMs = durationDays * 24 * 60 * 60 * 1000;
       if (elapsedMs >= maxDurationMs) {

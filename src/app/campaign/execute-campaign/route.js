@@ -487,7 +487,12 @@ export async function POST(request) {
     const createdOnTime = createdOnRaw ? new Date(createdOnRaw).getTime() : 0;
     const maxDurationMs = durationDays * 24 * 60 * 60 * 1000;
     const isDurationElapsed = () => createdOnTime > 0 && (Date.now() - createdOnTime >= maxDurationMs);
-    if (isDurationElapsed()) {
+    // Duration guards INTERACTIONS ONLY. A list (fileUrl) shoot must run the
+    // list to completion regardless of elapsed days — never complete it on
+    // duration. Social campaigns are interactions by nature, so they keep
+    // the guard; email with a list does not.
+    const durationGuardsInteractions = channel === "social" || !settings.fileUrl;
+    if (durationGuardsInteractions && isDurationElapsed()) {
       const elapsedMs = Date.now() - createdOnTime;
       log.info(` [campaign-duration] Campaign ${campaignId} reached its scheduled duration (${(elapsedMs / 86400000).toFixed(1)} / ${durationDays} days). Completing campaign.`);
       await updateSheetRowApi("campaigns", "campaignId", campaignId, {
@@ -500,6 +505,9 @@ export async function POST(request) {
         completed: true,
         durationExpired: true
       });
+    }
+    if (!durationGuardsInteractions && isDurationElapsed()) {
+      log.info(` [campaign-duration] list shoot ignores duration window (${durationDays}d elapsed) — list runs to completion.`);
     }
 
     // Per-user concurrent campaign cap (SETTINGS campaignConcurrentLimit).
@@ -893,11 +901,8 @@ export async function POST(request) {
         const pickSmtpWithinCap = smtpCap.pick;
         const noteSmtpSend = smtpCap.note;
         for (let i = startIndex; i < deduplicatedRows.length; i++) {
-          if (isDurationElapsed()) {
-            durationExpiredMidRun = true;
-            log.info(` [campaign-duration] Campaign ${campaignId} duration elapsed mid-run at row ${i}. Stopping and completing.`);
-            break;
-          }
+          // List shooting ignores the duration window by design (see entry
+          // guard): bounded only by quotas/caps, never by elapsed days.
           if (await isCampaignPaused(campaignId)) {
             pausedByAdmin = true;
             log.info(` Campaign ${campaignId} was paused during run. Stopping at row ${i}.`);
@@ -1111,10 +1116,9 @@ export async function POST(request) {
           }
         });
 
-        // Step 3e: Single campaign status update
-        let finalStatus = (durationExpiredMidRun || isDurationElapsed())
-          ? "completed"
-          : (pausedByAdmin ? "paused" : (limitReached ? "Limit Reached" : "completed"));
+        // Step 3e: Single campaign status update. Email list shooting is
+        // never duration-completed: completed = loop finished the list.
+        let finalStatus = pausedByAdmin ? "paused" : (limitReached ? "Limit Reached" : "completed");
         if (isRestingLikeStatus(finalStatus) && !Number(settings.restUntil)) {
           settings.restUntil = Date.now() + 60 * 60 * 1000;
           settings.restReason = settings.restReason || "limit_reached";
