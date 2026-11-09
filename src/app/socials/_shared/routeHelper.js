@@ -1653,6 +1653,13 @@ export async function postCommentVerified(page, s, text, logPrefix = '', opts = 
         return { posted: true };
     }
 
+    // Composer stuck but publish API confirmed status_code=0: the comment
+    // DID land (ground truth) — count it posted, don't lose the action.
+    if (pubRes && String(pubRes.status_code) === '0') {
+        if (logPrefix) logger.info(`${logPrefix} [${mode}] publish API confirmed (status_code=0) with stuck composer — treated as posted.`);
+        return { posted: true };
+    }
+
     if (logPrefix) logger.warn(`${logPrefix} [${mode}] composer still has text 4.5s after submit.`);
     return { posted: false, reason: 'composer-not-cleared' };
 }

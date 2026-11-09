@@ -1628,6 +1628,7 @@ export async function POST(request) {
         // Skipped when duration expired, paused, or quota stopped.
         {
           const unresolvedProfileIds = new Set();
+          let fbDebug = [];
           for (const r of executionResults) {
             const subs = r.results || [];
             const hadUnresolved = subs.some(sub => {
@@ -1636,10 +1637,13 @@ export async function POST(request) {
               return st === 'network_error' || st === 'nav_failed' || st === 'page_unsettled' || (Array.isArray(sub.unresolvedKeywords) && sub.unresolvedKeywords.length > 0) || (st === 'failed' && /open-failed/i.test(String(sub.reason || sub.error || '')));
             });
             const searched = tasksToExecute.find(t => t.taskId === r.taskId && ['search-interact', 'page-interact', 'inbox-interact'].includes(t.operation));
+            fbDebug.push(`${r.taskId}:${r.status}:subs=${subs.length}:unresolved=${hadUnresolved}:taskFound=${!!searched}`);
             if (hadUnresolved && searched) unresolvedProfileIds.add(searched.profileId);
           }
+          log.info(` [activities-fallback] check: ${fbDebug.join(' | ')}`);
           const alreadyRanActivities = new Set(tasksToExecute.filter(t => t.operation === 'activities-interact').map(t => t.profileId));
           const fallbackIds = [...unresolvedProfileIds].filter(pid => !alreadyRanActivities.has(pid) && !isDurationElapsed() && !pausedByAdmin && !quotaStopped);
+          log.info(` [activities-fallback] unresolvedProfiles=${[...unresolvedProfileIds].join(',') || 'none'} fallbackIds=${fallbackIds.join(',') || 'none'} (expired=${isDurationElapsed()} paused=${pausedByAdmin} quotaStopped=${quotaStopped} limit=${pendingSocialTasks.length}/${interactionLimit})`);
           if (fallbackIds.length > 0 && pendingSocialTasks.length < interactionLimit) {
             log.info(` [activities-fallback] search unresolved for ${fallbackIds.length} profile(s) — running activities-interact now (campaign stays open).`);
             for (const pid of fallbackIds) {
@@ -1708,7 +1712,10 @@ export async function POST(request) {
         }
 
         // Step 4g: Single campaign status update
-        const hasHourlyRateLimits = executionResults.some(r => r.status === 'COMPLETED' && (r.results || []).some(sub => sub.status === 'rate_limited' || sub.resumedNextCycle));
+        // Hourly only when a subresult is explicitly rate_limited — our
+        // network_error subresults also carry resumedNextCycle:true and must
+        // NOT be misclassified as hourly (they rest 15m, not 1h).
+        const hasHourlyRateLimits = executionResults.some(r => r.status === 'COMPLETED' && (r.results || []).some(sub => String(sub.status || '').toLowerCase() === 'rate_limited'));
         const hasNetworkErrors = executionResults.some(r =>
           r.status === 'NETWORK_ERROR' ||
           (r.results || []).some(sub => {

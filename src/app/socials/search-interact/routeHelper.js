@@ -358,11 +358,24 @@ export async function runSearchInteractEngagement(page, opts) {
     // fail with the same detached-frame error. Open a fresh page in the same
     // context and swap it in (all closures in this scope see the new page).
     let pageSwapped = false;
+    let browserDead = false;
     const recoverFromDetached = async () => {
+        if (browserDead) return false;
+        // Dead browser (e.g. laptop slept, WS closed): a new page in the
+        // same browser can never work — stop the run as network_error so
+        // execute rests and the next cycle relaunches a fresh browser.
+        try {
+            if (runnerBrowser && typeof runnerBrowser.isConnected === 'function' && !runnerBrowser.isConnected()) {
+                browserDead = true;
+                logger.warn(`[engage:${taskId}] Browser is disconnected — stopping run as network_error (next cycle relaunches).`);
+                return false;
+            }
+        } catch (_) {}
         if (pageSwapped) return false;
         try {
             const ctx = page.context ? page.context() : null;
-            const fresh = ctx ? await ctx.newPage() : null;
+            if (!ctx) { logger.warn(`[engage:${taskId}] Detached-frame recovery: no browser context.`); return false; }
+            const fresh = await ctx.newPage().catch((e) => { logger.warn(`[engage:${taskId}] newPage failed: ${e.message}`); return null; });
             if (!fresh) return false;
             page = fresh;
             pageSwapped = true;
@@ -598,7 +611,13 @@ export async function runSearchInteractEngagement(page, opts) {
                         continue;
                     }
                 } else if (nav.detached) {
-                    continue;
+                    // Recovery impossible (dead browser / no context): stop
+                    // the whole run as network_error now — don't burn the
+                    // remaining keywords against a dead page.
+                    stopType = 'network_error';
+                    stopReason = 'detached_frame_browser_dead';
+                    logger.warn(`[engage:${taskId}] Detached frame unrecoverable — stopping run as network_error (remaining keywords stay pending).`);
+                    break;
                 } else {
                     continue;
                 }
