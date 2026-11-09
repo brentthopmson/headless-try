@@ -78,12 +78,19 @@ export async function runGenericEngagement(page, opts) {
         return ok;
     };
     let stopType = null; let stopReason = null; let engaged = 0; let failed = 0; let completedKeywords = [];
+    let unresolvedKeywords = [];
     const startedAt = Date.now();
     const pause = (a, b) => DOMHelpers.randomDelay(a, b);
 
+    // Returns null when the search page never settled (navigation/load
+    // failure) so the keyword is left pending instead of marked done.
     const searchResults = async (kw) => {
         const searchUrl = platformConfig.searchUrl || platformConfig.homeUrl;
-        await navigateAndWaitGeneric(page, searchUrl, { timeoutMs: 20000, label: 'search' });
+        const nav = await navigateAndWaitGeneric(page, searchUrl, { timeoutMs: 20000, label: 'search' });
+        if (!nav || nav.ok === false || nav.state === 'nav_failed' || nav.state === 'unknown') {
+            logger.warn(`[generic:${taskId}] search navigation did not settle for "${kw}" (${(nav && (nav.error || nav.state)) || 'unknown'})`);
+            return null;
+        }
         if (s.searchBox) {
             await page.click(s.searchBox, { timeout: 4000 }).catch(() => {});
             await page.keyboard.down('Control').catch(() => {});
@@ -118,6 +125,12 @@ export async function runGenericEngagement(page, opts) {
         if (stopAfterHours > 0 && (Date.now() - startedAt) / 3600000 >= stopAfterHours) { stopType = 'time'; stopReason = 'interaction_stop_after_hours'; break; }
         try {
             const videos = await searchResults(kw);
+            if (videos === null) {
+                // Navigation/load failure: keyword stays pending, never done.
+                unresolvedKeywords.push(kw);
+                results.push({ keyword: kw, status: 'page_unsettled' });
+                continue;
+            }
             logger.info(`[generic:${taskId}] "${kw}": ${videos.length} result(s), cap=${maxResultsPerKeyword}`);
             const slice = videos.slice(0, maxResultsPerKeyword);
             let kwDone = true;
@@ -129,12 +142,13 @@ export async function runGenericEngagement(page, opts) {
             }
             if (kwDone) completedKeywords.push(kw);
         } catch (e) {
-            logger.warn(`[generic:${taskId}] keyword "${kw}" failed: ${e.message}`);
-            kwDone = kwDone ?? false;
-            kwDone = false;
+            logger.warn(`[generic:${taskId}] keyword "${kw}" failed: ${e.message} — stays pending.`);
+            unresolvedKeywords.push(kw);
+            results.push({ keyword: kw, status: 'failed', error: e.message });
         }
     }
-    return { results, quota: quotaTally, engaged, failed, stopType, stopReason, completedKeywords, captchaFailed: false, isNetworkError: false };
+    const isNetworkError = unresolvedKeywords.length > 0 && unresolvedKeywords.length === keywords.length && engaged === 0;
+    return { results, quota: quotaTally, engaged, failed: failed + unresolvedKeywords.length, stopType: isNetworkError ? 'network_error' : stopType, stopReason: isNetworkError ? 'all_keywords_unsettled' : stopReason, completedKeywords, unresolvedKeywords: [...new Set(unresolvedKeywords)], captchaFailed: false, isNetworkError };
 
     async function engageOne(page, v, idx, kw) {
         const label = `[generic:${taskId}] ${platform} ${idx + 1}: ${String(v.url || '').slice(0, 80)}`;

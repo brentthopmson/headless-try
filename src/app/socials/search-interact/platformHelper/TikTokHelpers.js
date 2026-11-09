@@ -467,9 +467,13 @@ export async function navigateAndWait(page, url, s, opts = {}) {
             } catch (_) {}
 
             if (navError.message && (navError.message.includes('detached Frame') || navError.message.includes('context was destroyed'))) {
-                // In-flight navigation or frame swap destroyed execution context — pause and settle frame
+                // In-flight navigation or frame swap destroyed execution context.
+                // Same-page retries keep hitting the dead frame, so navigate to
+                // about:blank to force a fresh frame before the retry goto.
+                logger.warn(`${logPrefix} Detached frame on ${label} — resetting page to about:blank before retry.`);
                 await new Promise(r => setTimeout(r, 1200));
                 try { await page.mainFrame(); } catch (_) {}
+                try { await page.goto('about:blank', { waitUntil: 'domcontentloaded', timeout: 10000 }); } catch (_) {}
             }
             if (attempt < 2) await new Promise(r => setTimeout(r, 1500));
         } else {
@@ -478,7 +482,7 @@ export async function navigateAndWait(page, url, s, opts = {}) {
     }
 
     if (navError) {
-        return { ok: false, state: 'nav_failed', url: page.url(), error: navError.message };
+        return { ok: false, state: 'nav_failed', url: (() => { try { return page.url(); } catch (_) { return ''; } })(), error: navError.message, detached: /detached Frame|context was destroyed/i.test(navError.message) };
     }
 
     // Short hydration pause so React can start rendering, then poll for a

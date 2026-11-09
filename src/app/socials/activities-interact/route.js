@@ -135,7 +135,10 @@ async function processTask(taskPayload) {
             }
             results.push(...(run.results || []));
             runnerAccounted = true;
-            if (run.stopType) logger.info(`[processTask] ${taskId}: runner stopped (${run.stopType})`);
+            if (run.stopType) {
+                logger.info(`[processTask] ${taskId}: runner stopped (${run.stopType})`);
+                if (run.stopType === 'hourly') results.push({ status: 'rate_limited', reason: run.stopReason || 'hourly_limit', resumedNextCycle: true });
+            }
         }
 
         let handledIterations = 0;
@@ -189,7 +192,16 @@ async function processTask(taskPayload) {
             }
         }
 
-        finalStatus = "COMPLETED";
+        // Surface transient/network failures: notifications that never
+        // opened with zero verified actions is NOT completed — rest/retry.
+        const quotaTotalNow = Object.values(quota).reduce((a, b) => a + (Number(b) || 0), 0);
+        const failedOpens = results.filter(r => String(r.status || '').toUpperCase() === 'FAILED' && /open-failed/i.test(String(r.reason || '')));
+        if (failedOpens.length > 0 && quotaTotalNow === 0) {
+            finalStatus = "NETWORK_ERROR";
+            results.push({ status: 'network_error', reason: failedOpens[0].reason || 'notifications_open_failed', resumedNextCycle: true });
+        } else {
+            finalStatus = "COMPLETED";
+        }
 
         if (profileId) {
             // The DOM runner already consumed each verified action.

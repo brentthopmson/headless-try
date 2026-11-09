@@ -47,12 +47,19 @@ logger.info(`[Page Interact] Concurrency limit: ${MAX_CONCURRENT_TASKS} (setting
 async function discoverPeopleHandles(page, platformConfig, tags, maxPerTag = 5) {
     const s = platformConfig.selectors || {};
     const found = new Map();
+    const failedTags = [];
     for (const tag of tags) {
         const url = platformConfig.searchUrl || platformConfig.profileUrl;
         if (!url) continue;
         const q = String(tag || '').trim().replace(/^#/, '');
         if (!q) continue;
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+        const navErr = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch((e) => e);
+        if (navErr && navErr instanceof Error) {
+            // Navigation/load failure: tag stays pending, never "done".
+            logger.warn(`[discover] tag "${q}": navigation failed (${navErr.message}) — tag stays pending.`);
+            failedTags.push(q);
+            continue;
+        }
         await new Promise(r => setTimeout(r, 1500));
         if (s.searchBox) {
             await page.click(s.searchBox, { timeout: 4000 }).catch(() => {});
@@ -103,7 +110,7 @@ async function discoverPeopleHandles(page, platformConfig, tags, maxPerTag = 5) 
         }
         logger.info(`[discover] tag "${q}": +${(items || []).length} people`);
     }
-    return [...found.values()];
+    return { handles: [...found.values()], failedTags };
 }
 
 async function processTask(taskPayload) {
@@ -213,7 +220,10 @@ async function processTask(taskPayload) {
         // Chain: list → discovery → activities (see fallback below).
         const doDiscovery = async (exclude) => {
             const discMax = Number(taskPayload.maxDiscoveryPerTag || taskPayload.maxResultsPerKeyword || 5);
-            const discovered = await discoverPeopleHandles(page, platformConfig, discoveryTags, discMax);
+            const { handles: discovered, failedTags } = await discoverPeopleHandles(page, platformConfig, discoveryTags, discMax);
+            if (failedTags.length) {
+                results.push({ status: 'network_error', reason: 'discovery_navigation_failed', failedTags, resumedNextCycle: true });
+            }
             const fresh = discovered.filter(d => !exclude.has(d.username.toLowerCase()));
             if (!fresh.length) { logger.info(`[processTask] ${taskId}: discovery found 0 new profiles for ${discoveryTags.length} tag(s)`); return []; }
             logger.info(`[processTask] ${taskId}: discovery found ${fresh.length} profile(s) for ${discoveryTags.length} tag(s)`);
@@ -330,8 +340,9 @@ async function processTask(taskPayload) {
             let workflowHandles = searchQueries;
             if (!workflowHandles.length && discoveryTags.length) {
                 try {
-                    const fresh = await discoverPeopleHandles(page, platformConfig, discoveryTags, Number(taskPayload.maxDiscoveryPerTag || taskPayload.maxResultsPerKeyword || 5));
+                    const { handles: fresh, failedTags: wfFailedTags } = await discoverPeopleHandles(page, platformConfig, discoveryTags, Number(taskPayload.maxDiscoveryPerTag || taskPayload.maxResultsPerKeyword || 5));
                     workflowHandles = fresh.map(d => d.username);
+                    if (wfFailedTags.length) results.push({ status: 'network_error', reason: 'discovery_navigation_failed', failedTags: wfFailedTags, resumedNextCycle: true });
                     logger.info(`[processTask] ${taskId}: discovery (workflow) found ${workflowHandles.length} profile(s)`);
                 } catch (e) { logger.warn(`[processTask] ${taskId}: discovery failed: ${e.message}`); }
             }
@@ -369,7 +380,20 @@ async function processTask(taskPayload) {
             }
         }
 
-        finalStatus = "COMPLETED";
+        // Surface transient/network failures: a task where every profile
+        // failed to open with zero verified actions is NOT completed — the
+        // campaign must rest and retry (execute reads these subresults).
+        const quotaTotalNow = Object.values(quota).reduce((a, b) => a + (Number(b) || 0), 0);
+        const failedOpens = results.filter(r => String(r.status || '').toUpperCase() === 'FAILED' && /open-failed/i.test(String(r.reason || '')));
+        if (runnerStop === 'hourly') {
+            finalStatus = "COMPLETED";
+            results.push({ status: 'rate_limited', reason: 'hourly_limit', resumedNextCycle: true });
+        } else if (results.length > 0 && failedOpens.length > 0 && quotaTotalNow === 0) {
+            finalStatus = "NETWORK_ERROR";
+            results.push({ status: 'network_error', reason: failedOpens[0].reason || 'profile_open_failed', resumedNextCycle: true });
+        } else {
+            finalStatus = "COMPLETED";
+        }
 
         // Update hub usage — only actions VERIFIED after execution. The DOM
         // runner already consumed each verified action, so never double-write.

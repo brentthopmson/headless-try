@@ -314,6 +314,9 @@ export async function runSearchInteractEngagement(page, opts) {
     // Tags fully iterated this run (no stop hit mid-keyword). The caller marks
     // these 'done' so a resumed run only processes still-pending tags.
     const completedKeywords = [];
+    // Keywords that never settled / failed navigation: NEVER marked done —
+    // they stay pending so the next run (or fallback) retries them.
+    const unresolvedKeywords = [];
 
     // ---- Single-tab guard ----
     // --disable-popup-blocking is enabled engine-wide (login flows depend on it),
@@ -350,6 +353,26 @@ export async function runSearchInteractEngagement(page, opts) {
         } catch (e) { /* non-fatal */ }
     };
     await enforceSingleTab('at start');
+
+    // Detached-frame recovery: a destroyed frame makes every subsequent goto
+    // fail with the same detached-frame error. Open a fresh page in the same
+    // context and swap it in (all closures in this scope see the new page).
+    let pageSwapped = false;
+    const recoverFromDetached = async () => {
+        if (pageSwapped) return false;
+        try {
+            const ctx = page.context ? page.context() : null;
+            const fresh = ctx ? await ctx.newPage() : null;
+            if (!fresh) return false;
+            page = fresh;
+            pageSwapped = true;
+            logger.info(`[engage:${taskId}] Detached frame recovered with a fresh page.`);
+            return true;
+        } catch (e) {
+            logger.warn(`[engage:${taskId}] Detached-frame recovery failed: ${e.message}`);
+            return false;
+        }
+    };
 
     const checkTimeStop = () => {
         if (stopAfterHours > 0) {
@@ -547,14 +570,38 @@ export async function runSearchInteractEngagement(page, opts) {
                 logPrefix: `[engage:${taskId}]`,
             });
             if (!nav.ok) {
-                logger.warn(`[engage:${taskId}] Keyword "${keyword}": navigation failed (${nav.error}) — skipping keyword.`);
+                logger.warn(`[engage:${taskId}] Keyword "${keyword}": navigation failed (${nav.error}) — NOT done, stays pending.`);
                 results.push({
                     keyword,
                     status: 'nav_failed',
                     error: nav.error,
                     isNetworkError: /ERR_NAME_NOT_RESOLVED|ERR_NETWORK_CHANGED|ERR_INTERNET_DISCONNECTED|ERR_CONNECTION|timeout|net::/i.test(nav.error || '')
                 });
-                continue;
+                unresolvedKeywords.push(keyword);
+                // Detached frame: recover once, then retry this keyword on the
+                // fresh page instead of burning every remaining keyword.
+                if (nav.detached && (await recoverFromDetached())) {
+                    logger.info(`[engage:${taskId}] Retrying keyword "${keyword}" on recovered page.`);
+                    const retryNav = await navigateAndWait(page, searchUrl, s, {
+                        label: `search "${keyword}" (recovered)`,
+                        logPrefix: `[engage:${taskId}]`,
+                    });
+                    if (retryNav.ok && retryNav.state !== 'unknown') {
+                        // Fall through to scrape with the recovered navigation.
+                        // (Nav state re-checked below via the same gates.)
+                        await enforceSingleTab('after recovered navigation');
+                    } else if (!retryNav.ok) {
+                        logger.warn(`[engage:${taskId}] Recovered retry also failed for "${keyword}" (${retryNav.error}) — stays pending.`);
+                        continue;
+                    } else {
+                        logger.warn(`[engage:${taskId}] Recovered retry unsettled for "${keyword}" — stays pending.`);
+                        continue;
+                    }
+                } else if (nav.detached) {
+                    continue;
+                } else {
+                    continue;
+                }
             }
             await enforceSingleTab('after search navigation');
             if (nav.state === 'captcha' && !(await ensureCaptchaSolved('search page'))) break;
@@ -563,8 +610,9 @@ export async function runSearchInteractEngagement(page, opts) {
             if (!(await ensureCaptchaSolved('search results'))) break;
             if (!(await ensureLoggedIn('search results'))) break;
             if (nav.state === 'unknown') {
-                logger.warn(`[engage:${taskId}] Keyword "${keyword}": page never reached a settled state — skipping keyword (no silent 0-scrape).`);
+                logger.warn(`[engage:${taskId}] Keyword "${keyword}": page never reached a settled state — NOT done, stays pending.`);
                 results.push({ keyword, status: 'page_unsettled', error: 'page never reached a settled state' });
+                unresolvedKeywords.push(keyword);
                 continue;
             }
 
@@ -1599,8 +1647,9 @@ export async function runSearchInteractEngagement(page, opts) {
                 }
             }
         } catch (kwErr) {
-            logger.warn(`[engage:${taskId}] Keyword "${keyword}" failed: ${kwErr.message}`);
+            logger.warn(`[engage:${taskId}] Keyword "${keyword}" failed: ${kwErr.message} — stays pending.`);
             results.push({ keyword, status: 'failed', error: kwErr.message });
+            unresolvedKeywords.push(keyword);
         }
 
         // Only mark keyword as completed if it was actually processed successfully
@@ -1612,7 +1661,8 @@ export async function runSearchInteractEngagement(page, opts) {
 
         // A keyword is only completed if navigation succeeded without network/fatal errors,
         // and had successful engagements (or search genuinely returned empty results with no errors).
-        if (!stopType && !hasNavError && !hasOnlyErrors && (hasSuccessfulEngagement || (kwResults.length === 0 && !hasNavError))) {
+        // Unresolved (nav_failed / page_unsettled / thrown) keywords NEVER complete.
+        if (!stopType && !hasNavError && !hasOnlyErrors && !unresolvedKeywords.includes(keyword) && (hasSuccessfulEngagement || (kwResults.length === 0 && !hasNavError))) {
             completedKeywords.push(keyword);
             logger.info(`[engage:${taskId}] Keyword "${keyword}" marked as completed (successful=${hasSuccessfulEngagement}, items=${kwResults.length}).`);
         } else {
@@ -1637,11 +1687,17 @@ export async function runSearchInteractEngagement(page, opts) {
 
     const totalKeywords = keywords.length;
     const navFailedKeywords = keywords.filter(kw => results.some(r => r.keyword === kw && r.status === 'nav_failed'));
-    const isNetworkError = navFailedKeywords.length > 0 && navFailedKeywords.length === totalKeywords;
+    // Any keyword that never settled counts toward a network/transient
+    // failure (not just nav_failed) — page_unsettled is a load failure too.
+    const settledFailures = unresolvedKeywords.length;
+    const isNetworkError = settledFailures > 0 && settledFailures === totalKeywords && results.filter(r => r.status === 'engaged').length === 0;
     if (!stopType && isNetworkError) {
         stopType = 'network_error';
-        stopReason = 'all_keywords_nav_failed';
-        logger.warn(`[engage:${taskId}] All ${totalKeywords} keyword(s) failed navigation due to network/connectivity error — set stopType=network_error.`);
+        stopReason = 'all_keywords_unsettled';
+        logger.warn(`[engage:${taskId}] All ${totalKeywords} keyword(s) failed to settle (network/transient) — set stopType=network_error; tags stay pending.`);
+    }
+    if (settledFailures > 0) {
+        logger.warn(`[engage:${taskId}] ${settledFailures}/${totalKeywords} keyword(s) unresolved this run — left pending for retry (NOT marked done).`);
     }
 
     const quotaTotal = Object.values(quotaTally).reduce((a, b) => a + b, 0);
@@ -1649,12 +1705,13 @@ export async function runSearchInteractEngagement(page, opts) {
     return {
         results,
         completedKeywords,
+        unresolvedKeywords: [...new Set(unresolvedKeywords)],
         stopType,
         stopReason,
         captchaFailed,
         isNetworkError,
         engaged: results.filter(r => r.status === 'engaged').length,
-        failed: results.filter(r => r.status === 'failed' || r.status === 'nav_failed').length,
+        failed: results.filter(r => r.status === 'failed' || r.status === 'nav_failed' || r.status === 'page_unsettled').length,
         quota: { ...quotaTally, total: quotaTotal },
     };
 }

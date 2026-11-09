@@ -169,7 +169,11 @@ async function processTask(taskPayload) {
                 });
                 for (const [k, v] of Object.entries(run.quota || {})) { if (k !== "total") quota[k] = (quota[k] || 0) + (Number(v) || 0); }
                 results.push(...(run.results || []).map(r => ({ ...r, recipient })));
-                if (run.stopType) { logger.info(`[processTask] ${taskId}: runner stopped (${run.stopType})`); break; }
+                if (run.stopType) {
+                    logger.info(`[processTask] ${taskId}: runner stopped (${run.stopType})`);
+                    if (run.stopType === 'hourly') results.push({ status: 'rate_limited', reason: run.stopReason || 'hourly_limit', resumedNextCycle: true });
+                    break;
+                }
                 await new Promise(r => setTimeout(r, 800));
             }
             runnerAccounted = true;
@@ -213,7 +217,10 @@ async function processTask(taskPayload) {
             }
             results.push(...(run.results || []));
             runnerAccounted = true;
-            if (run.stopType) logger.info(`[processTask] ${taskId}: runner stopped (${run.stopType})`);
+            if (run.stopType) {
+                logger.info(`[processTask] ${taskId}: runner stopped (${run.stopType})`);
+                if (run.stopType === 'hourly') results.push({ status: 'rate_limited', reason: run.stopReason || 'hourly_limit', resumedNextCycle: true });
+            }
             // Fallback chain: when the DM/CVS list is exhausted, keep the
             // account engaging via notifications + For You feed (quota-walled).
             const fallback = taskPayload.fallbackToActivities !== false && taskPayload.fallbackToActivities !== 'false';
@@ -275,7 +282,16 @@ async function processTask(taskPayload) {
             }
         }
 
-        finalStatus = "COMPLETED";
+        // Surface transient/network failures: inbox that never opened with
+        // zero verified actions is NOT completed — rest and retry.
+        const quotaTotalNow = Object.values(quota).reduce((a, b) => a + (Number(b) || 0), 0);
+        const failedOpens = results.filter(r => String(r.status || '').toUpperCase() === 'FAILED' && /open-failed/i.test(String(r.reason || '')));
+        if (failedOpens.length > 0 && quotaTotalNow === 0) {
+            finalStatus = "NETWORK_ERROR";
+            results.push({ status: 'network_error', reason: failedOpens[0].reason || 'messages_open_failed', resumedNextCycle: true });
+        } else {
+            finalStatus = "COMPLETED";
+        }
 
         if (profileId) {
             // Count only replies the send step VERIFIED as delivered; the DOM

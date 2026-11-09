@@ -273,7 +273,16 @@ export async function markTagsDone(campaignId, profileId, tags) {
       if (!changed) return;
       tagStatus[pid] = acct;
       await updateCampaignSettings(campaignId, { tagStatus });
-      logger.info(`[tagStatus] Marked ${tags.length} tag(s) done for ${campaignId}/${pid}`);
+      // Verify the write landed — a flush that silently failed must NOT be
+      // treated as done (the tags would never be retried).
+      const verify = await getCampaignSettings(campaignId).catch(() => null);
+      const persisted = ((verify && verify.settings && verify.settings.tagStatus) || {})[pid] || {};
+      const missing = tags.map(t => String(t || '').trim()).filter(k => k && persisted[k] !== 'done');
+      if (missing.length > 0) {
+        logger.warn(`[tagStatus] Persist verify failed for ${campaignId}/${pid}: ${missing.length} tag(s) NOT saved (${missing.slice(0, 5).join(', ')}${missing.length > 5 ? '…' : ''}) — they stay pending.`);
+      } else {
+        logger.info(`[tagStatus] Marked ${tags.length} tag(s) done for ${campaignId}/${pid}`);
+      }
     })
     .catch((e) => {
       logger.warn(`[tagStatus] Failed to mark tags done for ${campaignId}/${pid}: ${e.message}`);

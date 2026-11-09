@@ -231,6 +231,13 @@ async function processTask(taskRow, columnIndexes) {
                 finalStatus = "NETWORK_ERROR";
                 results.push({ status: 'network_error', reason: engagementSummary.stopReason || 'network_navigation_failed', resumedNextCycle: true });
                 logger.warn(`[processTask] ${taskId}: network error encountered — marked NETWORK_ERROR for cooldown rest.`);
+            } else if ((engagementSummary.unresolvedKeywords || []).length > 0) {
+                // Partial task: some keywords never settled. The task itself is
+                // COMPLETED, but unresolved tags stay pending — surface a
+                // network subresult so execute rests instead of completing.
+                finalStatus = "COMPLETED";
+                results.push({ status: 'network_error', reason: 'partial_unresolved_keywords', unresolvedKeywords: engagementSummary.unresolvedKeywords, resumedNextCycle: true });
+                logger.warn(`[processTask] ${taskId}: ${(engagementSummary.unresolvedKeywords || []).length} keyword(s) unresolved — tags left pending, campaign will rest.`);
             } else if (engagementSummary.engaged === 0 && (engagementSummary.completedKeywords || []).length === 0 && engagementSummary.failed > 0) {
                 finalStatus = "FAILED";
                 results.push({ status: 'failed', reason: 'all_interactions_failed' });
@@ -252,6 +259,8 @@ async function processTask(taskRow, columnIndexes) {
             quotaSummary = engagementSummary.quota || {};
             try { await markTagsDone(campaignId, profileId, engagementSummary.completedKeywords || []); } catch (e) { logger.warn(`[processTask] ${taskId}: tag status persist failed: ${e.message}`); }
             if (engagementSummary.stopType === 'daily' || engagementSummary.stopType === 'monthly' || engagementSummary.stopType === 'yearly' || engagementSummary.stopType === 'cap') finalStatus = "COMPLETED";
+            else if (engagementSummary.stopType === 'network_error' || engagementSummary.isNetworkError) { finalStatus = "NETWORK_ERROR"; results.push({ status: 'network_error', reason: engagementSummary.stopReason || 'network_navigation_failed', resumedNextCycle: true }); }
+            else if ((engagementSummary.unresolvedKeywords || []).length > 0) { finalStatus = "COMPLETED"; results.push({ status: 'network_error', reason: 'partial_unresolved_keywords', unresolvedKeywords: engagementSummary.unresolvedKeywords, resumedNextCycle: true }); }
             else if (engagementSummary.engaged === 0 && engagementSummary.failed > 0 && (engagementSummary.completedKeywords || []).length === 0) { finalStatus = "FAILED"; results.push({ status: 'failed', reason: 'all_interactions_failed' }); }
             else finalStatus = "COMPLETED";
             logger.info(`[processTask] Task ${taskId} completed: engaged=${engagementSummary.engaged}, failed=${engagementSummary.failed}, stop=${engagementSummary.stopType || 'none'}`);

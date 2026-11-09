@@ -10,7 +10,13 @@ import logger from '../../../../utils/logger.js';
 async function safe(fn, fallback) { try { return await fn(); } catch { return fallback; } }
 
 export async function navigateAndWaitGeneric(page, url, { waitSelector = null, timeoutMs = 20000, label = 'page' } = {}) {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs }).catch(() => {});
+    // A failed goto is a settled failure — never report ok:true on a page
+    // that never loaded (callers mark the keyword pending).
+    const navErr = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs }).catch((e) => e);
+    if (navErr && navErr instanceof Error) {
+        logger.warn(`[genericNav] Navigation failed (${label}): ${navErr.message}`);
+        return { ok: false, state: 'nav_failed', error: navErr.message, url: '' };
+    }
     if (!waitSelector) {
         await page.waitForTimeout ? await new Promise(r => setTimeout(r, 1200)) : await new Promise(r => setTimeout(r, 1200));
         return { ok: true, state: 'loaded', url: page.url() };

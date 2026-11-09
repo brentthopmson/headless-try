@@ -1621,6 +1621,59 @@ export async function POST(request) {
         );
         await Promise.all(socialRunners);
 
+        // Step 4e2: In-run activities fallback. If search produced unresolved
+        // keywords (network/transient failures) or zero engagement, the
+        // campaign must NOT complete — run the activities feed sweep now
+        // (notifications + feed) so the profile keeps engaging, then rest.
+        // Skipped when duration expired, paused, or quota stopped.
+        {
+          const unresolvedProfileIds = new Set();
+          for (const r of executionResults) {
+            const subs = r.results || [];
+            const hadUnresolved = subs.some(sub => {
+              if (!sub) return false;
+              const st = String(sub.status || '').toLowerCase();
+              return st === 'network_error' || st === 'nav_failed' || st === 'page_unsettled' || (Array.isArray(sub.unresolvedKeywords) && sub.unresolvedKeywords.length > 0) || (st === 'failed' && /open-failed/i.test(String(sub.reason || sub.error || '')));
+            });
+            const searched = tasksToExecute.find(t => t.taskId === r.taskId && ['search-interact', 'page-interact', 'inbox-interact'].includes(t.operation));
+            if (hadUnresolved && searched) unresolvedProfileIds.add(searched.profileId);
+          }
+          const alreadyRanActivities = new Set(tasksToExecute.filter(t => t.operation === 'activities-interact').map(t => t.profileId));
+          const fallbackIds = [...unresolvedProfileIds].filter(pid => !alreadyRanActivities.has(pid) && !isDurationElapsed() && !pausedByAdmin && !quotaStopped);
+          if (fallbackIds.length > 0 && pendingSocialTasks.length < interactionLimit) {
+            log.info(` [activities-fallback] search unresolved for ${fallbackIds.length} profile(s) — running activities-interact now (campaign stays open).`);
+            for (const pid of fallbackIds) {
+              const pData = await getSocialProfileCookies(pid).catch(() => null);
+              if (!pData || !pData.cookies) continue;
+              const fbTask = {
+                taskId: "task-" + Math.random().toString(36).substring(2, 11),
+                campaignId,
+                platform: profilePlatforms[pid] || "twitter",
+                operation: "activities-interact",
+                priority: PRIORITY_MAP["activities-interact"],
+                engagementMode,
+                searchQuery: "",
+                searchQueries: [""],
+                maxResultsPerKeyword,
+                fallbackToActivities: true,
+                fallbackToDiscovery: true,
+                cookieJSON: typeof pData.cookies === "string" ? pData.cookies : JSON.stringify(pData.cookies),
+                browserIdentity: pData.browserIdentity || null,
+                driveUrl: pData.driveUrl || "",
+                profileId: pid,
+                targetLink: settings.targetLink || "",
+                socialStrategyPrompt: settings.socialStrategyPrompt || "",
+                campaignMode: settings.campaignMode || "",
+                directExecute: true,
+                status: "PENDING",
+                createdAt: new Date().toISOString(),
+              };
+              tasksToExecute.push(fbTask);
+              await runSocialTask(fbTask);
+            }
+          }
+        }
+
         // Step 4f: Send direct messages to all social profiles in CSV if enabled
         const shouldSendMessage = settings.shouldSendMessage === true || settings.shouldSendMessage === "true" || settings.sendToAll === true;
         if (shouldSendMessage && socialFileUrl && !durationExpiredMidRun && !isDurationElapsed() && !pausedByAdmin) {
@@ -1658,8 +1711,37 @@ export async function POST(request) {
         const hasHourlyRateLimits = executionResults.some(r => r.status === 'COMPLETED' && (r.results || []).some(sub => sub.status === 'rate_limited' || sub.resumedNextCycle));
         const hasNetworkErrors = executionResults.some(r =>
           r.status === 'NETWORK_ERROR' ||
-          (r.results || []).some(sub => sub.status === 'network_error' || sub.status === 'nav_failed')
+          (r.results || []).some(sub => {
+            const st = String(sub.status || '').toLowerCase();
+            return st === 'network_error' || st === 'nav_failed' || st === 'page_unsettled' || (sub.keyword && st === 'failed') || (st === 'failed' && /open-failed/i.test(String(sub.reason || sub.error || '')));
+          })
         );
+        // Pending-tag guard: tags never marked done (network/transient
+        // failures) mean work remains. Never complete while pending tags
+        // exist and time is left — rest and resume instead.
+        let pendingTagCount = 0;
+        try {
+          // Only the search hook owns tagStatus — campaigns running only
+          // page/inbox/activities hooks must not be held open by tags they
+          // never attempted.
+          const searchHookOn = (interactionTypes || []).includes('search');
+          if (searchHookOn) {
+            const fresh = await getCampaignSettings(campaignId);
+            const freshTagStatus = (fresh && fresh.settings && fresh.settings.tagStatus) || {};
+            for (const pid of activeProfiles) {
+              const done = freshTagStatus[String(pid)] || {};
+              for (const kw of (effectiveKeywords || [])) {
+                if (done[String(kw).trim()] !== 'done') pendingTagCount++;
+              }
+            }
+          }
+        } catch (tagErr) {
+          log.warn(` Pending-tag check failed (treating as pending): ${tagErr.message}`);
+          pendingTagCount = 1;
+        }
+        if (pendingTagCount > 0) {
+          log.warn(` [campaign-rest] ${pendingTagCount} tag(s) still pending for ${campaignId} — campaign will rest, not complete.`);
+        }
         if (hasHourlyRateLimits) {
           settings.restUntil = Date.now() + 3600000; // 1-hour rest before auto-resume
           settings.restReason = "hourly_rate_limit";
@@ -1672,7 +1754,12 @@ export async function POST(request) {
 
         const totalActions = executionResults.reduce((acc, r) => acc + interactionActionsFromQuota(r?.quota), 0);
         const isZeroActionTransientFailure = totalActions === 0 && (hasNetworkErrors || failedCount > 0);
-        const shouldRest = hasHourlyRateLimits || hasNetworkErrors || isZeroActionTransientFailure;
+        const shouldRest = hasHourlyRateLimits || hasNetworkErrors || isZeroActionTransientFailure || pendingTagCount > 0;
+
+        if (pendingTagCount > 0 && !settings.restUntil) {
+          settings.restUntil = Date.now() + 15 * 60 * 1000;
+          settings.restReason = "pending_tags";
+        }
 
         if (isZeroActionTransientFailure && !settings.restUntil) {
           settings.restUntil = Date.now() + 15 * 60 * 1000;
