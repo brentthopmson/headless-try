@@ -287,6 +287,11 @@ export function getPlatformConfig(platform) {
 export const emailInboxPlatforms = {
   gmail: {
     inboxUrl: "https://mail.google.com/mail/u/0/#inbox",
+    // Search surfaces (preferred): campaign replies carry [campaignId] in the
+    // subject and the reply filter archives them OUT of the inbox into the
+    // reply-folder label — searching [campaignId] finds them anywhere.
+    searchUrlTemplate: (q) => `https://mail.google.com/mail/u/0/#search/${encodeURIComponent(q)}`,
+    labelUrlTemplate: (name) => `https://mail.google.com/mail/u/0/#label/${encodeURIComponent(name)}`,
     unreadRow: "tr.zA.zE",
     anyRow: "tr.zA",
     rowSender: ".yW span[email], .yW .zF",
@@ -301,6 +306,8 @@ export const emailInboxPlatforms = {
   },
   outlook: {
     inboxUrl: "https://outlook.live.com/mail/0/inbox",
+    searchUrlTemplate: (q) => `https://outlook.live.com/mail/0/search?q=${encodeURIComponent(q)}`,
+    labelUrlTemplate: (name) => `https://outlook.live.com/mail/0/?path=/folders/${encodeURIComponent(name)}`,
     unreadRow: "div[role='option'][aria-label*='Unread'], div[data-convid]",
     anyRow: "div[role='option']",
     rowSender: "div[role='option'] div[title]",
@@ -315,6 +322,8 @@ export const emailInboxPlatforms = {
   },
   yahoo: {
     inboxUrl: "https://mail.yahoo.com/d/folders/1",
+    searchUrlTemplate: (q) => `https://mail.yahoo.com/d/search?query=${encodeURIComponent(q)}`,
+    labelUrlTemplate: (name) => `https://mail.yahoo.com/d/search?query=${encodeURIComponent(name)}`,
     unreadRow: "li[data-test='message-row'][data-is-unread='true']",
     anyRow: "li[data-test='message-row']",
     rowSender: "[data-test-id='sender']",
@@ -329,6 +338,8 @@ export const emailInboxPlatforms = {
   },
   aol: {
     inboxUrl: "https://mail.aol.com/d/folders/1",
+    searchUrlTemplate: (q) => `https://mail.aol.com/d/search?query=${encodeURIComponent(q)}`,
+    labelUrlTemplate: (name) => `https://mail.aol.com/d/search?query=${encodeURIComponent(name)}`,
     unreadRow: "li[data-test='message-row'][data-is-unread='true']",
     anyRow: "li[data-test='message-row']",
     rowSender: "[data-test-id='sender']",

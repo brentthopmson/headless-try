@@ -90,11 +90,18 @@ export async function sendCampaignEmail({
     return { senderHost, delivered };
   }
 
-  if (deliveryMethod === "smtp" || deliveryMethod === "mixed") {
+  // Mixed = load-balance across methods PER ROW: pick exactly ONE sender
+  // per recipient (never both — sending twice to the same list is a spam
+  // report waiting to happen). Wire sessions are scarcer, so alternate.
+  const useWire = deliveryMethod === "wire"
+    || (deliveryMethod === "mixed" && profileData?.cookies && (email.length % 2 === 0));
+
+  if (!useWire) {
     await sendViaSMTP(email, subject, message, smtp);
     noteSmtp(smtp);
     senderHost = smtp?.host || "SMTP";
     delivered++;
+    return { senderHost, delivered };
   }
 
   if (deliveryMethod === "wire" || deliveryMethod === "mixed") {
@@ -106,6 +113,7 @@ export async function sendCampaignEmail({
         driveUrl: profileData?.driveUrl || "",
         profileId,
       });
+      senderHost = `WIRE(${provider})`;
     } else {
       log.info(` No WIRE browser session available for profile ${profileId}, using SMTP fallback`);
       if (deliveryMethod === "wire") {

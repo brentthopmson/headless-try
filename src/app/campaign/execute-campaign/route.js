@@ -919,11 +919,19 @@ export async function POST(request) {
             break;
           }
           if (sentCount >= 30) {
+            // Safety cap hit with rows remaining = incomplete, NOT completed.
+            limitReached = true;
             log.info(` Vercel timeout safety cap (30) reached, stopping.`);
             break;
           }
 
           const row = deduplicatedRows[i];
+          // Resume safety: rows already sent/scheduled in a prior run are
+          // never re-sent (prevents duplicates after checkpoint loss or a
+          // re-triggered run on a completed campaign).
+          if (executionStatusIdx !== -1 && ['sent', 'scheduled'].includes(String(row[executionStatusIdx] || '').trim().toLowerCase())) {
+            continue;
+          }
           const email = row[emailColIdx]?.trim();
           if (!email) continue;
 
@@ -1053,7 +1061,8 @@ export async function POST(request) {
           } catch (err) {
             log.error(` Failed to send to ${email} via ${senderHost}: ${err.message}`);
             failedCount++;
-            sentCount++;
+            // Failures do NOT burn the batch cap (only delivered sends do);
+            // the row stays 'failed' in the CSV so a resume retries it.
             failureDetails.push({ email, error: err.message, host: senderHost });
 
             if (executionStatusIdx !== -1) row[executionStatusIdx] = "failed";

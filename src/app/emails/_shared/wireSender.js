@@ -158,6 +158,19 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
 
     await DOMHelpers.randomDelay(2000, 3000);
 
+    // Verify the send landed: compose must close/empty. Blind success here
+    // used to count undelivered emails (and poison quota + job accounting).
+    let composeOpen = false;
+    try {
+      composeOpen = await page.evaluate((sel) => {
+        const els = document.querySelectorAll(sel);
+        return Array.from(els).some(el => el && el.offsetParent !== null && (el.textContent || '').trim().length > 0);
+      }, config.selectors.bodyInput).catch(() => false);
+    } catch (_) { /* eval failure: keep legacy behaviour */ }
+    if (composeOpen) {
+      throw new Error(`Send unverified (compose still open) for ${recipient} via ${providerName}`);
+    }
+
     // Increment counter after successful send
     incrementSendCount(platform, accountId);
 

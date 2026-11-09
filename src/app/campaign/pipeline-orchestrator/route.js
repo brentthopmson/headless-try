@@ -61,7 +61,13 @@ function resolveCurrentStage(settings) {
     if (config.statusField) {
       const status = settings[config.statusField];
       if (status === "completed") continue;
-      if (status === "monitoring") continue;
+      // Email watcher: 'monitoring' means a pass finished and another is
+      // due (the watcher is re-triggered by GAS polls) — it must re-run,
+      // never be skipped as done. Other stages treat it as terminal.
+      if (status === "monitoring") {
+        if (stage === "interact" && channel === "email") return { stage, action: "run" };
+        continue;
+      }
       if (status === "processing") return { stage, action: "wait" };
       if (status === "retry") return { stage, action: "retry" };
       if (status === "failed") return { stage, action: "fail" };
@@ -103,17 +109,20 @@ async function triggerStage(campaignId, stage, settings, scope) {
 
   if (stage !== "execute") {
     const fileUrl = settings.fileUrl;
-    // Interaction-only email campaigns have no fileUrl — their interact stage
-    // is handled by the AI inbox watcher which doesn't need a contact list.
-    const isInteractionOnlyInteract = stage === "interact"
-      && !fileUrl
-      && (settings.campaignMode === "interactions-only"
-        || (settings.interactionAccounts?.length
-          && (settings.emailKeywords?.length || settings.emailStrategyPrompt)));
+    // Email interaction has ONE reply engine: the AI inbox watcher. It runs
+    // for interactions-only campaigns (no CSV) AND for CSV campaigns with
+    // interaction accounts + keywords/strategy (CSV emails become a
+    // relevance signal inside the watcher; the old CSV-only monitor never
+    // replied to anyone).
+    const emailInteractReplies = stage === "interact"
+      && (settings.channel || "email") === "email"
+      && settings.interactionAccounts?.length
+      && (settings.emailKeywords?.length || settings.emailStrategyPrompt);
 
-    if (isInteractionOnlyInteract) {
+    if (emailInteractReplies) {
       route = "/campaign/interact-inbox";
-      log.info(` Interaction-only campaign — routing interact stage to AI inbox watcher`);
+      log.info(` Email interact — routing interact stage to AI inbox watcher (${fileUrl ? 'with CSV relevance signal' : 'interactions-only'})`);
+      if (fileUrl) body.fileUrl = fileUrl;
     } else if (!fileUrl) {
       log.warn(`No fileUrl for stage ${stage}`);
       return null;

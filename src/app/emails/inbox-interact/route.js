@@ -13,7 +13,7 @@ import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
 
-// Extract unread inbox items from the DOM.
+// Extract inbox items from the DOM on the current page.
 async function scanInbox(page, cfg, maxScan) {
   const items = [];
   for (const rowSelector of [cfg.unreadRow, cfg.anyRow]) {
@@ -30,7 +30,17 @@ async function scanInbox(page, cfg, maxScan) {
           const snippet = snippetEl ? ((await snippetEl.textContent()) || "") : "";
           const text = `${sender} ${subject} ${snippet}`.replace(/\s+/g, " ").trim();
           if (!text) continue;
-          items.push({ row, sender: sender.trim(), subject: subject.trim(), snippet: snippet.trim(), text });
+          // Thread identity: prefer the provider's stable thread id so the
+          // same thread seen on two surfaces (search + label + inbox)
+          // dedupes to one ledger entry.
+          let threadId = "";
+          try {
+            threadId = (await row.evaluate(el =>
+              el.getAttribute('data-thread-id') || el.getAttribute('data-legacy-thread-id') ||
+              el.getAttribute('data-convid') || el.getAttribute('data-id') || ''
+            ).catch(() => '')) || '';
+          } catch { /* noop */ }
+          items.push({ row, sender: sender.trim(), subject: subject.trim(), snippet: snippet.trim(), text, threadId: String(threadId) });
         } catch { /* skip malformed row */ }
       }
       if (items.length > 0) break;
@@ -50,6 +60,12 @@ function keywordMatches(item, keywords) {
   return keywords.some(k => text.includes(String(k).toLowerCase()));
 }
 
+// Never reply to automated/system mail — these are not conversations.
+const AUTOMATED_SENDER_RE = /(no-?reply|do-?not-?reply|mailer-daemon|postmaster|notifications?@|bounce|undeliverable|delivery-?status|auto-?reply)/i;
+function isAutomatedSender(item) {
+  return AUTOMATED_SENDER_RE.test(String(item?.sender || '')) || /out of office|automatic reply|delivery status notification/i.test(String(item?.subject || ''));
+}
+
 // Person-specific interaction link: interactionTargetLink (fallback:
 // targetLink) + ?email=<thread contact>. Extracted from the sender field.
 function extractContactEmail(item) {
@@ -64,23 +80,25 @@ function buildPersonalInteractionLink(item, settings) {
   return email ? buildQueryUrl(base, "email", email) : base;
 }
 
-function buildRelevancePrompt(itemList, settings) {
+function buildRelevancePrompt(itemList, settings, knownContacts = []) {
   const keywords = (settings.emailKeywords || []).join(", ");
   const strategy = settings.emailStrategyPrompt || "";
   const targetLink = settings.interactionTargetLink || settings.targetLink || "";
   const listing = itemList.map((it, i) =>
     `[${i}] From: ${it.sender || "unknown"} | Subject: ${it.subject || "no subject"} | Snippet: ${(it.snippet || it.text).slice(0, 200)}`
   ).join("\n");
+  const known = knownContacts.length
+    ? `\nKnown campaign recipients (replies from these addresses are HIGHLY relevant): ${knownContacts.slice(0, 50).join(", ")}${knownContacts.length > 50 ? ` (+${knownContacts.length - 50} more)` : ""}\n`
+    : "";
   return `You are screening an email inbox for a campaign.
 
 Campaign keywords: ${keywords || "(none provided — use the strategy context)"}
 Campaign strategy: ${strategy || "General outreach engagement"}
-${targetLink ? `Campaign target link: ${targetLink}` : ""}
-
+${targetLink ? `Campaign target link: ${targetLink}` : ""}${known}
 Inbox items:
 ${listing}
 
-Decide which items are RELEVANT to this campaign (matches the keywords/strategy, real sender — not automated no-reply addresses, not spam).
+Decide which items are RELEVANT to this campaign (matches the keywords/strategy, or is a reply from a known campaign recipient; real sender — not automated no-reply addresses, not spam).
 
 Return ONLY a JSON object: {"relevant": [{"index": 0, "reason": "why"}]}
 Return {"relevant": []} if none match.`;
@@ -133,9 +151,9 @@ async function aiGenerate(prompt, fallback = null) {
   }
 }
 
-async function aiSelectRelevant(itemList, settings) {
+async function aiSelectRelevant(itemList, settings, knownContacts = []) {
   const ai = new MultiProviderAI();
-  const raw = await aiGenerate(buildRelevancePrompt(itemList, settings));
+  const raw = await aiGenerate(buildRelevancePrompt(itemList, settings, knownContacts));
   if (!raw) return [];
   const parsed = ai.parseAiJson(raw);
   if (!parsed || !Array.isArray(parsed.relevant)) return [];
@@ -148,7 +166,14 @@ async function aiSelectRelevant(itemList, settings) {
 }
 
 function ledgerKey(item) {
-  return `${(item.sender || "").toLowerCase()}|${(item.subject || "").toLowerCase()}`
+  // Stable thread identity: provider thread id first; fallback is sender +
+  // subject with Re:/Fw:/Fwd: chains stripped (subjects mutate across turns).
+  if (item?.threadId) return `tid:${String(item.threadId).trim().toLowerCase()}`;
+  const subj = String(item?.subject || '').toLowerCase()
+    .replace(/^(re|fw|fwd)\s*:\s*/g, '')
+    .replace(/^(re|fw|fwd)\s*:\s*/g, '')
+    .replace(/\[.+?\]\s*/g, '');
+  return `${(item.sender || "").toLowerCase()}|${subj}`
     .replace(/[^a-z0-9|]/g, "").slice(0, 120);
 }
 
@@ -167,10 +192,33 @@ async function fillAndSendReply(page, cfg, replyText) {
     await page.keyboard.up("Control");
   }
   await DOMHelpers.randomDelay(2000, 3000);
+  // Verify the send landed: the compose box must close (or empty). A blind
+  // true here used to write the ledger for replies that never sent.
+  try {
+    const stillOpen = await page.evaluate((sel) => {
+      const els = document.querySelectorAll(sel);
+      return Array.from(els).some(el => el && el.offsetParent !== null && (el.textContent || '').trim().length > 0);
+    }, cfg.bodyInput).catch(() => false);
+    if (stillOpen) {
+      logger.warn(`[interact-inbox] compose box still open with text after send — treating as NOT sent.`);
+      return false;
+    }
+  } catch (_) { /* eval failure: keep legacy behaviour */ }
   return true;
 }
 
-async function replyToThread(page, cfg, replyText) {
+async function replyToThread(page, cfg, replyText, item) {
+  // Open the thread FIRST — the Reply button only exists in thread view,
+  // not on the inbox list (attempting reply on the list silently failed
+  // forever and no ledger entry was ever written).
+  try {
+    if (item && item.row) {
+      await item.row.click();
+      await DOMHelpers.randomDelay(cfg.waitAfterOpen * 0.6, cfg.waitAfterOpen * 1.1);
+    }
+  } catch (e) {
+    logger.warn(`[interact-inbox] opening thread failed: ${e.message}`);
+  }
   // Attempt 1: click the reply button
   const replyEl = await page.$(cfg.replyButton);
   if (replyEl) {
@@ -275,13 +323,20 @@ export async function processInboxInteract(body) {
     // Strict per-run interaction cap: unset/empty/0 in the SETTINGS sheet
     // (interactionBatchLimit) blocks the watcher entirely — no Infinity
     // fallback (was the last fail-open path for interactionLimit).
-    let planInteractionLimit = Infinity;
+    let planInteractionLimit = 0;
     try {
       const limits = await getCampaignLimits();
-      if (limits.interactionLimit > 0) {
-        planInteractionLimit = limits.interactionLimit;
-      }
-    } catch { /* unlimited */ }
+      planInteractionLimit = Number(limits.interactionLimit) || 0;
+    } catch (capErr) {
+      // Fail-closed like the social path: no readable cap = block the pass
+      // (never unlimited replies on a settings read failure).
+      log.warn(` interactionBatchLimit read failed (${capErr.message}) — blocking pass (fail-closed).`);
+      return NextResponse.json({ success: true, message: "Interact blocked: interactionBatchLimit unreadable", replies: 0 });
+    }
+    if (!(planInteractionLimit > 0)) {
+      log.info(` interactionBatchLimit is 0 or unavailable, blocking watcher - set interactionBatchLimit in the SETTINGS sheet`);
+      return NextResponse.json({ success: true, message: "Interact blocked: interactionBatchLimit is 0 - set it in the SETTINGS sheet", replies: 0 });
+    }
 
     if (await isCampaignPaused(campaignId)) {
       return NextResponse.json({ success: true, message: "Campaign paused", replies: 0 });
@@ -314,6 +369,29 @@ export async function processInboxInteract(body) {
       identifier: a.identifier || a.accountId,
       platform: a.platform || a.provider || "email",
     }))).catch(() => {});
+
+    // CSV campaigns: known recipient emails are a relevance signal (a reply
+    // from someone we emailed about this campaign outranks keyword matches).
+    let knownContacts = [];
+    if (settings.fileUrl || body?.fileUrl) {
+      try {
+        const { extractFileId, parseCSV } = await import("../../campaign/_shared/pipelineUtils.js");
+        const { downloadCsvText } = await import("../../api/googlesheets.js");
+        const fid = extractFileId(settings.fileUrl || body.fileUrl);
+        if (fid) {
+          const dl = await downloadCsvText(fid);
+          if (dl.success && typeof dl.content === 'string') {
+            const rows = parseCSV(dl.content);
+            if (rows.length > 1) {
+              const eIdx = rows[0].findIndex(h => /^(email|mail|e-mail|lead)$/i.test(String(h || '').trim()));
+              if (eIdx !== -1) knownContacts = rows.slice(1).map(r => String(r[eIdx] || '').trim().toLowerCase()).filter(Boolean);
+            }
+          }
+        }
+      } catch (csvErr) {
+        log.warn(` CSV relevance signal load failed (continuing without): ${csvErr.message}`);
+      }
+    }
 
     // Ledger of replied threads (persisted in settings, capped). threadTurns
     // tracks exchanges per thread so linkAfterTurns can gate the link.
@@ -411,21 +489,47 @@ export async function processInboxInteract(body) {
           ({ browser, page } = await launchBrowserWithSession(account.cookieJSON, false));
         }
         scannedAccounts++;
-        await page.goto(cfg.inboxUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
-        await DOMHelpers.randomDelay(3000, 5000);
+        // Scan surfaces in priority order: campaignId search (finds replies
+        // anywhere, incl. archived-by-filter), reply-folder label, inbox.
+        const replyFolder = String(settings.replyFolder || "").trim() || "Campaign-Replies";
+        const surfaces = [];
+        if (typeof cfg.searchUrlTemplate === 'function') surfaces.push({ name: 'campaign-search', url: cfg.searchUrlTemplate(`[${campaignId}]`) });
+        if (typeof cfg.labelUrlTemplate === 'function') surfaces.push({ name: 'reply-label', url: cfg.labelUrlTemplate(replyFolder) });
+        surfaces.push({ name: 'inbox', url: cfg.inboxUrl });
 
-        const items = await scanInbox(page, cfg, maxScan);
-        log.info(` [${account.identifier}] scanned ${items.length} inbox items`);
+        const items = [];
+        const surfaceSeen = new Set();
+        for (const surf of surfaces) {
+          try {
+            await page.goto(surf.url, { waitUntil: "domcontentloaded", timeout: 45000 });
+            await DOMHelpers.randomDelay(2500, 4000);
+            for (const it of await scanInbox(page, cfg, maxScan)) {
+              const k = ledgerKey(it);
+              if (surfaceSeen.has(k)) continue;
+              surfaceSeen.add(k);
+              it.surface = surf.name;
+              items.push(it);
+            }
+          } catch (surfErr) {
+            log.warn(` [${account.identifier}] surface ${surf.name} scan failed: ${surfErr.message}`);
+          }
+        }
+        log.info(` [${account.identifier}] scanned ${items.length} items across ${surfaces.map(s => s.name).join('+')}`);
 
         if (items.length > 0) {
-          // 1) AI relevance pass over the list; 2) DOM keyword pre-filter as safety net
+          // 1) AI relevance pass over the list; 2) DOM keyword pre-filter as safety net.
+          // Automated/system senders are NEVER candidates (not conversations).
+          const liveItems = items.filter(it => !isAutomatedSender(it));
+          if (liveItems.length < items.length) {
+            log.info(` [${account.identifier}] dropped ${items.length - liveItems.length} automated sender(s) from candidacy`);
+          }
           const candidates = [];
           const seenKeys = new Set();
-          for (const hit of await aiSelectRelevant(items, settings)) {
+          for (const hit of await aiSelectRelevant(liveItems, settings, knownContacts)) {
             const key = ledgerKey(hit.item);
             if (!seenKeys.has(key)) { candidates.push(hit.item); seenKeys.add(key); }
           }
-          for (const item of items) {
+          for (const item of liveItems) {
             const key = ledgerKey(item);
             if (keywordMatches(item, emailKeywords) && !seenKeys.has(key)) {
               candidates.push(item);
@@ -438,6 +542,13 @@ export async function processInboxInteract(body) {
             const priorTurns = threadTurns[key] || 0;
             if (priorTurns >= maxThreadTurns) continue;
 
+            // Per-pass cap (SETTINGS interactionBatchLimit): stop this pass at
+            // the cap — never complete on it (rest/resume owns the rest).
+            if (Number.isFinite(planInteractionLimit) && newReplies >= planInteractionLimit) {
+              log.info(` [${account.identifier}] per-pass interaction cap (${planInteractionLimit}) reached — stopping pass (rest, not completed).`);
+              break;
+            }
+
             // Re-check the platform policy with locally-incremented usage so
             // a batch can't overshoot the hourly/daily window mid-pass.
             const actionCheck = await checkActionAllowed(account.platform || "", "inboxReply", accountUsage);
@@ -449,7 +560,7 @@ export async function processInboxInteract(body) {
             const replyText = await aiGenerate(buildReplyPrompt(item, settings, priorTurns));
             if (!replyText) continue;
 
-            const sent = await replyToThread(page, cfg, replyText);
+            const sent = await replyToThread(page, cfg, replyText, item);
             if (sent) {
               repliedThreads.add(key);
               threadTurns[key] = priorTurns + 1;
@@ -468,16 +579,18 @@ export async function processInboxInteract(body) {
                 monthly: (cur.monthly || 0) + 1,
                 total: (cur.total || 0) + 1,
               };
-              // Persist ledger + count after each reply so we never double-reply
+              // Persist ledger + count after each reply so we never double-reply.
+              // Both maps are capped so the settings JSON can't bloat.
+              const turnEntries = Object.entries(threadTurns).slice(-200);
               await updateCampaignSettings(campaignId, {
                 repliedThreads: Array.from(repliedThreads).slice(-200),
-                threadTurns: threadTurns,
+                threadTurns: Object.fromEntries(turnEntries),
                 interactionRepliesCount: replyCount,
               });
             }
 
-            // Re-open the inbox after handling a thread
-            await page.goto(cfg.inboxUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+            // Re-open the primary surface after handling a thread
+            await page.goto(surfaces[0].url, { waitUntil: "domcontentloaded", timeout: 45000 });
             await DOMHelpers.randomDelay(2500, 4000);
           }
         }
