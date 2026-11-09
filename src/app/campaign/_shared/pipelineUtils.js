@@ -406,15 +406,66 @@ export async function getFirestickEmails() {
 export function mergeTemplate(template, row, headers) {
   if (!template) return "";
   const getVal = (col) => {
-    const idx = headers.indexOf(col);
-    return idx !== -1 ? (row[idx]?.trim() || "") : "";
+    const idx = headers.findIndex(h => String(h).trim().toUpperCase() === col);
+    return idx !== -1 ? (String(row[idx] ?? "").trim() || "") : "";
   };
   return template
     .replace(/\{\{firstName\}\}|\{\{first_name\}\}/gi, getVal("FIRSTNAME"))
     .replace(/\{\{lastName\}\}|\{\{last_name\}\}/gi, getVal("LASTNAME"))
     .replace(/\{\{email\}\}/gi, getVal("EMAIL"))
     .replace(/\{\{company\}\}|\{\{businessName\}\}/gi, getVal("BUSINESSNAME"))
+    .replace(/\{\{link\}\}|\{\{url\}\}/gi, getVal("LINK") || getVal("URL"))
     .replace(/\{\{context\}\}/gi, getVal("CONTEXT"));
+}
+
+/**
+ * Appends ?param=value (or &param=value) to a URL. Param names are lower-cased
+ * and values URL-encoded so ?email= links are per-recipient unique. Returns
+ * the base URL unchanged when no value is present.
+ */
+export function buildQueryUrl(baseUrl, param, value) {
+  const base = String(baseUrl || "").trim();
+  const v = String(value ?? "").trim();
+  if (!base || !v) return base;
+  const key = String(param || "email").trim().toLowerCase().replace(/[^a-z0-9_]/gi, "") || "email";
+  const sep = base.includes("?") ? "&" : "?";
+  return `${base}${sep}${key}=${encodeURIComponent(v)}`;
+}
+
+/** Case-insensitive CSV row lookup by header name (with aliases). */
+export function getCsvValue(row, headers, names) {
+  const list = (Array.isArray(names) ? names : [names]).map(n => String(n).trim().toUpperCase());
+  for (const name of list) {
+    const idx = headers.findIndex(h => String(h).trim().toUpperCase() === name);
+    if (idx !== -1) {
+      const v = String(row[idx] ?? "").trim();
+      if (v) return v;
+    }
+  }
+  return "";
+}
+
+/**
+ * Per-recipient personalized link: targetLink + ?<linkParam>=<row value>.
+ * Deterministic (never AI-generated) so every recipient gets a unique URL.
+ */
+export function buildPersonalizedLink(settings, row, headers) {
+  const base = String(settings?.targetLink || "").trim();
+  if (!base) return "";
+  const param = String(settings?.linkParam || "email").trim() || "email";
+  const val = getCsvValue(row, headers, [param, "email", "EMAIL", "MAIL", "E-MAIL"]);
+  return val ? buildQueryUrl(base, param, val) : base;
+}
+
+/** Ensures a `link` column exists; returns its index. */
+export function ensureLinkColumn(rows) {
+  const headers = rows[0];
+  let idx = headers.findIndex(h => String(h).trim().toLowerCase() === "link");
+  if (idx === -1) {
+    headers.push("link");
+    idx = headers.length - 1;
+  }
+  return idx;
 }
 
 /**

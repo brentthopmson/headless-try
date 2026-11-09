@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import { identifySelfFromHost } from "../../../utils/serverlessTracker.js";
-import { extractFileId, parseCSV, stringifyCSV, getCampaignSettings, mergeTemplate } from "../_shared/pipelineUtils.js";
+import { extractFileId, parseCSV, stringifyCSV, getCampaignSettings, mergeTemplate, buildPersonalizedLink, ensureLinkColumn } from "../_shared/pipelineUtils.js";
 import { downloadCsvText } from "../../api/googlesheets.js";
 
 export const maxDuration = 60;
@@ -74,9 +74,20 @@ export async function POST(request) {
     const enhancedBodyIdx = headers.findIndex(h => h.toLowerCase().trim() === "enhancedbody");
     const enhancedSocialMsgIdx = headers.findIndex(h => h.toLowerCase().trim() === "enhancedsocialmessage");
 
+    // Personalized link: write a per-recipient `link` column BEFORE merging so
+    // {{link}}/{{url}} in the body template resolves to that recipient's
+    // unique targetLink?param=value URL (deterministic, never AI-written).
+    let linkIdx = -1;
+    if (settings.personalizeLink && settings.targetLink) {
+      linkIdx = ensureLinkColumn(rows);
+    }
+
     let processed = 0;
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
+      if (linkIdx !== -1) {
+        row[linkIdx] = buildPersonalizedLink(settings, row, rows[0]);
+      }
 
       if (channel === "email") {
         if (enhancedSubjectIdx !== -1 && subjectTemplate) {

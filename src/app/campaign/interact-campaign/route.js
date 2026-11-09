@@ -203,8 +203,6 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log) {
     }
   }
 
-  const stopAfterHours = settings.interactionStopAfterHours || 72;
-  const interactionStartedAt = settings.interactionStartedAt || new Date().toISOString();
 
   const batchCount = Math.ceil(sentRows.length / BATCH_SIZE);
   for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
@@ -213,20 +211,6 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log) {
       break;
     }
 
-    // Stop guard: check time limit
-    const hoursElapsed = (Date.now() - new Date(interactionStartedAt).getTime()) / (1000 * 60 * 60);
-    if (hoursElapsed >= stopAfterHours) {
-      log.info(` Stop guard: time limit reached (${hoursElapsed.toFixed(1)}h >= ${stopAfterHours}h)`);
-      await updateCampaignSettings(campaignId, {
-        interactionStatus: "completed",
-        interactionStoppedReason: "time_limit_reached"
-      });
-      return NextResponse.json({
-        success: true,
-        message: `Interaction stopped: time limit reached (${stopAfterHours}h)`,
-        stats: { monitored: sentRows.length, replies: replyCount, autoReplied: autoReplyCount, stoppedReason: "time_limit_reached" }
-      });
-    }
 
     // Stop guard: monthly interactionUsage quota (plan row vs users sheet)
     const coordinatorQuota = await checkUserQuota(settings.userId || null, { keys: ["interactionUsage"] });
@@ -362,24 +346,12 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
     }
   }
 
-  const stopAfterHours = settings.interactionStopAfterHours || 72;
-  const interactionStartedAt = settings.interactionStartedAt || new Date().toISOString();
 
   let wasPaused = false;
   const batchCount = Math.ceil(mySentRows.length / BATCH_SIZE);
   for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
     if (await isCampaignPaused(campaignId)) { wasPaused = true; break; }
 
-    // Stop guard: check time limit
-    const hoursElapsed = (Date.now() - new Date(interactionStartedAt).getTime()) / (1000 * 60 * 60);
-    if (hoursElapsed >= stopAfterHours) {
-      log.info(`[Worker] Stop guard: time limit reached`);
-      await updateCampaignSettings(campaignId, {
-        interactionStatus: "completed",
-        interactionStoppedReason: "time_limit_reached"
-      });
-      break;
-    }
 
     // Stop guard: monthly interactionUsage quota (plan row vs users sheet)
     const workerQuota = await checkUserQuota(settings.userId || null, { keys: ["interactionUsage"] });

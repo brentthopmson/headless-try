@@ -22,7 +22,7 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import { getMaxConcurrentTasks, checkUserConcurrentCampaigns, registerActiveCampaignRun, unregisterActiveCampaignRun } from "../../../utils/campaignConcurrency.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { dispatchToServers } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getFirestickEmails, getPerformancePresets, updateCampaignSettings, getCampaignSettings, getAccountTagStatuses } from "../_shared/pipelineUtils.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getFirestickEmails, getPerformancePresets, updateCampaignSettings, getCampaignSettings, getAccountTagStatuses, buildPersonalizedLink } from "../_shared/pipelineUtils.js";
 import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
 import { calculateScheduleTimes } from "../../../utils/scheduleCalculator.js";
 import { detectEmailProvider } from "../../../utils/sendRateLimiter.js";
@@ -939,6 +939,15 @@ export async function POST(request) {
             || (emailBodyIdx !== -1 && row[emailBodyIdx]?.trim())
             || settings.body
             || "";
+
+          // Personalized link: resolve any leftover {{link}}/{{url}} token to
+          // this recipient's deterministic targetLink?param=value URL so a
+          // literal placeholder never lands in the sent email.
+          if (settings.personalizeLink && settings.targetLink) {
+            const personalLink = buildPersonalizedLink(settings, row, nHeaders);
+            subject = subject.replace(/\{\{\s*(link|url)\s*\}\}/gi, personalLink);
+            message = message.replace(/\{\{\s*(link|url)\s*\}\}/gi, personalLink);
+          }
 
           // Embed campaign identifier for interaction tracking
           const tagged = embedCampaignIdentifier(subject, message, campaignId);

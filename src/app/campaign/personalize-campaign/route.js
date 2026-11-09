@@ -4,7 +4,7 @@ import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, getPerformancePresets } from "../_shared/pipelineUtils.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, getPerformancePresets, buildPersonalizedLink, ensureLinkColumn } from "../_shared/pipelineUtils.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
 import { updateUserUsage } from "../../socials/_shared/hubUpdater.js";
@@ -16,7 +16,7 @@ async function personalizeBatch(batch, personalizationPrompt, headers) {
   if (batch.length === 0) return batch.map(() => null);
 
   const batchDescription = batch.map((contact, i) =>
-    `${i + 1}. Name: ${contact.firstName}, Company: ${contact.company}, Email: ${contact.email}${contact.context ? `, Context: ${contact.context.slice(0, 200)}` : ""}`
+    `${i + 1}. Name: ${contact.firstName}, Company: ${contact.company}, Email: ${contact.email}${contact.context ? `, Context: ${contact.context.slice(0, 200)}` : ""}${contact.link ? `, Personal link (use EXACTLY this URL when you include a CTA, never re-type the base URL): ${contact.link}` : ""}`
   ).join("\n");
 
   const prompt = `You are an expert personalized outreach copywriter writing as the SENDER (our campaign account). Generate highly tailored cold email subject lines and email bodies for these ${batch.length} recipients. Each recipient below is the person RECEIVING this email (they have never seen it) — never write as if they already replied or agreed to anything. "You" (in the email) = that recipient; "I/we" = the sender.
@@ -34,7 +34,8 @@ Rules:
 2. Each body must be professional, natural, concise, with clear CTA
 3. Reference the recipient's name and company
 4. Keep body under 150 words
-5. Return ONLY the JSON array, no markdown or explanations`;
+5. If a "Personal link" is listed for a recipient, include that EXACT URL in the body as the CTA — do not invent, shorten, or re-type a different URL.
+6. Return ONLY the JSON array, no markdown or explanations`;
 
   try {
     const ai = new MultiProviderAI();
@@ -148,13 +149,20 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   let personalizationPrompt = "Write a short, professional cold outreach email. Address by first name, reference company. Keep it engaging, under 150 words. Vary subject lines.";
 
   let channel = "email";
+  let campaignSettings = {};
   try {
     const campaignData = await getCampaignSettings(campaignId);
     if (campaignData?.settings) {
+      campaignSettings = campaignData.settings;
       if (campaignData.settings.aiPersonalizationPrompt) personalizationPrompt = campaignData.settings.aiPersonalizationPrompt;
       channel = campaignData.settings.channel || "email";
     }
   } catch {}
+
+  // Personalized link column: deterministic per-recipient URL, written next
+  // to enhancedBody so execute/send (and any re-merge) can use {{link}}.
+  const wantsLink = !!(campaignSettings.personalizeLink && campaignSettings.targetLink);
+  const linkIdx = wantsLink ? ensureLinkColumn(rows) : -1;
 
   // Cap personalization prompt length to prevent token overflow
   const promptMaxCharsSetting = await getSetting('personalizationPromptMaxChars');
@@ -198,12 +206,17 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
     const batch = dataRows.slice(start, end);
 
     if (channel === "email") {
-      const contacts = batch.map(row => ({
-        email: row[emailIdx]?.trim() || "",
-        firstName: firstNameIdx !== -1 ? row[firstNameIdx]?.trim() || "there" : "there",
-        company: companyIdx !== -1 ? row[companyIdx]?.trim() || "your company" : "your company",
-        context: contextIdx !== -1 ? row[contextIdx]?.trim() || "" : ""
-      }));
+      const contacts = batch.map(row => {
+        const link = linkIdx !== -1 ? buildPersonalizedLink(campaignSettings, row, headers) : "";
+        if (linkIdx !== -1) row[linkIdx] = link;
+        return {
+          email: row[emailIdx]?.trim() || "",
+          firstName: firstNameIdx !== -1 ? row[firstNameIdx]?.trim() || "there" : "there",
+          company: companyIdx !== -1 ? row[companyIdx]?.trim() || "your company" : "your company",
+          context: contextIdx !== -1 ? row[contextIdx]?.trim() || "" : "",
+          link,
+        };
+      });
 
       let aiResults = await personalizeBatch(contacts, personalizationPrompt, headers);
 
@@ -219,7 +232,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
               const result = retryResults[i];
               if (result && (result.subject || result.body)) {
                 if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = result.subject || "";
-                if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = result.body || "";
+                if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = contacts[i]?.link ? String(result.body || "").replace(/\{\{\s*(link|url)\s*\}\}/gi, contacts[i].link) : (result.body || "");
                 personalizedCount++;
               } else {
                 const firstName = contacts[i].firstName;
@@ -243,7 +256,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
                 const result = quarterResults[i];
                 if (result && (result.subject || result.body)) {
                   if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = result.subject || "";
-                  if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = result.body || "";
+                  if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = contacts[i]?.link ? String(result.body || "").replace(/\{\{\s*(link|url)\s*\}\}/gi, contacts[i].link) : (result.body || "");
                   personalizedCount++;
                 } else {
                   const firstName = contacts[i].firstName;
@@ -264,7 +277,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
         const email = contacts[i].email || "unknown";
         if (result) {
           if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = result.subject || "";
-          if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = result.body || "";
+          if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = contacts[i]?.link ? String(result.body || "").replace(/\{\{\s*(link|url)\s*\}\}/gi, contacts[i].link) : (result.body || "");
           personalizedCount++;
           log.info(`[Row personalize] ${email}: subject="${(result.subject || "").substring(0, 50)}"`);
         } else {
@@ -418,13 +431,20 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
   let personalizationPrompt = "Write a short, professional cold outreach email. Address by first name, reference company. Keep it engaging, under 150 words. Vary subject lines.";
 
   let channel = "email";
+  let campaignSettings = {};
   try {
     const campaignData = await getCampaignSettings(campaignId);
     if (campaignData?.settings) {
+      campaignSettings = campaignData.settings;
       if (campaignData.settings.aiPersonalizationPrompt) personalizationPrompt = campaignData.settings.aiPersonalizationPrompt;
       channel = campaignData.settings.channel || "email";
     }
   } catch {}
+
+  // Personalized link column: deterministic per-recipient URL, written next
+  // to enhancedBody so execute/send (and any re-merge) can use {{link}}.
+  const wantsLink = !!(campaignSettings.personalizeLink && campaignSettings.targetLink);
+  const linkIdx = wantsLink ? ensureLinkColumn(rows) : -1;
 
   // Cap personalization prompt length to prevent token overflow
   const promptMaxCharsSetting = await getSetting('personalizationPromptMaxChars');
@@ -454,12 +474,17 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
     const batch = myRows.slice(start, end);
 
     if (channel === "email") {
-      const contacts = batch.map(row => ({
-        email: row[emailIdx]?.trim() || "",
-        firstName: firstNameIdx !== -1 ? row[firstNameIdx]?.trim() || "there" : "there",
-        company: companyIdx !== -1 ? row[companyIdx]?.trim() || "your company" : "your company",
-        context: contextIdx !== -1 ? row[contextIdx]?.trim() || "" : ""
-      }));
+      const contacts = batch.map(row => {
+        const link = linkIdx !== -1 ? buildPersonalizedLink(campaignSettings, row, headers) : "";
+        if (linkIdx !== -1) row[linkIdx] = link;
+        return {
+          email: row[emailIdx]?.trim() || "",
+          firstName: firstNameIdx !== -1 ? row[firstNameIdx]?.trim() || "there" : "there",
+          company: companyIdx !== -1 ? row[companyIdx]?.trim() || "your company" : "your company",
+          context: contextIdx !== -1 ? row[contextIdx]?.trim() || "" : "",
+          link,
+        };
+      });
 
       let aiResults = await personalizeBatch(contacts, personalizationPrompt, headers);
 
@@ -475,7 +500,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
               const result = retryResults[i];
               if (result && (result.subject || result.body)) {
                 if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = result.subject || "";
-                if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = result.body || "";
+                if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = contacts[i]?.link ? String(result.body || "").replace(/\{\{\s*(link|url)\s*\}\}/gi, contacts[i].link) : (result.body || "");
                 personalizedCount++;
               } else {
                 const firstName = contacts[i].firstName;
@@ -499,7 +524,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
                 const result = quarterResults[i];
                 if (result && (result.subject || result.body)) {
                   if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = result.subject || "";
-                  if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = result.body || "";
+                  if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = contacts[i]?.link ? String(result.body || "").replace(/\{\{\s*(link|url)\s*\}\}/gi, contacts[i].link) : (result.body || "");
                   personalizedCount++;
                 } else {
                   const firstName = contacts[i].firstName;
@@ -520,7 +545,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
         const email = contacts[i].email || "unknown";
         if (result) {
           if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = result.subject || "";
-          if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = result.body || "";
+          if (enhancedBodyIdx !== -1) batch[i][enhancedBodyIdx] = contacts[i]?.link ? String(result.body || "").replace(/\{\{\s*(link|url)\s*\}\}/gi, contacts[i].link) : (result.body || "");
           personalizedCount++;
           log.info(`[Row personalize] ${email}: subject="${(result.subject || "").substring(0, 50)}"`);
         } else {

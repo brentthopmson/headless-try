@@ -5,7 +5,7 @@ import { launchBrowserWithSession, resolveSocialSession, DOMHelpers } from "../.
 import { getCampaignLimits, checkActionAllowed, checkUserQuota } from "../../socials/_shared/limits.js";
 import { resolveAccountGate } from "../../socials/_shared/accountGate.js";
 import { getAccountUsage, updateAccountUsage, updateUserUsage, setActiveCampaignForAccount, clearActiveCampaignForAccount, seedCampaignAccountsInStats } from "../../socials/_shared/hubUpdater.js";
-import { isCampaignPaused, updateCampaignSettings, getCampaignSettings } from "../../campaign/_shared/pipelineUtils.js";
+import { isCampaignPaused, updateCampaignSettings, getCampaignSettings, buildQueryUrl } from "../../campaign/_shared/pipelineUtils.js";
 import { updateSheetRowApi } from "../../api/googlesheets.js";
 import { INBOX_CONFIGS, detectInboxProvider } from "./platform.js";
 import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
@@ -50,10 +50,24 @@ function keywordMatches(item, keywords) {
   return keywords.some(k => text.includes(String(k).toLowerCase()));
 }
 
+// Person-specific interaction link: interactionTargetLink (fallback:
+// targetLink) + ?email=<thread contact>. Extracted from the sender field.
+function extractContactEmail(item) {
+  const m = String(item?.sender || item?.text || "").match(/[\w.+-]+@[\w-]+\.[\w.]+/);
+  return m ? m[0] : "";
+}
+
+function buildPersonalInteractionLink(item, settings) {
+  const base = String(settings.interactionTargetLink || settings.targetLink || "").trim();
+  if (!base) return "";
+  const email = extractContactEmail(item);
+  return email ? buildQueryUrl(base, "email", email) : base;
+}
+
 function buildRelevancePrompt(itemList, settings) {
   const keywords = (settings.emailKeywords || []).join(", ");
   const strategy = settings.emailStrategyPrompt || "";
-  const targetLink = settings.targetLink || "";
+  const targetLink = settings.interactionTargetLink || settings.targetLink || "";
   const listing = itemList.map((it, i) =>
     `[${i}] From: ${it.sender || "unknown"} | Subject: ${it.subject || "no subject"} | Snippet: ${(it.snippet || it.text).slice(0, 200)}`
   ).join("\n");
@@ -72,17 +86,22 @@ Return ONLY a JSON object: {"relevant": [{"index": 0, "reason": "why"}]}
 Return {"relevant": []} if none match.`;
 }
 
-function buildReplyPrompt(item, settings) {
+function buildReplyPrompt(item, settings, threadTurn = 0) {
   const strategy = settings.emailStrategyPrompt || "";
-  const targetLink = settings.targetLink || "";
   const keywords = (settings.emailKeywords || []).join(", ");
+  const linkAfterTurns = Math.max(0, parseInt(settings.linkAfterTurns, 10) || 0);
+  const personalLink = buildPersonalInteractionLink(item, settings);
+  // Link gate: only hand the AI the person-specific link once the contact
+  // has replied linkAfterTurns times (threadTurn = prior replies by us,
+  // which tracks their exchanges). 0 = include immediately.
+  const includeLink = !!personalLink && threadTurn >= linkAfterTurns;
   return `You are the account OWNER replying to an email that was sent TO you. The message below was written by the sender TO you (not a public post, not a cold message from you).
 
 Write a brief, professional email reply for this campaign.
 
 Campaign keywords: ${keywords}
 Campaign strategy: ${strategy || "General outreach engagement"}
-${targetLink ? `Campaign target link: ${targetLink} — mention this destination naturally where it helps the conversation (show it as a plain URL).` : ""}
+${includeLink ? `Person-specific destination link (use this EXACT URL verbatim when you mention the destination — it is personalized for this contact with ?email=, never invent or re-type a different URL): ${personalLink}` : "Do NOT include any link or URL in this reply."}
 Replying to (sender wrote TO you):
 From: ${item.sender || "unknown"}
 Subject: ${item.subject || "no subject"}
@@ -93,6 +112,7 @@ Rules:
 - Professional, human, no placeholders
 - Stay on-campaign; do not invent facts
 - "You" (in the reply) = the sender; "I/we" = the account owner replying. Never act as if you sent the original email.
+${includeLink ? "- Weave the person-specific link into the reply as a plain URL where it naturally fits the conversation." : "- Ask a question or continue the conversation without sending a link yet."}
 
 Return ONLY the reply body text.`;
 }
@@ -247,9 +267,8 @@ export async function processInboxInteract(body) {
     }
 
     // ─── Stop guards (same semantics as interact-campaign) ──────────
-    const startedAt = settings.interactionStartedAt ? new Date(settings.interactionStartedAt) : new Date();
-    const stopAfterHours = settings.interactionStopAfterHours || 72;
-    const hoursElapsed = (Date.now() - startedAt.getTime()) / 3600000;
+    // No stop-after-hours timer: interactions run until durationDays expires
+    // or quotas cap out (duration guard above + platform/user quotas below).
     let replyCount = settings.interactionRepliesCount || 0;
     // No per-campaign reply cap: the platform gates (hourly/daily/monthly)
     // are the ceiling and renew on their own windows.
@@ -264,10 +283,6 @@ export async function processInboxInteract(body) {
       }
     } catch { /* unlimited */ }
 
-    if (hoursElapsed >= stopAfterHours) {
-      await updateCampaignSettings(campaignId, { interactionStatus: "completed", interactionStoppedReason: "time_limit_reached" });
-      return NextResponse.json({ success: true, message: "Stop guard: time limit reached", replies: 0 });
-    }
     if (await isCampaignPaused(campaignId)) {
       return NextResponse.json({ success: true, message: "Campaign paused", replies: 0 });
     }
@@ -300,8 +315,15 @@ export async function processInboxInteract(body) {
       platform: a.platform || a.provider || "email",
     }))).catch(() => {});
 
-    // Ledger of already-replied threads (persisted in settings, capped)
+    // Ledger of replied threads (persisted in settings, capped). threadTurns
+    // tracks exchanges per thread so linkAfterTurns can gate the link.
     const repliedThreads = new Set(settings.repliedThreads || []);
+    const threadTurns = (settings.threadTurns && typeof settings.threadTurns === "object") ? { ...settings.threadTurns } : {};
+    // Threads already in the legacy repliedThreads ledger count as turn 1.
+    for (const k of repliedThreads) if (!(k in threadTurns)) threadTurns[k] = 1;
+    const linkAfterTurns = Math.max(0, parseInt(settings.linkAfterTurns, 10) || 0);
+    // Max replies per thread: link turn + one closing turn, capped at 5.
+    const maxThreadTurns = Math.min(5, linkAfterTurns + 1);
     const maxScan = parseInt(String(settings.interactionMaxScan || ""), 10) || 25;
 
     let newReplies = 0;
@@ -413,7 +435,8 @@ export async function processInboxInteract(body) {
 
           for (const item of candidates) {
             const key = ledgerKey(item);
-            if (repliedThreads.has(key)) continue;
+            const priorTurns = threadTurns[key] || 0;
+            if (priorTurns >= maxThreadTurns) continue;
 
             // Re-check the platform policy with locally-incremented usage so
             // a batch can't overshoot the hourly/daily window mid-pass.
@@ -423,12 +446,13 @@ export async function processInboxInteract(body) {
               break;
             }
 
-            const replyText = await aiGenerate(buildReplyPrompt(item, settings));
+            const replyText = await aiGenerate(buildReplyPrompt(item, settings, priorTurns));
             if (!replyText) continue;
 
             const sent = await replyToThread(page, cfg, replyText);
             if (sent) {
               repliedThreads.add(key);
+              threadTurns[key] = priorTurns + 1;
               replyCount++;
               newReplies++;
               log.info(` [${account.identifier}] AI replied to: ${item.subject || item.sender}`);
@@ -447,6 +471,7 @@ export async function processInboxInteract(body) {
               // Persist ledger + count after each reply so we never double-reply
               await updateCampaignSettings(campaignId, {
                 repliedThreads: Array.from(repliedThreads).slice(-200),
+                threadTurns: threadTurns,
                 interactionRepliesCount: replyCount,
               });
             }
