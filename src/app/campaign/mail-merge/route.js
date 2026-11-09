@@ -82,11 +82,26 @@ export async function POST(request) {
       linkIdx = ensureLinkColumn(rows);
     }
 
+    // Helper keyword stamping: one campaign-level keyword onto every row
+    // (HELPERKEYWORD column) so interactions can detect our emails.
+    let helperIdx = -1;
+    const campaignHelperKeyword = String(settings.helperKeyword || '').trim();
+    if (campaignHelperKeyword) {
+      helperIdx = rows[0].findIndex(h => String(h).trim().toUpperCase() === 'HELPERKEYWORD');
+      if (helperIdx === -1) {
+        rows[0].push('HELPERKEYWORD');
+        helperIdx = rows[0].length - 1;
+      }
+    }
+
     let processed = 0;
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
       if (linkIdx !== -1) {
         row[linkIdx] = buildPersonalizedLink(settings, row, rows[0]);
+      }
+      if (helperIdx !== -1 && !String(row[helperIdx] || '').trim()) {
+        row[helperIdx] = campaignHelperKeyword;
       }
 
       if (channel === "email") {

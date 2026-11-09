@@ -121,7 +121,7 @@ async function finalizeScopedRun(campaignId, serverScope, scopedAccounts, finalS
 
 const STANDARD_88_COLUMNS = [
   'SN',
-  'FIRSTNAME', 'LASTNAME', 'EMAIL', 'ADDRESS', 'CITY', 'STATE', 'COUNTRY', 'ZIPCODE', 'PHONE', 'SEX',
+  'FIRSTNAME', 'LASTNAME', 'EMAIL', 'ADDRESS', 'CITY', 'STATE', 'COUNTRY', 'ZIPCODE', 'PHONE', 'SEX', 'JOBTITLE',
   'BUSINESSNAME', 'BUSINESSADDRESS', 'BUSINESSCITY', 'BUSINESSSTATE', 'BUSINESSCOUNTRY', 'BUSINESSZIPCODE', 'BUSINESSPHONE', 'BUSINESSEMAIL',
   'SOCIALPLATFORM', 'SOCIALUSERNAME', 'SOCIALPHONE',
   'CONTEXT',
@@ -142,7 +142,11 @@ const STANDARD_88_COLUMNS = [
   'searchKeys', 'searchCount', 'searchStatus', 'searchStamp',
   '',
   'profileToInteract', 'interactCount', 'interactStatus', 'interactStamp',
-  '', 'personalizationStatus', 'executionStatus'
+  '', 'personalizationStatus', 'executionStatus',
+  // LINK: baked per-recipient URL (kept separate from URL = reference URL
+  // used for AI/enrichment research). HELPERKEYWORD: campaign-wide keyword
+  // stamped on every row so interactions can detect our emails.
+  'LINK', 'HELPERKEYWORD'
 ];
 
 const FUZZY_MAP = {
@@ -156,6 +160,7 @@ const FUZZY_MAP = {
   ZIPCODE: ['ZIP', 'ZIPCODE', 'ZIP CODE', 'POSTAL', 'POSTCODE'],
   PHONE: ['PHONE', 'PHONENUMBER', 'PHONE NUMBER', 'TELEPHONE', 'TEL', 'MOBILE', 'CELL'],
   SEX: ['SEX', 'GENDER'],
+  JOBTITLE: ['JOBTITLE', 'JOB TITLE', 'TITLE', 'POSITION', 'ROLE'],
   BUSINESSNAME: ['BUSINESS', 'BUSINESS NAME', 'COMPANY', 'ORGANIZATION', 'ORG'],
   BUSINESSADDRESS: ['BUSINESS ADDRESS', 'COMPANY ADDRESS'],
   BUSINESSCITY: ['BUSINESS CITY', 'COMPANY CITY'],
@@ -167,7 +172,10 @@ const FUZZY_MAP = {
   SOCIALPLATFORM: ['SOCIAL', 'SOCIAL PLATFORM', 'PLATFORM'],
   SOCIALUSERNAME: ['SOCIAL USERNAME', 'USERNAME', 'HANDLE', 'SOCIAL HANDLE'],
   SOCIALPHONE: ['SOCIAL PHONE'],
-  URL: ['URL', 'LINK', 'WEBSITE', 'WEB', 'REFERENCE']
+  URL: ['URL', 'WEBSITE', 'WEB', 'REFERENCE'],
+  // LINK is its own baked-send-URL column (never the enrichment reference).
+  LINK: ['LINK'],
+  HELPERKEYWORD: ['HELPERKEYWORD', 'HELPER KEYWORD', 'HELPERKEY', 'HELPER KEY', 'WATCH KEYWORD']
 };
 
 function normalizeAndMapCSV(rawCsvContent, targetSchema) {
@@ -686,7 +694,18 @@ export async function POST(request) {
 
         const dataRows = normalizedRows.slice(1);
 
+        // HELPERKEYWORD stamping: one campaign-level keyword written onto
+        // every row (like enhancedBody) so the interaction watcher can
+        // detect our emails via the helper keyword. Per-row CSV values win
+        // when the campaign setting is empty.
         const nHeaders = normalizedRows[0];
+        const helperKeywordIdx = nHeaders.indexOf("HELPERKEYWORD");
+        const campaignHelperKeyword = String(settings.helperKeyword || '').trim();
+        if (campaignHelperKeyword && helperKeywordIdx !== -1) {
+          for (const r of dataRows) {
+            if (!String(r[helperKeywordIdx] || '').trim()) r[helperKeywordIdx] = campaignHelperKeyword;
+          }
+        }
         const emailColIdx = nHeaders.indexOf("EMAIL");
         const nameColIdx = nHeaders.indexOf("FIRSTNAME");
         const companyColIdx = nHeaders.indexOf("BUSINESSNAME");

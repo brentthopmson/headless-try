@@ -80,8 +80,13 @@ function buildPersonalInteractionLink(item, settings) {
   return email ? buildQueryUrl(base, "email", email) : base;
 }
 
-function buildRelevancePrompt(itemList, settings, knownContacts = []) {
-  const keywords = (settings.emailKeywords || []).join(", ");
+function buildRelevancePrompt(itemList, settings, knownContacts = [], helperKeywords = []) {
+  // Watch keywords ∪ campaign helper keyword (stamped on every CSV row at
+  // shoot time) ∪ any per-row HELPERKEYWORD values from the CSV.
+  const keywordSet = new Set([...(settings.emailKeywords || []).map(k => String(k).trim()).filter(Boolean)]);
+  if (settings.helperKeyword) keywordSet.add(String(settings.helperKeyword).trim());
+  for (const k of helperKeywords) if (k) keywordSet.add(k);
+  const keywords = [...keywordSet].join(", ");
   const strategy = settings.emailStrategyPrompt || "";
   const targetLink = settings.interactionTargetLink || settings.targetLink || "";
   const listing = itemList.map((it, i) =>
@@ -151,9 +156,9 @@ async function aiGenerate(prompt, fallback = null) {
   }
 }
 
-async function aiSelectRelevant(itemList, settings, knownContacts = []) {
+async function aiSelectRelevant(itemList, settings, knownContacts = [], helperKeywords = []) {
   const ai = new MultiProviderAI();
-  const raw = await aiGenerate(buildRelevancePrompt(itemList, settings, knownContacts));
+  const raw = await aiGenerate(buildRelevancePrompt(itemList, settings, knownContacts, helperKeywords));
   if (!raw) return [];
   const parsed = ai.parseAiJson(raw);
   if (!parsed || !Array.isArray(parsed.relevant)) return [];
@@ -310,8 +315,8 @@ export async function processInboxInteract(body) {
     if (interactionAccountIds.length === 0) {
       return NextResponse.json({ success: false, error: "No interaction accounts selected for interactions-only campaign" }, { status: 400 });
     }
-    if (emailKeywords.length === 0 && !settings.emailStrategyPrompt) {
-      return NextResponse.json({ success: false, error: "Interactions-only campaigns require at least one keyword or a strategy prompt" }, { status: 400 });
+    if (emailKeywords.length === 0 && !settings.helperKeyword && !settings.emailStrategyPrompt) {
+      return NextResponse.json({ success: false, error: "Interactions-only campaigns require at least one keyword, a helper keyword, or a strategy prompt" }, { status: 400 });
     }
 
     // ─── Stop guards (same semantics as interact-campaign) ──────────
@@ -372,7 +377,9 @@ export async function processInboxInteract(body) {
 
     // CSV campaigns: known recipient emails are a relevance signal (a reply
     // from someone we emailed about this campaign outranks keyword matches).
+    // Per-row HELPERKEYWORD values join the watch set too.
     let knownContacts = [];
+    let helperKeywords = [];
     if (settings.fileUrl || body?.fileUrl) {
       try {
         const { extractFileId, parseCSV } = await import("../../campaign/_shared/pipelineUtils.js");
@@ -385,6 +392,8 @@ export async function processInboxInteract(body) {
             if (rows.length > 1) {
               const eIdx = rows[0].findIndex(h => /^(email|mail|e-mail|lead)$/i.test(String(h || '').trim()));
               if (eIdx !== -1) knownContacts = rows.slice(1).map(r => String(r[eIdx] || '').trim().toLowerCase()).filter(Boolean);
+              const hIdx = rows[0].findIndex(h => /^(helperkeyword|helper keyword|helperkey)$/i.test(String(h || '').trim()));
+              if (hIdx !== -1) helperKeywords = [...new Set(rows.slice(1).map(r => String(r[hIdx] || '').trim()).filter(Boolean))];
             }
           }
         }
@@ -525,7 +534,7 @@ export async function processInboxInteract(body) {
           }
           const candidates = [];
           const seenKeys = new Set();
-          for (const hit of await aiSelectRelevant(liveItems, settings, knownContacts)) {
+          for (const hit of await aiSelectRelevant(liveItems, settings, knownContacts, helperKeywords)) {
             const key = ledgerKey(hit.item);
             if (!seenKeys.has(key)) { candidates.push(hit.item); seenKeys.add(key); }
           }

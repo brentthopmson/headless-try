@@ -422,8 +422,10 @@ export function mergeTemplate(template, row, headers) {
     .replace(/\{\{firstName\}\}|\{\{first_name\}\}/gi, getVal("FIRSTNAME"))
     .replace(/\{\{lastName\}\}|\{\{last_name\}\}/gi, getVal("LASTNAME"))
     .replace(/\{\{email\}\}/gi, getVal("EMAIL"))
+    .replace(/\{\{jobTitle\}\}|\{\{job_title\}\}|\{\{title\}\}/gi, getVal("JOBTITLE"))
     .replace(/\{\{company\}\}|\{\{businessName\}\}/gi, getVal("BUSINESSNAME"))
     .replace(/\{\{link\}\}|\{\{url\}\}/gi, getVal("LINK") || getVal("URL"))
+    .replace(/\{\{helperKeyword\}\}|\{\{helper_keyword\}\}/gi, getVal("HELPERKEYWORD"))
     .replace(/\{\{context\}\}/gi, getVal("CONTEXT"));
 }
 
