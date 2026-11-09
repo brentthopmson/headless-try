@@ -1,6 +1,11 @@
 import { sendViaSMTP, getNextSmtpConfig } from "../../emails/_shared/smtpSender.js";
 import { sendViaBrowser, scheduleViaBrowser, detectProvider } from "../../emails/_shared/wireSender.js";
 
+function isPositiveInt(val) {
+  const n = Number(val);
+  return Number.isFinite(n) && Number.isInteger(n) && n >= 1;
+}
+
 export function validateSmtpConfigs(smtpSettings) {
   if (!smtpSettings || smtpSettings.length === 0) {
     throw new Error("No SMTP accounts configured for SMTP/Mixed delivery");
@@ -15,6 +20,10 @@ export function validateSmtpConfigs(smtpSettings) {
     if (!cfg.from_email || typeof cfg.from_email !== 'string' || !cfg.from_email.trim()) errors.push('from_email is required');
     const hasAuth = (cfg.password && String(cfg.password).trim()) || (cfg.appPassword && String(cfg.appPassword).trim()) || (cfg.oAuth2RefreshToken && String(cfg.oAuth2RefreshToken).trim());
     if (!hasAuth) errors.push('password, appPassword, or oAuth2RefreshToken is required');
+    // Per-server send limits are MANDATORY (no fallbacks to provider/platform defaults).
+    if (!isPositiveInt(cfg.hourlyLimit)) errors.push('hourlyLimit is required (whole number >= 1)');
+    if (!isPositiveInt(cfg.dailyLimit)) errors.push('dailyLimit is required (whole number >= 1)');
+    if (!isPositiveInt(cfg.monthlyLimit)) errors.push('monthlyLimit is required (whole number >= 1)');
     if (errors.length > 0) {
       throw new Error(`SMTP config #${i + 1} (${cfg.host || 'unknown'}): ${errors.join('; ')}`);
     }

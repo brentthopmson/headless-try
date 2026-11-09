@@ -8,12 +8,14 @@ import { getLimitsSheet } from "../app/socials/_shared/limits.js";
 if (!globalThis.__sendRateLimiter) {
   globalThis.__sendRateLimiter = {
     counters: new Map(), // accountId -> { hourly, daily, monthly, total }
-    accountLimits: new Map(), // accountId -> per-account {hourly,daily,monthly} override (hub _limits)
+    accountLimits: new Map(), // accountId -> per-account {hourly,daily,monthly} override
+    configLockedLimits: new Set(), // accountIds whose limits come from campaign SMTP config (MANDATORY) — never overwritten by hub restore
     limits: null,        // cached from Limits sheet coldMessage column
     limitsFetchedAt: 0,
   };
 }
 const state = globalThis.__sendRateLimiter;
+if (!state.configLockedLimits) state.configLockedLimits = new Set();
 
 const LIMITS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -151,12 +153,29 @@ function resetMonthlyIfNeeded(window) {
 // ==================== Public API ====================
 
 /**
+ * Register mandatory per-config send limits for an account (e.g. SMTP server).
+ * Config-sourced limits take precedence and are never overwritten by hub restore.
+ */
+export function setConfigSendLimits(accountId, limits) {
+  if (!accountId || !limits) return;
+  if (!state.configLockedLimits) state.configLockedLimits = new Set();
+  state.configLockedLimits.add(accountId);
+  state.accountLimits.set(accountId, {
+    hourly: parseInt(limits.hourly, 10) || 0,
+    daily: parseInt(limits.daily, 10) || 0,
+    monthly: parseInt(limits.monthly, 10) || 0,
+  });
+}
+
+/**
  * Check if a send is allowed for the given platform and account.
  * @param {string} platform - GMAIL, MICROSOFT, GSUITE, OFFICE, etc.
  * @param {string} accountId - smtp.user (for SMTP) or profileId (for wire)
+ * @param {object} [configLimits] - mandatory per-config {hourly,daily,monthly} (e.g. SMTP). Overrides all fallbacks.
  * @returns {Promise<{ allowed: boolean, reason?: string, retryAfterMs?: number }>}
  */
-export async function checkSendAllowed(platform, accountId) {
+export async function checkSendAllowed(platform, accountId, configLimits) {
+  if (configLimits) setConfigSendLimits(accountId, configLimits);
   const limits = await loadSendLimits();
   const platformKey = (platform || "GMAIL").toUpperCase();
   const platformLimits = limits[platformKey];
@@ -336,23 +355,27 @@ export async function restoreUsageFromHub(browserId) {
         const total = parseInt(row[headers.indexOf("shotTotal")] || "0", 10);
 
         // Per-account window limits override (hub interactionUsage._limits).
-        // Absent → clear any stale override so admin removal takes effect.
+        // Config-locked limits (campaign SMTP config, mandatory) take precedence
+        // and are NEVER overwritten by hub restore — no fallbacks.
         if (!state.accountLimits) state.accountLimits = new Map();
-        state.accountLimits.delete(browserId);
-        const usageIdx = headers.indexOf("interactionUsage");
-        if (usageIdx !== -1 && row[usageIdx]) {
-          try {
-            const blob = JSON.parse(row[usageIdx]);
-            if (blob && typeof blob._limits === "object" && blob._limits) {
-              state.accountLimits.set(browserId, {
-                hourly: parseInt(blob._limits.hourly, 10) || 0,
-                daily: parseInt(blob._limits.daily, 10) || 0,
-                monthly: parseInt(blob._limits.monthly, 10) || 0,
-              });
-              logger.info(`[sendRateLimiter] Account limits override for ${browserId}: ${JSON.stringify(state.accountLimits.get(browserId))}`);
+        if (!state.configLockedLimits) state.configLockedLimits = new Set();
+        if (!state.configLockedLimits.has(browserId)) {
+          state.accountLimits.delete(browserId);
+          const usageIdx = headers.indexOf("interactionUsage");
+          if (usageIdx !== -1 && row[usageIdx]) {
+            try {
+              const blob = JSON.parse(row[usageIdx]);
+              if (blob && typeof blob._limits === "object" && blob._limits) {
+                state.accountLimits.set(browserId, {
+                  hourly: parseInt(blob._limits.hourly, 10) || 0,
+                  daily: parseInt(blob._limits.daily, 10) || 0,
+                  monthly: parseInt(blob._limits.monthly, 10) || 0,
+                });
+                logger.info(`[sendRateLimiter] Account limits override for ${browserId}: ${JSON.stringify(state.accountLimits.get(browserId))}`);
+              }
+            } catch (e) {
+              // malformed usage blob — ignore override
             }
-          } catch (e) {
-            // malformed usage blob — ignore override
           }
         }
 

@@ -17,12 +17,25 @@ export function createTransporter(smtpConfig) {
   });
 }
 
+function parseRequiredLimit(val) {
+  const n = Number(val);
+  return Number.isFinite(n) && Number.isInteger(n) && n >= 1 ? n : null;
+}
+
 export async function sendViaSMTP(recipient, subject, body, smtpConfig) {
   // Rate limit check: detect provider from host, use smtp.user as account ID
   const platform = detectEmailProvider(smtpConfig.host || smtpConfig.user);
   const accountId = smtpConfig.user || smtpConfig.username || "unknown";
 
-  const rateCheck = await checkSendAllowed(platform, accountId);
+  // Per-server send limits are MANDATORY (no fallbacks to provider/platform defaults).
+  const hourly = parseRequiredLimit(smtpConfig.hourlyLimit);
+  const daily = parseRequiredLimit(smtpConfig.dailyLimit);
+  const monthly = parseRequiredLimit(smtpConfig.monthlyLimit);
+  if (hourly === null || daily === null || monthly === null) {
+    throw new Error(`[smtpSender] Missing/invalid send limits for ${accountId} — hourly/daily/monthly are required (whole numbers >= 1), no fallbacks.`);
+  }
+
+  const rateCheck = await checkSendAllowed(platform, accountId, { hourly, daily, monthly });
   if (!rateCheck.allowed) {
     logger.warn(`[smtpSender] Rate limited for ${accountId} (${platform}): ${rateCheck.reason}`);
     throw new Error(`Rate limited: ${rateCheck.reason}`);
