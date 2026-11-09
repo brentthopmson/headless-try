@@ -103,7 +103,7 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
     throw new Error(`Rate limited: ${rateCheck.reason}`);
   }
 
-  logger.info(`[wireSender] Sending via ${providerName} to ${recipient}`);
+  logger.info(`[wireSender] Sending via ${providerName} to ${recipient} (account=${accountId}, subject ${String(subject || '').length} chars, body ${String(body || '').length} chars)`);
 
   // Hybrid session: use Drive profile + identity if available, else CDP cookies + identity
   const profile = {
@@ -113,38 +113,43 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
     profileId: options.profileId || accountId,
     platform,
   };
-  const { browser, page, profileDir } = await resolveSocialSession(profile, false);
+  let browser, page, profileDir;
+  try {
+    ({ browser, page, profileDir } = await resolveSocialSession(profile, false));
+    logger.info(`[wireSender] Session resolved for ${accountId} (${providerName}) — opening compose.`);
+  } catch (sessErr) {
+    logger.error(`[wireSender] Session resolution FAILED for ${accountId}: ${sessErr.message}`);
+    throw sessErr;
+  }
 
   try {
     await page.goto(config.composeUrl, { waitUntil: "networkidle0", timeout: 30000 });
     await DOMHelpers.randomDelay(config.waitAfterNavigate * 0.8, config.waitAfterNavigate * 1.2);
 
-    // Fill recipient
+    // Fill recipient (missing field = loud failure, never a silent skip)
     const toSelector = config.selectors.toInput;
     const toEl = await page.$(toSelector);
-    if (toEl) {
-      await toEl.click();
-      await page.type(toSelector, recipient, { delay: 30 });
-      await DOMHelpers.randomDelay(500, 1000);
-    }
+    if (!toEl) throw new Error(`To input not found (${providerName})`);
+    await toEl.click();
+    await page.type(toSelector, recipient, { delay: 30 });
+    await DOMHelpers.randomDelay(500, 1000);
 
     // Fill subject
     const subjectSelector = config.selectors.subjectInput;
     const subjectEl = await page.$(subjectSelector);
-    if (subjectEl) {
-      await subjectEl.click();
-      await page.type(subjectSelector, subject, { delay: 20 });
-      await DOMHelpers.randomDelay(500, 1000);
-    }
+    if (!subjectEl) throw new Error(`Subject input not found (${providerName})`);
+    await subjectEl.click();
+    await page.type(subjectSelector, subject, { delay: 20 });
+    await DOMHelpers.randomDelay(500, 1000);
 
     // Fill body
     const bodySelector = config.selectors.bodyInput;
     const bodyEl = await page.$(bodySelector);
-    if (bodyEl) {
-      await bodyEl.click();
-      await page.type(bodySelector, body, { delay: 10 });
-      await DOMHelpers.randomDelay(config.waitAfterFill * 0.8, config.waitAfterFill * 1.2);
-    }
+    if (!bodyEl) throw new Error(`Body input not found (${providerName})`);
+    await bodyEl.click();
+    await page.type(bodySelector, body, { delay: 10 });
+    await DOMHelpers.randomDelay(config.waitAfterFill * 0.8, config.waitAfterFill * 1.2);
+    logger.info(`[wireSender] Compose filled for ${recipient} (${providerName}) — clicking send.`);
 
     // Click send
     const sendSelector = config.selectors.sendButton;
@@ -225,7 +230,14 @@ export async function scheduleViaBrowser(recipient, subject, body, cookieJSON, p
     profileId: options.profileId || accountId,
     platform,
   };
-  const { browser, page, profileDir } = await resolveSocialSession(profile, false);
+  let browser, page, profileDir;
+  try {
+    ({ browser, page, profileDir } = await resolveSocialSession(profile, false));
+    logger.info(`[wireSender] Session resolved for ${accountId} (${providerName}) — opening compose for schedule.`);
+  } catch (sessErr) {
+    logger.error(`[wireSender] Session resolution FAILED for ${accountId}: ${sessErr.message}`);
+    throw sessErr;
+  }
 
   try {
     // Step 1: Navigate to compose
@@ -244,19 +256,18 @@ export async function scheduleViaBrowser(recipient, subject, body, cookieJSON, p
 
     // Step 3: Fill subject
     const subjectEl = await page.$(config.selectors.subjectInput);
-    if (subjectEl) {
-      await subjectEl.click();
-      await page.type(config.selectors.subjectInput, subject, { delay: 20 });
-      await DOMHelpers.randomDelay(500, 1000);
-    }
+    if (!subjectEl) throw new Error("Subject input not found");
+    await subjectEl.click();
+    await page.type(config.selectors.subjectInput, subject, { delay: 20 });
+    await DOMHelpers.randomDelay(500, 1000);
 
     // Step 4: Fill body
     const bodyEl = await page.$(config.selectors.bodyInput);
-    if (bodyEl) {
-      await bodyEl.click();
-      await page.type(config.selectors.bodyInput, body, { delay: 10 });
-      await DOMHelpers.randomDelay(config.waitAfterFill * 0.8, config.waitAfterFill * 1.2);
-    }
+    if (!bodyEl) throw new Error("Body input not found");
+    await bodyEl.click();
+    await page.type(config.selectors.bodyInput, body, { delay: 10 });
+    await DOMHelpers.randomDelay(config.waitAfterFill * 0.8, config.waitAfterFill * 1.2);
+    logger.info(`[wireSender] Compose filled for ${recipient} (${providerName}) — opening schedule picker.`);
 
     // Step 5: Click dropdown arrow → "Schedule send"
     const dropdownClicked = await DOMHelpers.clickElement(page, config.selectors.scheduleDropdownArrow, { timeout: 5000 });

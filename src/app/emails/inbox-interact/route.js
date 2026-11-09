@@ -552,7 +552,10 @@ export async function processInboxInteract(body) {
           for (const item of candidates) {
             const key = ledgerKey(item);
             const priorTurns = threadTurns[key] || 0;
-            if (priorTurns >= maxThreadTurns) continue;
+            if (priorTurns >= maxThreadTurns) {
+              log.info(` [${account.identifier}] skip thread "${item.subject || item.sender}" — turn cap reached (${priorTurns}/${maxThreadTurns}).`);
+              continue;
+            }
 
             // Per-pass cap (SETTINGS interactionBatchLimit): stop this pass at
             // the cap — never complete on it (rest/resume owns the rest).
@@ -570,9 +573,15 @@ export async function processInboxInteract(body) {
             }
 
             const replyText = await aiGenerate(buildReplyPrompt(item, settings, priorTurns));
-            if (!replyText) continue;
+            if (!replyText) {
+              log.warn(` [${account.identifier}] AI reply empty for "${item.subject || item.sender}" — skipping (will retry next pass).`);
+              continue;
+            }
 
             const sent = await replyToThread(page, cfg, replyText, item);
+            if (!sent) {
+              log.warn(` [${account.identifier}] reply NOT sent to "${item.subject || item.sender}" (turn ${priorTurns}) — not ledgered, will retry next pass.`);
+            }
             if (sent) {
               repliedThreads.add(key);
               threadTurns[key] = priorTurns + 1;
