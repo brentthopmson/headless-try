@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { downloadCsvText } from "../../api/googlesheets.js";
+import { downloadCsvText, uploadCsvText } from "../../api/googlesheets.js";
 import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
@@ -339,10 +339,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
     }
 
     try {
-      await drive.files.update({
-        fileId,
-        media: { mimeType: "text/csv", body: stringifyCSV(rows) }
-      });
+      await uploadCsvText(fileId, stringifyCSV(rows));
     } catch (flushErr) {
       log.warn(` Live flush failed at batch ${batchIdx + 1}: ${flushErr.message}`);
     }
@@ -356,10 +353,11 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
       rows[i][personalizationStatusIdx] = "personalized";
     }
   }
-  await drive.files.update({
-    fileId,
-    media: { mimeType: "text/csv", body: stringifyCSV(rows) }
-  });
+  try {
+    await uploadCsvText(fileId, stringifyCSV(rows));
+  } catch (flushErr) {
+    log.warn(` Final CSV flush failed: ${flushErr.message}`);
+  }
 
   await updateCampaignSettings(campaignId, { personalizationStatus: "completed" });
 
@@ -644,6 +642,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
 }
 
 export async function POST(request) {
+  let log = logger.child({ campaignId: null, stage: 'personalize' });
   try {
     await identifySelfFromHost(request.headers.get('host'));
     const body = await request.json();
@@ -653,7 +652,7 @@ export async function POST(request) {
       return NextResponse.json({ success: false, error: "Missing campaignId or fileUrl" }, { status: 400 });
     }
 
-    const log = logger.child({ campaignId, stage: 'personalize' });
+    log = logger.child({ campaignId, stage: 'personalize' });
     log.info(`Received personalization request`);
 
     const fileId = extractFileId(fileUrl);
@@ -683,7 +682,7 @@ export async function POST(request) {
     }
 
   } catch (error) {
-    log.error(`Error: ${error.message}`, { stack: error.stack });
+    (log || logger).error(`Error: ${error.message}`, { stack: error.stack });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }

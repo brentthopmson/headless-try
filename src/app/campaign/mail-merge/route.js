@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import { identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { extractFileId, parseCSV, stringifyCSV, getCampaignSettings, mergeTemplate, buildPersonalizedLink, ensureLinkColumn } from "../_shared/pipelineUtils.js";
-import { downloadCsvText } from "../../api/googlesheets.js";
+import { downloadCsvText, uploadCsvText } from "../../api/googlesheets.js";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -122,10 +122,7 @@ export async function POST(request) {
     mlog.info(`Columns after merge-prep: [${rows[0].join(', ')}]`);
     mlog.info(`link column: ${linkIdx === -1 ? 'not requested' : 'computed per row'}; helper column: ${helperIdx === -1 ? 'not requested' : 'stamped per row'}`);
 
-    await drive.files.update({
-      fileId,
-      media: { mimeType: "text/csv", body: stringifyCSV(rows) },
-    });
+    await uploadCsvText(fileId, stringifyCSV(rows));
 
     logger.info(`[Mail Merge] Campaign ${campaignId}: merged ${processed} rows (channel: ${channel})`);
 

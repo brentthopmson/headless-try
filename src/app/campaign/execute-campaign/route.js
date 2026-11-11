@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { downloadCsvText, updateSheetRowApi, getSheetDataApi } from "../../api/googlesheets.js";
+import { downloadCsvText, uploadCsvText, updateSheetRowApi, getSheetDataApi } from "../../api/googlesheets.js";
 import logger from "../../../utils/logger.js";
 import { detectProvider } from "../../emails/_shared/wireSender.js";
 import { validateSmtpConfigs, createSmtpSendCap, sendWarmupEmail, sendCampaignEmail } from "../../shooting/email/campaignSender.js";
@@ -1116,10 +1116,7 @@ export async function POST(request) {
             // progress mid-run. Uses the Drive API directly (no Apps Script), so the
             // backend/AppScript cache and quota are untouched.
             try {
-              await drive.files.update({
-                fileId,
-                media: { mimeType: "text/csv", body: stringifyCSV(normalizedRows) }
-              });
+              await uploadCsvText(fileId, stringifyCSV(normalizedRows));
             } catch (flushErr) {
               log.warn(` Live CSV flush failed at row ${i + 1}: ${flushErr.message}`);
             }
@@ -1129,13 +1126,11 @@ export async function POST(request) {
         // Step 3d: Single-flush Drive save â€” rebuild CSV and overwrite file
         log.info(` Flushing updated CSV back to Drive: ${fileId}`);
         const updatedCSVContent = stringifyCSV(normalizedRows);
-        await drive.files.update({
-          fileId: fileId,
-          media: {
-            mimeType: "text/csv",
-            body: updatedCSVContent
-          }
-        });
+        try {
+          await uploadCsvText(fileId, updatedCSVContent);
+        } catch (flushErr) {
+          log.warn(` Final CSV flush failed: ${flushErr.message}`);
+        }
 
         // Step 3e: Single campaign status update. Email list shooting is
         // never duration-completed: completed = loop finished the list.
@@ -1488,7 +1483,7 @@ export async function POST(request) {
         // (Drive API only, no Apps Script) so the file view updates mid-run.
         let csvUpdated = false;
         const flushSocialCsv = async () => {
-          if (!socialCsvRows || !socialFileId || !drive) return;
+          if (!socialCsvRows || !socialFileId) return;
           const nHeaders = socialCsvRows[0];
           for (let i = 1; i < socialCsvRows.length; i++) {
             const row = socialCsvRows[i];
@@ -1517,10 +1512,11 @@ export async function POST(request) {
             }
           }
           const updatedCSV = stringifyCSV(socialCsvRows);
-          await drive.files.update({
-            fileId: socialFileId,
-            media: { mimeType: "text/csv", body: updatedCSV }
-          });
+          try {
+            await uploadCsvText(socialFileId, updatedCSV);
+          } catch (flushErr) {
+            log.warn(` Social CSV flush failed: ${flushErr.message}`);
+          }
           csvUpdated = true;
         };
 

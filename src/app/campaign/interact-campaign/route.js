@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { downloadCsvText } from "../../api/googlesheets.js";
+import { downloadCsvText, uploadCsvText } from "../../api/googlesheets.js";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import MultiProviderAI from "../../../utils/multiProviderAI.js";
@@ -75,6 +75,7 @@ Return ONLY the reply text, no JSON or formatting.`;
 
 export async function POST(request) {
   let browser = null;
+  let log = logger.child({ campaignId: null, stage: 'interact' });
   try {
     await identifySelfFromHost(request.headers.get('host'));
     const body = await request.json();
@@ -84,7 +85,7 @@ export async function POST(request) {
       return NextResponse.json({ success: false, error: "Missing campaignId or fileUrl" }, { status: 400 });
     }
 
-    const log = logger.child({ campaignId, stage: 'interact' });
+    log = logger.child({ campaignId, stage: 'interact' });
     log.info(`Received interaction request${serverBatch ? ` [worker rowStart=${serverBatch.rowStart} rowEnd=${serverBatch.rowEnd}]` : ''}`);
 
     const fileId = extractFileId(fileUrl);
@@ -122,7 +123,7 @@ export async function POST(request) {
     return await handleCoordinatorMode(campaignId, fileId, fileUrl, log);
 
   } catch (error) {
-    log.error(`Error: ${error.message}`, { stack: error.stack });
+    (log || logger).error(`Error: ${error.message}`, { stack: error.stack });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   } finally {
     if (browser) {
@@ -251,10 +252,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log) {
     }
 
     try {
-      await drive.files.update({
-        fileId,
-        media: { mimeType: "text/csv", body: stringifyCSV(rows) }
-      });
+      await uploadCsvText(fileId, stringifyCSV(rows));
     } catch (flushErr) {
       log.warn(` Live flush failed at batch ${batchIdx + 1}: ${flushErr.message}`);
     }
@@ -282,11 +280,6 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
 
   await updateMyAssignment(campaignId, 'interact', { status: 'running' });
 
-  const drive = await getDriveClient();
-  if (!drive) {
-    return NextResponse.json({ success: false, error: "Failed to get Drive client" }, { status: 500 });
-  }
-
   const perfLevelSetting = await getSetting('performanceLevel');
   const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
 
@@ -301,8 +294,9 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
   const interactionAccountIds = settings.interactionAccounts || [];
   const channel = settings.channel || "email";
 
-  const driveFile = await drive.files.get({ fileId, alt: "media" });
-  const csvContent = driveFile.data;
+  const dl = await downloadCsvText(fileId);
+  if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
+  const csvContent = dl.content;
   if (typeof csvContent !== "string") throw new Error("Failed to download CSV");
 
   const rows = parseCSV(csvContent);

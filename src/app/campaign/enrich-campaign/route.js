@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { downloadCsvText } from "../../api/googlesheets.js";
+import { downloadCsvText, uploadCsvText } from "../../api/googlesheets.js";
 import axios from "axios";
 import * as cheerio from "cheerio";
 import MultiProviderAI from "../../../utils/multiProviderAI.js";
@@ -147,6 +147,7 @@ Return a JSON array with one object per webpage (same order):
 }
 
 export async function POST(request) {
+  let log = logger.child({ campaignId: null, stage: 'enrich' });
   try {
     await identifySelfFromHost(request.headers.get('host'));
     const body = await request.json();
@@ -156,7 +157,7 @@ export async function POST(request) {
       return NextResponse.json({ success: false, error: "Missing campaignId" }, { status: 400 });
     }
 
-    const log = logger.child({ campaignId, stage: 'enrich' });
+    log = logger.child({ campaignId, stage: 'enrich' });
     log.info(`Received enrichment request${serverBatch ? ` [worker rowStart=${serverBatch.rowStart} rowEnd=${serverBatch.rowEnd}]` : ''}`);
 
     // USER tier — monthly enrichUsage gate (GAS sends full settings; our own
@@ -185,7 +186,7 @@ export async function POST(request) {
     return await handleCoordinatorMode(campaignId, fileUrl, log, stageUserId);
 
   } catch (error) {
-    log.error(`Error: ${error.message}`, { stack: error.stack });
+    (log || logger).error(`Error: ${error.message}`, { stack: error.stack });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
 }
@@ -331,10 +332,7 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
 
     // Live flush
     try {
-      await drive.files.update({
-        fileId,
-        media: { mimeType: "text/csv", body: stringifyCSV(parsedRows) }
-      });
+      await uploadCsvText(fileId, stringifyCSV(parsedRows));
     } catch (flushErr) {
       log.warn(` Live flush failed at batch ${batchIdx + 1}: ${flushErr.message}`);
     }
@@ -400,10 +398,7 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
 
     // Live flush
     try {
-      await drive.files.update({
-        fileId,
-        media: { mimeType: "text/csv", body: stringifyCSV(parsedRows) }
-      });
+      await uploadCsvText(fileId, stringifyCSV(parsedRows));
     } catch (flushErr) {
       log.warn(` Live flush failed at search batch ${batchIdx + 1}: ${flushErr.message}`);
     }
@@ -485,10 +480,11 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
 
   // 8. Final CSV flush
   log.info(` Final CSV flush to Drive: ${fileId}`);
-  await drive.files.update({
-    fileId,
-    media: { mimeType: "text/csv", body: stringifyCSV(parsedRows) }
-  });
+  try {
+    await uploadCsvText(fileId, stringifyCSV(parsedRows));
+  } catch (flushErr) {
+    log.warn(` Final CSV flush failed: ${flushErr.message}`);
+  }
 
   // 8. Update campaign settings
   await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
@@ -796,10 +792,11 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
 
   // 9. Final flush
   log.info(` Worker final flush to Drive: ${fileId}`);
-  await drive.files.update({
-    fileId,
-    media: { mimeType: "text/csv", body: stringifyCSV(parsedRows) }
-  });
+  try {
+    await uploadCsvText(fileId, stringifyCSV(parsedRows));
+  } catch (flushErr) {
+    log.warn(` Worker final flush failed: ${flushErr.message}`);
+  }
 
   await updateMyAssignment(campaignId, 'enrich', {
     status: wasPaused ? 'paused' : 'completed',

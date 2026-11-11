@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { downloadCsvText } from "../../api/googlesheets.js";
+import { downloadCsvText, uploadCsvText } from "../../api/googlesheets.js";
 import dns from "dns";
 import { promisify } from "util";
 import logger from "../../../utils/logger.js";
@@ -122,6 +122,7 @@ function detectPlatform(domain) {
 
 export async function POST(request) {
   let browser = null;
+  let log = logger.child({ campaignId: null, stage: 'validate' });
   try {
     await identifySelfFromHost(request.headers.get('host'));
     const body = await request.json();
@@ -131,7 +132,7 @@ export async function POST(request) {
       return NextResponse.json({ success: false, error: "Missing campaignId or fileUrl" }, { status: 400 });
     }
 
-    const log = logger.child({ campaignId, stage: 'validate' });
+    log = logger.child({ campaignId, stage: 'validate' });
     log.info(`Received validation request${serverBatch ? ` [worker rowStart=${serverBatch.rowStart} rowEnd=${serverBatch.rowEnd}]` : ''}`);
 
     const fileId = extractFileId(fileUrl);
@@ -164,7 +165,7 @@ export async function POST(request) {
     return await handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUserId);
 
   } catch (error) {
-    log.error(`Error: ${error.message}`, { stack: error.stack });
+    (log || logger).error(`Error: ${error.message}`, { stack: error.stack });
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   } finally {
     if (browser) {
@@ -337,10 +338,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
     await Promise.allSettled(mxPromises);
 
     try {
-      await drive.files.update({
-        fileId,
-        media: { mimeType: "text/csv", body: stringifyCSV(normalizedRows) }
-      });
+      await uploadCsvText(fileId, stringifyCSV(normalizedRows));
     } catch (flushErr) {
       log.warn(` Live CSV flush failed at MX batch ${batchIdx + 1}: ${flushErr.message}`);
     }
@@ -409,7 +407,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
         }
 
         try {
-          await drive.files.update({ fileId, media: { mimeType: "text/csv", body: stringifyCSV(normalizedRows) } });
+          await uploadCsvText(fileId, stringifyCSV(normalizedRows));
         } catch {}
       }
     }

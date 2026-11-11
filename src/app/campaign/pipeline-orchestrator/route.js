@@ -381,9 +381,19 @@ export async function POST(request) {
           log.info(`Mail merge result: ${JSON.stringify(mailMergeResult).slice(0, 300)}`);
           if (mailMergeResult.success) {
             await updateCampaignSettings(campaignId, { mailMerged: true });
+          } else {
+            // Mail merge failed (e.g. Drive CSV flush) — pause, do NOT proceed to later stages.
+            await recordStageError(campaignId, { stage: 'mail-merge', reason: mailMergeResult.error || 'mail merge failed', kind: 'permanent' });
+            await updateCampaignSettings(campaignId, { status: "paused", lastError: { stage: 'mail-merge', reason: mailMergeResult.error || 'mail merge failed', kind: 'permanent' } });
+            await notifyCampaignFailure({ campaignId, stage: 'mail-merge', channelType: 'campaign', failedCount: 1, reason: mailMergeResult.error || 'mail merge failed' });
+            return NextResponse.json({ success: false, message: 'Mail merge failed', failedStage: 'mail-merge', details: mailMergeResult }, { status: 500 });
           }
         } catch (mmErr) {
-          log.warn(`Mail merge failed (non-fatal): ${mmErr.message}`);
+          log.error(`Mail merge failed: ${mmErr.message}`);
+          await recordStageError(campaignId, { stage: 'mail-merge', reason: mmErr.message, kind: 'transient' });
+          await updateCampaignSettings(campaignId, { status: "paused", lastError: { stage: 'mail-merge', reason: mmErr.message, kind: 'transient' } });
+          await notifyCampaignFailure({ campaignId, stage: 'mail-merge', channelType: 'campaign', failedCount: 1, reason: mmErr.message });
+          return NextResponse.json({ success: false, message: 'Mail merge failed', failedStage: 'mail-merge', error: mmErr.message }, { status: 500 });
         }
       }
     } else {

@@ -295,6 +295,27 @@ export async function downloadCsvText(fileId) {
   return getDriveFileTextViaAppScript(fileId);
 }
 
+export async function uploadCsvText(fileId, csvContent) {
+  const authClient = await getSheetsAuthClient();
+  if (!authClient) {
+    const err = `Drive OAuth client unavailable for CSV upload (${fileId})`;
+    logger.error(`[Sheets API] ${err}`);
+    throw new Error(err);
+  }
+  try {
+    const drive = google.drive({ version: 'v3', auth: authClient });
+    await drive.files.update({
+      fileId,
+      media: { mimeType: 'text/csv', body: csvContent },
+      supportsAllDrives: true,
+    });
+    return { success: true };
+  } catch (err) {
+    logger.error(`[Sheets API] Drive CSV upload failed for ${fileId}: ${err.message}`);
+    throw err;
+  }
+}
+
 export async function getSheetDataApi(sheetName) {
   if (!SPREADSHEET_ID) {
     return { success: false, error: "SPREADSHEET_ID is not defined." };
