@@ -4,8 +4,8 @@ import { setCorsHeaders } from "../../../socials/_shared/routeHelper.js";
 import { requireFeature } from "../../../../utils/featureGate.js";
 import { validateDeviceToken, enforceScope } from "../../_shared/auth.js";
 import { enqueueCommand, getResult } from "../../_shared/commandQueue.js";
-import { getProjectDetails } from "../../api/googlesheets.js";
-import { sendTelegramMessage } from "../../api/telegram.js";
+import { getProjectDetails } from "../../../api/googlesheets.js";
+import { sendTelegramMessage } from "../../../api/telegram.js";
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";

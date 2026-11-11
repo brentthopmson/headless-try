@@ -5,8 +5,8 @@ import { requireFeature } from "../../../../utils/featureGate.js";
 import { validateDeviceToken } from "../../_shared/auth.js";
 import { ensureGraphSheet, upsertGraphDevice } from "../../_shared/sheets.js";
 import { uploadGraphIndex } from "../../_shared/drive.js";
-import { getProjectDetails } from "../../api/googlesheets.js";
-import { sendTelegramMessage } from "../../api/telegram.js";
+import { getProjectDetails } from "../../../api/googlesheets.js";
+import { sendTelegramMessage } from "../../../api/telegram.js";
 
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
