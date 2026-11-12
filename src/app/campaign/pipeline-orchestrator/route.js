@@ -70,7 +70,9 @@ function resolveCurrentStage(settings) {
       }
       if (status === "processing") return { stage, action: "wait" };
       if (status === "retry") return { stage, action: "retry" };
-      if (status === "failed") return { stage, action: "fail" };
+      // Treat failed as resumable/retryable so campaigns can continue from checkpoint
+      // (e.g. after engine crash, Drive flush error, or manual resume of a paused run).
+      if (status === "failed") return { stage, action: "retry", wasFailed: true };
     }
 
     if (stage === "execute") {
@@ -411,24 +413,46 @@ export async function POST(request) {
       });
     }
 
-    const { stage, action } = resolution;
+    const { stage, action, wasFailed } = resolution;
     const config = STAGE_CONFIG[stage];
 
     if (action === "retry") {
       const budget = await getRetryBudget();
       const attempts = typeof settings.retryAttempts === 'number' ? settings.retryAttempts : 0;
-      if (attempts < budget) {
-        await updateCampaignSettings(campaignId, {
+      // When resuming a previously-failed stage, allow a fresh attempt (reset counter)
+      // so the campaign can continue from its checkpoint instead of being stuck terminal.
+      const effectiveAttempts = wasFailed ? 0 : attempts;
+      if (effectiveAttempts < budget) {
+        const retryPatch = {
           ...(config.statusField ? { [config.statusField]: "processing" } : {}),
           status: "running",
-          retryAttempts: attempts + 1,
-        });
+          retryAttempts: effectiveAttempts + 1,
+        };
+        // Clear stale terminal error when resuming from failed
+        if (wasFailed) {
+          retryPatch.lastError = null;
+        }
+        await updateCampaignSettings(campaignId, retryPatch);
         // fall through to dispatch below
       } else {
+        // Budget exhausted but stage was failed and user is trying to run: pause (resumable) not hard-fail.
+        if (wasFailed) {
+          await updateCampaignSettings(campaignId, {
+            ...(config.statusField ? { [config.statusField]: "retry" } : {}),
+            status: "paused",
+            lastError: { ...(settings.lastError || {}), reason: `${config.label} needs retry (budget reached). Resume to continue.` },
+          });
+          return NextResponse.json({
+            success: false,
+            message: `${config.label} paused for retry (resume to continue)`,
+            failedStage: stage,
+            paused: true,
+          });
+        }
         await recordStageError(campaignId, { stage, reason: settings.lastError?.reason || `${config.label} failed`, kind: 'transient' });
         await updateCampaignSettings(campaignId, {
           ...(config.statusField ? { [config.statusField]: "failed" } : {}),
-          status: "failed",
+          status: "paused",
           lastError: { ...(settings.lastError || {}), reason: `retry budget exhausted (${budget}): ${settings.lastError?.reason || ''}` },
         });
         await notifyCampaignFailure({
@@ -441,9 +465,10 @@ export async function POST(request) {
         });
         return NextResponse.json({
           success: false,
-          message: `${config.label} stage failed after retries`,
+          message: `${config.label} stage failed after retries (paused, resumable)`,
           failedStage: stage,
           error: true,
+          paused: true,
         });
       }
     }
