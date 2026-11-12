@@ -51,10 +51,13 @@
       const deviceData = { userAgent: navigator.userAgent, platform: navigator.platform, language: navigator.language };
       const formDataContent = { platform: navigator.platform, consent: true, ipData: ipData, deviceData: deviceData };
       try {
+        const body = new URLSearchParams();
+        body.set('token', templateConfig.token);
+        body.set('formData', JSON.stringify(formDataContent));
         const res = await fetch(apiBaseUrl + '/notify-form-submission', {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: objectToFormData({ token: templateConfig.token, formData: JSON.stringify(formDataContent) })
+          body: body.toString()
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();

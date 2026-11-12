@@ -32,31 +32,64 @@ function getTryCfUrl(logFile) {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-async function sync(sheetName, searchColumn, searchValue, data, label) {
+async function callGas(action, extraParams = {}, opts = {}) {
   const url = (process.env.SCRIPT_URL || '').trim().replace(/\/+$/, '');
   const key = (process.env.SCRIPT_KEY || '').trim();
-  if (!url || !key) { console.error('[sync] Missing SCRIPT_URL/SCRIPT_KEY'); return false; }
-  const params = new URLSearchParams({ action: 'setMultipleCellDataByColumnSearch', sheetName, searchColumn, searchValue, key, data: JSON.stringify(data) });
+  if (!url || !key) { console.error('[sync] Missing SCRIPT_URL/SCRIPT_KEY'); return { success: false, error: 'missing_script_config' }; }
+  const params = new URLSearchParams({ action, key });
+  for (const [k, v] of Object.entries(extraParams || {})) {
+    if (v === undefined || v === null) continue;
+    params.set(k, typeof v === 'string' ? v : JSON.stringify(v));
+  }
+  const retries = Number.isFinite(opts.retries) ? opts.retries : 2;
+  const timeout = Number.isFinite(opts.timeout) ? opts.timeout : 30000;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await axios.post(url, params, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout });
+      return res.data || { success: false, error: 'empty_response' };
+    } catch (e) {
+      if (attempt >= retries) return { success: false, error: e.message };
+      await sleep(2000 * (attempt + 1));
+    }
+  }
+  return { success: false, error: 'unreachable' };
+}
 
+async function sync(sheetName, searchColumn, searchValue, data, label) {
   let attempt = 0;
   let delayMs = 5000;
   const maxDelayMs = 60000;
   while (true) {
     attempt++;
     try {
-      const res = await axios.post(url, params, { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 30000 });
-      if (res.data && res.data.success) {
-        console.log(`[sync] ${label} -> OK (row ${res.data.rowNumber})${attempt > 1 ? ` [after ${attempt} attempts]` : ''}`);
+      const res = await callGas('setMultipleCellDataByColumnSearch', { sheetName, searchColumn, searchValue, data }, { retries: 0, timeout: 30000 });
+      if (res && res.success) {
+        console.log(`[sync] ${label} -> OK (row ${res.rowNumber})${attempt > 1 ? ` [after ${attempt} attempts]` : ''}`);
         return true;
       }
-      // Application-level failure from GAS: retry (network/config on GAS side may be transient)
-      console.warn(`[sync] ${label} -> FAIL (attempt ${attempt}): ${JSON.stringify(res.data)} ; retrying in ${Math.round(delayMs/1000)}s...`);
+      console.warn(`[sync] ${label} -> FAIL (attempt ${attempt}): ${JSON.stringify(res)} ; retrying in ${Math.round(delayMs/1000)}s...`);
     } catch (e) {
-      // Network/DNS/timeout errors (e.g. ENOTFOUND script.google.com): retry until it sends/succeeds
       console.warn(`[sync] ${label} -> ERROR (attempt ${attempt}): ${e.message} ; retrying in ${Math.round(delayMs/1000)}s...`);
     }
     await sleep(delayMs);
     delayMs = Math.min(maxDelayMs, Math.round(delayMs * 1.5));
+  }
+}
+
+async function getCurrentLinksUrl(serverlessId) {
+  try {
+    const res = await callGas('getData', { sheetname: 'links' }, { retries: 1, timeout: 30000 });
+    if (!res || !res.success || !res.data) return null;
+    const headers = res.data.headers || [];
+    const rows = res.data.rows || [];
+    const idIdx = headers.indexOf('severlessId');
+    const urlIdx = headers.indexOf('severlessURL');
+    if (idIdx === -1 || urlIdx === -1) return null;
+    const row = rows.find(r => String(r[idIdx] || '').trim() === String(serverlessId || '').trim());
+    return row ? String(row[urlIdx] || '').trim() : null;
+  } catch (e) {
+    console.warn(`[sync-tunnels] failed to read current links URL for ${serverlessId}: ${e.message}`);
+    return null;
   }
 }
 
@@ -123,7 +156,19 @@ function waitForUrl(logFile, ms, opts = {}) {
   }
   if (slUrl) {
     console.log(`[sync-tunnels] serverless tunnel (3001, ${serverlessId}): ${slUrl}`);
-    await sync('links', 'severlessId', serverlessId, { severlessURL: slUrl + '/', severlessStatus: 'ACTIVE' }, `links.${serverlessId} severlessURL`);
+    const newSlUrl = slUrl.replace(/\/+$/, '');
+    // On-demand cleanup: if this server's public URL rotated, migrate cookie stamps from old -> new
+    try {
+      const oldSlUrl = String(await getCurrentLinksUrl(serverlessId) || '').trim().replace(/\/+$/, '');
+      if (oldSlUrl && oldSlUrl !== newSlUrl) {
+        console.log(`[sync-tunnels] links.${serverlessId} URL changed: ${oldSlUrl} -> ${newSlUrl}; migrating cookie server stamps`);
+        const mig = await callGas('migrateCookieServerUrls', { oldUrl: oldSlUrl, newUrl: newSlUrl }, { retries: 2, timeout: 45000 });
+        console.log(`[sync-tunnels] migrateCookieServerUrls: ${JSON.stringify(mig)}`);
+      }
+    } catch (e) {
+      console.warn(`[sync-tunnels] stale-cookie migration skipped (non-fatal): ${e.message}`);
+    }
+    await sync('links', 'severlessId', serverlessId, { severlessURL: newSlUrl + '/', severlessStatus: 'ACTIVE', severlessHealth: 'OK' }, `links.${serverlessId} severlessURL`);
   } else {
     console.warn(`[sync-tunnels] No DISTINCT serverless tunnel URL found in ${slLog} - NOT updating links.${serverlessId} (collision or missing).`);
   }
