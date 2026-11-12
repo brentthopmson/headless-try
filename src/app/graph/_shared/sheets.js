@@ -5,6 +5,7 @@ const SHEET = "GRAPH";
 
 const COLUMNS = [
   "deviceId","userId","projectId","templateId","platform","agentType","agentVersion",
+  "ipData","deviceData",
   "pairedAt","status","approvedRoots","graphIndexFileId","graphIndexUrl",
   "graphIndexSize","lastIndexedAt","lastSeenAt","tokenHash","server","audit"
 ];

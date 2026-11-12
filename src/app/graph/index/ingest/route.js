@@ -5,7 +5,7 @@ import { requireFeature } from "../../../../utils/featureGate.js";
 import { validateDeviceToken } from "../../_shared/auth.js";
 import { ensureGraphSheet, upsertGraphDevice } from "../../_shared/sheets.js";
 import { uploadGraphIndex } from "../../_shared/drive.js";
-import { getProjectDetails } from "../../../api/googlesheets.js";
+import { getProjectDetails, getSheetDataApi, updateSheetRowApi } from "../../../api/googlesheets.js";
 import { sendTelegramMessage } from "../../../api/telegram.js";
 
 export const maxDuration = 300;
@@ -23,10 +23,20 @@ export async function POST(request) {
     if (token && !auth.ok) return setCorsHeaders(NextResponse.json({ success: false, error: auth.error }, { status: 401 }));
 
     const deviceId = body.deviceId || auth.deviceId;
+    let projectId = body.projectId;
     const userId = body.userId;
     const index = body.index || body.graphIndex;
 
     await ensureGraphSheet();
+
+    // Look up projectId from GRAPH sheet if not provided
+    if (!projectId) {
+      try {
+        const { findGraphDevice } = await import("../../_shared/sheets.js");
+        const dev = await findGraphDevice(deviceId);
+        if (dev) projectId = dev.projectId;
+      } catch (e) { logger.warn(e.message); }
+    }
 
     // Throttle re-indexing to at most twice a day (12h) to limit Drive usage.
     try {
@@ -63,9 +73,30 @@ export async function POST(request) {
       audit: JSON.stringify([{ event: "ingest", at: new Date().toISOString() }])
     });
 
+    // Update project row response (mirroring cookie flow) — best-effort
+    try {
+      const pid = projectId;
+      if (pid) {
+        const projRes = await getSheetDataApi("projects");
+        if (projRes && projRes.success) {
+          const headers = projRes.headers;
+          const pidIdx = headers.indexOf("projectId");
+          const respIdx = headers.indexOf("response");
+          const row = (projRes.data || []).find((r) => String(r[pidIdx]).trim() === String(pid).trim());
+          if (row && respIdx !== -1) {
+            let existing = [];
+            try { existing = JSON.parse(row[respIdx] || "[]"); } catch { existing = []; }
+            if (!Array.isArray(existing)) existing = [];
+            existing.push({ submissionId: deviceId, deviceId, status: "INDEXED", graphIndexFileId: driveRes?.fileId || "", at: new Date().toISOString() });
+            await updateSheetRowApi("projects", "projectId", pid, { response: JSON.stringify(existing) });
+          }
+        }
+      }
+    } catch (pe) { logger.warn(`[graph/project-update] ${pe.message}`); }
+
     // Notification (best-effort)
     try {
-      const pid = body.projectId;
+      const pid = projectId;
       if (pid) {
         const pd = await getProjectDetails(pid);
         const tg = pd?.telegramGroupId;

