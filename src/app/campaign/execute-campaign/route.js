@@ -574,13 +574,22 @@ export async function POST(request) {
       await updateCampaignSettings(campaignId, { _fullAccounts: fullAccounts });
     }
 
-    // USER tier â€” monthly shootCampaign budget is checked PER ROW inside the
-    // processing loop (line ~934) so a campaign stops mid-run as soon as the
-    // budget is exhausted. The pre-flight gate here is removed because it
-    // blocked the entire campaign when the usage counter was inflated (e.g.
-    // from previous campaigns or stale data), even though only a few emails
-    // were actually sent. Fail-open: if the counter is wrong, the per-row
-    // check still guards against over-sending.
+    // USER tier â€” monthly shootCampaign budget gates the email run before any
+    // browser launches or CSV is downloaded. Social stage is gated per task
+    // below; campaign starts are no longer quota-gated (plan row *Limit only).
+    if (userId && channel === "email") {
+      const userQuota = await checkUserQuota(userId, { keys: ["shootCampaignUsage"] });
+      if (!userQuota.allowed) {
+        log.warn(` [user-limit] Campaign ${campaignId} blocked: ${userQuota.reason}`);
+        await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "Limit Reached" });
+        return NextResponse.json({
+          success: true,
+          message: `Execution blocked: ${userQuota.reason}`,
+          limitReached: true,
+          userMonthlyLimit: true,
+        });
+      }
+    }
 
     // Read batch limits from SETTINGS
     const perfLevelSetting = await getSetting('performanceLevel');
