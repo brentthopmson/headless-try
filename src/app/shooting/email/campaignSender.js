@@ -78,6 +78,7 @@ export async function sendCampaignEmail({
   scheduleTime,
   noteSmtp,
   log,
+  rowIndex,
 }) {
   let senderHost = "WIRE";
   let delivered = 0;
@@ -102,8 +103,11 @@ export async function sendCampaignEmail({
   // Mixed = load-balance across methods PER ROW: pick exactly ONE sender
   // per recipient (never both — sending twice to the same list is a spam
   // report waiting to happen). Wire sessions are scarcer, so alternate.
+  // Use rowIndex for deterministic alternation (not email length, which
+  // could result in all odd-length emails going via SMTP).
+  const altIndex = (typeof rowIndex === "number") ? rowIndex : 0;
   const useWire = deliveryMethod === "wire"
-    || (deliveryMethod === "mixed" && profileData?.cookies && (email.length % 2 === 0));
+    || (deliveryMethod === "mixed" && profileData?.cookies && (altIndex % 2 === 0));
 
   if (!useWire) {
     await sendViaSMTP(email, subject, message, smtp);

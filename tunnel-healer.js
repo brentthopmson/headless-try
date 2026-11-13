@@ -41,8 +41,13 @@ async function pingUrl(url, timeoutMs = 8000) {
   if (!url) return { ok: false, reason: 'no url' };
   const clean = url.replace(/\/+$/, '');
   try {
+    const headers = { 'ngrok-skip-browser-warning': 'true' };
+    // Include opencode password if available (for opencode 4096 endpoint)
+    if (process.env.OPENCODE_SERVER_PASSWORD) {
+      headers['Authorization'] = 'Basic ' + Buffer.from('opencode:' + process.env.OPENCODE_SERVER_PASSWORD).toString('base64');
+    }
     const res = await axios.get(clean + '/api/serverless-self?ping=1', {
-      headers: { 'ngrok-skip-browser-warning': 'true' },
+      headers: headers,
       timeout: timeoutMs,
       validateStatus: () => true,
     });
@@ -67,9 +72,9 @@ async function pingLocalhost(port) {
 async function getCurrentLinksUrl(serverlessId) {
   try {
     const res = await callGas('getData', { sheetname: 'links' });
-    if (!res || !res.success || !res.data) return null;
-    const headers = res.data.headers || [];
-    const rows = res.data.rows || [];
+    if (!res || !res.success) return null;
+    const headers = res.headers || [];
+    const rows = res.data || [];
     const idIdx = headers.indexOf('severlessId');
     const urlIdx = headers.indexOf('severlessURL');
     if (idIdx === -1 || urlIdx === -1) return null;

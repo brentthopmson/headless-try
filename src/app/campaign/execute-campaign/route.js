@@ -574,22 +574,13 @@ export async function POST(request) {
       await updateCampaignSettings(campaignId, { _fullAccounts: fullAccounts });
     }
 
-    // USER tier â€” monthly shootCampaign budget gates the email run before any
-    // browser launches or CSV is downloaded. Social stage is gated per task
-    // below; campaign starts are no longer quota-gated (plan row *Limit only).
-    if (userId && channel === "email") {
-      const userQuota = await checkUserQuota(userId, { keys: ["shootCampaignUsage"] });
-      if (!userQuota.allowed) {
-        log.warn(` [user-limit] Campaign ${campaignId} blocked: ${userQuota.reason}`);
-        await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "Limit Reached" });
-        return NextResponse.json({
-          success: true,
-          message: `Execution blocked: ${userQuota.reason}`,
-          limitReached: true,
-          userMonthlyLimit: true,
-        });
-      }
-    }
+    // USER tier â€” monthly shootCampaign budget is checked PER ROW inside the
+    // processing loop (line ~934) so a campaign stops mid-run as soon as the
+    // budget is exhausted. The pre-flight gate here is removed because it
+    // blocked the entire campaign when the usage counter was inflated (e.g.
+    // from previous campaigns or stale data), even though only a few emails
+    // were actually sent. Fail-open: if the counter is wrong, the per-row
+    // check still guards against over-sending.
 
     // Read batch limits from SETTINGS
     const perfLevelSetting = await getSetting('performanceLevel');
@@ -1053,6 +1044,7 @@ export async function POST(request) {
               scheduleTime: scheduleTime ? scheduleTime.toISOString() : null,
               noteSmtp: noteSmtpSend,
               log,
+              rowIndex: i,
             });
             senderHost = sendResult.senderHost;
             deliveredCount += sendResult.delivered;
@@ -1896,7 +1888,7 @@ export async function POST(request) {
             if (typeof settings === "object" && settings !== null) pauseSettings = { ...settings, pauseReason: error.message, runLease: null };
             else pauseSettings = { pauseReason: error.message, runLease: null };
             delete pauseSettings.runLease;
-            await updateSheetRowApi("campaigns", "campaignId", campaignId, { status: "failed", settings: JSON.stringify(pauseSettings) });
+            await updateSheetRowApi("campaigns", "campaignId", campaignId, { status: "paused", settings: JSON.stringify(pauseSettings) });
           } catch (statusError) { logger.error(` Failed to update campaign status after background error: ${statusError.message}`); }
         }
       } finally {

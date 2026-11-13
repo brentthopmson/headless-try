@@ -487,11 +487,12 @@ export async function POST(request) {
         reason: `${config.label} stage failed`,
         details: { stageStatus: config.statusField ? settings[config.statusField] : null },
       });
-      await updateCampaignSettings(campaignId, { status: "failed" });
+      await updateCampaignSettings(campaignId, { status: "paused" });
       return NextResponse.json({
         success: false,
-        message: `${config.label} stage failed`,
+        message: `${config.label} stage failed (paused, resumable)`,
         failedStage: stage,
+        paused: true,
       });
     }
 
@@ -614,9 +615,10 @@ export async function POST(request) {
           details: result,
         });
         // Controlling key: flip the campaign row out of 'running' so the
-        // UI shows a truthful terminal state instead of running forever.
+        // UI shows a truthful state instead of running forever. Use "paused"
+        // (not "failed") so the campaign remains resumable.
         if (stage !== "execute" || !result?.limitReached) {
-          await updateCampaignSettings(campaignId, { status: "failed" });
+          await updateCampaignSettings(campaignId, { status: "paused" });
         }
         return NextResponse.json({
           success: false,
@@ -703,7 +705,7 @@ export async function POST(request) {
       details: { stack: error.stack },
     });
     if (campaignId) {
-      try { await updateCampaignSettings(campaignId, { status: "failed" }); } catch { /* best-effort */ }
+      try { await updateCampaignSettings(campaignId, { status: "paused" }); } catch { /* best-effort */ }
     }
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   } finally {

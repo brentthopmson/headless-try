@@ -1,0 +1,89 @@
+[tunnel-healer] --- Health check cycle start (2026-11-13T04:44:44.499Z) ---
+[tunnel-healer] Started. Checking serverless4 every 120s.
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T04:46:44.718Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T04:48:44.723Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T04:50:44.730Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T04:52:44.753Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T04:54:44.769Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T04:56:44.777Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T04:58:44.797Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T05:00:44.796Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T05:02:44.801Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T05:04:44.838Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T05:06:44.845Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T05:08:44.859Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T05:10:44.861Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T05:12:44.861Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T05:14:44.865Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T05:16:44.865Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T05:18:44.866Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T05:20:44.868Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T05:22:44.870Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T05:24:44.880Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T05:26:44.885Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
