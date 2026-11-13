@@ -581,7 +581,7 @@ export async function POST(request) {
       const userQuota = await checkUserQuota(userId, { keys: ["shootCampaignUsage"] });
       if (!userQuota.allowed) {
         log.warn(` [user-limit] Campaign ${campaignId} blocked: ${userQuota.reason}`);
-        await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "Limit Reached" });
+        await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "paused", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000 });
         return NextResponse.json({
           success: true,
           message: `Execution blocked: ${userQuota.reason}`,
@@ -734,7 +734,7 @@ export async function POST(request) {
             const scQuota = await checkUserQuota(userId, { keys: ["smtpCheckerUsage"] });
             if (!scQuota.allowed) {
               log.info(` [user-limit] ${scQuota.reason} â€” blocking SMTP validation for campaign ${campaignId}.`);
-              await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "Limit Reached" });
+              await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "paused", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000 });
               return NextResponse.json({
                 success: true,
                 message: `Execution blocked: ${scQuota.reason}`,
@@ -766,7 +766,7 @@ export async function POST(request) {
 
         if (shootCampaignLimit <= 0) {
           log.info(` shootingBatchLimit is 0 or unavailable, blocking execution - set shootingBatchLimit in the SETTINGS sheet`);
-          await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "Limit Reached" });
+          await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "paused", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000 });
           return NextResponse.json({ success: true, message: "Execution blocked: shootingBatchLimit is 0 - set it in the SETTINGS sheet", limitReached: true });
         }
 
@@ -1096,7 +1096,17 @@ export async function POST(request) {
             if (providerMXIdx !== -1) row[providerMXIdx] = err.message;
           }
 
-          // Inter-email delay to prevent SMTP rate limiting
+          // Periodic CSV flush every 5 rows to prevent data loss on crash
+          if ((i + 1) % 5 === 0) {
+            try {
+              await uploadCsvText(fileId, stringifyCSV(parsedRows));
+              log.info("[Row " + (i + 1) + "] Periodic CSV flush completed");
+            } catch (flushErr) {
+              log.warn("[Row " + (i + 1) + "] Periodic CSV flush failed: " + flushErr.message);
+            }
+          }
+
+  // Inter-email delay to prevent SMTP rate limiting
           if (INTER_BATCH_DELAY > 0) {
             await new Promise(r => setTimeout(r, INTER_BATCH_DELAY));
           }
@@ -1135,7 +1145,8 @@ export async function POST(request) {
 
         // Step 3e: Single campaign status update. Email list shooting is
         // never duration-completed: completed = loop finished the list.
-        let finalStatus = pausedByAdmin ? "paused" : (limitReached ? "Limit Reached" : "completed");
+        let finalStatus = pausedByAdmin ? "paused" : (limitReached ? "paused" : "completed");
+if (limitReached) settings.restReason = "limit_reached";
         if (isRestingLikeStatus(finalStatus) && !Number(settings.restUntil)) {
           settings.restUntil = Date.now() + 60 * 60 * 1000;
           settings.restReason = settings.restReason || "limit_reached";
@@ -1816,7 +1827,8 @@ export async function POST(request) {
         const limitReached = executedCount < pendingSocialTasks.length || (interactionLimit !== Infinity && executedCount >= interactionLimit) || hasHourlyRateLimits;
         let finalStatus = isNowExpired
           ? "completed"
-          : (pausedByAdmin ? "paused" : (shouldRest ? "resting" : (limitReached ? "Limit Reached" : "completed")));
+          : (pausedByAdmin ? "paused" : (shouldRest ? "resting" : (limitReached ? "paused" : "completed")));
+if (limitReached) settings.restReason = "limit_reached";
 
         // Auto-resumable statuses require restUntil (GAS trigger). Ensure it's always set.
         if (isRestingLikeStatus(finalStatus)) {

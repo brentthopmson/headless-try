@@ -77,7 +77,7 @@ function resolveCurrentStage(settings) {
 
     if (stage === "execute") {
       const campaignStatus = settings._campaignStatus;
-      if (campaignStatus === "completed" || campaignStatus === "Limit Reached") continue;
+      if (campaignStatus === "completed" || campaignStatus === "paused" || campaignStatus === "Limit Reached") continue;
     }
 
     return { stage, action: "run" };
@@ -561,6 +561,24 @@ export async function POST(request) {
       // avoid client/proxy aborts. Treat as in-flight: do NOT mark completed or
       // auto-advance; completion/limit status is persisted to the sheet by the bg task.
       if (result?.accepted && result?.processing) {
+        // Start interact stage in parallel (same day as execute) if staged and not yet started.
+        // Interact reads the CSV for sent rows independently, so it can run
+        // concurrently with execute without waiting for execute to complete.
+        if (stage === "execute" && settings.interactionStaged === true) {
+          const interactConfig = STAGE_CONFIG.interact;
+          const interactStatus = settings[interactConfig.statusField];
+          if (!interactStatus || interactStatus === "idle") {
+            // Fire-and-forget: trigger interact in background
+            const selfUrl = getSelfUrlWithFallback();
+            const interactUrl = `${selfUrl}${interactConfig.route}`;
+            fetch(interactUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ campaignId, fileUrl: settings.fileUrl }),
+            }).catch(err => log.warn(`Parallel interact trigger failed (non-fatal): ${err.message}`));
+            log.info(`Triggered interact stage in parallel with execute`);
+          }
+        }
         return NextResponse.json({
           success: true,
           message: result.message || `${config.label} started in background`,
@@ -573,7 +591,7 @@ export async function POST(request) {
         const kind = classifyStageFailure(result?.error || result?.message || result);
         if (kind === 'limit' || result?.limitReached) {
           await clearStageError(campaignId);
-          await updateCampaignSettings(campaignId, { status: "Limit Reached" });
+          await updateCampaignSettings(campaignId, { status: "paused", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000 });
           return NextResponse.json({
             success: true,
             message: `${config.label} stopped: limit reached`,
@@ -646,7 +664,7 @@ export async function POST(request) {
       // interact already write the same value themselves.
       if (result.limitReached) {
         await clearStageError(campaignId);
-        await updateCampaignSettings(campaignId, { status: "Limit Reached" });
+        await updateCampaignSettings(campaignId, { status: "paused", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000 });
         return NextResponse.json({
           success: true,
           message: `${config.label} stopped: limit reached`,

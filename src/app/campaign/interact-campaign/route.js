@@ -219,7 +219,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log) {
       log.info(` Stop guard: monthly interaction quota exhausted (${coordinatorQuota.reason})`);
       await updateCampaignSettings(campaignId, {
         executionStatus: "completed",
-        status: "Limit Reached",
+        status: "paused", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000,
         interactionStatus: "completed",
         interactionStoppedReason: "monthly_interaction_quota"
       });
@@ -353,7 +353,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
       log.info(`[Worker] Stop guard: monthly interaction quota exhausted (${workerQuota.reason})`);
       await updateCampaignSettings(campaignId, {
         executionStatus: "completed",
-        status: "Limit Reached",
+        status: "paused", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000,
         interactionStatus: "completed",
         interactionStoppedReason: "monthly_interaction_quota"
       });

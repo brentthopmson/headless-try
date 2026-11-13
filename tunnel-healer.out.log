@@ -1,129 +1,1462 @@
-[tunnel-healer] --- Health check cycle start (2026-11-13T04:44:44.499Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:02:07.238Z) ---
 [tunnel-healer] Started. Checking serverless4 every 120s.
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:04:07.397Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:06:07.398Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:08:07.401Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:10:07.416Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:12:07.421Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:14:07.422Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:16:07.445Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:18:07.462Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:20:07.463Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:22:07.471Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:24:07.493Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:26:07.500Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:28:07.512Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:30:07.526Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:32:07.528Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:34:07.535Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:36:07.549Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:38:07.574Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:40:07.592Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:42:07.608Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:44:07.654Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:46:07.700Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:48:07.715Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:50:07.722Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:52:07.727Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:54:07.734Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:56:07.743Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T06:58:07.751Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:00:07.762Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:02:07.780Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:04:07.796Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:06:07.798Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:08:07.818Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:10:07.824Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:12:07.832Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:14:07.847Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:16:07.861Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:18:07.868Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:20:07.875Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:22:07.878Z) ---
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:24:07.906Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:26:07.909Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:28:07.923Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:30:07.932Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:32:07.943Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:34:07.953Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (HTTP 530): https://enlargement-wives-seeks-intense.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 33460) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ECONNABORTED) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://enlargement-wives-seeks-intense.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:36:07.959Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:38:07.969Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:40:07.980Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:42:08.000Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:44:08.007Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:46:08.019Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 30348) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://api.trycloudflare.com (HTTP 405) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://api.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://api.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:48:08.030Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (HTTP 405): https://api.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 22040) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://api.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:50:08.030Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 24644) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:52:08.030Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 31000) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:54:08.046Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 32692) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:56:08.046Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 4156) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T07:58:08.220Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:00:08.234Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:02:08.237Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:04:08.243Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:06:08.256Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:08:08.304Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 30556) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ECONNABORTED) — will retry next cycle
+[tunnel-healer] Failed to sync serverless4: {"success":false,"error":"Client network socket disconnected before secure TLS connection was established"}
+[tunnel-healer] migrateCookieServerUrls: {"success":false,"error":"Client network socket disconnected before secure TLS connection was established"}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:10:08.305Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 3920) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://api.trycloudflare.com (HTTP 405) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://api.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://api.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:12:08.307Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (HTTP 405): https://api.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 24740) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://api.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:14:08.320Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:16:08.331Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:18:08.342Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:20:08.345Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:22:08.345Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:24:08.348Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 30708) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:26:08.377Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 28028) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:28:08.399Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:30:08.418Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:32:08.440Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:34:08.471Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:36:08.510Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:38:08.603Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:40:08.627Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:42:08.658Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:44:08.681Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:46:08.700Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:48:08.720Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 4812) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:50:08.742Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:52:08.762Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:54:08.787Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:56:08.808Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T08:58:08.832Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:00:08.860Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 25524) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:02:08.882Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:04:08.892Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:06:08.905Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:08:08.925Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:10:08.945Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:12:08.955Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:14:08.967Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:16:08.985Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:18:08.993Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:20:09.010Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:22:09.057Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:24:09.065Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:26:09.120Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:28:09.135Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:30:09.142Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:32:09.157Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:34:09.177Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:36:09.191Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:38:09.201Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:40:09.209Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:42:09.220Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:44:09.239Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:46:09.252Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:48:09.272Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:50:09.276Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:52:09.290Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:54:09.321Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 23748) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls:[tunnel-healer] --- Health check cycle start (2026-11-13T09:54:46.536Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T04:46:44.718Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:56:46.566Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T04:48:44.723Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T09:58:46.586Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T04:50:44.730Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:00:46.603Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T04:52:44.753Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:02:46.620Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T04:54:44.769Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:04:46.625Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T04:56:44.777Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:06:46.641Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T04:58:44.797Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:08:46.659Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:00:44.796Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:10:46.675Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:02:44.801Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:12:46.688Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:04:44.838Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:14:46.695Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:06:44.845Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:16:46.702Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:08:44.859Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:18:46.717Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:10:44.861Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:20:46.735Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:12:44.861Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:22:46.748Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:14:44.865Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:24:46.760Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:16:44.865Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:26:46.776Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:18:44.866Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:28:46.778Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:20:44.868Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:30:46.796Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:22:44.870Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:32:46.811Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:24:44.880Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:34:46.823Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:26:44.885Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:36:46.841Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:28:44.890Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:38:46.848Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:30:44.892Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:40:46.863Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:32:44.893Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:42:46.867Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:34:44.894Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:44:46.882Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:36:44.897Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:46:46.894Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:38:44.898Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:48:46.906Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:40:44.900Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:50:46.913Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:42:44.903Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:52:46.917Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:44:44.919Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:54:46.925Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
 [tunnel-healer] --- Health check cycle end ---
-[tunnel-healer] --- Health check cycle start (2026-11-13T05:46:44.919Z) ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:56:46.941Z) ---
 [tunnel-healer] No current URL for serverless4 in links sheet
 [tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T10:58:46.944Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:00:46.951Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:02:46.965Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:04:46.966Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:06:46.983Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:08:46.994Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:10:46.998Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:12:47.005Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:14:47.020Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:16:47.021Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:18:47.039Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:20:47.056Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:22:47.074Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:24:47.098Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:26:47.106Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:28:47.132Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:30:47.136Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:32:47.147Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:34:47.158Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:36:47.162Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:38:47.185Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:40:47.204Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:42:47.220Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:44:47.229Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:46:47.229Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:48:47.229Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:50:47.234Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:52:47.242Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:54:47.259Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:56:47.280Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:58:47.298Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:00:47.303Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:02:47.315Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:04:47.331Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:06:47.334Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:08:47.354Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:10:47.382Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:12:47.385Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:14:47.390Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:16:47.395Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:18:47.408Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:20:47.415Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:22:47.417Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:24:47.422Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:26:47.434Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:28:47.463Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:30:47.484Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:32:47.484Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:34:47.488Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:36:47.507Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:38:47.513Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:40:47.518Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:42:47.545Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:44:47.547Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:46:47.565Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:48:47.585Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:50:47.585Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:52:47.586Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:54:47.592Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:56:47.610Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:58:47.619Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T13:00:47.639Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T13:02:47.653Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T13:04:47.658Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T13:06:47.667Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T13:08:47.667Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T13:10:47.668Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T13:12:47.701Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T13:14:47.733Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T13:16:47.811Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T13:18:47.816Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T13:20:47.820Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 401
+[tunnel-healer] --- Health check cycle end ---
+m","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:26:09.876Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 31832) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:28:09.901Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 33704) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:30:09.909Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 32608) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:32:09.925Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 756) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:34:09.926Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 31560) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:36:09.927Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 29596) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:38:09.927Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 9016) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:40:09.928Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 11588) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:42:09.930Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 15664) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:44:09.945Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 20204) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:46:09.955Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 30416) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:48:09.963Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 24860) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:50:09.980Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 32244) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:52:09.989Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 11804) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:54:09.996Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 30580) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:56:10.012Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 17040) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T11:58:10.013Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 28480) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:00:10.039Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 11712) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:02:10.057Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 31876) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:04:10.081Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 28948) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:06:10.105Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 12748) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:08:10.108Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 13220) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:10:10.116Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 5068) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:12:10.133Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 30388) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:14:10.134Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 33692) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:16:10.149Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 27328) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:18:10.162Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:20:10.183Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 31084) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:22:10.200Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 25496) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:24:10.206Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 16356) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:26:10.218Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 31328) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:28:10.218Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 820) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:30:10.240Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 18580) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:32:10.252Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 28308) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:34:10.259Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 24692) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:36:10.284Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 20672) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:38:10.290Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 13948) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:40:10.313Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 23176) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:42:10.335Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 29924) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:44:10.348Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 23800) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:46:10.359Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 24516) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:48:10.359Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 28128) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:50:10.368Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 33204) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:52:10.385Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 21564) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:54:10.386Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 24852) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:56:10.398Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 8776) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T12:58:10.412Z) ---
+[tunnel-healer] No current URL for serverless4 in links sheet
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T13:00:10.435Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 10492) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T13:02:10.458Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 29504) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T13:04:10.469Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 31952) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T13:06:10.493Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 30320) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T13:08:10.516Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 1268) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
+[tunnel-healer] --- Health check cycle end ---
+[tunnel-healer] --- Health check cycle start (2026-11-13T13:10:10.538Z) ---
+[tunnel-healer] serverless4 Cloudflare tunnel dead (ENOTFOUND): https://strength-nuts-mount-telephone.trycloudflare.com/
+[tunnel-healer] serverless4 localhost:3001 is alive -> healing Cloudflare tunnel
+[tunnel-healer] Restarting cloudflared for port 3001...
+[tunnel-healer] cloudflared spawned (PID 25476) for port 3001, logging to C:\Users\HP\Desktop\ZIPPER\WEBFIXX\DEV\API\offline-headless-webfixx\serverless-cloudflared.log
+[tunnel-healer] serverless4 new URL not reachable yet: https://strength-nuts-mount-telephone.trycloudflare.com (ENOTFOUND) — will retry next cycle
+[tunnel-healer] Synced serverless4 -> https://strength-nuts-mount-telephone.trycloudflare.com (ACTIVE)
+[tunnel-healer] migrateCookieServerUrls: {"success":true,"oldUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","newUrl":"https://strength-nuts-mount-telephone.trycloudflare.com","updated":0}
+[tunnel-healer] WARNING: opencode localhost:4096 is unreachable: HTTP 200
 [tunnel-healer] --- Health check cycle end ---

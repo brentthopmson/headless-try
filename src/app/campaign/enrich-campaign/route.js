@@ -35,6 +35,79 @@ function inferFirstName(email) {
   return username ? capitalize(username) : "";
 }
 
+/**
+ * Smart name splitting: handles cases where firstName contains both
+ * first and last name (e.g., "John Doe" → "John" + "Doe").
+ * Also handles camelCase ("JohnDoe" → "John" + "Doe").
+ * Falls back to email inference for missing parts.
+ */
+function smartSplitName(firstName, lastName, email) {
+  let fn = (firstName || "").trim();
+  let ln = (lastName || "").trim();
+
+  // If firstName has a space, split it into first + last
+  if (fn && fn.includes(" ")) {
+    const parts = fn.split(/\s+/);
+    if (parts.length >= 2) {
+      fn = parts[0];
+      ln = parts.slice(1).join(" ");
+      return { firstName: fn, lastName: ln };
+    }
+  }
+
+  // If lastName is empty but firstName has content, try camelCase split
+  if (fn && !ln) {
+    const camelMatch = fn.match(/^([A-Z][a-z]+)([A-Z][a-z]+.*)?$/);
+    if (camelMatch && camelMatch[2]) {
+      return { firstName: camelMatch[1], lastName: camelMatch[2] };
+    }
+  }
+
+  // Fall back to email inference for missing parts
+  if (!fn) {
+    fn = inferFirstName(email);
+  }
+  if (!ln) {
+    const username = (email || "").split("@")[0];
+    const parts = username.split(/[\._\-]+/);
+    if (parts.length >= 2) {
+      ln = capitalize(parts[parts.length - 1]);
+    }
+  }
+
+  return { firstName: fn, lastName: ln };
+}
+
+/**
+ * Verify that a search result matches the email's domain or username.
+ * Returns true if the result is relevant to the email.
+ */
+function verifySearchResult(email, result) {
+  if (!email || !result) return false;
+  const domain = email.split("@")[1]?.toLowerCase() || "";
+  const username = email.split("@")[0]?.toLowerCase() || "";
+  const url = (result.url || "").toLowerCase();
+  const title = (result.title || "").toLowerCase();
+  const snippet = (result.snippet || "").toLowerCase();
+
+  // For non-generic domains, check if result mentions the domain
+  if (domain && !GENERIC_DOMAINS.has(domain)) {
+    if (url.includes(domain) || title.includes(domain) || snippet.includes(domain)) {
+      return true;
+    }
+  }
+
+  // Check if result mentions the username (for longer usernames)
+  if (username && username.length > 3) {
+    if (title.includes(username) || snippet.includes(username)) {
+      return true;
+    }
+  }
+
+  // Check if result mentions the first name (if we have it)
+  return false;
+}
+
 function inferCompany(email) {
   if (!email) return "";
   const parts = email.split("@");
@@ -233,6 +306,7 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
   if (emailIdx === -1) throw new Error("EMAIL column not found");
 
   const firstNameIdx = headers.indexOf("FIRSTNAME");
+  const lastNameIdx = headers.indexOf("LASTNAME");
   const companyIdx = headers.indexOf("BUSINESSNAME");
   const urlIdx = headers.indexOf("URL");
   const contextIdx = headers.indexOf("CONTEXT");
@@ -261,21 +335,531 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
     }
   }
 
-  // 3. Inference pass (firstName, company from email)
+  // 3. Inference pass (firstName/lastName separation + company from email)
   for (const row of dataRows) {
     if (enrichStatusIdx !== -1 && row[enrichStatusIdx]?.trim() === "enriched") continue;
     const email = row[emailIdx]?.trim();
     if (!email) continue;
     let inferred = false;
-    if (firstNameIdx !== -1 && !row[firstNameIdx]?.trim()) {
-      row[firstNameIdx] = inferFirstName(email);
-      inferred = true;
+    const currentFirstName = firstNameIdx !== -1 ? (row[firstNameIdx]?.trim() || "") : "";
+    const currentLastName = lastNameIdx !== -1 ? (row[lastNameIdx]?.trim() || "") : "";
+
+    // Smart name separation: if firstName has "John Doe", split it
+    if (firstNameIdx !== -1) {
+      const { firstName: splitFirst, lastName: splitLast } = smartSplitName(currentFirstName, currentLastName, email);
+      if (splitFirst && splitFirst !== currentFirstName) {
+        row[firstNameIdx] = splitFirst;
+        inferred = true;
+      }
+      if (lastNameIdx !== -1 && splitLast && splitLast !== currentLastName) {
+        row[lastNameIdx] = splitLast;
+        inferred = true;
+      }
+      // If firstName is still empty, infer from email
+      if (!row[firstNameIdx]?.trim()) {
+        row[firstNameIdx] = inferFirstName(email);
+        inferred = true;
+      }
     }
     if (companyIdx !== -1 && !row[companyIdx]?.trim()) {
       row[companyIdx] = inferCompany(email);
       inferred = true;
     }
-    if (inferred) log.info(`[Row enrich] ${email}: inferred firstName=${row[firstNameIdx] || '-'}, company=${row[companyIdx] || '-'}`);
+    if (inferred) log.info(`[Row enrich] ${email}: firstName=${row[firstNameIdx] || '-'}, lastName=${lastNameIdx !== -1 ? (row[lastNameIdx] || '-') : '-'}, company=${row[companyIdx] || '-'}`);
+  }
+
+  // 4. URL Enrichment (batched)
+  let urlScrapedCount = 0;
+  const scrapeCache = new Map();
+  const rowsWithUrl = dataRows.filter(r => {
+    const url = r[urlIdx]?.trim();
+    return url && url.startsWith("http");
+  });
+
+  const enrichBatchCount = Math.ceil(rowsWithUrl.length / ENRICH_BATCH_SIZE);
+  for (let batchIdx = 0; batchIdx < enrichBatchCount; batchIdx++) {
+    if (await isCampaignPaused(campaignId)) {
+      log.info(`Campaign paused at URL batch ${batchIdx + 1}/${enrichBatchCount}`);
+      break;
+    }
+
+    const start = batchIdx * ENRICH_BATCH_SIZE;
+    const end = Math.min(start + ENRICH_BATCH_SIZE, rowsWithUrl.length);
+    const batch = rowsWithUrl.slice(start, end);
+
+    // Scrape with concurrency limit to prevent rate limiting
+    for (let ci = 0; ci < batch.length; ci += SCRAPE_CONCURRENCY) {
+      const chunk = batch.slice(ci, ci + SCRAPE_CONCURRENCY);
+      const scrapePromises = chunk.map(async (row) => {
+        const url = row[urlIdx]?.trim();
+        if (scrapeCache.has(url)) {
+          const cached = scrapeCache.get(url);
+          if (cached && contextIdx !== -1) row[contextIdx] = sanitizeForCsv(cached);
+          return;
+        }
+
+        const result = await scrapeUrl(url);
+        if (result) {
+          let contextValue = null;
+          const parts = [];
+          if (result.title) parts.push(`Page: ${result.title}`);
+          if (result.description) parts.push(result.description);
+          contextValue = parts.join(". ") || "";
+
+          if (contextIdx !== -1) row[contextIdx] = sanitizeForCsv(contextValue);
+          scrapeCache.set(url, contextValue);
+          urlScrapedCount++;
+          log.info(`[Row scrape] ${url}: ${result.title || 'no title'} (${contextValue.length} chars)`);
+        } else {
+          log.info(`[Row scrape] ${url}: no result`);
+        }
+      });
+      await Promise.allSettled(scrapePromises);
+      if (ci + SCRAPE_CONCURRENCY < batch.length) {
+        await new Promise(r => setTimeout(r, 200));
+      }
+    }
+
+    // Live flush
+    try {
+      await uploadCsvText(fileId, stringifyCSV(parsedRows));
+    } catch (flushErr) {
+      log.warn(` Live flush failed at batch ${batchIdx + 1}: ${flushErr.message}`);
+    }
+
+    log.info(` URL batch ${batchIdx + 1}/${enrichBatchCount} complete (${urlScrapedCount} scraped)`);
+  }
+
+  // 5. Google Search Fallback (rows without URL, batched)
+  let searchFoundCount = 0;
+  const rowsWithoutUrl = dataRows.filter(r => {
+    if (enrichStatusIdx !== -1 && r[enrichStatusIdx]?.trim() === "enriched") return false;
+    const url = r[urlIdx]?.trim();
+    const email = r[emailIdx]?.trim();
+    const context = r[contextIdx]?.trim();
+    return email && (!url || !url.startsWith("http")) && (!context || context.length < 10);
+  });
+
+  const searchBatchCount = Math.ceil(rowsWithoutUrl.length / SEARCH_BATCH_SIZE);
+  for (let batchIdx = 0; batchIdx < searchBatchCount; batchIdx++) {
+    if (await isCampaignPaused(campaignId)) {
+      log.info(` Campaign paused at search batch ${batchIdx + 1}/${searchBatchCount}`);
+      break;
+    }
+
+    const start = batchIdx * SEARCH_BATCH_SIZE;
+    const end = Math.min(start + SEARCH_BATCH_SIZE, rowsWithoutUrl.length);
+    const batch = rowsWithoutUrl.slice(start, end);
+
+    for (const row of batch) {
+      const email = row[emailIdx]?.trim();
+      const firstName = firstNameIdx !== -1 ? row[firstNameIdx]?.trim() : "";
+      const company = companyIdx !== -1 ? row[companyIdx]?.trim() : "";
+
+      if (!email) continue;
+
+      const query = [
+        firstName && company ? `"${firstName}" "${company}"` : "",
+        company || "",
+        "site:linkedin.com OR site:twitter.com OR site:github.com"
+      ].filter(Boolean).join(" ");
+
+      if (!query) continue;
+
+            const results = await googleSearch(query);
+      const verifiedResults = results.filter(r => verifySearchResult(email, r));
+      const usableResults = verifiedResults.length > 0 ? verifiedResults : results;
+
+      if (usableResults.length > 0) {
+        const bestResult = usableResults.find(r =>
+          r.url.includes("linkedin.com") || r.url.includes("twitter.com") || r.url.includes("github.com")
+        ) || usableResults[0];
+
+        const currentFirstName = firstNameIdx !== -1 ? (row[firstNameIdx] ? row[firstNameIdx].trim() : "") : "";
+        const nameMatch = currentFirstName && (bestResult.title ? bestResult.title.toLowerCase().includes(currentFirstName.toLowerCase()) : false) || (bestResult.snippet ? bestResult.snippet.toLowerCase().includes(currentFirstName.toLowerCase()) : false);
+
+        if (verifiedResults.length > 0 || nameMatch) {
+          let contextValue = bestResult.snippet || bestResult.title || "";
+          if (bestResult.url && contextIdx !== -1) {
+            contextValue = contextValue + " | Profile: " + bestResult.url;
+          }
+          if (contextIdx !== -1) row[contextIdx] = sanitizeForCsv(contextValue);
+          searchFoundCount++;
+          log.info("[Row search] " + email + ": found " + bestResult.url);
+        } else {
+          log.info("[Row search] " + email + ": results found but not verified - skipping update");
+        }
+      } else {
+        log.info("[Row search] " + email + ": no results");
+      }
+import { NextResponse } from "next/server";
+import { downloadCsvText, uploadCsvText } from "../../api/googlesheets.js";
+import axios from "axios";
+import * as cheerio from "cheerio";
+import MultiProviderAI from "../../../utils/multiProviderAI.js";
+import logger from "../../../utils/logger.js";
+import { getSetting } from "../../../utils/settingsCache.js";
+import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, sanitizeForCsv, getPerformancePresets } from "../_shared/pipelineUtils.js";
+import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
+import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
+import { updateUserUsage } from "../../socials/_shared/hubUpdater.js";
+
+export const maxDuration = 60;
+export const dynamic = "force-dynamic";
+
+const GENERIC_DOMAINS = new Set([
+  "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com", "icloud.com",
+  "mail.com", "zoho.com", "yandex.com", "protonmail.com", "proton.me", "gmx.com",
+  "mail.ru", "live.com", "msn.com", "googlemail.com"
+]);
+
+function capitalize(str) {
+  if (!str) return "";
+  return str.charAt(0).toUpperCase() + str.slice(1);
+}
+
+function inferFirstName(email) {
+  if (!email) return "";
+  const username = email.split("@")[0];
+  const parts = username.split(/[\._\-0-9]+/);
+  for (const part of parts) {
+    if (part.length > 1) return capitalize(part);
+  }
+  return username ? capitalize(username) : "";
+}
+
+/**
+ * Smart name splitting: handles cases where firstName contains both
+ * first and last name (e.g., "John Doe" → "John" + "Doe").
+ * Also handles camelCase ("JohnDoe" → "John" + "Doe").
+ * Falls back to email inference for missing parts.
+ */
+function smartSplitName(firstName, lastName, email) {
+  let fn = (firstName || "").trim();
+  let ln = (lastName || "").trim();
+
+  // If firstName has a space, split it into first + last
+  if (fn && fn.includes(" ")) {
+    const parts = fn.split(/\s+/);
+    if (parts.length >= 2) {
+      fn = parts[0];
+      ln = parts.slice(1).join(" ");
+      return { firstName: fn, lastName: ln };
+    }
+  }
+
+  // If lastName is empty but firstName has content, try camelCase split
+  if (fn && !ln) {
+    const camelMatch = fn.match(/^([A-Z][a-z]+)([A-Z][a-z]+.*)?$/);
+    if (camelMatch && camelMatch[2]) {
+      return { firstName: camelMatch[1], lastName: camelMatch[2] };
+    }
+  }
+
+  // Fall back to email inference for missing parts
+  if (!fn) {
+    fn = inferFirstName(email);
+  }
+  if (!ln) {
+    const username = (email || "").split("@")[0];
+    const parts = username.split(/[\._\-]+/);
+    if (parts.length >= 2) {
+      ln = capitalize(parts[parts.length - 1]);
+    }
+  }
+
+  return { firstName: fn, lastName: ln };
+}
+
+/**
+ * Verify that a search result matches the email's domain or username.
+ * Returns true if the result is relevant to the email.
+ */
+function verifySearchResult(email, result) {
+  if (!email || !result) return false;
+  const domain = email.split("@")[1]?.toLowerCase() || "";
+  const username = email.split("@")[0]?.toLowerCase() || "";
+  const url = (result.url || "").toLowerCase();
+  const title = (result.title || "").toLowerCase();
+  const snippet = (result.snippet || "").toLowerCase();
+
+  // For non-generic domains, check if result mentions the domain
+  if (domain && !GENERIC_DOMAINS.has(domain)) {
+    if (url.includes(domain) || title.includes(domain) || snippet.includes(domain)) {
+      return true;
+    }
+  }
+
+  // Check if result mentions the username (for longer usernames)
+  if (username && username.length > 3) {
+    if (title.includes(username) || snippet.includes(username)) {
+      return true;
+    }
+  }
+
+  // Check if result mentions the first name (if we have it)
+  return false;
+}
+
+function inferCompany(email) {
+  if (!email) return "";
+  const parts = email.split("@");
+  if (parts.length !== 2) return "";
+  const domain = parts[1].toLowerCase().trim();
+  if (GENERIC_DOMAINS.has(domain)) return "Personal";
+  return capitalize(domain.split(".")[0]);
+}
+
+async function scrapeUrl(url) {
+  try {
+    const resp = await axios.get(url, {
+      timeout: 10000,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+      },
+      maxRedirects: 5,
+    });
+
+    const $ = cheerio.load(resp.data);
+    $("script, style, noscript, nav, footer, header").remove();
+
+    const title = $("title").text().trim()
+      || $("meta[property='og:title']").attr("content")
+      || "";
+
+    const description = $("meta[name='description']").attr("content")
+      || $("meta[property='og:description']").attr("content")
+      || "";
+
+    const main = $("main").length ? $("main") : $("article").length ? $("article") : $("body");
+    const bodyText = main.text().replace(/\s+/g, " ").trim().slice(0, 3000);
+
+    return { title, description, bodyText, status: resp.status, url };
+  } catch (err) {
+    logger.warn(`[Enrich] Scrape failed for ${url}: ${err.message}`);
+    return null;
+  }
+}
+
+async function googleSearch(query) {
+  try {
+    const resp = await axios.get("https://www.google.com/search", {
+      params: { q: query, num: 3, hl: "en" },
+      timeout: 10000,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
+
+    const $ = cheerio.load(resp.data);
+    const results = [];
+
+    $("div.g, div[data-sokoban-container]").each((i, el) => {
+      if (results.length >= 3) return false;
+      const link = $(el).find("a").first().attr("href");
+      const title = $(el).find("h3").first().text().trim();
+      const snippet = $(el).find(".VwiC3b, .s, span.aCOpRe").first().text().trim();
+      if (link && link.startsWith("http")) {
+        results.push({ url: link, title, snippet });
+      }
+    });
+
+    return results;
+  } catch (err) {
+    logger.warn(`[Enrich] Google search failed for "${query}": ${err.message}`);
+    return [];
+  }
+}
+
+async function analyzeBatchWithGemini(scrapeResults) {
+  if (scrapeResults.length === 0) return [];
+
+  const batchContent = scrapeResults.map((r, i) => {
+    const parts = [r.title, r.description, r.bodyText?.slice(0, 800)].filter(Boolean).join(". ");
+    return `[${i + 1}] ${parts}`;
+  }).join("\n\n");
+
+  const prompt = `Analyze these ${scrapeResults.length} webpage contents and extract useful information for cold outreach.
+
+${batchContent}
+
+Return a JSON array with one object per webpage (same order):
+[{"summary": "2-3 sentence summary", "industry": "detected industry", "services": "key services/products"}, ...]`;
+
+  try {
+    const ai = new MultiProviderAI();
+    const text = await ai.generate(prompt, { maxTokens: 4000, jsonMode: true });
+    const parsed = ai.parseAiJson(text);
+    if (Array.isArray(parsed)) {
+      const clean = parsed.map(r => r && typeof r === 'object'
+        ? { summary: ai.sanitizeAiPlainText(String(r.summary || ''), 2000), industry: ai.sanitizeAiPlainText(String(r.industry || ''), 200), services: ai.sanitizeAiPlainText(String(r.services || ''), 2000) }
+        : null).filter(r => r && (r.summary || r.industry || r.services));
+      if (clean.length) return clean;
+    }
+    if (typeof ai._salvageJsonArray === 'function') {
+      const salvaged = ai._salvageJsonArray(text);
+      if (Array.isArray(salvaged) && salvaged.length) {
+        return salvaged.map(r => ({ summary: ai.sanitizeAiPlainText(String(r.summary || ''), 2000), industry: ai.sanitizeAiPlainText(String(r.industry || ''), 200), services: ai.sanitizeAiPlainText(String(r.services || ''), 2000) })).filter(r => r.summary || r.industry || r.services);
+      }
+    }
+  } catch (err) {
+    logger.warn(`[Enrich] Batch AI analysis failed: ${err.message}`);
+  }
+  return [];
+}
+
+export async function POST(request) {
+  let log = logger.child({ campaignId: null, stage: 'enrich' });
+  try {
+    await identifySelfFromHost(request.headers.get('host'));
+    const body = await request.json();
+    const { campaignId, fileUrl, serverBatch } = body;
+
+    if (!campaignId) {
+      return NextResponse.json({ success: false, error: "Missing campaignId" }, { status: 400 });
+    }
+
+    log = logger.child({ campaignId, stage: 'enrich' });
+    log.info(`Received enrichment request${serverBatch ? ` [worker rowStart=${serverBatch.rowStart} rowEnd=${serverBatch.rowEnd}]` : ''}`);
+
+    // USER tier — monthly enrichUsage gate (GAS sends full settings; our own
+    // orchestrator sends only campaignId → fall back to the campaign row).
+    let stageUserId = body.settings?.userId || body.userId || null;
+    if (!stageUserId) {
+      try { stageUserId = (await getCampaignSettings(campaignId))?.userId || null; } catch (e) { /* fail open */ }
+    }
+    if (stageUserId) {
+      const quota = await checkUserQuota(stageUserId, { keys: ["enrichUsage"] });
+      if (!quota.allowed) {
+        log.info(`[user-limit] ${quota.reason} — blocking enrichment for ${campaignId}`);
+        await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
+        return NextResponse.json({ success: true, limitReached: true, userMonthlyLimit: true, message: `Enrichment blocked: ${quota.reason}` });
+      }
+    }
+
+    if (serverBatch) {
+      return await handleWorkerMode(campaignId, fileUrl, serverBatch, log);
+    }
+
+    if (!fileUrl) {
+      return NextResponse.json({ success: false, error: "Missing fileUrl" }, { status: 400 });
+    }
+
+    return await handleCoordinatorMode(campaignId, fileUrl, log, stageUserId);
+
+  } catch (error) {
+    (log || logger).error(`Error: ${error.message}`, { stack: error.stack });
+    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+  }
+}
+
+async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
+  log.info(`Received enrichment request for campaign: ${campaignId}`);
+
+  const fileId = extractFileId(fileUrl);
+  if (!fileId) {
+    return NextResponse.json({ success: false, error: "Invalid fileUrl or Drive file ID" }, { status: 400 });
+  }
+
+  // Read batch limits from SETTINGS, falling back to performance level presets
+  const perfLevelSetting = await getSetting('performanceLevel');
+  const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
+
+  const enrichBatchSetting = await getSetting('enrichBatchLimit');
+  const ENRICH_BATCH_SIZE = parseInt(enrichBatchSetting?.value1) || perfPresets.enrichBatchLimit;
+  const searchBatchSetting = await getSetting('enrichSearchBatchLimit');
+  const SEARCH_BATCH_SIZE = parseInt(searchBatchSetting?.value1) || perfPresets.enrichSearchBatchLimit;
+  const aiBatchSetting = await getSetting('enrichAiBatchLimit');
+  const AI_BATCH_SIZE = parseInt(aiBatchSetting?.value1) || perfPresets.enrichAiBatchLimit;
+  const concurrencySetting = await getSetting('enrichScrapeConcurrency');
+  const SCRAPE_CONCURRENCY = parseInt(concurrencySetting?.value1) || perfPresets.enrichScrapeConcurrency;
+
+  log.info(`enrich=${ENRICH_BATCH_SIZE}, search=${SEARCH_BATCH_SIZE}, ai=${AI_BATCH_SIZE}, concurrency=${SCRAPE_CONCURRENCY}, level=${perfLevelSetting?.value1 || 'balanced'}`);
+
+  // 1. Download CSV
+  log.info(`Downloading CSV file: ${fileId}`);
+  const dl = await downloadCsvText(fileId);
+  if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
+  const csvContent = dl.content;
+
+  const cleanContent = csvContent.charCodeAt(0) === 0xFEFF ? csvContent.slice(1) : csvContent;
+
+  // 2. Parse and find columns
+  const parsedRows = parseCSV(cleanContent);
+  if (parsedRows.length === 0) throw new Error("CSV file is empty");
+
+  const rawHeaders = parsedRows[0];
+  const headers = rawHeaders.map(h => h.trim().toUpperCase());
+
+  const emailIdx = headers.indexOf("EMAIL");
+  if (emailIdx === -1) throw new Error("EMAIL column not found");
+
+  const firstNameIdx = headers.indexOf("FIRSTNAME");
+  const lastNameIdx = headers.indexOf("LASTNAME");
+  const companyIdx = headers.indexOf("BUSINESSNAME");
+  const urlIdx = headers.indexOf("URL");
+  const contextIdx = headers.indexOf("CONTEXT");
+  const validationIdx = headers.indexOf("validation");
+  const enrichStatusIdx = headers.findIndex(h => h.toLowerCase().trim() === "enrichmentstatus");
+
+  const dataRows = parsedRows.slice(1);
+
+  // Per-run cap from SETTINGS (enrichBatchLimit) — strict: missing key = block
+  const campaignLimits = await getCampaignLimits();
+  if (!(campaignLimits.enrichLimit > 0)) {
+    log.info(`enrichBatchLimit is 0 or unavailable, blocking enrichment - set enrichBatchLimit in the SETTINGS sheet`);
+    return NextResponse.json({ success: true, limitReached: true, message: "Enrichment blocked: enrichBatchLimit is 0 - set it in the SETTINGS sheet" });
+  }
+  if (dataRows.length > campaignLimits.enrichLimit) {
+    dataRows.length = campaignLimits.enrichLimit;
+    log.info(`enrichLimit (${campaignLimits.enrichLimit}) applied: capped to ${dataRows.length} rows`);
+  }
+  log.info(`Processing ${dataRows.length} rows`);
+
+  const multiEnabled = await isMultiServerEnabled();
+  if (multiEnabled) {
+    const dispatchResult = await dispatchToServers(campaignId, 'enrich', fileUrl, dataRows.length);
+    if (dispatchResult) {
+      return NextResponse.json({ success: true, dispatched: true, servers: dispatchResult.servers });
+    }
+  }
+
+  // 3. Inference pass (firstName/lastName separation + company from email)
+  for (const row of dataRows) {
+    if (enrichStatusIdx !== -1 && row[enrichStatusIdx]?.trim() === "enriched") continue;
+    const email = row[emailIdx]?.trim();
+    if (!email) continue;
+    let inferred = false;
+    const currentFirstName = firstNameIdx !== -1 ? (row[firstNameIdx]?.trim() || "") : "";
+    const currentLastName = lastNameIdx !== -1 ? (row[lastNameIdx]?.trim() || "") : "";
+
+    // Smart name separation: if firstName has "John Doe", split it
+    if (firstNameIdx !== -1) {
+      const { firstName: splitFirst, lastName: splitLast } = smartSplitName(currentFirstName, currentLastName, email);
+      if (splitFirst && splitFirst !== currentFirstName) {
+        row[firstNameIdx] = splitFirst;
+        inferred = true;
+      }
+      if (lastNameIdx !== -1 && splitLast && splitLast !== currentLastName) {
+        row[lastNameIdx] = splitLast;
+        inferred = true;
+      }
+      // If firstName is still empty, infer from email
+      if (!row[firstNameIdx]?.trim()) {
+        row[firstNameIdx] = inferFirstName(email);
+        inferred = true;
+      }
+    }
+    if (companyIdx !== -1 && !row[companyIdx]?.trim()) {
+      row[companyIdx] = inferCompany(email);
+      inferred = true;
+    }
+    if (inferred) log.info(`[Row enrich] ${email}: firstName=${row[firstNameIdx] || '-'}, lastName=${lastNameIdx !== -1 ? (row[lastNameIdx] || '-') : '-'}, company=${row[companyIdx] || '-'}`);
   }
 
   // 4. URL Enrichment (batched)
@@ -388,7 +972,7 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
         }
         if (contextIdx !== -1) row[contextIdx] = sanitizeForCsv(contextValue);
         searchFoundCount++;
-        log.info(`[Row search] ${email}: found "${bestResult.url}"`);
+        log.info(`[Row search] ${email}: found "${bestResult.url}" (verified=${verifiedResults.length > 0})`);
       } else {
         log.info(`[Row search] ${email}: no results`);
       }
@@ -553,6 +1137,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
   if (emailIdx === -1) throw new Error("EMAIL column not found");
 
   const firstNameIdx = headers.indexOf("FIRSTNAME");
+  const lastNameIdx = headers.indexOf("LASTNAME");
   const companyIdx = headers.indexOf("BUSINESSNAME");
   const urlIdx = headers.indexOf("URL");
   const contextIdx = headers.indexOf("CONTEXT");
@@ -693,7 +1278,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
         }
         if (contextIdx !== -1) row[contextIdx] = sanitizeForCsv(contextValue);
         searchFoundCount++;
-        log.info(`[Row search] ${email}: found "${bestResult.url}"`);
+        log.info(`[Row search] ${email}: found "${bestResult.url}" (verified=${verifiedResults.length > 0})`);
       } else {
         log.info(`[Row search] ${email}: no results`);
       }
