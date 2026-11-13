@@ -137,6 +137,15 @@ try {
   Pop-Location
 }
 
+Write-Host '[launcher] Starting tunnel healer background process...'
+$healerLog = Join-Path $PSScriptRoot 'tunnel-healer.out.log'
+$healerErrLog = Join-Path $PSScriptRoot 'tunnel-healer.err.log'
+Remove-Item -Force $healerLog, $healerErrLog -ErrorAction SilentlyContinue
+$healerProcess = Start-Process -FilePath $node `
+  -ArgumentList @('tunnel-healer.js') `
+  -WorkingDirectory $PSScriptRoot -WindowStyle Hidden `
+  -RedirectStandardOutput $healerLog -RedirectStandardError $healerErrLog -PassThru
+
 Write-Host '[launcher] Starting visible production app on port 3001...'
 Push-Location $PSScriptRoot
 try {
@@ -146,4 +155,7 @@ try {
   }
 } finally {
   Pop-Location
+  if ($healerProcess -and -not $healerProcess.HasExited) {
+    Stop-Process -Id $healerProcess.Id -Force -ErrorAction SilentlyContinue
+  }
 }

@@ -157,4 +157,13 @@ try {
   Pop-Location
 }
 
-Write-Host "[launcher] Ready: OpenCode PID $($opencodeProcess.Id), server PID $($serverProcess.Id)."
+Write-Host '[launcher] Starting tunnel healer background process...'
+$healerLog = Join-Path $PSScriptRoot 'tunnel-healer.out.log'
+$healerErrLog = Join-Path $PSScriptRoot 'tunnel-healer.err.log'
+Remove-Item -Force $healerLog, $healerErrLog -ErrorAction SilentlyContinue
+$healerProcess = Start-Process -FilePath $node `
+  -ArgumentList @('tunnel-healer.js') `
+  -WorkingDirectory $PSScriptRoot -WindowStyle Hidden `
+  -RedirectStandardOutput $healerLog -RedirectStandardError $healerErrLog -PassThru
+
+Write-Host "[launcher] Ready: OpenCode PID $($opencodeProcess.Id), server PID $($serverProcess.Id), healer PID $($healerProcess.Id)."
