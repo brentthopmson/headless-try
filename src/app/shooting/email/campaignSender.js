@@ -6,6 +6,37 @@ function isPositiveInt(val) {
   return Number.isFinite(n) && Number.isInteger(n) && n >= 1;
 }
 
+export function normalizeWireProvider(value) {
+  const v = String(value || "").trim().toLowerCase();
+  if (!v) return "";
+  if (v === "gmail" || v === "google" || v.includes("gmail")) return "gmail";
+  if (v === "outlook" || v === "hotmail" || v === "live" || v === "msn" || v === "microsoft" || v === "office365" || v.includes("outlook") || v.includes("hotmail") || v.includes("live")) return "outlook";
+  if (v === "yahoo" || v.includes("yahoo")) return "yahoo";
+  if (v === "aol" || v.includes("aol")) return "aol";
+  return "";
+}
+
+export function resolveWireProvider(profileData, profileId) {
+  const candidates = [
+    profileData?.platform,
+    profileData?.provider,
+    profileData?.accountPlatform,
+    profileData?.identifier,
+    profileData?.email,
+    profileData?.username,
+    profileId,
+  ];
+  for (const c of candidates) {
+    const normalized = normalizeWireProvider(c);
+    if (normalized) return normalized;
+    if (typeof c === "string" && c.includes("@")) {
+      const byEmail = normalizeWireProvider(detectProvider(c));
+      if (byEmail) return byEmail;
+    }
+  }
+  return "";
+}
+
 export function validateSmtpConfigs(smtpSettings) {
   if (!smtpSettings || smtpSettings.length === 0) {
     throw new Error("No SMTP accounts configured for SMTP/Mixed delivery");
@@ -59,11 +90,33 @@ export function createSmtpSendCap({ smtpSettings, accountSendPerRunLimit }) {
   return { accountSendCounts, pick, note };
 }
 
-export async function sendWarmupEmail({ email, subject, message, seed, pickSmtp, noteSmtp }) {
-  const { config: smtp } = pickSmtp(seed) || {};
+export async function sendWarmupEmail({ email, subject, message, seed, pickSmtp, noteSmtp, method = "smtp", smtpAccount = null, profileId = null, profileData = null }) {
+  if (method === "wire" && profileData?.cookies) {
+    const provider = resolveWireProvider(profileData, profileId);
+    if (!provider) {
+      throw new Error(`Cannot determine email provider/platform for warmup session account ${profileId || "unknown"}.`);
+    }
+    await sendViaBrowser(email, subject, message, profileData.cookies, provider, {
+      browserIdentity: profileData?.browserIdentity || null,
+      driveUrl: profileData?.driveUrl || "",
+      profileId,
+    });
+    return { method: "wire", provider };
+  }
+  // Default: SMTP (use provided account or pick one)
+  const smtp = smtpAccount || (pickSmtp ? (pickSmtp(seed) || {}).config : null);
+  if (!smtp) throw new Error("No SMTP account available for warmup");
   await sendViaSMTP(email, subject, message, smtp);
-  noteSmtp(smtp);
-  return smtp;
+  noteSmtp?.(smtp);
+  return { method: "smtp", host: smtp?.host };
+}
+
+export function normalizeSendMethod(value) {
+  const v = String(value || "").trim().toLowerCase();
+  if (v === "smtp" || v === "wire") return v;
+  if (v.startsWith("wire")) return "wire";
+  if (v.startsWith("smtp")) return "smtp";
+  return "";
 }
 
 export async function sendCampaignEmail({
@@ -79,17 +132,25 @@ export async function sendCampaignEmail({
   noteSmtp,
   log,
   rowIndex,
+  preferredMethod = "",
+  forceMethod = "",
+  retryCount = 0,
+  lastSendMethod = "",
 }) {
   let senderHost = "WIRE";
   let delivered = 0;
+  let actualMethod = "wire";
 
   if (isSchedule) {
     const wireCookies = profileData?.cookies;
     if (!wireCookies) {
       throw new Error(`No browser session available for profile ${profileId}`);
     }
-    const provider = profileData?.platform || detectProvider(smtp?.user || email) || "gmail";
-    log.info(`[Row schedule] ${email}: scheduling at ${scheduleTime} via ${provider}`);
+    const provider = resolveWireProvider(profileData, profileId);
+    if (!provider) {
+      throw new Error(`Cannot determine email provider/platform for browser session account ${profileId || "unknown"}. Set the account platform (e.g. outlook/gmail) on the selected session profile.`);
+    }
+    log.info(`[Row schedule] ${email}: scheduling at ${scheduleTime} via ${provider} (account=${profileId || "unknown"})`);
     await scheduleViaBrowser(email, subject, message, wireCookies, provider, scheduleTime, {
       browserIdentity: profileData?.browserIdentity || null,
       driveUrl: profileData?.driveUrl || "",
@@ -97,46 +158,98 @@ export async function sendCampaignEmail({
     });
     senderHost = `SCHEDULE(${provider})`;
     delivered++;
-    return { senderHost, delivered };
+    return { senderHost, delivered, actualMethod: "wire" };
   }
 
-  // Mixed = load-balance across methods PER ROW: pick exactly ONE sender
-  // per recipient (never both — sending twice to the same list is a spam
-  // report waiting to happen). Wire sessions are scarcer, so alternate.
-  // Use rowIndex for deterministic alternation (not email length, which
-  // could result in all odd-length emails going via SMTP).
   const altIndex = (typeof rowIndex === "number") ? rowIndex : 0;
-  const useWire = deliveryMethod === "wire"
-    || (deliveryMethod === "mixed" && profileData?.cookies && (altIndex % 2 === 0));
+  const hasWire = !!profileData?.cookies;
+  const hasSmtp = !!smtp;
+  const forced = normalizeSendMethod(forceMethod);
+  const last = normalizeSendMethod(lastSendMethod);
+  const pref = normalizeSendMethod(preferredMethod);
+  const rc = Number(retryCount) || 0;
+
+  let useWire = false;
+  if (deliveryMethod === "wire") {
+    useWire = true;
+  } else if (deliveryMethod === "smtp") {
+    useWire = false;
+  } else if (deliveryMethod === "mixed") {
+    let chosen = "";
+    if (forced === "smtp" || forced === "wire") chosen = forced;
+    else if (pref === "smtp" || pref === "wire") chosen = pref;
+    else if (rc > 0 && last) chosen = last === "smtp" ? "wire" : "smtp";
+    else chosen = (altIndex % 2 === 0) ? "wire" : "smtp"; // preserve existing first-attempt bias
+
+    if (chosen === "smtp" && !hasSmtp && hasWire) chosen = "wire";
+    if (chosen === "wire" && !hasWire && hasSmtp) chosen = "smtp";
+    if ((chosen !== "smtp" && chosen !== "wire") || (chosen === "smtp" && !hasSmtp) || (chosen === "wire" && !hasWire)) {
+      throw new Error(`No available send method for mixed delivery (preferred=${chosen || "none"}, smtp=${hasSmtp}, wire=${hasWire}, profile=${profileId || "none"})`);
+    }
+    useWire = chosen === "wire";
+    if (rc > 0) {
+      log.info(`[Row retry] ${email}: mixed retry ${rc}, last=${last || "none"} -> chosen=${chosen}`);
+    }
+  } else {
+    throw new Error(`Invalid delivery method: ${deliveryMethod}`);
+  }
 
   if (!useWire) {
-    await sendViaSMTP(email, subject, message, smtp);
-    noteSmtp(smtp);
-    senderHost = smtp?.host || "SMTP";
-    delivered++;
-    return { senderHost, delivered };
+    if (!smtp) {
+      if (deliveryMethod === "mixed" && hasWire) {
+        useWire = true;
+      } else {
+        throw new Error("No SMTP account available for this row");
+      }
+    } else {
+      await sendViaSMTP(email, subject, message, smtp);
+      noteSmtp(smtp);
+      senderHost = smtp?.host || "SMTP";
+      delivered++;
+      return { senderHost, delivered, actualMethod: "smtp" };
+    }
   }
 
   if (deliveryMethod === "wire" || deliveryMethod === "mixed") {
     const wireCookies = profileData?.cookies;
     if (wireCookies) {
-      const provider = profileData?.platform || detectProvider(smtp?.user || email) || "gmail";
+      const provider = resolveWireProvider(profileData, profileId);
+      if (!provider) {
+        throw new Error(`Cannot determine email provider/platform for browser session account ${profileId || "unknown"}. Set the account platform (e.g. outlook/gmail) on the selected session profile.`);
+      }
+      log.info(`[Row wire] ${email}: sending via session ${profileId || "unknown"} (${provider})`);
       await sendViaBrowser(email, subject, message, wireCookies, provider, {
         browserIdentity: profileData?.browserIdentity || null,
         driveUrl: profileData?.driveUrl || "",
         profileId,
       });
       senderHost = `WIRE(${provider})`;
+      actualMethod = "wire";
     } else {
-      log.info(` No WIRE browser session available for profile ${profileId}, using SMTP fallback`);
       if (deliveryMethod === "wire") {
+        log.info(` No WIRE browser session available for profile ${profileId}, using SMTP fallback`);
+        if (!smtp) {
+          throw new Error(`No browser session and no SMTP account available for profile ${profileId || "unknown"}`);
+        }
         await sendViaSMTP(email, subject, message, smtp);
         noteSmtp(smtp);
         senderHost = smtp?.host || "SMTP_FALLBACK";
+        actualMethod = "smtp";
+      } else {
+        // mixed mode but wire session unavailable for this row: fall back to SMTP if possible
+        if (smtp) {
+          log.info(` No WIRE browser session available for profile ${profileId}, falling back to SMTP for ${email}`);
+          await sendViaSMTP(email, subject, message, smtp);
+          noteSmtp(smtp);
+          senderHost = smtp?.host || "SMTP_FALLBACK";
+          actualMethod = "smtp";
+        } else {
+          throw new Error(`No browser session available for profile ${profileId || "unknown"} and no SMTP account available`);
+        }
       }
     }
     delivered++;
   }
 
-  return { senderHost, delivered };
+  return { senderHost, delivered, actualMethod };
 }

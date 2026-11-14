@@ -297,19 +297,53 @@ export async function downloadCsvText(fileId) {
 
 export async function uploadCsvText(fileId, csvContent) {
   const authClient = await getSheetsAuthClient();
-  if (!authClient) {
-    const err = `Drive OAuth client unavailable for CSV upload (${fileId})`;
-    logger.error(`[Sheets API] ${err}`);
-    throw new Error(err);
+  let oauthErr = null;
+  if (authClient) {
+    try {
+      const drive = google.drive({ version: 'v3', auth: authClient });
+      await drive.files.update({
+        fileId,
+        media: { mimeType: 'text/csv', body: csvContent },
+        supportsAllDrives: true,
+      });
+      return { success: true };
+    } catch (err) {
+      oauthErr = err;
+      logger.warn(`[Sheets API] Drive OAuth CSV upload failed for ${fileId}: ${err.message}. Trying App Script fallback.`);
+    }
+  } else {
+    oauthErr = new Error(`Drive OAuth client unavailable for CSV upload (${fileId})`);
+    logger.warn(`[Sheets API] ${oauthErr.message}. Trying App Script fallback.`);
   }
+
+  const appScriptUrl = process.env.SCRIPT_URL;
+  const appScriptKey = process.env.SCRIPT_KEY;
+  if (!appScriptUrl || !appScriptKey) {
+    const err = oauthErr || new Error(`SCRIPT_URL/SCRIPT_KEY not configured for CSV upload fallback (${fileId})`);
+    logger.error(`[Sheets API] ${err.message}`);
+    throw err;
+  }
+
   try {
-    const drive = google.drive({ version: 'v3', auth: authClient });
-    await drive.files.update({
-      fileId,
-      media: { mimeType: 'text/csv', body: csvContent },
-      supportsAllDrives: true,
+    const params = new URLSearchParams({
+      action: 'updateDriveFileText',
+      fileId: String(fileId),
+      content: String(csvContent ?? ''),
+      mimeType: 'text/csv',
+      key: appScriptKey,
     });
-    return { success: true };
+    const response = await axios.post(appScriptUrl, params, {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: APP_SCRIPT_DRIVE_TIMEOUT_MS,
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+    });
+    if (response.data && response.data.success) {
+      logger.info(`[Sheets API] CSV uploaded via App Script fallback for ${fileId}.`);
+      return { success: true, viaAppScript: true };
+    }
+    const msg = response.data?.error || `App Script CSV upload failed for ${fileId}`;
+    throw new Error(msg);
   } catch (err) {
     logger.error(`[Sheets API] Drive CSV upload failed for ${fileId}: ${err.message}`);
     throw err;

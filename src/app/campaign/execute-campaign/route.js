@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { downloadCsvText, uploadCsvText, updateSheetRowApi, getSheetDataApi } from "../../api/googlesheets.js";
 import logger from "../../../utils/logger.js";
 import { detectProvider } from "../../emails/_shared/wireSender.js";
-import { validateSmtpConfigs, createSmtpSendCap, sendWarmupEmail, sendCampaignEmail } from "../../shooting/email/campaignSender.js";
+import { validateSmtpConfigs, createSmtpSendCap, sendWarmupEmail, sendCampaignEmail, resolveWireProvider } from "../../shooting/email/campaignSender.js";
 import { resolveSocialSession } from "../../socials/_shared/routeHelper.js";
 import { ensureReplyFilter } from "../../emails/_shared/replyFilter.js";
 import { processSearchInteractTask } from "../../socials/search-interact/route.js";
@@ -719,6 +719,11 @@ export async function POST(request) {
         const emailSubjectIdx = nHeaders.indexOf("emailSubject");
         const emailBodyIdx = nHeaders.indexOf("emailBody");
         const executionStatusIdx = nHeaders.findIndex(h => h.toLowerCase().trim() === "executionstatus");
+        const retryCountIdx = nHeaders.findIndex(h => h.toLowerCase().trim() === "retrycount");
+        const lastSendMethodIdx = nHeaders.findIndex(h => h.toLowerCase().trim() === "lastsendmethod");
+        const lastSendStatusIdx = nHeaders.findIndex(h => h.toLowerCase().trim() === "lastsendstatus");
+        const lastSendErrorIdx = nHeaders.findIndex(h => h.toLowerCase().trim() === "lastsenderror");
+        const lastAttemptAtIdx = nHeaders.findIndex(h => h.toLowerCase().trim() === "lastattemptat");
 
         if (emailColIdx === -1) {
           throw new Error("EMAIL column not found in 88-column schema");
@@ -728,29 +733,7 @@ export async function POST(request) {
         const smtpSettings = settings.smtpSettings || [];
 
         if (deliveryMethod === "smtp" || deliveryMethod === "mixed") {
-          // USER tier â€” monthly smtpChecker budget counts one full run's SMTP
-          // config validation pass (Q6=B). Gated before any validation work.
-          if (userId) {
-            const scQuota = await checkUserQuota(userId, { keys: ["smtpCheckerUsage"] });
-            if (!scQuota.allowed) {
-              log.info(` [user-limit] ${scQuota.reason} â€” blocking SMTP validation for campaign ${campaignId}.`);
-              await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "paused", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000 });
-              return NextResponse.json({
-                success: true,
-                message: `Execution blocked: ${scQuota.reason}`,
-                limitReached: true,
-                userMonthlyLimit: true,
-              });
-            }
-          }
           validateSmtpConfigs(smtpSettings);
-          if (userId) {
-            try {
-              await updateUserUsage(userId, "smtpCheckerUsage");
-            } catch (uErr) {
-              log.warn(` [user-limit] smtpCheckerUsage increment failed: ${uErr.message}`);
-            }
-          }
         }
 
         // Step 3b: Fetch the per-run email cap from SETTINGS (shootingBatchLimit)
@@ -875,15 +858,17 @@ export async function POST(request) {
           const profileData = profileId ? await getSocialProfileCookies(profileId) : null;
           if (profileData?.cookies || profileData?.driveCookieJSON || profileData?.accountCookieJSON) {
             try {
-              const provider =
-                profileData.platform || detectProvider(smtpSettings[0]?.user || settings.wireAccount || "") || "gmail";
+              const provider = resolveWireProvider(profileData, profileId);
+              if (!provider) {
+                throw new Error(`Cannot determine email provider/platform for browser session account ${profileId}. Set the account platform (e.g. outlook/gmail) on the selected session profile.`);
+              }
               const { browser, page, profileDir } = await resolveSocialSession(
                 {
                   cookies: profileData.cookies,
                   browserIdentity: profileData.browserIdentity || null,
                   driveUrl: profileData.driveUrl || "",
                   profileId,
-                  platform: detectEmailProvider(provider),
+                  platform: provider,
                   driveCookieJSON: profileData.driveCookieJSON || "",
                   accountCookieJSON: profileData.accountCookieJSON || "",
                 },
@@ -951,14 +936,39 @@ export async function POST(request) {
           }
 
           const row = deduplicatedRows[i];
-          // Resume safety: rows already sent/scheduled in a prior run are
-          // never re-sent (prevents duplicates after checkpoint loss or a
-          // re-triggered run on a completed campaign).
-          if (executionStatusIdx !== -1 && ['sent', 'scheduled'].includes(String(row[executionStatusIdx] || '').trim().toLowerCase())) {
+          // Resume safety/idempotency: never re-send terminal successes.
+          // Failed rows are retryable up to 3 attempts total; terminal failures
+          // (failed_final or retryCount >= 3) are skipped.
+          const execStatus = executionStatusIdx !== -1 ? String(row[executionStatusIdx] || '').trim().toLowerCase() : '';
+          const rowRetryCount = retryCountIdx !== -1 ? (parseInt(row[retryCountIdx], 10) || 0) : 0;
+          if (['sent', 'scheduled'].includes(execStatus)) {
             skippedAlreadySent++;
             continue;
           }
+          if (execStatus === 'failed_final' || rowRetryCount >= 3) {
+            // terminal failed row (exhausted retries) — do not re-attempt
+            continue;
+          }
+          const isRetryAttempt = execStatus === 'failed' || execStatus === 'failed_retryable' || rowRetryCount > 0;
+          const priorMethod = lastSendMethodIdx !== -1 ? String(row[lastSendMethodIdx] || '').trim().toLowerCase() : '';
           const email = row[emailColIdx]?.trim();
+
+          // Backoff: retryable rows that failed recently are deferred to the next run
+          // so we don't hammer SMTP/wire accounts. Default backoff = 1 hour for
+          // first retry, 2 hours for subsequent retries.
+          if (isRetryAttempt && lastAttemptAtIdx !== -1) {
+            const lastAttemptRaw = String(row[lastAttemptAtIdx] || '').trim();
+            if (lastAttemptRaw) {
+              const lastAttemptMs = Date.parse(lastAttemptRaw);
+              if (Number.isFinite(lastAttemptMs)) {
+                const backoffMs = (rowRetryCount >= 2 ? 2 : 1) * 60 * 60 * 1000;
+                if (Date.now() - lastAttemptMs < backoffMs) {
+                  log.info(`[Row skip] ${email}: retry backoff active (attempt ${rowRetryCount + 1}/3, lastAttempt=${lastAttemptRaw}, backoff=${backoffMs / 3600000}h)`);
+                  continue;
+                }
+              }
+            }
+          }
           if (!email) continue;
 
           const firstName = nameColIdx !== -1 && row[nameColIdx] ? row[nameColIdx] : "";
@@ -989,18 +999,53 @@ export async function POST(request) {
           message = tagged.body;
 
           let smtpPick = pickSmtpWithinCap(sentCount);
-          if (!smtpPick && accountSendPerRunLimit > 0 && smtpSettings.length > 0) {
-            limitReached = true;
-            log.info(` accountSendPerRunLimit (${accountSendPerRunLimit}) reached on every SMTP account, stopping email run.`);
-            break;
+          const smtpPoolExhaustedByRunCap = !smtpPick && accountSendPerRunLimit > 0 && smtpSettings.length > 0;
+          if (smtpPoolExhaustedByRunCap) {
+            if (deliveryMethod === "smtp") {
+              limitReached = true;
+              log.info(` accountSendPerRunLimit (${accountSendPerRunLimit}) reached on every SMTP account, stopping email run.`);
+              break;
+            }
+            if (deliveryMethod === "mixed") {
+              log.info(` accountSendPerRunLimit (${accountSendPerRunLimit}) reached on every SMTP account; continuing mixed run with session/wire-capable rows only.`);
+            } else {
+              limitReached = true;
+              log.info(` accountSendPerRunLimit (${accountSendPerRunLimit}) reached on every SMTP account, stopping email run.`);
+              break;
+            }
           }
           const { config: smtp } = smtpPick || {};
           const now = new Date();
           let senderHost = "WIRE";
           const isSchedule = settings.sendMode === "schedule";
 
-          // Firestick warm-up: send to familiar inbox before the actual lead
-          if (firestickEnabled && firestickList.length > 0) {
+          let attemptedMethod = "";
+          try {
+            const needsBrowser = isSchedule || deliveryMethod === "wire" || deliveryMethod === "mixed";
+            const profileId = needsBrowser ? (settings.accounts?.[0] || settings.wireAccount) : null;
+            const profileData = profileId ? await getSocialProfileCookies(profileId) : null;
+
+            // Determine preferred/attempted method for retries (esp. mixed)
+            const canWireRow = !!(profileData?.cookies || profileData?.driveCookieJSON || profileData?.accountCookieJSON);
+            const canSmtpRow = !!smtp;
+            if (deliveryMethod === "smtp") attemptedMethod = "smtp";
+            else if (deliveryMethod === "wire") attemptedMethod = "wire";
+            else if (deliveryMethod === "mixed") {
+              const last = String(priorMethod || "").toLowerCase();
+              if (isRetryAttempt && (last === "smtp" || last === "wire")) {
+                const opposite = last === "smtp" ? "wire" : "smtp";
+                attemptedMethod = (opposite === "smtp" ? canSmtpRow : canWireRow) ? opposite : ((opposite === "smtp" ? canWireRow : canSmtpRow) ? (last === "smtp" ? "wire" : "smtp") : opposite);
+              } else {
+                attemptedMethod = (i % 2 === 0) ? "wire" : "smtp";
+                if (attemptedMethod === "smtp" && !canSmtpRow && canWireRow) attemptedMethod = "wire";
+                if (attemptedMethod === "wire" && !canWireRow && canSmtpRow) attemptedMethod = "smtp";
+              }
+            }
+
+          // Firestick warm-up: use the SAME method as the actual send
+          // Determine if firestick transport is available for the intended method
+          const firestickTransportAvailable = attemptedMethod === "smtp" ? !!smtp : (attemptedMethod === "wire" ? canWireRow : false);
+          if (firestickEnabled && firestickList.length > 0 && firestickTransportAvailable) {
             try {
               const firestick = firestickList[firestickIndex % firestickList.length];
               firestickIndex++;
@@ -1011,19 +1056,20 @@ export async function POST(request) {
                 seed: sentCount,
                 pickSmtp: pickSmtpWithinCap,
                 noteSmtp: noteSmtpSend,
+                method: attemptedMethod,
+                smtpAccount: smtp,
+                profileId: profileId,
+                profileData: profileData,
               });
-              log.info(` Firestick warm-up sent to ${firestick.email}`);
+              log.info(` Firestick warm-up sent to ${firestick.email} via ${attemptedMethod}`);
               // Small delay between firestick and lead send
               await new Promise(r => setTimeout(r, 500));
             } catch (firestickErr) {
               log.warn(` Firestick warm-up failed: ${firestickErr.message}, continuing with lead send`);
             }
+          } else if (firestickEnabled && firestickList.length > 0 && !firestickTransportAvailable) {
+            log.warn(` Firestick warm-up skipped: no ${attemptedMethod} transport available for this row.`);
           }
-
-          try {
-            const needsBrowser = isSchedule || deliveryMethod === "wire" || deliveryMethod === "mixed";
-            const profileId = needsBrowser ? (settings.accounts?.[0] || settings.wireAccount) : null;
-            const profileData = profileId ? await getSocialProfileCookies(profileId) : null;
 
             let scheduleTime = null;
             if (isSchedule) {
@@ -1054,8 +1100,12 @@ export async function POST(request) {
               noteSmtp: noteSmtpSend,
               log,
               rowIndex: i,
+              retryCount: isRetryAttempt ? rowRetryCount : 0,
+              lastSendMethod: priorMethod,
+              preferredMethod: (deliveryMethod === "mixed" && isRetryAttempt && (priorMethod === "smtp" || priorMethod === "wire")) ? (priorMethod === "smtp" ? "wire" : "smtp") : "",
             });
             senderHost = sendResult.senderHost;
+            attemptedMethod = String(sendResult.actualMethod || attemptedMethod || (String(senderHost).startsWith("WIRE") || String(senderHost).startsWith("SCHEDULE") ? "wire" : "smtp")).toLowerCase();
             deliveredCount += sendResult.delivered;
 
             sentCount++;
@@ -1074,10 +1124,10 @@ export async function POST(request) {
 
             if (isSchedule) {
               // For schedule mode, write the scheduled time back to CSV
-              const scheduleTime = settings.scheduleStartTime || new Date().toISOString();
-              if (sendDateIdx !== -1) row[sendDateIdx] = new Date(scheduleTime).toLocaleDateString();
-              if (sendTimeIdx !== -1) row[sendTimeIdx] = new Date(scheduleTime).toLocaleTimeString();
-              if (sendStampIdx !== -1) row[sendStampIdx] = new Date(scheduleTime).toISOString();
+              const sched = settings.scheduleStartTime || new Date().toISOString();
+              if (sendDateIdx !== -1) row[sendDateIdx] = new Date(sched).toLocaleDateString();
+              if (sendTimeIdx !== -1) row[sendTimeIdx] = new Date(sched).toLocaleTimeString();
+              if (sendStampIdx !== -1) row[sendStampIdx] = new Date(sched).toISOString();
             } else {
               if (sendDateIdx !== -1) row[sendDateIdx] = now.toLocaleDateString();
               if (sendTimeIdx !== -1) row[sendTimeIdx] = now.toLocaleTimeString();
@@ -1085,21 +1135,33 @@ export async function POST(request) {
             }
             if (executionStatusIdx !== -1) row[executionStatusIdx] = isSchedule ? "scheduled" : "sent";
             if (providerMXIdx !== -1) row[providerMXIdx] = senderHost;
+            if (lastSendMethodIdx !== -1) row[lastSendMethodIdx] = attemptedMethod || "";
+            if (lastSendStatusIdx !== -1) row[lastSendStatusIdx] = isSchedule ? "scheduled" : "sent";
+            if (lastSendErrorIdx !== -1) row[lastSendErrorIdx] = "";
+            if (lastAttemptAtIdx !== -1) row[lastAttemptAtIdx] = now.toISOString();
           } catch (err) {
-            log.error(` Failed to send to ${email} via ${senderHost}: ${err.message}`);
+            const msg = String(err?.message || err);
+            const nextRetryCount = (Number(rowRetryCount) || 0) + 1;
+            const terminal = nextRetryCount >= 3;
+            attemptedMethod = attemptedMethod || (String(senderHost).startsWith("WIRE") || String(senderHost).startsWith("SCHEDULE") ? "wire" : (deliveryMethod === "smtp" ? "smtp" : ""));
+            log.error(` Failed to send to ${email} via ${senderHost || attemptedMethod || "unknown"} (attempt ${nextRetryCount}/3): ${msg}`);
             failedCount++;
-            // Failures do NOT burn the batch cap (only delivered sends do);
-            // the row stays 'failed' in the CSV so a resume retries it.
-            failureDetails.push({ email, error: err.message, host: senderHost });
+            // Failures do NOT burn the batch cap (only delivered sends do).
+            failureDetails.push({ email, error: msg, host: senderHost || attemptedMethod || "unknown", attempt: nextRetryCount, terminal });
 
-            if (executionStatusIdx !== -1) row[executionStatusIdx] = "failed";
-            if (providerMXIdx !== -1) row[providerMXIdx] = err.message;
+            if (executionStatusIdx !== -1) row[executionStatusIdx] = terminal ? "failed_final" : "failed_retryable";
+            if (providerMXIdx !== -1) row[providerMXIdx] = msg;
+            if (retryCountIdx !== -1) row[retryCountIdx] = String(nextRetryCount);
+            if (lastSendMethodIdx !== -1 && attemptedMethod) row[lastSendMethodIdx] = attemptedMethod;
+            if (lastSendStatusIdx !== -1) row[lastSendStatusIdx] = terminal ? "failed_final" : "failed_retryable";
+            if (lastSendErrorIdx !== -1) row[lastSendErrorIdx] = msg.slice(0, 500);
+            if (lastAttemptAtIdx !== -1) row[lastAttemptAtIdx] = new Date().toISOString();
           }
 
           // Periodic CSV flush every 5 rows to prevent data loss on crash
           if ((i + 1) % 5 === 0) {
             try {
-              await uploadCsvText(fileId, stringifyCSV(parsedRows));
+              await uploadCsvText(fileId, stringifyCSV(normalizedRows));
               log.info("[Row " + (i + 1) + "] Periodic CSV flush completed");
             } catch (flushErr) {
               log.warn("[Row " + (i + 1) + "] Periodic CSV flush failed: " + flushErr.message);
@@ -1143,27 +1205,57 @@ export async function POST(request) {
           log.warn(` Final CSV flush failed: ${flushErr.message}`);
         }
 
+        // Recompute retry/terminal state from CSV rows so final status is accurate
+        let retryablePendingCount = 0;
+        let terminalFailedCount = 0;
+        let sentOrScheduledCount = 0;
+        for (const r of deduplicatedRows) {
+          const st = executionStatusIdx !== -1 ? String(r[executionStatusIdx] || '').trim().toLowerCase() : '';
+          const rc = retryCountIdx !== -1 ? (parseInt(r[retryCountIdx], 10) || 0) : 0;
+          if (st === 'sent' || st === 'scheduled') sentOrScheduledCount++;
+          else if (st === 'failed_final' || rc >= 3) terminalFailedCount++;
+          else if (st === 'failed' || st === 'failed_retryable' || (rc > 0 && rc < 3)) retryablePendingCount++;
+        }
+
         // Step 3e: Single campaign status update. Email list shooting is
         // never duration-completed: completed = loop finished the list.
+        // If retryable failures remain, keep campaign resumable (paused) instead of completing.
         let finalStatus = pausedByAdmin ? "paused" : (limitReached ? "paused" : "completed");
-if (limitReached) settings.restReason = "limit_reached";
+        if (!pausedByAdmin && !limitReached && retryablePendingCount > 0) {
+          finalStatus = "paused";
+          settings.restReason = settings.restReason || "retry_pending";
+          settings.pauseReason = settings.pauseReason || "retry_pending";
+        }
+        if (pausedByAdmin) {
+          settings.restReason = settings.restReason || "paused_by_admin";
+        } else if (limitReached) {
+          settings.restReason = settings.restReason || "limit_reached";
+          settings.pauseReason = settings.pauseReason || settings.restReason;
+        }
         if (isRestingLikeStatus(finalStatus) && !Number(settings.restUntil)) {
           settings.restUntil = Date.now() + 60 * 60 * 1000;
-          settings.restReason = settings.restReason || "limit_reached";
+          settings.restReason = settings.restReason || (limitReached ? "limit_reached" : "resting");
         }
         normalizeRestingState(settings, finalStatus, { reason: settings.restReason });
-        if (finalStatus === "completed" || finalStatus === "paused") {
-          delete settings.restUntil; delete settings.restReason; delete settings.restSetAt;
+        if (finalStatus === "completed") {
+          delete settings.restUntil; delete settings.restReason; delete settings.restSetAt; delete settings.pauseReason;
+        } else if (finalStatus === "paused") {
+          // Preserve resumable pause reason/checkpoint context; clear timed-rest fields unless explicitly resting.
+          delete settings.restUntil; delete settings.restSetAt;
+          if (pausedByAdmin) delete settings.pauseReason;
         }
-        log.info(`[execute-email] Run summary: sent=${sentCount} delivered=${deliveredCount} failed=${failedCount} skippedAlreadySent=${skippedAlreadySent} limitReached=${limitReached} paused=${pausedByAdmin}`);
+        log.info(`[execute-email] Run summary: sent=${sentCount} delivered=${deliveredCount} failedAttempts=${failedCount} terminalFailed=${terminalFailedCount} retryPending=${retryablePendingCount} sentOrScheduled=${sentOrScheduledCount} skippedAlreadySent=${skippedAlreadySent} limitReached=${limitReached} paused=${pausedByAdmin}`);
         const analytics = {
           totalRows: dataRows.length,
           sent: sentCount,
           delivered: deliveredCount,
           failed: failedCount,
+          terminalFailed: terminalFailedCount,
+          retryPending: retryablePendingCount,
+          sentOrScheduled: sentOrScheduledCount,
           skippedAlreadySent,
           limitReached,
-          paused: pausedByAdmin,
+          paused: pausedByAdmin || (finalStatus === "paused" && !limitReached),
           failureDetails: failureDetails.slice(0, 20),
           server: getSelfUrl(),
           batchConfig: { shootingBatchSize: SHOOTING_BATCH_SIZE, checkpointInterval: CHECKPOINT_INTERVAL }

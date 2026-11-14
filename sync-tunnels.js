@@ -79,13 +79,14 @@ async function sync(sheetName, searchColumn, searchValue, data, label) {
 async function getCurrentLinksUrl(serverlessId) {
   try {
     const res = await callGas('getData', { sheetname: 'links' }, { retries: 1, timeout: 30000 });
-    if (!res || !res.success || !res.data) return null;
-    const headers = res.data.headers || [];
-    const rows = res.data.rows || [];
+    // GAS handleGetData returns { success, headers, data } where data is an array of row arrays.
+    if (!res || !res.success) return null;
+    const headers = res.headers || (res.data && res.data.headers) || [];
+    const rows = res.data || res.rows || (res.data && res.data.rows) || [];
     const idIdx = headers.indexOf('severlessId');
     const urlIdx = headers.indexOf('severlessURL');
     if (idIdx === -1 || urlIdx === -1) return null;
-    const row = rows.find(r => String(r[idIdx] || '').trim() === String(serverlessId || '').trim());
+    const row = (Array.isArray(rows) ? rows : []).find(r => String((r && r[idIdx]) || '').trim() === String(serverlessId || '').trim());
     return row ? String(row[urlIdx] || '').trim() : null;
   } catch (e) {
     console.warn(`[sync-tunnels] failed to read current links URL for ${serverlessId}: ${e.message}`);
