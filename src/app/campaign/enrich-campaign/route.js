@@ -178,6 +178,69 @@ async function searxngSearch(query) {
   }
 }
 
+const GENERIC_EMAIL_DOMAINS = new Set([
+  "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com", "icloud.com",
+  "mail.com", "zoho.com", "yandex.com", "protonmail.com", "proton.me", "gmx.com",
+  "mail.ru", "live.com", "msn.com", "googlemail.com", "me.com",
+]);
+
+function buildSearchQueries(row, headers) {
+  const get = (col) => {
+    const idx = headers.indexOf(col);
+    return idx >= 0 ? String(row[idx] || '').trim() : '';
+  };
+  const email = get('EMAIL');
+  const firstName = get('FIRSTNAME');
+  const lastName = get('LASTNAME');
+  const company = get('BUSINESSNAME');
+  const url = get('URL');
+  const context = get('CONTEXT');
+
+  const queries = [];
+  const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
+
+  if (email) {
+    const parts = email.split('@');
+    const domain = parts.length === 2 ? parts[1].toLowerCase().trim() : '';
+    const username = parts[0];
+
+    // Non-generic domain: search the company
+    if (domain && !GENERIC_EMAIL_DOMAINS.has(domain)) {
+      queries.push(`${domain} about us`);
+      queries.push(`${domain} services products`);
+      queries.push(`${domain} contact team`);
+    }
+
+    // Generic domain: search the person
+    if (GENERIC_EMAIL_DOMAINS.has(domain)) {
+      if (fullName) queries.push(`"${fullName}" "${email}" profile`);
+      if (firstName && lastName) queries.push(`"${firstName} ${lastName}" linkedin`);
+      queries.push(`"${email}" profile`);
+    }
+
+    // Always search by email
+    queries.push(`"${email}"`);
+  }
+
+  // Business name search
+  if (company && company !== 'Personal') {
+    const city = get('BUSINESSCITY') || get('CITY');
+    queries.push(city ? `"${company}" "${city}" services` : `"${company}" services about`);
+  }
+
+  // URL direct
+  if (url && url.startsWith('http')) {
+    queries.push(null); // sentinel: scrape directly, no search
+  }
+
+  // First+last name search
+  if (fullName && !email) {
+    queries.push(`"${fullName}" profile`);
+  }
+
+  return [...new Set(queries.filter(q => q !== null))].slice(0, 6);
+}
+
 async function multiSearch(query) {
   const [g, b, d, s] = await Promise.allSettled([
     googleSearch(query), bingSearch(query), duckDuckGoSearch(query), searxngSearch(query),
@@ -340,6 +403,11 @@ export async function POST(request) {
 async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
   let wasPaused = false;
   log.info(`Received enrichment request for campaign: ${campaignId}`);
+  let enrichmentContext = '';
+  try {
+    const cs = await getCampaignSettings(campaignId);
+    enrichmentContext = cs?.settings?.enrichmentContext || cs?.enrichmentContext || '';
+  } catch (e) { /* ignore */ }
 
   const fileId = extractFileId(fileUrl);
   if (!fileId) {
@@ -408,22 +476,9 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
     }
   }
 
-  // 3. Inference pass (firstName, company from email)
-  for (const row of dataRows) {
-    if (enrichStatusIdx !== -1 && row[enrichStatusIdx]?.trim() === "enriched") continue;
-    const email = row[emailIdx]?.trim();
-    if (!email) continue;
-    let inferred = false;
-    if (firstNameIdx !== -1 && !row[firstNameIdx]?.trim()) {
-      row[firstNameIdx] = inferFirstName(email);
-      inferred = true;
-    }
-    if (companyIdx !== -1 && !row[companyIdx]?.trim()) {
-      row[companyIdx] = inferCompany(email);
-      inferred = true;
-    }
-    if (inferred) log.info(`[Row enrich] ${email}: inferred firstName=${row[firstNameIdx] || '-'}, company=${row[companyIdx] || '-'}`);
-  }
+  // 3. No string-based inference — AI handles name/company cleanup from
+  //    whatever data is available. This keeps enrichment general across
+  //    arbitrary CSV structures.
 
   // 4. URL Enrichment (batched)
   let urlScrapedCount = 0;
@@ -510,34 +565,70 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
 
     for (const row of batch) {
       const email = row[emailIdx]?.trim();
-      const firstName = firstNameIdx !== -1 ? row[firstNameIdx]?.trim() : "";
-      const company = companyIdx !== -1 ? row[companyIdx]?.trim() : "";
-
       if (!email) continue;
 
-      const query = [
-        firstName && company ? `"${firstName}" "${company}"` : "",
-        company || "",
-        "site:linkedin.com OR site:twitter.com OR site:github.com"
-      ].filter(Boolean).join(" ");
+      const queries = buildSearchQueries(row, headers);
+      const allResults = [];
+      for (const q of queries) {
+        const results = await multiSearch(q);
+        allResults.push(...results);
+        await new Promise(r => setTimeout(r, 300));
+      }
 
-      if (!query) continue;
+      const seen = new Set();
+      const uniqueResults = [];
+      for (const r of allResults) {
+        if (!r.url || seen.has(r.url)) continue;
+        seen.add(r.url);
+        uniqueResults.push(r);
+        if (uniqueResults.length >= 10) break;
+      }
 
-      const results = await multiSearch(query);
-      if (results.length > 0) {
-        const bestResult = results.find(r =>
-          r.url.includes("linkedin.com") || r.url.includes("twitter.com") || r.url.includes("github.com")
-        ) || results[0];
-
-        let contextValue = bestResult.snippet || bestResult.title || "";
-        if (bestResult.url && contextIdx !== -1) {
-          contextValue = `${contextValue} | Profile: ${bestResult.url}`.trim();
+      const scrapePromises = uniqueResults.slice(0, 8).map(r => deepScrape(r.url));
+      const scrapeResults = await Promise.allSettled(scrapePromises);
+      const scraped = [];
+      for (let i = 0; i < scrapeResults.length; i++) {
+        const sr = scrapeResults[i];
+        if (sr.status === 'fulfilled' && sr.value) {
+          scraped.push({
+            ...sr.value,
+            knownData: {
+              email,
+              firstName: firstNameIdx !== -1 ? row[firstNameIdx]?.trim() : '',
+              lastName: headers.indexOf('LASTNAME') >= 0 ? row[headers.indexOf('LASTNAME')]?.trim() : '',
+              company: companyIdx !== -1 ? row[companyIdx]?.trim() : '',
+              url: urlIdx !== -1 ? row[urlIdx]?.trim() : '',
+            },
+          });
         }
-        if (contextIdx !== -1) row[contextIdx] = sanitizeForCsv(contextValue);
-        searchFoundCount++;
-        log.info(`[Row search] ${email}: found "${bestResult.url}"`);
+      }
+
+      if (scraped.length > 0) {
+        const aiResults = await analyzeBatchWithAI(scraped, ['FIRSTNAME', 'LASTNAME', 'JOBTITLE', 'BUSINESSNAME', 'BUSINESSCITY', 'BUSINESSSTATE', 'BUSINESSCOUNTRY', 'CONTEXT', 'SOCIALUSERNAME', 'SOCIALPLATFORM', 'EMAIL'], enrichmentContext);
+        const reviewed = await reviewBatchWithAI(aiResults, scraped);
+
+        const bestResult = reviewed && reviewed.length > 0 ? reviewed[0] : null;
+        if (bestResult) {
+          // Dynamic write-back: map every AI-returned key to a matching CSV column
+          for (const [aiKey, val] of Object.entries(bestResult)) {
+            if (aiKey === 'confidence') continue;
+            if (!val || String(val).trim() === '') continue;
+            const ci = headers.indexOf(String(aiKey).toUpperCase().trim());
+            if (ci === -1) continue;
+            row[ci] = sanitizeForCsv(String(val));
+          }
+          if (enrichStatusIdx !== -1) {
+            row[enrichStatusIdx] = (bestResult.confidence === 'none') ? 'no_data' : 'enriched';
+          }
+          searchFoundCount++;
+          log.info(`[Row search] ${email}: enriched (confidence=${bestResult.confidence})`);
+        } else {
+          log.info(`[Row search] ${email}: no results`);
+          if (enrichStatusIdx !== -1) row[enrichStatusIdx] = 'no_data';
+        }
       } else {
-        log.info(`[Row search] ${email}: no results`);
+        log.info(`[Row search] ${email}: no scrape results`);
+        if (enrichStatusIdx !== -1) row[enrichStatusIdx] = 'no_data';
       }
 
       await new Promise(r => setTimeout(r, 500));
@@ -575,7 +666,7 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
     }));
 
     const targetCols = ['FIRSTNAME', 'LASTNAME', 'JOBTITLE', 'BUSINESSNAME', 'BUSINESSCITY', 'BUSINESSSTATE', 'BUSINESSCOUNTRY', 'CONTEXT', 'SOCIALUSERNAME', 'SOCIALPLATFORM'];
-let aiResults = await analyzeBatchWithAI(scrapeResults, targetCols);
+let aiResults = await analyzeBatchWithAI(scrapeResults, targetCols, enrichmentContext);
 
     // Dynamic batch reduction: if AI fails, retry with half batch
     if (!aiResults || aiResults.length === 0) {
@@ -583,7 +674,7 @@ let aiResults = await analyzeBatchWithAI(scrapeResults, targetCols);
       if (halfSize >= 2) {
         log.warn(` AI batch failed, retrying with half size (${halfSize})`);
         const halfResults = scrapeResults.slice(0, halfSize);
-        const retryResults = await analyzeBatchWithAI(halfResults, targetCols);
+        const retryResults = await analyzeBatchWithAI(halfResults, targetCols, enrichmentContext);
         if (retryResults && retryResults.length > 0) {
           aiResults = retryResults;
           for (let i = 0; i < Math.min(halfSize, batch.length); i++) {
@@ -606,22 +697,14 @@ let aiResults = await analyzeBatchWithAI(scrapeResults, targetCols);
     for (let i = 0; i < batch.length; i++) {
       const aiResult = aiResults[i];
       if (aiResult) {
-        const colMap = {
-          FIRSTNAME: 'FIRSTNAME', LASTNAME: 'LASTNAME', JOBTITLE: 'JOBTITLE',
-          BUSINESSNAME: 'BUSINESSNAME', BUSINESSCITY: 'BUSINESSCITY',
-          BUSINESSSTATE: 'BUSINESSSTATE', BUSINESSCOUNTRY: 'BUSINESSCOUNTRY',
-          CONTEXT: 'CONTEXT', SOCIALUSERNAME: 'SOCIALUSERNAME',
-          SOCIALPLATFORM: 'SOCIALPLATFORM', PHONE: 'PHONE',
-        };
         let anyFilled = false;
-        for (const [aiKey, colName] of Object.entries(colMap)) {
-          const ci = headers.indexOf(colName);
+        for (const [aiKey, val] of Object.entries(aiResult)) {
+          if (aiKey === 'confidence') continue;
+          if (!val || String(val).trim() === '') continue;
+          const ci = headers.indexOf(String(aiKey).toUpperCase().trim());
           if (ci === -1) continue;
-          const val = aiResult[aiKey];
-          if (val && String(val).trim() !== '') {
-            batch[i][ci] = sanitizeForCsv(String(val));
-            anyFilled = true;
-          }
+          batch[i][ci] = sanitizeForCsv(String(val));
+          anyFilled = true;
         }
         if (contextIdx !== -1 && !(batch[i][contextIdx] || '').trim()) {
           const parts = [aiResult.summary, aiResult.industry ? `Industry: ${aiResult.industry}` : '', aiResult.services ? `Services: ${aiResult.services}` : ''].filter(Boolean);
@@ -691,6 +774,11 @@ let aiResults = await analyzeBatchWithAI(scrapeResults, targetCols);
 
 async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
   log.info(` Worker mode for campaign: ${campaignId}, rows ${serverBatch.rowStart}-${serverBatch.rowEnd}`);
+  let enrichmentContext = '';
+  try {
+    const cs = await getCampaignSettings(campaignId);
+    enrichmentContext = cs?.settings?.enrichmentContext || cs?.enrichmentContext || '';
+  } catch (e) { /* ignore */ }
 
   const assignment = await findMyAssignment(campaignId, 'enrich');
   if (!assignment) {
@@ -847,34 +935,70 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
 
     for (const row of batch) {
       const email = row[emailIdx]?.trim();
-      const firstName = firstNameIdx !== -1 ? row[firstNameIdx]?.trim() : "";
-      const company = companyIdx !== -1 ? row[companyIdx]?.trim() : "";
-
       if (!email) continue;
 
-      const query = [
-        firstName && company ? `"${firstName}" "${company}"` : "",
-        company || "",
-        "site:linkedin.com OR site:twitter.com OR site:github.com"
-      ].filter(Boolean).join(" ");
+      const queries = buildSearchQueries(row, headers);
+      const allResults = [];
+      for (const q of queries) {
+        const results = await multiSearch(q);
+        allResults.push(...results);
+        await new Promise(r => setTimeout(r, 300));
+      }
 
-      if (!query) continue;
+      const seen = new Set();
+      const uniqueResults = [];
+      for (const r of allResults) {
+        if (!r.url || seen.has(r.url)) continue;
+        seen.add(r.url);
+        uniqueResults.push(r);
+        if (uniqueResults.length >= 10) break;
+      }
 
-      const results = await multiSearch(query);
-      if (results.length > 0) {
-        const bestResult = results.find(r =>
-          r.url.includes("linkedin.com") || r.url.includes("twitter.com") || r.url.includes("github.com")
-        ) || results[0];
-
-        let contextValue = bestResult.snippet || bestResult.title || "";
-        if (bestResult.url && contextIdx !== -1) {
-          contextValue = `${contextValue} | Profile: ${bestResult.url}`.trim();
+      const scrapePromises = uniqueResults.slice(0, 8).map(r => deepScrape(r.url));
+      const scrapeResults = await Promise.allSettled(scrapePromises);
+      const scraped = [];
+      for (let i = 0; i < scrapeResults.length; i++) {
+        const sr = scrapeResults[i];
+        if (sr.status === 'fulfilled' && sr.value) {
+          scraped.push({
+            ...sr.value,
+            knownData: {
+              email,
+              firstName: firstNameIdx !== -1 ? row[firstNameIdx]?.trim() : '',
+              lastName: headers.indexOf('LASTNAME') >= 0 ? row[headers.indexOf('LASTNAME')]?.trim() : '',
+              company: companyIdx !== -1 ? row[companyIdx]?.trim() : '',
+              url: urlIdx !== -1 ? row[urlIdx]?.trim() : '',
+            },
+          });
         }
-        if (contextIdx !== -1) row[contextIdx] = sanitizeForCsv(contextValue);
-        searchFoundCount++;
-        log.info(`[Row search] ${email}: found "${bestResult.url}"`);
+      }
+
+      if (scraped.length > 0) {
+        const aiResults = await analyzeBatchWithAI(scraped, ['FIRSTNAME', 'LASTNAME', 'JOBTITLE', 'BUSINESSNAME', 'BUSINESSCITY', 'BUSINESSSTATE', 'BUSINESSCOUNTRY', 'CONTEXT', 'SOCIALUSERNAME', 'SOCIALPLATFORM', 'EMAIL'], enrichmentContext);
+        const reviewed = await reviewBatchWithAI(aiResults, scraped);
+
+        const bestResult = reviewed && reviewed.length > 0 ? reviewed[0] : null;
+        if (bestResult) {
+          // Dynamic write-back: map every AI-returned key to a matching CSV column
+          for (const [aiKey, val] of Object.entries(bestResult)) {
+            if (aiKey === 'confidence') continue;
+            if (!val || String(val).trim() === '') continue;
+            const ci = headers.indexOf(String(aiKey).toUpperCase().trim());
+            if (ci === -1) continue;
+            row[ci] = sanitizeForCsv(String(val));
+          }
+          if (enrichStatusIdx !== -1) {
+            row[enrichStatusIdx] = (bestResult.confidence === 'none') ? 'no_data' : 'enriched';
+          }
+          searchFoundCount++;
+          log.info(`[Row search] ${email}: enriched (confidence=${bestResult.confidence})`);
+        } else {
+          log.info(`[Row search] ${email}: no results`);
+          if (enrichStatusIdx !== -1) row[enrichStatusIdx] = 'no_data';
+        }
       } else {
-        log.info(`[Row search] ${email}: no results`);
+        log.info(`[Row search] ${email}: no scrape results`);
+        if (enrichStatusIdx !== -1) row[enrichStatusIdx] = 'no_data';
       }
 
       await new Promise(r => setTimeout(r, 500));
@@ -910,7 +1034,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
     }));
 
     const targetCols = ['FIRSTNAME', 'LASTNAME', 'JOBTITLE', 'BUSINESSNAME', 'BUSINESSCITY', 'BUSINESSSTATE', 'BUSINESSCOUNTRY', 'CONTEXT', 'SOCIALUSERNAME', 'SOCIALPLATFORM'];
-let aiResults = await analyzeBatchWithAI(scrapeResults, targetCols);
+let aiResults = await analyzeBatchWithAI(scrapeResults, targetCols, enrichmentContext);
 
     // Dynamic batch reduction: if AI fails, retry with half batch
     if (!aiResults || aiResults.length === 0) {
@@ -918,7 +1042,7 @@ let aiResults = await analyzeBatchWithAI(scrapeResults, targetCols);
       if (halfSize >= 2) {
         log.warn(` Worker AI batch failed, retrying with half size (${halfSize})`);
         const halfResults = scrapeResults.slice(0, halfSize);
-        const retryResults = await analyzeBatchWithAI(halfResults, targetCols);
+        const retryResults = await analyzeBatchWithAI(halfResults, targetCols, enrichmentContext);
         if (retryResults && retryResults.length > 0) {
           aiResults = retryResults;
           for (let i = 0; i < Math.min(halfSize, batch.length); i++) {
@@ -941,22 +1065,14 @@ let aiResults = await analyzeBatchWithAI(scrapeResults, targetCols);
     for (let i = 0; i < batch.length; i++) {
       const aiResult = aiResults[i];
       if (aiResult) {
-        const colMap = {
-          FIRSTNAME: 'FIRSTNAME', LASTNAME: 'LASTNAME', JOBTITLE: 'JOBTITLE',
-          BUSINESSNAME: 'BUSINESSNAME', BUSINESSCITY: 'BUSINESSCITY',
-          BUSINESSSTATE: 'BUSINESSSTATE', BUSINESSCOUNTRY: 'BUSINESSCOUNTRY',
-          CONTEXT: 'CONTEXT', SOCIALUSERNAME: 'SOCIALUSERNAME',
-          SOCIALPLATFORM: 'SOCIALPLATFORM', PHONE: 'PHONE',
-        };
         let anyFilled = false;
-        for (const [aiKey, colName] of Object.entries(colMap)) {
-          const ci = headers.indexOf(colName);
+        for (const [aiKey, val] of Object.entries(aiResult)) {
+          if (aiKey === 'confidence') continue;
+          if (!val || String(val).trim() === '') continue;
+          const ci = headers.indexOf(String(aiKey).toUpperCase().trim());
           if (ci === -1) continue;
-          const val = aiResult[aiKey];
-          if (val && String(val).trim() !== '') {
-            batch[i][ci] = sanitizeForCsv(String(val));
-            anyFilled = true;
-          }
+          batch[i][ci] = sanitizeForCsv(String(val));
+          anyFilled = true;
         }
         if (contextIdx !== -1 && !(batch[i][contextIdx] || '').trim()) {
           const parts = [aiResult.summary, aiResult.industry ? `Industry: ${aiResult.industry}` : '', aiResult.services ? `Services: ${aiResult.services}` : ''].filter(Boolean);
@@ -1049,7 +1165,7 @@ export async function OPTIONS() {
   });
 }
 
-async function analyzeBatchWithAI(scrapeResults, targetColumns) {
+async function analyzeBatchWithAI(scrapeResults, targetColumns, enrichmentContext) {
   if (scrapeResults.length === 0) return [];
   const batchContent = scrapeResults.map((r, i) => {
     const known = r.knownData ? 'KNOWN DATA: ' + JSON.stringify(r.knownData) : '';
@@ -1059,7 +1175,8 @@ async function analyzeBatchWithAI(scrapeResults, targetColumns) {
 
   const colList = targetColumns.join(', ');
 
-  const prompt = 'You are a data enrichment agent. For each row below, extract information into these columns: ' + colList + '.\n\n' + batchContent + '\n\nRules:\n1. Clean up FIRSTNAME if it contains "First Last" -> split into FIRSTNAME and LASTNAME.\n2. Only fill a field if directly supported by the scraped content or known data.\n3. For generic email domains (gmail, yahoo, etc.), try to find the person by name + email. For business domains, search the company site.\n4. If you cannot verify a field, leave it empty - do not guess.\n5. Return a JSON array with one object per row (same order). Each object has keys matching the target columns plus a "confidence" field ("high", "medium", "low", or "none").\n6. If confidence is "none", set all enriched fields to empty (except name cleanup).\n7. CONTEXT should contain a 2-3 sentence summary of what the person/company does.\n\nReturn ONLY valid JSON array.';
+  const ctx = enrichmentContext ? '\\nENRICHMENT CONTEXT (user instruction): ' + enrichmentContext + '\\n' : '';
+  const prompt = 'You are a data enrichment agent. For each row below, extract information into these columns: ' + colList + '.' + ctx + '\\n\\n' + batchContent + '\\n\\nRules:\\n1. Clean up FIRSTNAME if it contains "First Last" -> split into FIRSTNAME and LASTNAME.\\n2. Only fill a field if directly supported by the scraped content or known data.\\n3. If no email is provided, try to find the person email from scraped content (business website, LinkedIn, etc.) and fill the EMAIL column.\\n4. For generic email domains (gmail, yahoo, etc.), try to find the person by name + email. For business domains, search the company site.\\n5. If you cannot verify a field, leave it empty - do not guess.\\n6. Return a JSON array with one object per row (same order). Each object has keys matching the target columns plus a "confidence" field ("high", "medium", "low", or "none").\\n7. If confidence is "none", set all enriched fields to empty (except name cleanup).\\n8. CONTEXT should contain a 2-3 sentence summary of what the person/company does.\\n9. If enrichment context asks for specific info (e.g. "find the CEO"), prioritize that.\\n\\nReturn ONLY valid JSON array.';
 
   try {
     const ai = new MultiProviderAI();

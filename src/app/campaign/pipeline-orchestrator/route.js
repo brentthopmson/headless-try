@@ -8,7 +8,10 @@ import { checkUserConcurrentCampaigns, registerActiveCampaignRun, unregisterActi
 import { getSheetDataApi, updateSheetRowApi } from "../../api/googlesheets.js";
 import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
 
-export const maxDuration = 60;
+// Self-hosted: no platform timeout. Allow long-running pipelines (validation
+// of 100k+ rows can take hours). Removed the 60s cap that caused premature
+// timeouts and validation re-runs.
+export const maxDuration = 0;
 export const dynamic = "force-dynamic";
 
 const STAGE_ORDER = ["validate", "enrich", "personalize", "execute", "interact"];
