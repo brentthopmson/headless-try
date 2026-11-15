@@ -1,62 +1,42 @@
-[tunnel-healer] 2026-11-15T18:17:09.894Z --- Health check cycle start (serverless=serverless4) ---
-[tunnel-healer] 2026-11-15T18:17:10.031Z Started. Checking serverless4 every 120s (ports 3001/4096).
+[tunnel-healer] 2026-11-15T21:56:18.030Z --- Health check cycle start (serverless=serverless4) ---
+[tunnel-healer] 2026-11-15T21:56:19.035Z Started. Checking serverless4 every 120s (ports 3001/4096).
+[tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
+[tunnel-healer] 2026-11-15T21:56:41.965Z links.serverless4 public URL unhealthy (ECONNABORTED) url=https://mines-diy-cookie-reforms.trycloudflare.com local=up
+[tunnel-healer] 2026-11-15T21:56:41.969Z Restarting cloudflared for port 3001 (targeted)...
+[tunnel-healer] 2026-11-15T21:56:44.233Z cloudflared spawned (PID 15528) for port 3001
+[tunnel-healer] 2026-11-15T21:56:50.160Z links.serverless4 synced {"severlessStatus":"ACTIVE","severlessHealth":"OK","severlessURL":"https://mines-diy-cookie-reforms.trycloudflare.com/"}
+[tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
+[tunnel-healer] 2026-11-15T21:57:01.554Z --- Health check cycle end ---
+[tunnel-healer] 2026-11-15T21:58:19.051Z --- Health check cycle start (serverless=serverless4) ---
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] 2026-11-15T18:17:40.234Z opencode serverless4 public URL unhealthy (ENOTFOUND) url=https://bluetooth-cheaper-critical-infrared.trycloudflare.com local=up
-[tunnel-healer] 2026-11-15T18:17:40.236Z Restarting cloudflared for port 4096 (targeted)...
-[tunnel-healer] 2026-11-15T18:17:42.351Z cloudflared spawned (PID 33212) for port 4096
-[tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] SETTINGS.aiSn=1 updated -> OK (row 2) keys=aiBaseUrl,aiStatus,aiHealthReason,aiKey
-[tunnel-healer] 2026-11-15T18:17:52.039Z --- Health check cycle end ---
-[tunnel-healer] 2026-11-15T18:19:10.045Z --- Health check cycle start (serverless=serverless4) ---
+[tunnel-healer] 2026-11-15T21:58:46.614Z --- Health check cycle end ---
+[tunnel-healer] 2026-11-15T22:00:19.065Z --- Health check cycle start (serverless=serverless4) ---
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] 2026-11-15T18:19:39.127Z --- Health check cycle end ---
-[tunnel-healer] 2026-11-15T18:21:10.059Z --- Health check cycle start (serverless=serverless4) ---
+[tunnel-healer] 2026-11-15T22:00:46.629Z --- Health check cycle end ---
+[tunnel-healer] 2026-11-15T22:02:19.074Z --- Health check cycle start (serverless=serverless4) ---
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] 2026-11-15T18:21:42.650Z --- Health check cycle end ---
-[tunnel-healer] 2026-11-15T18:23:10.075Z --- Health check cycle start (serverless=serverless4) ---
+[tunnel-healer] 2026-11-15T22:02:47.175Z --- Health check cycle end ---
+[tunnel-healer] 2026-11-15T22:04:19.076Z --- Health check cycle start (serverless=serverless4) ---
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] 2026-11-15T18:23:41.439Z --- Health check cycle end ---
-[tunnel-healer] 2026-11-15T18:25:10.086Z --- Health check cycle start (serverless=serverless4) ---
+[tunnel-healer] 2026-11-15T22:04:57.810Z --- Health check cycle end ---
+[tunnel-healer] 2026-11-15T22:06:19.092Z --- Health check cycle start (serverless=serverless4) ---
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] 2026-11-15T18:25:43.648Z --- Health check cycle end ---
-[tunnel-healer] 2026-11-15T18:27:10.091Z --- Health check cycle start (serverless=serverless4) ---
+[tunnel-healer] 2026-11-15T22:06:46.113Z --- Health check cycle end ---
+[tunnel-healer] 2026-11-15T22:08:19.100Z --- Health check cycle start (serverless=serverless4) ---
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] 2026-11-15T18:27:39.099Z --- Health check cycle end ---
-[tunnel-healer] 2026-11-15T18:29:10.099Z --- Health check cycle start (serverless=serverless4) ---
+[tunnel-healer] 2026-11-15T22:08:48.396Z --- Health check cycle end ---
+[tunnel-healer] 2026-11-15T22:10:19.122Z --- Health check cycle start (serverless=serverless4) ---
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] 2026-11-15T18:29:44.585Z --- Health check cycle end ---
-[tunnel-healer] 2026-11-15T18:31:10.110Z --- Health check cycle start (serverless=serverless4) ---
+[tunnel-healer] 2026-11-15T22:10:46.302Z --- Health check cycle end ---
+[tunnel-healer] 2026-11-15T22:12:19.125Z --- Health check cycle start (serverless=serverless4) ---
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] 2026-11-15T18:31:45.831Z --- Health check cycle end ---
-[tunnel-healer] 2026-11-15T18:33:10.112Z --- Health check cycle start (serverless=serverless4) ---
-[tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] 2026-11-15T18:33:44.222Z --- Health check cycle end ---
-[tunnel-healer] 2026-11-15T18:35:10.116Z --- Health check cycle start (serverless=serverless4) ---
-[tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] 2026-11-15T18:35:54.455Z --- Health check cycle end ---
-[tunnel-healer] 2026-11-15T18:37:10.126Z --- Health check cycle start (serverless=serverless4) ---
-[tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] 2026-11-15T18:37:42.774Z --- Health check cycle end ---
-[tunnel-healer] 2026-11-15T18:39:10.135Z --- Health check cycle start (serverless=serverless4) ---
-[tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] 2026-11-15T18:39:52.799Z --- Health check cycle end ---
-[tunnel-healer] 2026-11-15T18:41:10.136Z --- Health check cycle start (serverless=serverless4) ---
-[tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] 2026-11-15T18:41:59.233Z --- Health check cycle end ---
-[tunnel-healer] 2026-11-15T18:43:10.140Z --- Health check cycle start (serverless=serverless4) ---
-[tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] 2026-11-15T18:43:47.008Z --- Health check cycle end ---
+[tunnel-healer] 2026-11-15T22:12:46.087Z --- Health check cycle end ---
+[tunnel-healer] 2026-11-15T22:14:19.129Z --- Health check cycle start (serverless=serverless4) ---

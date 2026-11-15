@@ -11,1238 +11,603 @@ import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../
 import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
 import { updateUserUsage } from "../../socials/_shared/hubUpdater.js";
 
-export const maxDuration = 60;
+// Validate/enrich/personalize must be able to run to completion for all rows.
+export const maxDuration = 0;
 export const dynamic = "force-dynamic";
 
-const GENERIC_DOMAINS = new Set([
+const GENERIC_EMAIL_DOMAINS = new Set([
   "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com", "icloud.com",
   "mail.com", "zoho.com", "yandex.com", "protonmail.com", "proton.me", "gmx.com",
-  "mail.ru", "live.com", "msn.com", "googlemail.com"
+  "mail.ru", "live.com", "msn.com", "googlemail.com", "me.com"
 ]);
 
-function capitalize(str) {
-  if (!str) return "";
-  return str.charAt(0).toUpperCase() + str.slice(1);
+function normHeader(h) { return String(h || "").trim().toUpperCase(); }
+function getCell(row, headers, name) {
+  const idx = headers.indexOf(normHeader(name));
+  return idx >= 0 ? String(row[idx] || "").trim() : "";
 }
-
-function inferFirstName(email) {
-  if (!email) return "";
-  const username = email.split("@")[0];
-  const parts = username.split(/[\._\-0-9]+/);
-  for (const part of parts) {
-    if (part.length > 1) return capitalize(part);
+function setCell(row, headers, name, value) {
+  const idx = headers.indexOf(normHeader(name));
+  if (idx >= 0) row[idx] = sanitizeForCsv(String(value ?? ""));
+}
+function ensureColumn(headers, rows, name) {
+  const n = normHeader(name);
+  let idx = headers.indexOf(n);
+  if (idx === -1) {
+    headers.push(n);
+    idx = headers.length - 1;
+    for (const r of rows) r[idx] = "";
   }
-  return username ? capitalize(username) : "";
+  return idx;
 }
 
-function inferCompany(email) {
-  if (!email) return "";
-  const parts = email.split("@");
-  if (parts.length !== 2) return "";
-  const domain = parts[1].toLowerCase().trim();
-  if (GENERIC_DOMAINS.has(domain)) return "Personal";
-  return capitalize(domain.split(".")[0]);
+function rowKnownData(row, headers) {
+  const data = {};
+  headers.forEach((h, i) => {
+    const v = String(row[i] || "").trim();
+    if (!v) return;
+    // exclude large/template/system-ish fields
+    if (["EMAILSUBJECT","EMAILBODY","SOCIALMESSAGE","REPLYTO","ENHANCEDSUBJECT","ENHANCEDBODY","ENHANCEDSOCIALMESSAGE"].includes(h)) return;
+    if (h.startsWith("__")) return;
+    data[h] = v.slice(0, 300);
+  });
+  return data;
+}
+
+function hasSearchableData(row, headers) {
+  const keys = ["EMAIL","FIRSTNAME","LASTNAME","BUSINESSNAME","URL","SOCIALUSERNAME","SOCIALPLATFORM","CONTEXT","WEBSITE","COMPANY","DOMAIN"];
+  for (const k of keys) {
+    const idx = headers.indexOf(k);
+    if (idx >= 0 && String(row[idx] || "").trim()) return true;
+  }
+  // fallback: any non-empty non-system cell
+  const ignore = new Set(["SN","CAMPAIGNTYPE","ENGINE","PROVIDER","SMTP","PORT","USERNAME","PASSWORD","APPPASSWORD","BACKUPCODE","OAUTH2CLIENTID","OAUTH2CLIENTSECRET","OAUTH2REFRESHTOKEN","SHOULDVALIDATE","SHOULDENHANCE","SHOULDSEARCHINTERACT","SHOULDPAGEINTERACT","SHOULDINBOXINTERACT","SHOULDACTIVITIESINTERACT","SHOULDSENDMESSAGE","VALIDATION","PROVIDERMXRESULT","ENRICHMENTSTATUS","SENDDATE","SENDTIME","SENDSTAMP","SEARCHKEYS","SEARCHCOUNT","SEARCHSTATUS","SEARCHSTAMP","PROFILETOINTERACT","INTERACTCOUNT","INTERACTSTATUS","INTERACTSTAMP","PERSONALIZATIONSTATUS","EXECUTIONSTATUS"]);
+  for (let i = 0; i < headers.length; i++) {
+    if (ignore.has(headers[i])) continue;
+    if (String(row[i] || "").trim()) return true;
+  }
+  return false;
+}
+
+function buildHeuristicQueries(row, headers) {
+  const email = getCell(row, headers, "EMAIL");
+  const first = getCell(row, headers, "FIRSTNAME");
+  const last = getCell(row, headers, "LASTNAME");
+  const company = getCell(row, headers, "BUSINESSNAME") || getCell(row, headers, "COMPANY");
+  const url = getCell(row, headers, "URL") || getCell(row, headers, "WEBSITE");
+  const social = getCell(row, headers, "SOCIALUSERNAME");
+  const platform = getCell(row, headers, "SOCIALPLATFORM");
+  const fullName = [first, last].filter(Boolean).join(" ").trim();
+  const queries = [];
+  if (email && email.includes("@")) {
+    const [user, domain] = email.split("@");
+    const d = (domain || "").toLowerCase();
+    if (d && !GENERIC_EMAIL_DOMAINS.has(d)) {
+      queries.push(`${d} company about contact`);
+      queries.push(`${d} team leadership services`);
+    } else {
+      if (fullName) queries.push(`"${fullName}" "${email}" profile contact`);
+      else if (user) queries.push(`"${user}" ${d} profile`);
+    }
+  }
+  if (fullName && company) queries.push(`"${fullName}" "${company}" profile email contact`);
+  else if (fullName) queries.push(`"${fullName}" profile linkedin contact`);
+  if (company) queries.push(`"${company}" official website contact email`);
+  if (social) queries.push(`${platform || ""} ${social} profile contact`.trim());
+  if (url) {
+    try { const u = new URL(url.startsWith("http") ? url : `https://${url}`); queries.push(`${u.hostname} about contact team`); } catch { queries.push(`${url} contact about`); }
+  }
+  // dedupe
+  return Array.from(new Set(queries.map(q => q.replace(/\s+/g, " ").trim()).filter(Boolean))).slice(0, 6);
 }
 
 async function scrapeUrl(url) {
   try {
     const resp = await axios.get(url, {
-      timeout: 10000,
+      timeout: 12000,
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.5",
       },
       maxRedirects: 5,
+      validateStatus: s => s >= 200 && s < 400,
     });
-
-    const $ = cheerio.load(resp.data);
-    $("script, style, noscript, nav, footer, header").remove();
-
-    const title = $("title").text().trim()
-      || $("meta[property='og:title']").attr("content")
-      || "";
-
-    const description = $("meta[name='description']").attr("content")
-      || $("meta[property='og:description']").attr("content")
-      || "";
-
-    const main = $("main").length ? $("main") : $("article").length ? $("article") : $("body");
-    const bodyText = main.text().replace(/\s+/g, " ").trim().slice(0, 3000);
-
-    return { title, description, bodyText, status: resp.status, url };
+    const $ = cheerio.load(resp.data || "");
+    $("script, style, noscript, svg").remove();
+    const title = $("title").first().text().trim() || $("meta[property='og:title']").attr("content") || "";
+    const description = $("meta[name='description']").attr("content") || $("meta[property='og:description']").attr("content") || "";
+    const bodyText = $("body").text().replace(/\s+/g, " ").trim().slice(0, 4000);
+    const links = [];
+    $("a[href]").each((_, el) => {
+      if (links.length >= 20) return false;
+      const href = $(el).attr("href");
+      if (!href) return;
+      try { const abs = new URL(href, url).toString(); if (abs.startsWith("http")) links.push(abs); } catch {}
+    });
+    return { url, title, description, bodyText, links };
   } catch (err) {
-    logger.warn(`[Enrich] Scrape failed for ${url}: ${err.message}`);
     return null;
   }
+}
+
+async function deepScrape(url) {
+  const main = await scrapeUrl(url);
+  if (!main) return null;
+  const internalTexts = [];
+  const baseHost = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
+  const interesting = (main.links || []).filter(l => {
+    try {
+      const u = new URL(l); if (baseHost && u.hostname !== baseHost) return false;
+      return /about|contact|team|company|services|profile|people|leadership|impressum/i.test(u.pathname + u.search);
+    } catch { return false; }
+  }).slice(0, 3);
+  const extras = await Promise.allSettled(interesting.map(l => scrapeUrl(l)));
+  for (const r of extras) {
+    if (r.status === "fulfilled" && r.value) {
+      const v = r.value;
+      internalTexts.push([v.title, v.description, v.bodyText].filter(Boolean).join(" ").slice(0, 1500));
+    }
+  }
+  return { ...main, internalTexts };
 }
 
 async function googleSearch(query) {
   try {
     const resp = await axios.get("https://www.google.com/search", {
-      params: { q: query, num: 5, hl: "en" },
-      timeout: 10000,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml",
-        "Accept-Language": "en-US,en;q=0.9",
-      },
+      params: { q: query, num: 5, hl: "en" }, timeout: 10000,
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36", "Accept-Language": "en-US,en;q=0.9" },
     });
-
-    const $ = cheerio.load(resp.data);
+    const $ = cheerio.load(resp.data || "");
     const results = [];
-
-    $("div.g, div[data-sokoban-container]").each((i, el) => {
+    $("div.g, div[data-sokoban-container]").each((_, el) => {
       if (results.length >= 5) return false;
-      const link = $(el).find("a").first().attr("href");
-      const title = $(el).find("h3").first().text().trim();
-      const snippet = $(el).find(".VwiC3b, .s, span.aCOpRe").first().text().trim();
-      if (link && link.startsWith("http")) {
-        results.push({ url: link, title, snippet });
-      }
+      const a = $(el).find("a[href^='http']").first();
+      const href = a.attr("href"); const title = $(el).find("h3").first().text().trim(); const snippet = $(el).find(".VwiC3b, span.aCOpRe").first().text().trim();
+      if (href && !href.includes("google.com/search")) results.push({ url: href, title, snippet });
     });
-
     return results;
-  } catch (err) {
-    logger.warn(`[Enrich] Google search failed for "${query}": ${err.message}`);
-    return [];
-  }
+  } catch { return []; }
 }
-
 async function bingSearch(query) {
   try {
-    const resp = await axios.get("https://www.bing.com/search", {
-      params: { q: query, count: 5 },
-      timeout: 10000,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml",
-        "Accept-Language": "en-US,en;q=0.9",
-      },
-    });
-    const $ = cheerio.load(resp.data);
-    const results = [];
-    $("li.b_algo").each((i, el) => {
+    const resp = await axios.get("https://www.bing.com/search", { params: { q: query, count: 5 }, timeout: 10000, headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36" } });
+    const $ = cheerio.load(resp.data || ""); const results = [];
+    $("li.b_algo").each((_, el) => {
       if (results.length >= 5) return false;
-      const link = $(el).find("h2 a").attr("href");
-      const title = $(el).find("h2").text().trim();
-      const snippet = $(el).find(".b_caption p").text().trim();
+      const link = $(el).find("h2 a").attr("href"); const title = $(el).find("h2").text().trim(); const snippet = $(el).find(".b_caption p").text().trim();
       if (link && link.startsWith("http")) results.push({ url: link, title, snippet });
-    });
-    return results;
-  } catch (err) {
-    logger.warn(`[Enrich] Bing search failed for "${query}": ${err.message}`);
-    return [];
-  }
+    }); return results;
+  } catch { return []; }
 }
-
 async function duckDuckGoSearch(query) {
   try {
-    const resp = await axios.get("https://html.duckduckgo.com/html/", {
-      params: { q: query },
-      timeout: 10000,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml",
-      },
-    });
-    const $ = cheerio.load(resp.data);
-    const results = [];
-    $(".result").each((i, el) => {
+    const resp = await axios.get("https://html.duckduckgo.com/html/", { params: { q: query }, timeout: 10000, headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36" } });
+    const $ = cheerio.load(resp.data || ""); const results = [];
+    $(".result").each((_, el) => {
       if (results.length >= 5) return false;
-      const link = $(el).find("a.result__a").attr("href");
-      const title = $(el).find("a.result__a").text().trim();
-      const snippet = $(el).find("a.result__snippet").text().trim();
-      if (link && link.startsWith("http")) results.push({ url: link, title, snippet });
-    });
-    return results;
-  } catch (err) {
-    logger.warn(`[Enrich] DDG search failed for "${query}": ${err.message}`);
-    return [];
-  }
+      const a = $(el).find("a.result__a"); const href = a.attr("href"); const title = a.text().trim(); const snippet = $(el).find(".result__snippet").text().trim();
+      if (href && href.startsWith("http")) results.push({ url: href, title, snippet });
+    }); return results;
+  } catch { return []; }
 }
-
 async function searxngSearch(query) {
-  const base = process.env.SEARXNG_URL;
-  if (!base) return [];
+  const base = process.env.SEARXNG_URL; if (!base) return [];
   try {
-    const resp = await axios.get(`${base.replace(/\/$/, '')}/search`, {
-      params: { q: query, format: 'json' },
-      timeout: 10000,
-    });
-    const items = resp.data?.results || [];
-    return items.slice(0, 5).map(r => ({ url: r.url, title: r.title, snippet: r.content }));
-  } catch (err) {
-    logger.warn(`[Enrich] SearXNG search failed for "${query}": ${err.message}`);
-    return [];
-  }
+    const resp = await axios.get(`${base.replace(/\/$/, "")}/search`, { params: { q: query, format: "json" }, timeout: 10000 });
+    return (resp.data?.results || []).slice(0, 5).map(r => ({ url: r.url, title: r.title, snippet: r.content }));
+  } catch { return []; }
 }
-
-const GENERIC_EMAIL_DOMAINS = new Set([
-  "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com", "icloud.com",
-  "mail.com", "zoho.com", "yandex.com", "protonmail.com", "proton.me", "gmx.com",
-  "mail.ru", "live.com", "msn.com", "googlemail.com", "me.com",
-]);
-
-function buildSearchQueries(row, headers) {
-  const get = (col) => {
-    const idx = headers.indexOf(col);
-    return idx >= 0 ? String(row[idx] || '').trim() : '';
-  };
-  const email = get('EMAIL');
-  const firstName = get('FIRSTNAME');
-  const lastName = get('LASTNAME');
-  const company = get('BUSINESSNAME');
-  const url = get('URL');
-  const context = get('CONTEXT');
-
-  const queries = [];
-  const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
-
-  if (email) {
-    const parts = email.split('@');
-    const domain = parts.length === 2 ? parts[1].toLowerCase().trim() : '';
-    const username = parts[0];
-
-    // Non-generic domain: search the company
-    if (domain && !GENERIC_EMAIL_DOMAINS.has(domain)) {
-      queries.push(`${domain} about us`);
-      queries.push(`${domain} services products`);
-      queries.push(`${domain} contact team`);
-    }
-
-    // Generic domain: search the person
-    if (GENERIC_EMAIL_DOMAINS.has(domain)) {
-      if (fullName) queries.push(`"${fullName}" "${email}" profile`);
-      if (firstName && lastName) queries.push(`"${firstName} ${lastName}" linkedin`);
-      queries.push(`"${email}" profile`);
-    }
-
-    // Always search by email
-    queries.push(`"${email}"`);
-  }
-
-  // Business name search
-  if (company && company !== 'Personal') {
-    const city = get('BUSINESSCITY') || get('CITY');
-    queries.push(city ? `"${company}" "${city}" services` : `"${company}" services about`);
-  }
-
-  // URL direct
-  if (url && url.startsWith('http')) {
-    queries.push(null); // sentinel: scrape directly, no search
-  }
-
-  // First+last name search
-  if (fullName && !email) {
-    queries.push(`"${fullName}" profile`);
-  }
-
-  return [...new Set(queries.filter(q => q !== null))].slice(0, 6);
-}
-
 async function multiSearch(query) {
-  const [g, b, d, s] = await Promise.allSettled([
-    googleSearch(query), bingSearch(query), duckDuckGoSearch(query), searxngSearch(query),
-  ]);
-  const all = [];
-  for (const r of [g, b, d, s]) {
-    if (r.status === 'fulfilled' && Array.isArray(r.value)) all.push(...r.value);
+  const settled = await Promise.allSettled([googleSearch(query), bingSearch(query), duckDuckGoSearch(query), searxngSearch(query)]);
+  const out = []; const seen = new Set();
+  for (const r of settled) {
+    if (r.status !== "fulfilled") continue;
+    for (const item of (r.value || [])) {
+      const u = String(item?.url || ""); if (!u || seen.has(u)) continue; seen.add(u); out.push(item);
+    }
   }
-  // dedupe by url
-  const seen = new Set();
-  const out = [];
-  for (const r of all) {
-    if (!r.url || seen.has(r.url)) continue;
-    seen.add(r.url);
-    out.push(r);
-    if (out.length >= 10) break;
+  return out.slice(0, 10);
+}
+
+function parseJsonLoose(ai, text) {
+  const parsed = ai.parseAiJson(text);
+  if (parsed) return parsed;
+  try {
+    const m = String(text || "").match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+    if (m) return JSON.parse(m[0]);
+  } catch {}
+  return null;
+}
+
+function cleanEmail(v) {
+  const s = String(v || "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)) return "";
+  return s;
+}
+
+async function aiSuggestQueries(ai, row, headers, enrichmentContext, missingTargets = []) {
+  const known = rowKnownData(row, headers);
+  const prompt = `You generate web search queries to enrich a lead/contact/company record.
+Known row data (JSON): ${JSON.stringify(known).slice(0, 4000)}
+Enrichment context/instructions: ${enrichmentContext || "(none)"}
+Still missing or low-confidence targets: ${missingTargets.join(", ") || "(general enrichment)"}
+
+Return ONLY a JSON array of 3 to 6 short, specific search query strings.
+Prioritize finding verifiable identity/company/contact info (including email if missing and verifiable). Do not invent facts.`;
+  try {
+    const text = await ai.generate(prompt, { maxTokens: 600, jsonMode: true });
+    const parsed = parseJsonLoose(ai, text);
+    if (Array.isArray(parsed)) {
+      const qs = parsed.map(x => String(x || "").trim()).filter(Boolean).slice(0, 6);
+      if (qs.length) return qs;
+    }
+  } catch {}
+  return buildHeuristicQueries(row, headers).slice(0, 6);
+}
+
+async function aiExtractRow(ai, row, headers, evidence, enrichmentContext, targetColumns) {
+  const known = rowKnownData(row, headers);
+  const ev = (evidence || []).slice(0, 8).map((e, i) => ({
+    i: i + 1,
+    url: e.url, title: e.title, snippet: e.snippet,
+    description: e.description,
+    text: (e.bodyText || "").slice(0, 1800),
+    internal: (e.internalTexts || []).join(" ").slice(0, 1200)
+  }));
+  const prompt = `You are a precise data enrichment agent. Extract ONLY verifiable information from evidence for this row.
+
+Target columns (fill only if supported): ${targetColumns.join(", ")}
+Known row data: ${JSON.stringify(known).slice(0, 3500)}
+Enrichment context/instructions: ${enrichmentContext || "General enrichment: extract all available verifiable business/personal information."}
+
+Evidence (JSON): ${JSON.stringify(ev).slice(0, 12000)}
+
+Rules:
+- Only fill fields directly supported by known data or evidence. If not verifiable, leave empty.
+- If FIRSTNAME contains "First Last", split into FIRSTNAME and LASTNAME when appropriate.
+- If EMAIL is missing/empty in known data and a verifiable email is found in evidence, include EMAIL.
+- CONTEXT should be a concise 1-3 sentence factual summary when supported.
+- Follow enrichment context priorities when provided.
+- Return ONLY a JSON object with keys from target columns plus "confidence" ("high"|"medium"|"low"|"none") and "missing" (array of target columns still unknown/unverified).
+- When confidence is "none", return empty values for unverified fields.`;
+  try {
+    const text = await ai.generate(prompt, { maxTokens: 2500, jsonMode: true });
+    const parsed = parseJsonLoose(ai, text);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+  } catch {}
+  return { confidence: "none", missing: targetColumns };
+}
+
+async function aiReviewRow(ai, extracted, row, headers, evidence, enrichmentContext, targetColumns) {
+  const known = rowKnownData(row, headers);
+  const prompt = `Review this enrichment extraction for correctness and unsupported claims.
+Target columns: ${targetColumns.join(", ")}
+Known row data: ${JSON.stringify(known).slice(0, 2500)}
+Enrichment context: ${enrichmentContext || "(none)"}
+Evidence snippets: ${JSON.stringify((evidence||[]).slice(0,5).map(e=>({url:e.url,title:e.title,text:(e.bodyText||"").slice(0,500)}))).slice(0,5000)}
+Extraction: ${JSON.stringify(extracted).slice(0,4000)}
+
+Return ONLY a JSON object with the same target column keys plus "confidence" and "missing". Remove any value not supported by evidence/known data. Keep empty string for unknown.`;
+  try {
+    const text = await ai.generate(prompt, { maxTokens: 1800, jsonMode: true });
+    const parsed = parseJsonLoose(ai, text);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+  } catch {}
+  return extracted;
+}
+
+function normalizeExtracted(extracted, targetColumns, headers) {
+  const out = { confidence: String(extracted?.confidence || "none").toLowerCase(), missing: Array.isArray(extracted?.missing) ? extracted.missing : [] };
+  for (const col of targetColumns) {
+    let v = extracted?.[col] ?? extracted?.[col.toLowerCase()] ?? extracted?.[col.toUpperCase()] ?? "";
+    if (col === "EMAIL") v = cleanEmail(v) || (String(v || "").trim() ? cleanEmail(String(v)) : "");
+    out[col] = typeof v === "string" ? v.trim() : (v == null ? "" : String(v).trim());
+  }
+  if (!targetColumns.includes("EMAIL") && headers.includes("EMAIL")) {
+    const ev = cleanEmail(extracted?.EMAIL || extracted?.email || "");
+    if (ev) out.EMAIL = ev;
+  }
+  if (!["high","medium","low","none"].includes(out.confidence)) out.confidence = "low";
+  if (out.confidence === "none") {
+    for (const col of targetColumns) {
+      if (col === "FIRSTNAME" || col === "LASTNAME") continue;
+      out[col] = "";
+    }
   }
   return out;
 }
 
-async function deepScrape(url) {
-  try {
-    const resp = await axios.get(url, {
-      timeout: 10000,
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-      },
-      maxRedirects: 5,
-    });
-    const $ = cheerio.load(resp.data);
-    $("script, style, noscript, nav, footer, header, aside").remove();
-    const title = $("title").text().trim() || $("meta[property='og:title']").attr("content") || "";
-    const description = $("meta[name='description']").attr("content") || $("meta[property='og:description']").attr("content") || "";
-    const main = $("main").length ? $("main") : $("article").length ? $("article") : $("body");
-    const bodyText = main.text().replace(/\s+/g, " ").trim().slice(0, 2000);
-
-    // internal links
-    const internalLinks = [];
-    const baseHost = new URL(url).hostname;
-    $("a[href]").each((i, el) => {
-      if (internalLinks.length >= 5) return false;
-      const href = $(el).attr("href");
-      if (!href) return;
-      try {
-        const u = new URL(href, url);
-        if (u.hostname === baseHost && /about|contact|team|company|services|who-we-are|people/i.test(u.pathname)) {
-          if (!internalLinks.includes(u.href)) internalLinks.push(u.href);
-        }
-      } catch {}
-    });
-
-    // fetch up to 3 internal links in parallel
-    const internalTexts = [];
-    if (internalLinks.length > 0) {
-      const fetches = internalLinks.slice(0, 3).map(async (il) => {
-        try {
-          const r = await axios.get(il, { timeout: 8000, headers: { "User-Agent": "Mozilla/5.0" } });
-          const $2 = cheerio.load(r.data);
-          $2("script, style, noscript, nav, footer, header").remove();
-          return $2("body").text().replace(/\s+/g, " ").trim().slice(0, 1000);
-        } catch { return ""; }
-      });
-      const results = await Promise.allSettled(fetches);
-      for (const r of results) {
-        if (r.status === 'fulfilled' && r.value) internalTexts.push(r.value);
-      }
-    }
-
-    return { url, title, description, bodyText, internalTexts, status: resp.status };
-  } catch (err) {
-    logger.warn(`[Enrich] deepScrape failed for ${url}: ${err.message}`);
-    return null;
-  }
+function getTargetColumns(headers) {
+  const preferred = ["FIRSTNAME","LASTNAME","JOBTITLE","BUSINESSNAME","BUSINESSCITY","BUSINESSSTATE","BUSINESSCOUNTRY","BUSINESSZIPCODE","BUSINESSPHONE","BUSINESSEMAIL","EMAIL","CONTEXT","SOCIALUSERNAME","SOCIALPLATFORM","URL","WEBSITE","ADDRESS","CITY","STATE","COUNTRY","ZIPCODE","PHONE"];
+  const targets = preferred.filter(c => headers.includes(c));
+  // ensure some core targets exist if columns present; if not, still allow EMAIL/CONTEXT if present
+  if (!targets.includes("EMAIL") && headers.includes("EMAIL")) targets.unshift("EMAIL");
+  if (!targets.includes("CONTEXT") && headers.includes("CONTEXT")) targets.push("CONTEXT");
+  return Array.from(new Set(targets));
 }
 
-async function analyzeBatchWithGemini_OLD(scrapeResults) {
-  if (scrapeResults.length === 0) return [];
+function isRowEnrichedFinal(row, headers) {
+  const s = String(getCell(row, headers, "enrichmentStatus") || "").toLowerCase();
+  return s === "enriched" || s === "no_data" || s === "skipped";
+}
 
-  const batchContent = scrapeResults.map((r, i) => {
-    const parts = [r.title, r.description, r.bodyText?.slice(0, 800)].filter(Boolean).join(". ");
-    return `[${i + 1}] ${parts}`;
-  }).join("\n\n");
+async function enrichOneRow({ row, headers, ai, enrichmentContext, scrapeConcurrency }) {
+  const targetColumns = getTargetColumns(headers);
+  if (!hasSearchableData(row, headers)) {
+    return { status: "no_data", reason: "no_searchable_data", updated: false };
+  }
 
-  const prompt = `Analyze these ${scrapeResults.length} webpage contents and extract useful information for cold outreach.
+  const knownUrl = getCell(row, headers, "URL") || getCell(row, headers, "WEBSITE");
+  let evidence = [];
+  if (knownUrl) {
+    try {
+      const u = knownUrl.startsWith("http") ? knownUrl : `https://${knownUrl}`;
+      const scraped = await deepScrape(u);
+      if (scraped) evidence.push(scraped);
+    } catch {}
+  }
 
-${batchContent}
+  let queries = await aiSuggestQueries(ai, row, headers, enrichmentContext, []);
+  let extracted = null;
+  let reviewed = null;
 
-Return a JSON array with one object per webpage (same order):
-[{"summary": "2-3 sentence summary", "industry": "detected industry", "services": "key services/products"}, ...]`;
-
-  try {
-    const ai = new MultiProviderAI();
-    const text = await ai.generate(prompt, { maxTokens: 4000, jsonMode: true });
-    const parsed = ai.parseAiJson(text);
-    if (Array.isArray(parsed)) {
-      const clean = parsed.map(r => r && typeof r === 'object'
-        ? { summary: ai.sanitizeAiPlainText(String(r.summary || ''), 2000), industry: ai.sanitizeAiPlainText(String(r.industry || ''), 200), services: ai.sanitizeAiPlainText(String(r.services || ''), 2000) }
-        : null).filter(r => r && (r.summary || r.industry || r.services));
-      if (clean.length) return clean;
-    }
-    if (typeof ai._salvageJsonArray === 'function') {
-      const salvaged = ai._salvageJsonArray(text);
-      if (Array.isArray(salvaged) && salvaged.length) {
-        return salvaged.map(r => ({ summary: ai.sanitizeAiPlainText(String(r.summary || ''), 2000), industry: ai.sanitizeAiPlainText(String(r.industry || ''), 200), services: ai.sanitizeAiPlainText(String(r.services || ''), 2000) })).filter(r => r.summary || r.industry || r.services);
+  for (let round = 0; round < 3; round++) { // initial + up to 2 refinements
+    const qset = (queries || []).slice(0, 6);
+    const searchSettled = await Promise.allSettled(qset.map(q => multiSearch(q)));
+    const found = [];
+    const seen = new Set(evidence.map(e => e.url));
+    for (const s of searchSettled) {
+      if (s.status !== "fulfilled") continue;
+      for (const item of (s.value || [])) {
+        if (!item?.url || seen.has(item.url)) continue;
+        seen.add(item.url); found.push(item);
       }
     }
-  } catch (err) {
-    logger.warn(`[Enrich] Batch AI analysis failed: ${err.message}`);
+    const toScrape = found.slice(0, Math.max(4, Math.min(8, scrapeConcurrency || 6)));
+    const scrapedSettled = await Promise.allSettled(toScrape.map(it => deepScrape(it.url)));
+    for (let i = 0; i < scrapedSettled.length; i++) {
+      const r = scrapedSettled[i];
+      if (r.status === "fulfilled" && r.value) {
+        evidence.push({ ...r.value, snippet: toScrape[i]?.snippet || "", title: r.value.title || toScrape[i]?.title || "" });
+      }
+    }
+    // cap evidence
+    evidence = evidence.slice(0, 10);
+
+    extracted = normalizeExtracted(await aiExtractRow(ai, row, headers, evidence, enrichmentContext, targetColumns), targetColumns, headers);
+    reviewed = normalizeExtracted(await aiReviewRow(ai, extracted, row, headers, evidence, enrichmentContext, targetColumns), targetColumns, headers);
+
+    const conf = reviewed.confidence || "none";
+    const missing = Array.isArray(reviewed.missing) ? reviewed.missing.filter(Boolean) : [];
+    const needsEmail = headers.includes("EMAIL") && !getCell(row, headers, "EMAIL") && !cleanEmail(reviewed.EMAIL || "");
+    const low = conf === "low" || conf === "none";
+    if (round >= 2 || (!low && !needsEmail)) break;
+    // refine: ask AI for alternative queries
+    const missingTargets = Array.from(new Set([...missing, ...(needsEmail ? ["EMAIL"] : [])]));
+    queries = await aiSuggestQueries(ai, row, headers, enrichmentContext, missingTargets);
+    if (!queries || queries.length === 0) break;
   }
-  return [];
+
+  const finalRes = reviewed || extracted || { confidence: "none" };
+  let updated = false;
+  let anyValue = false;
+  for (const col of targetColumns) {
+    const val = String(finalRes[col] || "").trim();
+    if (!val) continue;
+    if (col === "EMAIL") {
+      const existing = getCell(row, headers, "EMAIL");
+      if (!existing && cleanEmail(val)) { setCell(row, headers, "EMAIL", cleanEmail(val)); updated = true; anyValue = true; }
+      continue;
+    }
+    const existing = getCell(row, headers, col);
+    if (!existing) { setCell(row, headers, col, val); updated = true; anyValue = true; }
+    else if (col === "CONTEXT" && val.length > existing.length + 20) { setCell(row, headers, col, val); updated = true; anyValue = true; }
+  }
+  // allow writing discovered email even if not in targetColumns list but header exists
+  if (headers.includes("EMAIL") && !getCell(row, headers, "EMAIL")) {
+    const evEmail = cleanEmail(finalRes.EMAIL || finalRes.email || "");
+    if (evEmail) { setCell(row, headers, "EMAIL", evEmail); updated = true; anyValue = true; }
+  }
+
+  const status = (finalRes.confidence === "none" && !anyValue) ? "no_data" : "enriched";
+  return { status, updated, confidence: finalRes.confidence || "none" };
+}
+
+async function runEnrichmentRange({ rows, headers, start, end, campaignId, enrichmentContext, log, fileId, onCheckpoint, stageUserIdForUsage }) {
+  ensureColumn(headers, rows, "enrichmentStatus");
+  const ai = new MultiProviderAI();
+  let processed = 0, enriched = 0, noData = 0, skipped = 0;
+
+  for (let i = start; i < end; i++) {
+    const idx = i + 1; // header offset
+    if (idx >= rows.length) break;
+    const row = rows[idx];
+
+    // do not pause mid-stage for validate/enrich/personalize (policy)
+    // resumability: skip finalized rows
+    if (isRowEnrichedFinal(row, headers)) { skipped++; continue; }
+
+    try {
+      const res = await enrichOneRow({ row, headers, ai, enrichmentContext, scrapeConcurrency: 6 });
+      setCell(row, headers, "enrichmentStatus", res.status);
+      if (res.status === "enriched") enriched++; else noData++;
+      processed++;
+      log.info(`[Row ${i}] enrichment ${res.status} conf=${res.confidence || "n/a"}`);
+    } catch (e) {
+      // per-row isolation: mark no_data for now? better to leave unfinalized so resume can retry; but to avoid blocking completion forever on hard errors, mark no_data after logging
+      log.warn(`[Row ${i}] enrichment error: ${e.message}`);
+      setCell(row, headers, "enrichmentStatus", "no_data");
+      noData++; processed++;
+    }
+
+    if (processed % 5 === 0) {
+      if (onCheckpoint) await onCheckpoint(i + 1, { processed, enriched, noData, skipped });
+      else if (fileId) await mergeAndFlush(campaignId, 'enrich', rows, fileId);
+    }
+  }
+
+  // final checkpoint flush
+  if (onCheckpoint) await onCheckpoint(end, { processed, enriched, noData, skipped });
+  else if (fileId) await mergeAndFlush(campaignId, 'enrich', rows, fileId);
+
+  return { processed, enriched, noData, skipped };
+}
+
+function isRangeFullyEnriched(rows, headers, start, end) {
+  for (let i = start; i < end; i++) {
+    const idx = i + 1;
+    if (idx >= rows.length) break;
+    if (!isRowEnrichedFinal(rows[idx], headers)) return false;
+  }
+  return true;
+}
+
+async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
+  await updateCampaignSettings(campaignId, { enrichmentStatus: "processing" });
+  let enrichmentContext = '';
+  try {
+    const cs = await getCampaignSettings(campaignId);
+    enrichmentContext = cs?.settings?.enrichmentContext || cs?.enrichmentContext || '';
+  } catch {}
+
+  const fileId = extractFileId(fileUrl);
+  if (!fileId) return NextResponse.json({ success: false, error: "Invalid fileUrl or Drive file ID" }, { status: 400 });
+
+  log.info(` Downloading CSV file: ${fileId}`);
+  const dl = await downloadCsvText(fileId);
+  if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
+  let csvContent = dl.content;
+  if (csvContent.charCodeAt(0) === 0xFEFF) csvContent = csvContent.slice(1);
+  const rows = parseCSV(csvContent);
+  if (rows.length <= 1) throw new Error("CSV empty or no data rows");
+  const headers = rows[0].map(normHeader);
+  rows[0] = headers;
+  ensureColumn(headers, rows, "enrichmentStatus");
+  const dataRows = rows.slice(1);
+
+  // quota/limits
+  const campaignLimits = await getCampaignLimits();
+  if (!(campaignLimits.enrichLimit > 0)) {
+    return NextResponse.json({ success: true, limitReached: true, message: "Enrichment blocked: enrichBatchLimit is 0 - set it in the SETTINGS sheet" });
+  }
+  const maxRows = Math.min(dataRows.length, campaignLimits.enrichLimit);
+
+  // multi-server dispatch only if nothing processed yet (simple heuristic)
+  if (await isMultiServerEnabled()) {
+    const noneProcessed = dataRows.slice(0, maxRows).every(r => !String(getCell(r, headers, "enrichmentStatus") || "").trim());
+    if (noneProcessed) {
+      const dispatchResult = await dispatchToServers(campaignId, 'enrich', fileUrl, maxRows);
+      if (dispatchResult) {
+        return NextResponse.json({ success: true, processing: true, dispatched: true, servers: dispatchResult.servers });
+      }
+    }
+  }
+
+  const stats = await runEnrichmentRange({
+    rows, headers, start: 0, end: maxRows, campaignId, enrichmentContext, log, fileId,
+  });
+
+  const complete = isRangeFullyEnriched(rows, headers, 0, maxRows);
+  if (!complete) {
+    await updateCampaignSettings(campaignId, { enrichmentStatus: "processing" });
+    return NextResponse.json({ success: true, processing: true, completed: false, message: "Enrichment incomplete - remaining rows pending", stats });
+  }
+
+  await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
+  if (stageUserId && maxRows > 0) {
+    try { await updateUserUsage(stageUserId, "enrichUsage", maxRows); } catch (e) { log.warn(`[user-limit] enrichUsage increment failed: ${e.message}`); }
+  }
+  return NextResponse.json({ success: true, completed: true, message: "Campaign enrichment completed", total: maxRows, stats });
+}
+
+async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
+  await updateCampaignSettings(campaignId, { enrichmentStatus: "processing" });
+  let enrichmentContext = '';
+  try { const cs = await getCampaignSettings(campaignId); enrichmentContext = cs?.settings?.enrichmentContext || cs?.enrichmentContext || ''; } catch {}
+
+  const myAssignment = await findMyAssignment(campaignId, 'enrich');
+  if (!myAssignment) return NextResponse.json({ success: false, error: "No assignment found for this server" }, { status: 400 });
+  await updateMyAssignment(campaignId, 'enrich', { status: 'running' });
+
+  const fileId = extractFileId(fileUrl);
+  if (!fileId) return NextResponse.json({ success: false, error: "Invalid fileUrl or Drive file ID" }, { status: 400 });
+  const dl = await downloadCsvText(fileId);
+  if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
+  let csvContent = dl.content; if (csvContent.charCodeAt(0) === 0xFEFF) csvContent = csvContent.slice(1);
+  const rows = parseCSV(csvContent);
+  if (rows.length <= 1) throw new Error("CSV empty or no data rows");
+  const headers = rows[0].map(normHeader); rows[0] = headers; ensureColumn(headers, rows, "enrichmentStatus");
+
+  const rowStart = Math.max(0, parseInt(serverBatch?.rowStart || 0));
+  const rowEnd = Math.min(rows.length - 1, parseInt(serverBatch?.rowEnd || (rows.length - 1)));
+
+  try {
+    const stats = await runEnrichmentRange({
+      rows, headers, start: rowStart, end: rowEnd, campaignId, enrichmentContext, log, fileId,
+      onCheckpoint: async (processedUpTo, s) => {
+        await updateMyAssignment(campaignId, 'enrich', { processedUpTo, ...s });
+        await mergeAndFlush(campaignId, 'enrich', rows, fileId);
+      }
+    });
+    const completeRange = isRangeFullyEnriched(rows, headers, rowStart, rowEnd);
+    await updateMyAssignment(campaignId, 'enrich', { status: completeRange ? 'completed' : 'running', processedUpTo: rowEnd });
+    if (completeRange) {
+      const allDone = await checkAllComplete(campaignId, 'enrich');
+      if (allDone) {
+        // verify whole file complete before marking
+        const wholeComplete = isRangeFullyEnriched(rows, headers, 0, rows.length - 1);
+        if (wholeComplete) {
+          await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
+          try { const selfUrl = getSelfUrlWithFallback(); fetch(`${selfUrl}/campaign/pipeline-orchestrator`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaignId }) }).catch(()=>{}); } catch {}
+        } else {
+          await updateCampaignSettings(campaignId, { enrichmentStatus: "processing" });
+        }
+      }
+    }
+    return NextResponse.json({ success: true, completed: completeRange, message: `Worker enrichment ${completeRange ? 'completed' : 'in progress'} for rows ${rowStart}-${rowEnd - 1}`, stats });
+  } catch (error) {
+    await updateMyAssignment(campaignId, 'enrich', { status: 'failed', error: error.message });
+    throw error;
+  }
 }
 
 export async function POST(request) {
   let log = logger.child({ campaignId: null, stage: 'enrich' });
+  let campaignId;
   try {
     await identifySelfFromHost(request.headers.get('host'));
     const body = await request.json();
-    const { campaignId, fileUrl, serverBatch } = body;
+    const { fileUrl, serverBatch } = body;
+    ({ campaignId } = body);
 
-    if (!campaignId) {
-      return NextResponse.json({ success: false, error: "Missing campaignId" }, { status: 400 });
+    if (!campaignId || !fileUrl) {
+      return NextResponse.json({ success: false, error: "Missing campaignId or fileUrl" }, { status: 400 });
     }
 
     log = logger.child({ campaignId, stage: 'enrich' });
-    log.info(`Received enrichment request${serverBatch ? ` [worker rowStart=${serverBatch.rowStart} rowEnd=${serverBatch.rowEnd}]` : ''}`);
+    log.info(`Received enrichment request${serverBatch ? ` [worker]` : ''}`);
 
-    // USER tier — monthly enrichUsage gate (GAS sends full settings; our own
-    // orchestrator sends only campaignId → fall back to the campaign row).
+    // USER tier — monthly enrichUsage gate
     let stageUserId = body.settings?.userId || body.userId || null;
-    if (!stageUserId) {
-      try { stageUserId = (await getCampaignSettings(campaignId))?.userId || null; } catch (e) { /* fail open */ }
-    }
+    if (!stageUserId) { try { stageUserId = (await getCampaignSettings(campaignId))?.userId || null; } catch {} }
     if (stageUserId) {
       const quota = await checkUserQuota(stageUserId, { keys: ["enrichUsage"] });
       if (!quota.allowed) {
-        log.info(`[user-limit] ${quota.reason} — blocking enrichment for ${campaignId}`);
         await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
         return NextResponse.json({ success: true, limitReached: true, userMonthlyLimit: true, message: `Enrichment blocked: ${quota.reason}` });
       }
     }
 
-    if (serverBatch) {
-      return await handleWorkerMode(campaignId, fileUrl, serverBatch, log);
-    }
-
-    if (!fileUrl) {
-      return NextResponse.json({ success: false, error: "Missing fileUrl" }, { status: 400 });
-    }
-
+    if (serverBatch) return await handleWorkerMode(campaignId, fileUrl, serverBatch, log);
     return await handleCoordinatorMode(campaignId, fileUrl, log, stageUserId);
-
   } catch (error) {
     (log || logger).error(`Error: ${error.message}`, { stack: error.stack });
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    try { if (campaignId) await updateCampaignSettings(campaignId, { enrichmentStatus: "processing" }); } catch {}
+    return NextResponse.json({ success: false, error: error.message, processing: true }, { status: 500 });
   }
-}
-
-async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
-  let wasPaused = false;
-  log.info(`Received enrichment request for campaign: ${campaignId}`);
-  let enrichmentContext = '';
-  try {
-    const cs = await getCampaignSettings(campaignId);
-    enrichmentContext = cs?.settings?.enrichmentContext || cs?.enrichmentContext || '';
-  } catch (e) { /* ignore */ }
-
-  const fileId = extractFileId(fileUrl);
-  if (!fileId) {
-    return NextResponse.json({ success: false, error: "Invalid fileUrl or Drive file ID" }, { status: 400 });
-  }
-
-  // Read batch limits from SETTINGS, falling back to performance level presets
-  const perfLevelSetting = await getSetting('performanceLevel');
-  const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
-
-  const enrichBatchSetting = await getSetting('enrichBatchLimit');
-  const ENRICH_BATCH_SIZE = parseInt(enrichBatchSetting?.value1) || perfPresets.enrichBatchLimit;
-  const searchBatchSetting = await getSetting('enrichSearchBatchLimit');
-  const SEARCH_BATCH_SIZE = parseInt(searchBatchSetting?.value1) || perfPresets.enrichSearchBatchLimit;
-  const aiBatchSetting = await getSetting('enrichAiBatchLimit');
-  const AI_BATCH_SIZE = parseInt(aiBatchSetting?.value1) || perfPresets.enrichAiBatchLimit;
-  const concurrencySetting = await getSetting('enrichScrapeConcurrency');
-  const SCRAPE_CONCURRENCY = parseInt(concurrencySetting?.value1) || perfPresets.enrichScrapeConcurrency;
-
-  log.info(`enrich=${ENRICH_BATCH_SIZE}, search=${SEARCH_BATCH_SIZE}, ai=${AI_BATCH_SIZE}, concurrency=${SCRAPE_CONCURRENCY}, level=${perfLevelSetting?.value1 || 'balanced'}`);
-
-  // 1. Download CSV
-  log.info(`Downloading CSV file: ${fileId}`);
-  const dl = await downloadCsvText(fileId);
-  if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
-  const csvContent = dl.content;
-
-  const cleanContent = csvContent.charCodeAt(0) === 0xFEFF ? csvContent.slice(1) : csvContent;
-
-  // 2. Parse and find columns
-  const parsedRows = parseCSV(cleanContent);
-  if (parsedRows.length === 0) throw new Error("CSV file is empty");
-
-  const rawHeaders = parsedRows[0];
-  const headers = rawHeaders.map(h => h.trim().toUpperCase());
-
-  const emailIdx = headers.indexOf("EMAIL");
-  if (emailIdx === -1) throw new Error("EMAIL column not found");
-
-  const firstNameIdx = headers.indexOf("FIRSTNAME");
-  const companyIdx = headers.indexOf("BUSINESSNAME");
-  const urlIdx = headers.indexOf("URL");
-  const contextIdx = headers.indexOf("CONTEXT");
-  const validationIdx = headers.indexOf("validation");
-  const enrichStatusIdx = headers.findIndex(h => h.toLowerCase().trim() === "enrichmentstatus");
-
-  const dataRows = parsedRows.slice(1);
-
-  // Per-run cap from SETTINGS (enrichBatchLimit) — strict: missing key = block
-  const campaignLimits = await getCampaignLimits();
-  if (!(campaignLimits.enrichLimit > 0)) {
-    log.info(`enrichBatchLimit is 0 or unavailable, blocking enrichment - set enrichBatchLimit in the SETTINGS sheet`);
-    return NextResponse.json({ success: true, limitReached: true, message: "Enrichment blocked: enrichBatchLimit is 0 - set it in the SETTINGS sheet" });
-  }
-  if (dataRows.length > campaignLimits.enrichLimit) {
-    dataRows.length = campaignLimits.enrichLimit;
-    log.info(`enrichLimit (${campaignLimits.enrichLimit}) applied: capped to ${dataRows.length} rows`);
-  }
-  log.info(`Processing ${dataRows.length} rows`);
-
-  const multiEnabled = await isMultiServerEnabled();
-  if (multiEnabled) {
-    const dispatchResult = await dispatchToServers(campaignId, 'enrich', fileUrl, dataRows.length);
-    if (dispatchResult) {
-      return NextResponse.json({ success: true, dispatched: true, servers: dispatchResult.servers });
-    }
-  }
-
-  // 3. No string-based inference — AI handles name/company cleanup from
-  //    whatever data is available. This keeps enrichment general across
-  //    arbitrary CSV structures.
-
-  // 4. URL Enrichment (batched)
-  let urlScrapedCount = 0;
-  const scrapeCache = new Map();
-  const rowsWithUrl = dataRows.filter(r => {
-    const url = r[urlIdx]?.trim();
-    return url && url.startsWith("http");
-  });
-
-  const enrichBatchCount = Math.ceil(rowsWithUrl.length / ENRICH_BATCH_SIZE);
-  for (let batchIdx = 0; batchIdx < enrichBatchCount; batchIdx++) {
-    if (await isCampaignPaused(campaignId)) {
-      log.info(`Campaign paused at URL batch ${batchIdx + 1}/${enrichBatchCount}`);
-      break;
-    }
-
-    const start = batchIdx * ENRICH_BATCH_SIZE;
-    const end = Math.min(start + ENRICH_BATCH_SIZE, rowsWithUrl.length);
-    const batch = rowsWithUrl.slice(start, end);
-
-    // Scrape with concurrency limit to prevent rate limiting
-    for (let ci = 0; ci < batch.length; ci += SCRAPE_CONCURRENCY) {
-      const chunk = batch.slice(ci, ci + SCRAPE_CONCURRENCY);
-      const scrapePromises = chunk.map(async (row) => {
-        const url = row[urlIdx]?.trim();
-        if (scrapeCache.has(url)) {
-          const cached = scrapeCache.get(url);
-          if (cached && contextIdx !== -1) row[contextIdx] = sanitizeForCsv(cached);
-          return;
-        }
-
-        const result = await scrapeUrl(url);
-        if (result) {
-          let contextValue = null;
-          const parts = [];
-          if (result.title) parts.push(`Page: ${result.title}`);
-          if (result.description) parts.push(result.description);
-          contextValue = parts.join(". ") || "";
-
-          if (contextIdx !== -1) row[contextIdx] = sanitizeForCsv(contextValue);
-          scrapeCache.set(url, contextValue);
-          urlScrapedCount++;
-          log.info(`[Row scrape] ${url}: ${result.title || 'no title'} (${contextValue.length} chars)`);
-        } else {
-          log.info(`[Row scrape] ${url}: no result`);
-        }
-      });
-      await Promise.allSettled(scrapePromises);
-      if (ci + SCRAPE_CONCURRENCY < batch.length) {
-        await new Promise(r => setTimeout(r, 200));
-      }
-    }
-
-    // Live flush
-    try {
-      await uploadCsvText(fileId, stringifyCSV(parsedRows));
-    } catch (flushErr) {
-      log.warn(` Live flush failed at batch ${batchIdx + 1}: ${flushErr.message}`);
-    }
-
-    log.info(` URL batch ${batchIdx + 1}/${enrichBatchCount} complete (${urlScrapedCount} scraped)`);
-  }
-
-  // 5. Google Search Fallback (rows without URL, batched)
-  let searchFoundCount = 0;
-  const rowsWithoutUrl = dataRows.filter(r => {
-    if (enrichStatusIdx !== -1 && r[enrichStatusIdx]?.trim() === "enriched") return false;
-    const url = r[urlIdx]?.trim();
-    const email = r[emailIdx]?.trim();
-    const context = r[contextIdx]?.trim();
-    return email && (!url || !url.startsWith("http")) && (!context || context.length < 10);
-  });
-
-  const searchBatchCount = Math.ceil(rowsWithoutUrl.length / SEARCH_BATCH_SIZE);
-  for (let batchIdx = 0; batchIdx < searchBatchCount; batchIdx++) {
-    if (await isCampaignPaused(campaignId)) {
-      log.info(` Campaign paused at search batch ${batchIdx + 1}/${searchBatchCount}`);
-      break;
-    }
-
-    const start = batchIdx * SEARCH_BATCH_SIZE;
-    const end = Math.min(start + SEARCH_BATCH_SIZE, rowsWithoutUrl.length);
-    const batch = rowsWithoutUrl.slice(start, end);
-
-    for (const row of batch) {
-      const email = row[emailIdx]?.trim();
-      if (!email) continue;
-
-      const queries = buildSearchQueries(row, headers);
-      const allResults = [];
-      for (const q of queries) {
-        const results = await multiSearch(q);
-        allResults.push(...results);
-        await new Promise(r => setTimeout(r, 300));
-      }
-
-      const seen = new Set();
-      const uniqueResults = [];
-      for (const r of allResults) {
-        if (!r.url || seen.has(r.url)) continue;
-        seen.add(r.url);
-        uniqueResults.push(r);
-        if (uniqueResults.length >= 10) break;
-      }
-
-      const scrapePromises = uniqueResults.slice(0, 8).map(r => deepScrape(r.url));
-      const scrapeResults = await Promise.allSettled(scrapePromises);
-      const scraped = [];
-      for (let i = 0; i < scrapeResults.length; i++) {
-        const sr = scrapeResults[i];
-        if (sr.status === 'fulfilled' && sr.value) {
-          scraped.push({
-            ...sr.value,
-            knownData: {
-              email,
-              firstName: firstNameIdx !== -1 ? row[firstNameIdx]?.trim() : '',
-              lastName: headers.indexOf('LASTNAME') >= 0 ? row[headers.indexOf('LASTNAME')]?.trim() : '',
-              company: companyIdx !== -1 ? row[companyIdx]?.trim() : '',
-              url: urlIdx !== -1 ? row[urlIdx]?.trim() : '',
-            },
-          });
-        }
-      }
-
-      if (scraped.length > 0) {
-        const aiResults = await analyzeBatchWithAI(scraped, ['FIRSTNAME', 'LASTNAME', 'JOBTITLE', 'BUSINESSNAME', 'BUSINESSCITY', 'BUSINESSSTATE', 'BUSINESSCOUNTRY', 'CONTEXT', 'SOCIALUSERNAME', 'SOCIALPLATFORM', 'EMAIL'], enrichmentContext);
-        const reviewed = await reviewBatchWithAI(aiResults, scraped);
-
-        const bestResult = reviewed && reviewed.length > 0 ? reviewed[0] : null;
-        if (bestResult) {
-          // Dynamic write-back: map every AI-returned key to a matching CSV column
-          for (const [aiKey, val] of Object.entries(bestResult)) {
-            if (aiKey === 'confidence') continue;
-            if (!val || String(val).trim() === '') continue;
-            const ci = headers.indexOf(String(aiKey).toUpperCase().trim());
-            if (ci === -1) continue;
-            row[ci] = sanitizeForCsv(String(val));
-          }
-          if (enrichStatusIdx !== -1) {
-            row[enrichStatusIdx] = (bestResult.confidence === 'none') ? 'no_data' : 'enriched';
-          }
-          searchFoundCount++;
-          log.info(`[Row search] ${email}: enriched (confidence=${bestResult.confidence})`);
-        } else {
-          log.info(`[Row search] ${email}: no results`);
-          if (enrichStatusIdx !== -1) row[enrichStatusIdx] = 'no_data';
-        }
-      } else {
-        log.info(`[Row search] ${email}: no scrape results`);
-        if (enrichStatusIdx !== -1) row[enrichStatusIdx] = 'no_data';
-      }
-
-      await new Promise(r => setTimeout(r, 500));
-    }
-
-    // Live flush
-    try {
-      await uploadCsvText(fileId, stringifyCSV(parsedRows));
-    } catch (flushErr) {
-      log.warn(` Live flush failed at search batch ${batchIdx + 1}: ${flushErr.message}`);
-    }
-
-    log.info(` Search batch ${batchIdx + 1}/${searchBatchCount} complete (${searchFoundCount} found)`);
-  }
-
-  // 6. Batch AI Analysis (on scraped content)
-  const rowsNeedingAnalysis = dataRows.filter(r => {
-    if (enrichStatusIdx !== -1 && r[enrichStatusIdx]?.trim() === "enriched") return false;
-    const context = r[contextIdx]?.trim();
-    return context && context.length > 10 && !context.includes("Industry:");
-  });
-
-  const aiBatchCount = Math.ceil(rowsNeedingAnalysis.length / AI_BATCH_SIZE);
-  for (let batchIdx = 0; batchIdx < aiBatchCount; batchIdx++) {
-    if (await isCampaignPaused(campaignId)) { wasPaused = true; break; }
-
-    const start = batchIdx * AI_BATCH_SIZE;
-    const end = Math.min(start + AI_BATCH_SIZE, rowsNeedingAnalysis.length);
-    const batch = rowsNeedingAnalysis.slice(start, end);
-
-    const scrapeResults = batch.map(row => ({
-      title: "",
-      description: row[contextIdx]?.trim() || "",
-      bodyText: ""
-    }));
-
-    const targetCols = ['FIRSTNAME', 'LASTNAME', 'JOBTITLE', 'BUSINESSNAME', 'BUSINESSCITY', 'BUSINESSSTATE', 'BUSINESSCOUNTRY', 'CONTEXT', 'SOCIALUSERNAME', 'SOCIALPLATFORM'];
-let aiResults = await analyzeBatchWithAI(scrapeResults, targetCols, enrichmentContext);
-
-    // Dynamic batch reduction: if AI fails, retry with half batch
-    if (!aiResults || aiResults.length === 0) {
-      const halfSize = Math.ceil(scrapeResults.length / 2);
-      if (halfSize >= 2) {
-        log.warn(` AI batch failed, retrying with half size (${halfSize})`);
-        const halfResults = scrapeResults.slice(0, halfSize);
-        const retryResults = await analyzeBatchWithAI(halfResults, targetCols, enrichmentContext);
-        if (retryResults && retryResults.length > 0) {
-          aiResults = retryResults;
-          for (let i = 0; i < Math.min(halfSize, batch.length); i++) {
-            const aiResult = retryResults[i];
-            if (aiResult) {
-              const enriched = [
-                aiResult.summary,
-                aiResult.industry ? `Industry: ${aiResult.industry}` : "",
-                aiResult.services ? `Services: ${aiResult.services}` : ""
-              ].filter(Boolean).join(". ");
-              if (enriched) batch[i][contextIdx] = sanitizeForCsv(enriched);
-            }
-          }
-          log.info(` AI retry succeeded for ${halfSize} items`);
-          continue;
-        }
-      }
-    }
-
-    for (let i = 0; i < batch.length; i++) {
-      const aiResult = aiResults[i];
-      if (aiResult) {
-        let anyFilled = false;
-        for (const [aiKey, val] of Object.entries(aiResult)) {
-          if (aiKey === 'confidence') continue;
-          if (!val || String(val).trim() === '') continue;
-          const ci = headers.indexOf(String(aiKey).toUpperCase().trim());
-          if (ci === -1) continue;
-          batch[i][ci] = sanitizeForCsv(String(val));
-          anyFilled = true;
-        }
-        if (contextIdx !== -1 && !(batch[i][contextIdx] || '').trim()) {
-          const parts = [aiResult.summary, aiResult.industry ? `Industry: ${aiResult.industry}` : '', aiResult.services ? `Services: ${aiResult.services}` : ''].filter(Boolean);
-          if (parts.length) { batch[i][contextIdx] = sanitizeForCsv(parts.join('. ')); anyFilled = true; }
-        }
-        const reviewed = await reviewBatchWithAI([aiResult], [batch[i]]);
-        if (reviewed && reviewed[0]) {
-          for (const [aiKey, colName] of Object.entries(colMap)) {
-            const ci = headers.indexOf(colName);
-            if (ci === -1) continue;
-            const val = reviewed[0][aiKey];
-            if (val && String(val).trim() !== '') {
-              batch[i][ci] = sanitizeForCsv(String(val));
-            } else if (reviewed[0].confidence === 'none' && aiKey !== 'FIRSTNAME' && aiKey !== 'LASTNAME') {
-              batch[i][ci] = '';
-            }
-          }
-        }
-        if (enrichStatusIdx !== -1) {
-          batch[i][enrichStatusIdx] = (aiResult.confidence === 'none' || !anyFilled) ? 'no_data' : 'enriched';
-        }
-        log.info(`[Row AI] batch item ${i}: confidence=${aiResult.confidence || 'low'} filled=${anyFilled}`);
-      }
-    }
-
-    log.info(` AI batch ${batchIdx + 1}/${aiBatchCount} complete`);
-  }
-
-  // 7. Mark all processed rows as enriched
-  if (enrichStatusIdx !== -1) {
-    for (const row of dataRows) {
-      row[enrichStatusIdx] = "enriched";
-    }
-  }
-
-  // 8. Final CSV flush
-  log.info(` Final CSV flush to Drive: ${fileId}`);
-  try {
-    await uploadCsvText(fileId, stringifyCSV(parsedRows));
-  } catch (flushErr) {
-    log.warn(` Final CSV flush failed: ${flushErr.message}`);
-  }
-
-  // 8. Update campaign settings
-  await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
-
-  // USER tier accounting: one monthly enrichUsage increment for the whole
-  // single-server run (multi-server dispatch exits before this point and is
-  // not metered — documented limitation).
-  if (stageUserId && dataRows.length > 0) {
-    try {
-      await updateUserUsage(stageUserId, "enrichUsage", dataRows.length);
-    } catch (e) {
-      log.warn(`[user-limit] enrichUsage increment failed: ${e.message}`);
-    }
-  }
-
-  return NextResponse.json({
-    success: true,
-    message: "Campaign enrichment completed",
-    total: dataRows.length,
-    urlsScraped: urlScrapedCount,
-    searchFound: searchFoundCount,
-    aiAnalyzed: rowsNeedingAnalysis.length
-  });
-}
-
-async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
-  log.info(` Worker mode for campaign: ${campaignId}, rows ${serverBatch.rowStart}-${serverBatch.rowEnd}`);
-  let enrichmentContext = '';
-  try {
-    const cs = await getCampaignSettings(campaignId);
-    enrichmentContext = cs?.settings?.enrichmentContext || cs?.enrichmentContext || '';
-  } catch (e) { /* ignore */ }
-
-  const assignment = await findMyAssignment(campaignId, 'enrich');
-  if (!assignment) {
-    return NextResponse.json({ success: false, error: "No assignment found for this worker" }, { status: 404 });
-  }
-
-  await updateMyAssignment(campaignId, 'enrich', { status: 'running' });
-
-  const fileId = extractFileId(fileUrl);
-  if (!fileId) {
-    return NextResponse.json({ success: false, error: "Invalid fileUrl or Drive file ID" }, { status: 400 });
-  }
-
-  const enrichBatchSetting = await getSetting('enrichBatchLimit');
-  const ENRICH_BATCH_SIZE = parseInt(enrichBatchSetting?.value1) || perfPresets.enrichBatchLimit;
-  const searchBatchSetting = await getSetting('enrichSearchBatchLimit');
-  const SEARCH_BATCH_SIZE = parseInt(searchBatchSetting?.value1) || perfPresets.enrichSearchBatchLimit;
-  const aiBatchSetting = await getSetting('enrichAiBatchLimit');
-  const AI_BATCH_SIZE = parseInt(aiBatchSetting?.value1) || perfPresets.enrichAiBatchLimit;
-  const concurrencySetting = await getSetting('enrichScrapeConcurrency');
-  const SCRAPE_CONCURRENCY = parseInt(concurrencySetting?.value1) || perfPresets.enrichScrapeConcurrency;
-
-  // 1. Download full CSV
-  log.info(` Worker downloading CSV file: ${fileId}`);
-  const dl = await downloadCsvText(fileId);
-  if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
-  const csvContent = dl.content;
-
-  const cleanContent = csvContent.charCodeAt(0) === 0xFEFF ? csvContent.slice(1) : csvContent;
-
-  // 2. Parse and find columns
-  const parsedRows = parseCSV(cleanContent);
-  if (parsedRows.length === 0) throw new Error("CSV file is empty");
-
-  const rawHeaders = parsedRows[0];
-  const headers = rawHeaders.map(h => h.trim().toUpperCase());
-
-  const emailIdx = headers.indexOf("EMAIL");
-  if (emailIdx === -1) throw new Error("EMAIL column not found");
-
-  const firstNameIdx = headers.indexOf("FIRSTNAME");
-  const companyIdx = headers.indexOf("BUSINESSNAME");
-  const urlIdx = headers.indexOf("URL");
-  const contextIdx = headers.indexOf("CONTEXT");
-  const validationIdx = headers.indexOf("validation");
-  const enrichStatusIdx = headers.findIndex(h => h.toLowerCase().trim() === "enrichmentstatus");
-
-  const allDataRows = parsedRows.slice(1);
-
-  // 3. Extract assigned slice
-  const rowStart = serverBatch.rowStart || 0;
-  const rowEnd = Math.min(serverBatch.rowEnd || allDataRows.length, allDataRows.length);
-  const dataRows = allDataRows.slice(rowStart, rowEnd);
-
-  log.info(` Worker processing ${dataRows.length} rows (slice ${rowStart}-${rowEnd})`);
-
-  // 4. Inference pass
-  for (const row of dataRows) {
-    if (enrichStatusIdx !== -1 && row[enrichStatusIdx]?.trim() === "enriched") continue;
-    const email = row[emailIdx]?.trim();
-    if (!email) continue;
-    if (firstNameIdx !== -1 && !row[firstNameIdx]?.trim()) {
-      row[firstNameIdx] = inferFirstName(email);
-    }
-    if (companyIdx !== -1 && !row[companyIdx]?.trim()) {
-      row[companyIdx] = inferCompany(email);
-    }
-  }
-
-  // 5. URL Enrichment (batched)
-  let urlScrapedCount = 0;
-  let wasPaused = false;
-  const scrapeCache = new Map();
-  try {
-  const rowsWithUrl = dataRows.filter(r => {
-    const url = r[urlIdx]?.trim();
-    return url && url.startsWith("http");
-  });
-
-  const enrichBatchCount = Math.ceil(rowsWithUrl.length / ENRICH_BATCH_SIZE);
-  for (let batchIdx = 0; batchIdx < enrichBatchCount; batchIdx++) {
-    if (await isCampaignPaused(campaignId)) {
-      log.info(` Worker campaign paused at URL batch ${batchIdx + 1}/${enrichBatchCount}`);
-      wasPaused = true;
-      break;
-    }
-
-    const start = batchIdx * ENRICH_BATCH_SIZE;
-    const end = Math.min(start + ENRICH_BATCH_SIZE, rowsWithUrl.length);
-    const batch = rowsWithUrl.slice(start, end);
-
-    // Scrape with concurrency limit to prevent rate limiting
-    for (let ci = 0; ci < batch.length; ci += SCRAPE_CONCURRENCY) {
-      const chunk = batch.slice(ci, ci + SCRAPE_CONCURRENCY);
-      const scrapePromises = chunk.map(async (row) => {
-        const url = row[urlIdx]?.trim();
-        if (scrapeCache.has(url)) {
-          const cached = scrapeCache.get(url);
-          if (cached && contextIdx !== -1) row[contextIdx] = sanitizeForCsv(cached);
-          return;
-        }
-
-        const result = await scrapeUrl(url);
-        if (result) {
-          let contextValue = null;
-          const parts = [];
-          if (result.title) parts.push(`Page: ${result.title}`);
-          if (result.description) parts.push(result.description);
-          contextValue = parts.join(". ") || "";
-
-          if (contextIdx !== -1) row[contextIdx] = sanitizeForCsv(contextValue);
-          scrapeCache.set(url, contextValue);
-          urlScrapedCount++;
-          log.info(`[Row scrape] ${url}: ${result.title || 'no title'} (${contextValue.length} chars)`);
-        } else {
-          log.info(`[Row scrape] ${url}: no result`);
-        }
-      });
-      await Promise.allSettled(scrapePromises);
-      if (ci + SCRAPE_CONCURRENCY < batch.length) {
-        await new Promise(r => setTimeout(r, 200));
-      }
-    }
-
-    await updateMyAssignment(campaignId, 'enrich', {
-      processedUpTo: rowStart + (batchIdx + 1) * ENRICH_BATCH_SIZE
-    });
-    await mergeAndFlush(campaignId, 'enrich', parsedRows, fileId);
-
-    log.info(` Worker URL batch ${batchIdx + 1}/${enrichBatchCount} complete (${urlScrapedCount} scraped)`);
-  }
-
-  // 6. Google Search Fallback
-  let searchFoundCount = 0;
-  const rowsWithoutUrl = dataRows.filter(r => {
-    if (enrichStatusIdx !== -1 && r[enrichStatusIdx]?.trim() === "enriched") return false;
-    const url = r[urlIdx]?.trim();
-    const email = r[emailIdx]?.trim();
-    const context = r[contextIdx]?.trim();
-    return email && (!url || !url.startsWith("http")) && (!context || context.length < 10);
-  });
-
-  const searchBatchCount = Math.ceil(rowsWithoutUrl.length / SEARCH_BATCH_SIZE);
-  for (let batchIdx = 0; batchIdx < searchBatchCount; batchIdx++) {
-    if (await isCampaignPaused(campaignId)) {
-      log.info(` Worker campaign paused at search batch ${batchIdx + 1}/${searchBatchCount}`);
-      wasPaused = true;
-      break;
-    }
-
-    const start = batchIdx * SEARCH_BATCH_SIZE;
-    const end = Math.min(start + SEARCH_BATCH_SIZE, rowsWithoutUrl.length);
-    const batch = rowsWithoutUrl.slice(start, end);
-
-    for (const row of batch) {
-      const email = row[emailIdx]?.trim();
-      if (!email) continue;
-
-      const queries = buildSearchQueries(row, headers);
-      const allResults = [];
-      for (const q of queries) {
-        const results = await multiSearch(q);
-        allResults.push(...results);
-        await new Promise(r => setTimeout(r, 300));
-      }
-
-      const seen = new Set();
-      const uniqueResults = [];
-      for (const r of allResults) {
-        if (!r.url || seen.has(r.url)) continue;
-        seen.add(r.url);
-        uniqueResults.push(r);
-        if (uniqueResults.length >= 10) break;
-      }
-
-      const scrapePromises = uniqueResults.slice(0, 8).map(r => deepScrape(r.url));
-      const scrapeResults = await Promise.allSettled(scrapePromises);
-      const scraped = [];
-      for (let i = 0; i < scrapeResults.length; i++) {
-        const sr = scrapeResults[i];
-        if (sr.status === 'fulfilled' && sr.value) {
-          scraped.push({
-            ...sr.value,
-            knownData: {
-              email,
-              firstName: firstNameIdx !== -1 ? row[firstNameIdx]?.trim() : '',
-              lastName: headers.indexOf('LASTNAME') >= 0 ? row[headers.indexOf('LASTNAME')]?.trim() : '',
-              company: companyIdx !== -1 ? row[companyIdx]?.trim() : '',
-              url: urlIdx !== -1 ? row[urlIdx]?.trim() : '',
-            },
-          });
-        }
-      }
-
-      if (scraped.length > 0) {
-        const aiResults = await analyzeBatchWithAI(scraped, ['FIRSTNAME', 'LASTNAME', 'JOBTITLE', 'BUSINESSNAME', 'BUSINESSCITY', 'BUSINESSSTATE', 'BUSINESSCOUNTRY', 'CONTEXT', 'SOCIALUSERNAME', 'SOCIALPLATFORM', 'EMAIL'], enrichmentContext);
-        const reviewed = await reviewBatchWithAI(aiResults, scraped);
-
-        const bestResult = reviewed && reviewed.length > 0 ? reviewed[0] : null;
-        if (bestResult) {
-          // Dynamic write-back: map every AI-returned key to a matching CSV column
-          for (const [aiKey, val] of Object.entries(bestResult)) {
-            if (aiKey === 'confidence') continue;
-            if (!val || String(val).trim() === '') continue;
-            const ci = headers.indexOf(String(aiKey).toUpperCase().trim());
-            if (ci === -1) continue;
-            row[ci] = sanitizeForCsv(String(val));
-          }
-          if (enrichStatusIdx !== -1) {
-            row[enrichStatusIdx] = (bestResult.confidence === 'none') ? 'no_data' : 'enriched';
-          }
-          searchFoundCount++;
-          log.info(`[Row search] ${email}: enriched (confidence=${bestResult.confidence})`);
-        } else {
-          log.info(`[Row search] ${email}: no results`);
-          if (enrichStatusIdx !== -1) row[enrichStatusIdx] = 'no_data';
-        }
-      } else {
-        log.info(`[Row search] ${email}: no scrape results`);
-        if (enrichStatusIdx !== -1) row[enrichStatusIdx] = 'no_data';
-      }
-
-      await new Promise(r => setTimeout(r, 500));
-    }
-
-    await updateMyAssignment(campaignId, 'enrich', {
-      processedUpTo: rowStart + (batchIdx + 1) * SEARCH_BATCH_SIZE
-    });
-    await mergeAndFlush(campaignId, 'enrich', parsedRows, fileId);
-
-    log.info(` Worker search batch ${batchIdx + 1}/${searchBatchCount} complete (${searchFoundCount} found)`);
-  }
-
-  // 7. Batch AI Analysis
-  const rowsNeedingAnalysis = dataRows.filter(r => {
-    if (enrichStatusIdx !== -1 && r[enrichStatusIdx]?.trim() === "enriched") return false;
-    const context = r[contextIdx]?.trim();
-    return context && context.length > 10 && !context.includes("Industry:");
-  });
-
-  const aiBatchCount = Math.ceil(rowsNeedingAnalysis.length / AI_BATCH_SIZE);
-  for (let batchIdx = 0; batchIdx < aiBatchCount; batchIdx++) {
-    if (await isCampaignPaused(campaignId)) { wasPaused = true; break; }
-
-    const start = batchIdx * AI_BATCH_SIZE;
-    const end = Math.min(start + AI_BATCH_SIZE, rowsNeedingAnalysis.length);
-    const batch = rowsNeedingAnalysis.slice(start, end);
-
-    const scrapeResults = batch.map(row => ({
-      title: "",
-      description: row[contextIdx]?.trim() || "",
-      bodyText: ""
-    }));
-
-    const targetCols = ['FIRSTNAME', 'LASTNAME', 'JOBTITLE', 'BUSINESSNAME', 'BUSINESSCITY', 'BUSINESSSTATE', 'BUSINESSCOUNTRY', 'CONTEXT', 'SOCIALUSERNAME', 'SOCIALPLATFORM'];
-let aiResults = await analyzeBatchWithAI(scrapeResults, targetCols, enrichmentContext);
-
-    // Dynamic batch reduction: if AI fails, retry with half batch
-    if (!aiResults || aiResults.length === 0) {
-      const halfSize = Math.ceil(scrapeResults.length / 2);
-      if (halfSize >= 2) {
-        log.warn(` Worker AI batch failed, retrying with half size (${halfSize})`);
-        const halfResults = scrapeResults.slice(0, halfSize);
-        const retryResults = await analyzeBatchWithAI(halfResults, targetCols, enrichmentContext);
-        if (retryResults && retryResults.length > 0) {
-          aiResults = retryResults;
-          for (let i = 0; i < Math.min(halfSize, batch.length); i++) {
-            const aiResult = retryResults[i];
-            if (aiResult) {
-              const enriched = [
-                aiResult.summary,
-                aiResult.industry ? `Industry: ${aiResult.industry}` : "",
-                aiResult.services ? `Services: ${aiResult.services}` : ""
-              ].filter(Boolean).join(". ");
-              if (enriched) batch[i][contextIdx] = sanitizeForCsv(enriched);
-            }
-          }
-          log.info(` Worker AI retry succeeded for ${halfSize} items`);
-          continue;
-        }
-      }
-    }
-
-    for (let i = 0; i < batch.length; i++) {
-      const aiResult = aiResults[i];
-      if (aiResult) {
-        let anyFilled = false;
-        for (const [aiKey, val] of Object.entries(aiResult)) {
-          if (aiKey === 'confidence') continue;
-          if (!val || String(val).trim() === '') continue;
-          const ci = headers.indexOf(String(aiKey).toUpperCase().trim());
-          if (ci === -1) continue;
-          batch[i][ci] = sanitizeForCsv(String(val));
-          anyFilled = true;
-        }
-        if (contextIdx !== -1 && !(batch[i][contextIdx] || '').trim()) {
-          const parts = [aiResult.summary, aiResult.industry ? `Industry: ${aiResult.industry}` : '', aiResult.services ? `Services: ${aiResult.services}` : ''].filter(Boolean);
-          if (parts.length) { batch[i][contextIdx] = sanitizeForCsv(parts.join('. ')); anyFilled = true; }
-        }
-        const reviewed = await reviewBatchWithAI([aiResult], [batch[i]]);
-        if (reviewed && reviewed[0]) {
-          for (const [aiKey, colName] of Object.entries(colMap)) {
-            const ci = headers.indexOf(colName);
-            if (ci === -1) continue;
-            const val = reviewed[0][aiKey];
-            if (val && String(val).trim() !== '') {
-              batch[i][ci] = sanitizeForCsv(String(val));
-            } else if (reviewed[0].confidence === 'none' && aiKey !== 'FIRSTNAME' && aiKey !== 'LASTNAME') {
-              batch[i][ci] = '';
-            }
-          }
-        }
-        if (enrichStatusIdx !== -1) {
-          batch[i][enrichStatusIdx] = (aiResult.confidence === 'none' || !anyFilled) ? 'no_data' : 'enriched';
-        }
-        log.info(`[Row AI] batch item ${i}: confidence=${aiResult.confidence || 'low'} filled=${anyFilled}`);
-      }
-    }
-
-    log.info(` Worker AI batch ${batchIdx + 1}/${aiBatchCount} complete`);
-  }
-  } catch (error) {
-    log.error(`[Worker] Error: ${error.message}`, { stack: error.stack });
-    await updateMyAssignment(campaignId, 'enrich', {
-      status: 'failed',
-      processedUpTo: rowEnd,
-      error: error.message
-    });
-    throw error;
-  }
-
-  // 8. Mark all processed rows as enriched
-  if (enrichStatusIdx !== -1) {
-    for (const row of dataRows) {
-      row[enrichStatusIdx] = "enriched";
-    }
-  }
-
-  // 9. Final flush
-  log.info(` Worker final flush to Drive: ${fileId}`);
-  try {
-    await uploadCsvText(fileId, stringifyCSV(parsedRows));
-  } catch (flushErr) {
-    log.warn(` Worker final flush failed: ${flushErr.message}`);
-  }
-
-  await updateMyAssignment(campaignId, 'enrich', {
-    status: wasPaused ? 'paused' : 'completed',
-    processedUpTo: wasPaused ? rowStart + urlScrapedCount + searchFoundCount : rowEnd
-  });
-
-  // 9. Check if all workers are done
-  const allDone = await checkAllComplete(campaignId, 'enrich');
-  if (allDone) {
-    await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
-    try {
-      const selfUrl = getSelfUrlWithFallback();
-      fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ campaignId })
-      }).catch(err => log.warn(` Worker auto-advance failed: ${err.message}`));
-    } catch {}
-  }
-
-  return NextResponse.json({
-    success: true,
-    message: "Worker enrichment completed",
-    total: dataRows.length,
-    urlsScraped: urlScrapedCount,
-    searchFound: searchFoundCount,
-    aiAnalyzed: rowsNeedingAnalysis.length
-  });
 }
 
 export async function OPTIONS() {
-  return new Response(null, {
-    status: 200,
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type"
-    }
-  });
-}
-
-async function analyzeBatchWithAI(scrapeResults, targetColumns, enrichmentContext) {
-  if (scrapeResults.length === 0) return [];
-  const batchContent = scrapeResults.map((r, i) => {
-    const known = r.knownData ? 'KNOWN DATA: ' + JSON.stringify(r.knownData) : '';
-    const parts = [r.title, r.description, r.bodyText && r.bodyText.slice(0, 1500), (r.internalTexts || []).join(' ').slice(0, 1500)].filter(Boolean).join('. ');
-    return '[' + (i + 1) + '] ' + known + '\nCONTENT: ' + parts;
-  }).join('\n\n---\n\n');
-
-  const colList = targetColumns.join(', ');
-
-  const ctx = enrichmentContext ? '\\nENRICHMENT CONTEXT (user instruction): ' + enrichmentContext + '\\n' : '';
-  const prompt = 'You are a data enrichment agent. For each row below, extract information into these columns: ' + colList + '.' + ctx + '\\n\\n' + batchContent + '\\n\\nRules:\\n1. Clean up FIRSTNAME if it contains "First Last" -> split into FIRSTNAME and LASTNAME.\\n2. Only fill a field if directly supported by the scraped content or known data.\\n3. If no email is provided, try to find the person email from scraped content (business website, LinkedIn, etc.) and fill the EMAIL column.\\n4. For generic email domains (gmail, yahoo, etc.), try to find the person by name + email. For business domains, search the company site.\\n5. If you cannot verify a field, leave it empty - do not guess.\\n6. Return a JSON array with one object per row (same order). Each object has keys matching the target columns plus a "confidence" field ("high", "medium", "low", or "none").\\n7. If confidence is "none", set all enriched fields to empty (except name cleanup).\\n8. CONTEXT should contain a 2-3 sentence summary of what the person/company does.\\n9. If enrichment context asks for specific info (e.g. "find the CEO"), prioritize that.\\n\\nReturn ONLY valid JSON array.';
-
-  try {
-    const ai = new MultiProviderAI();
-    const text = await ai.generate(prompt, { maxTokens: 6000, jsonMode: true });
-    const parsed = ai.parseAiJson(text);
-    if (Array.isArray(parsed)) {
-      return parsed.map(r => {
-        if (!r || typeof r !== 'object') return null;
-        const out = {};
-        for (const col of targetColumns) {
-          out[col] = ai.sanitizeAiPlainText(String(r[col] || ''), 2000);
-        }
-        out.confidence = String(r.confidence || 'low').toLowerCase();
-        if (out.confidence === 'none') {
-          for (const col of targetColumns) {
-            if (col !== 'FIRSTNAME' && col !== 'LASTNAME') out[col] = '';
-          }
-        }
-        return out;
-      }).filter(Boolean);
-    }
-    if (typeof ai._salvageJsonArray === 'function') {
-      const salvaged = ai._salvageJsonArray(text);
-      if (Array.isArray(salvaged) && salvaged.length) {
-        return salvaged.map(r => {
-          const out = {};
-          for (const col of targetColumns) out[col] = ai.sanitizeAiPlainText(String(r && r[col] || ''), 2000);
-          out.confidence = String(r && r.confidence || 'low').toLowerCase();
-          return out;
-        });
-      }
-    }
-  } catch (err) {
-    logger.warn('[Enrich] Batch AI analysis failed: ' + err.message);
-  }
-  return [];
-}
-
-async function reviewBatchWithAI(extracted, scrapedData) {
-  if (!extracted || extracted.length === 0) return extracted;
-  const reviewContent = extracted.map((r, i) => {
-    const source = scrapedData[i] ? (scrapedData[i].bodyText || '').slice(0, 1000) : '';
-    return '[' + (i + 1) + '] EXTRACTED: ' + JSON.stringify(r) + '\nSOURCE: ' + source;
-  }).join('\n\n');
-
-  const prompt = 'Review these extracted data points against their source content. Remove any field not directly supported by the source. Adjust confidence. Return the corrected JSON array (same structure, same order).\n\n' + reviewContent + '\n\nReturn ONLY valid JSON array with the same keys plus "confidence".';
-
-  try {
-    const ai = new MultiProviderAI();
-    const text = await ai.generate(prompt, { maxTokens: 4000, jsonMode: true });
-    const parsed = ai.parseAiJson(text);
-    if (Array.isArray(parsed) && parsed.length === extracted.length) {
-      return parsed.map((r, i) => {
-        if (!r || typeof r !== 'object') return extracted[i];
-        const out = Object.assign({}, extracted[i]);
-        for (const key of Object.keys(r)) {
-          if (r[key] !== undefined && r[key] !== null && r[key] !== '') {
-            out[key] = (typeof r[key] === 'string') ? r[key] : String(r[key]);
-          }
-        }
-        out.confidence = String(r.confidence || extracted[i].confidence || 'low').toLowerCase();
-        return out;
-      });
-    }
-  } catch (err) {
-    logger.warn('[Enrich] Review pass failed: ' + err.message);
-  }
-  return extracted;
+  return new Response(null, { status: 200, headers: { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "POST, OPTIONS", "Access-Control-Allow-Headers": "Content-Type" } });
 }

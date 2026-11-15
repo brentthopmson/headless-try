@@ -103,7 +103,7 @@ export async function dispatchToServers(campaignId, stage, fileUrl, totalRows, c
   const multiServerSetting = await getSetting('multiServerEnabled');
   if (multiServerSetting?.value1 !== 'true') return null;
 
-  if (await isCampaignPaused(campaignId)) {
+  if (await isCampaignPaused(campaignId, stage)) {
     logger.info(`[MultiServer][${stage}] Campaign ${campaignId} is paused, skipping dispatch`);
     return null;
   }

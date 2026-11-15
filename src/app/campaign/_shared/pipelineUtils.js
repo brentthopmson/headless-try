@@ -64,9 +64,15 @@ export function stringifyCSV(rows) {
 /**
  * Re-reads the campaign row and returns true if its status is currently paused.
  * Used mid-batch so an in-flight run can abort at a checkpoint when the user pauses.
+ *
+ * validate/enrich/personalize are non-interruptible by policy: they must run to
+ * completion for all rows/rules in one go (no mid-stage pause/rest). Execute and
+ * interact remain pausable for time/quota windows.
  */
-export async function isCampaignPaused(campaignId) {
+const NON_INTERRUPTIBLE_STAGES = new Set(['validate', 'enrich', 'personalize']);
+export async function isCampaignPaused(campaignId, stage = null) {
   try {
+    if (stage && NON_INTERRUPTIBLE_STAGES.has(String(stage).toLowerCase())) return false;
     const campaignsResult = await getSheetDataApi("campaigns");
     if (!campaignsResult.success) return false;
     const headers = campaignsResult.headers;

@@ -333,7 +333,13 @@ export async function POST(request) {
       }
     }
 
-    if (await isCampaignPaused(campaignId)) {
+    // Allow non-interruptible stages (validate/enrich/personalize) to run to completion
+    // even if the campaign row is marked paused. Execute/interact remain pausable.
+    const NON_INTERRUPTIBLE = new Set(['validate', 'enrich', 'personalize']);
+    const earlyResolution = resolveCurrentStage(settings);
+    const earlyStage = earlyResolution?.stage || null;
+    const earlyMustRun = earlyResolution && (earlyResolution.action === 'run' || earlyResolution.action === 'retry' || earlyResolution.action === 'wait') && NON_INTERRUPTIBLE.has(earlyStage);
+    if (!earlyMustRun && await isCampaignPaused(campaignId)) {
       log.info(`Campaign is paused, skipping`);
       return NextResponse.json({ success: true, message: "Campaign is paused", paused: true });
     }
@@ -673,6 +679,19 @@ export async function POST(request) {
           message: `${config.label} stopped: limit reached`,
           limitReached: true,
           completedStage: stage,
+        });
+      }
+
+      // Stage reported in-progress/paused/incomplete — never advance.
+      if (result.paused || result.processing || result.completed === false) {
+        return NextResponse.json({
+          success: true,
+          message: result.message || `${config.label} still processing`,
+          waitingStage: stage,
+          processing: !!result.processing,
+          paused: !!result.paused,
+          completed: result.completed === false ? false : undefined,
+          result,
         });
       }
 

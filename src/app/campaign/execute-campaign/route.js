@@ -917,6 +917,10 @@ if (!String(settings.helperKeyword || "").trim()) {
         let pausedByAdmin = false;
         let durationExpiredMidRun = false;
         let firestickIndex = 0;
+        // Validation/send gating applies ONLY when validation is active/staged for this campaign.
+        // When inactive, execute must not be blocked by validation results.
+        const validationGateActive = settings.validationStaged === true || settings.validationStaged === 'true' || String(settings.validationStatus || '').toLowerCase() === 'processing' || String(settings.validationStatus || '').toLowerCase() === 'completed';
+        const eligibleValidationStatuses = new Set(['verified_exists', 'valid_mx', 'social_valid']);
         // Per-run send cap per SMTP account (plan cell accountSendPerRunLimit,
         // campaign default 5, 0 = off): rotate across accounts; when every
         // account hit its cap, stop the run with limitReached.
@@ -988,6 +992,22 @@ if (!String(settings.helperKeyword || "").trim()) {
             }
           }
           if (!email) continue;
+
+          // Validation/send gating: ONLY when validation is active/staged for this campaign.
+          // Never send or firestick-warmup rows that are not validated/safe in that case.
+          if (validationGateActive) {
+            const rawValidation = validationIdx !== -1 ? String(row[validationIdx] || '').trim().toLowerCase() : '';
+            const isValidationEligible = eligibleValidationStatuses.has(rawValidation);
+            if (!isValidationEligible) {
+              const reason = rawValidation || 'not_validated';
+              if (executionStatusIdx !== -1) row[executionStatusIdx] = 'skipped_invalid';
+              if (lastSendStatusIdx !== -1) row[lastSendStatusIdx] = 'skipped_invalid';
+              if (lastSendErrorIdx !== -1) row[lastSendErrorIdx] = `Blocked by validation: ${reason}`;
+              if (lastAttemptAtIdx !== -1) row[lastAttemptAtIdx] = new Date().toISOString();
+              log.info(`[Row skip] ${email}: blocked by validation gate (status=${reason}) - no send, no firestick warmup`);
+              continue;
+            }
+          }
 
           const firstName = nameColIdx !== -1 && row[nameColIdx] ? row[nameColIdx] : "";
           const company = companyColIdx !== -1 && row[companyColIdx] ? row[companyColIdx] : "";
