@@ -80,7 +80,7 @@ async function scrapeUrl(url) {
 async function googleSearch(query) {
   try {
     const resp = await axios.get("https://www.google.com/search", {
-      params: { q: query, num: 3, hl: "en" },
+      params: { q: query, num: 5, hl: "en" },
       timeout: 10000,
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -93,7 +93,7 @@ async function googleSearch(query) {
     const results = [];
 
     $("div.g, div[data-sokoban-container]").each((i, el) => {
-      if (results.length >= 3) return false;
+      if (results.length >= 5) return false;
       const link = $(el).find("a").first().attr("href");
       const title = $(el).find("h3").first().text().trim();
       const snippet = $(el).find(".VwiC3b, .s, span.aCOpRe").first().text().trim();
@@ -109,7 +109,153 @@ async function googleSearch(query) {
   }
 }
 
-async function analyzeBatchWithGemini(scrapeResults) {
+async function bingSearch(query) {
+  try {
+    const resp = await axios.get("https://www.bing.com/search", {
+      params: { q: query, count: 5 },
+      timeout: 10000,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
+    const $ = cheerio.load(resp.data);
+    const results = [];
+    $("li.b_algo").each((i, el) => {
+      if (results.length >= 5) return false;
+      const link = $(el).find("h2 a").attr("href");
+      const title = $(el).find("h2").text().trim();
+      const snippet = $(el).find(".b_caption p").text().trim();
+      if (link && link.startsWith("http")) results.push({ url: link, title, snippet });
+    });
+    return results;
+  } catch (err) {
+    logger.warn(`[Enrich] Bing search failed for "${query}": ${err.message}`);
+    return [];
+  }
+}
+
+async function duckDuckGoSearch(query) {
+  try {
+    const resp = await axios.get("https://html.duckduckgo.com/html/", {
+      params: { q: query },
+      timeout: 10000,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml",
+      },
+    });
+    const $ = cheerio.load(resp.data);
+    const results = [];
+    $(".result").each((i, el) => {
+      if (results.length >= 5) return false;
+      const link = $(el).find("a.result__a").attr("href");
+      const title = $(el).find("a.result__a").text().trim();
+      const snippet = $(el).find("a.result__snippet").text().trim();
+      if (link && link.startsWith("http")) results.push({ url: link, title, snippet });
+    });
+    return results;
+  } catch (err) {
+    logger.warn(`[Enrich] DDG search failed for "${query}": ${err.message}`);
+    return [];
+  }
+}
+
+async function searxngSearch(query) {
+  const base = process.env.SEARXNG_URL;
+  if (!base) return [];
+  try {
+    const resp = await axios.get(`${base.replace(/\/$/, '')}/search`, {
+      params: { q: query, format: 'json' },
+      timeout: 10000,
+    });
+    const items = resp.data?.results || [];
+    return items.slice(0, 5).map(r => ({ url: r.url, title: r.title, snippet: r.content }));
+  } catch (err) {
+    logger.warn(`[Enrich] SearXNG search failed for "${query}": ${err.message}`);
+    return [];
+  }
+}
+
+async function multiSearch(query) {
+  const [g, b, d, s] = await Promise.allSettled([
+    googleSearch(query), bingSearch(query), duckDuckGoSearch(query), searxngSearch(query),
+  ]);
+  const all = [];
+  for (const r of [g, b, d, s]) {
+    if (r.status === 'fulfilled' && Array.isArray(r.value)) all.push(...r.value);
+  }
+  // dedupe by url
+  const seen = new Set();
+  const out = [];
+  for (const r of all) {
+    if (!r.url || seen.has(r.url)) continue;
+    seen.add(r.url);
+    out.push(r);
+    if (out.length >= 10) break;
+  }
+  return out;
+}
+
+async function deepScrape(url) {
+  try {
+    const resp = await axios.get(url, {
+      timeout: 10000,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+      },
+      maxRedirects: 5,
+    });
+    const $ = cheerio.load(resp.data);
+    $("script, style, noscript, nav, footer, header, aside").remove();
+    const title = $("title").text().trim() || $("meta[property='og:title']").attr("content") || "";
+    const description = $("meta[name='description']").attr("content") || $("meta[property='og:description']").attr("content") || "";
+    const main = $("main").length ? $("main") : $("article").length ? $("article") : $("body");
+    const bodyText = main.text().replace(/\s+/g, " ").trim().slice(0, 2000);
+
+    // internal links
+    const internalLinks = [];
+    const baseHost = new URL(url).hostname;
+    $("a[href]").each((i, el) => {
+      if (internalLinks.length >= 5) return false;
+      const href = $(el).attr("href");
+      if (!href) return;
+      try {
+        const u = new URL(href, url);
+        if (u.hostname === baseHost && /about|contact|team|company|services|who-we-are|people/i.test(u.pathname)) {
+          if (!internalLinks.includes(u.href)) internalLinks.push(u.href);
+        }
+      } catch {}
+    });
+
+    // fetch up to 3 internal links in parallel
+    const internalTexts = [];
+    if (internalLinks.length > 0) {
+      const fetches = internalLinks.slice(0, 3).map(async (il) => {
+        try {
+          const r = await axios.get(il, { timeout: 8000, headers: { "User-Agent": "Mozilla/5.0" } });
+          const $2 = cheerio.load(r.data);
+          $2("script, style, noscript, nav, footer, header").remove();
+          return $2("body").text().replace(/\s+/g, " ").trim().slice(0, 1000);
+        } catch { return ""; }
+      });
+      const results = await Promise.allSettled(fetches);
+      for (const r of results) {
+        if (r.status === 'fulfilled' && r.value) internalTexts.push(r.value);
+      }
+    }
+
+    return { url, title, description, bodyText, internalTexts, status: resp.status };
+  } catch (err) {
+    logger.warn(`[Enrich] deepScrape failed for ${url}: ${err.message}`);
+    return null;
+  }
+}
+
+async function analyzeBatchWithGemini_OLD(scrapeResults) {
   if (scrapeResults.length === 0) return [];
 
   const batchContent = scrapeResults.map((r, i) => {
@@ -192,6 +338,7 @@ export async function POST(request) {
 }
 
 async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
+  let wasPaused = false;
   log.info(`Received enrichment request for campaign: ${campaignId}`);
 
   const fileId = extractFileId(fileUrl);
@@ -376,7 +523,7 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
 
       if (!query) continue;
 
-      const results = await googleSearch(query);
+      const results = await multiSearch(query);
       if (results.length > 0) {
         const bestResult = results.find(r =>
           r.url.includes("linkedin.com") || r.url.includes("twitter.com") || r.url.includes("github.com")
@@ -427,7 +574,8 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
       bodyText: ""
     }));
 
-    let aiResults = await analyzeBatchWithGemini(scrapeResults);
+    const targetCols = ['FIRSTNAME', 'LASTNAME', 'JOBTITLE', 'BUSINESSNAME', 'BUSINESSCITY', 'BUSINESSSTATE', 'BUSINESSCOUNTRY', 'CONTEXT', 'SOCIALUSERNAME', 'SOCIALPLATFORM'];
+let aiResults = await analyzeBatchWithAI(scrapeResults, targetCols);
 
     // Dynamic batch reduction: if AI fails, retry with half batch
     if (!aiResults || aiResults.length === 0) {
@@ -435,7 +583,7 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
       if (halfSize >= 2) {
         log.warn(` AI batch failed, retrying with half size (${halfSize})`);
         const halfResults = scrapeResults.slice(0, halfSize);
-        const retryResults = await analyzeBatchWithGemini(halfResults);
+        const retryResults = await analyzeBatchWithAI(halfResults, targetCols);
         if (retryResults && retryResults.length > 0) {
           aiResults = retryResults;
           for (let i = 0; i < Math.min(halfSize, batch.length); i++) {
@@ -458,13 +606,44 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
     for (let i = 0; i < batch.length; i++) {
       const aiResult = aiResults[i];
       if (aiResult) {
-        const enriched = [
-          aiResult.summary,
-          aiResult.industry ? `Industry: ${aiResult.industry}` : "",
-          aiResult.services ? `Services: ${aiResult.services}` : ""
-        ].filter(Boolean).join(". ");
-        if (enriched) batch[i][contextIdx] = sanitizeForCsv(enriched);
-        log.info(`[Row AI] batch item ${i}: ${aiResult.summary ? aiResult.summary.substring(0, 60) : "no summary"}`);
+        const colMap = {
+          FIRSTNAME: 'FIRSTNAME', LASTNAME: 'LASTNAME', JOBTITLE: 'JOBTITLE',
+          BUSINESSNAME: 'BUSINESSNAME', BUSINESSCITY: 'BUSINESSCITY',
+          BUSINESSSTATE: 'BUSINESSSTATE', BUSINESSCOUNTRY: 'BUSINESSCOUNTRY',
+          CONTEXT: 'CONTEXT', SOCIALUSERNAME: 'SOCIALUSERNAME',
+          SOCIALPLATFORM: 'SOCIALPLATFORM', PHONE: 'PHONE',
+        };
+        let anyFilled = false;
+        for (const [aiKey, colName] of Object.entries(colMap)) {
+          const ci = headers.indexOf(colName);
+          if (ci === -1) continue;
+          const val = aiResult[aiKey];
+          if (val && String(val).trim() !== '') {
+            batch[i][ci] = sanitizeForCsv(String(val));
+            anyFilled = true;
+          }
+        }
+        if (contextIdx !== -1 && !(batch[i][contextIdx] || '').trim()) {
+          const parts = [aiResult.summary, aiResult.industry ? `Industry: ${aiResult.industry}` : '', aiResult.services ? `Services: ${aiResult.services}` : ''].filter(Boolean);
+          if (parts.length) { batch[i][contextIdx] = sanitizeForCsv(parts.join('. ')); anyFilled = true; }
+        }
+        const reviewed = await reviewBatchWithAI([aiResult], [batch[i]]);
+        if (reviewed && reviewed[0]) {
+          for (const [aiKey, colName] of Object.entries(colMap)) {
+            const ci = headers.indexOf(colName);
+            if (ci === -1) continue;
+            const val = reviewed[0][aiKey];
+            if (val && String(val).trim() !== '') {
+              batch[i][ci] = sanitizeForCsv(String(val));
+            } else if (reviewed[0].confidence === 'none' && aiKey !== 'FIRSTNAME' && aiKey !== 'LASTNAME') {
+              batch[i][ci] = '';
+            }
+          }
+        }
+        if (enrichStatusIdx !== -1) {
+          batch[i][enrichStatusIdx] = (aiResult.confidence === 'none' || !anyFilled) ? 'no_data' : 'enriched';
+        }
+        log.info(`[Row AI] batch item ${i}: confidence=${aiResult.confidence || 'low'} filled=${anyFilled}`);
       }
     }
 
@@ -681,7 +860,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
 
       if (!query) continue;
 
-      const results = await googleSearch(query);
+      const results = await multiSearch(query);
       if (results.length > 0) {
         const bestResult = results.find(r =>
           r.url.includes("linkedin.com") || r.url.includes("twitter.com") || r.url.includes("github.com")
@@ -730,7 +909,8 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
       bodyText: ""
     }));
 
-    let aiResults = await analyzeBatchWithGemini(scrapeResults);
+    const targetCols = ['FIRSTNAME', 'LASTNAME', 'JOBTITLE', 'BUSINESSNAME', 'BUSINESSCITY', 'BUSINESSSTATE', 'BUSINESSCOUNTRY', 'CONTEXT', 'SOCIALUSERNAME', 'SOCIALPLATFORM'];
+let aiResults = await analyzeBatchWithAI(scrapeResults, targetCols);
 
     // Dynamic batch reduction: if AI fails, retry with half batch
     if (!aiResults || aiResults.length === 0) {
@@ -738,7 +918,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
       if (halfSize >= 2) {
         log.warn(` Worker AI batch failed, retrying with half size (${halfSize})`);
         const halfResults = scrapeResults.slice(0, halfSize);
-        const retryResults = await analyzeBatchWithGemini(halfResults);
+        const retryResults = await analyzeBatchWithAI(halfResults, targetCols);
         if (retryResults && retryResults.length > 0) {
           aiResults = retryResults;
           for (let i = 0; i < Math.min(halfSize, batch.length); i++) {
@@ -761,13 +941,44 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
     for (let i = 0; i < batch.length; i++) {
       const aiResult = aiResults[i];
       if (aiResult) {
-        const enriched = [
-          aiResult.summary,
-          aiResult.industry ? `Industry: ${aiResult.industry}` : "",
-          aiResult.services ? `Services: ${aiResult.services}` : ""
-        ].filter(Boolean).join(". ");
-        if (enriched) batch[i][contextIdx] = sanitizeForCsv(enriched);
-        log.info(`[Row AI] batch item ${i}: ${aiResult.summary ? aiResult.summary.substring(0, 60) : "no summary"}`);
+        const colMap = {
+          FIRSTNAME: 'FIRSTNAME', LASTNAME: 'LASTNAME', JOBTITLE: 'JOBTITLE',
+          BUSINESSNAME: 'BUSINESSNAME', BUSINESSCITY: 'BUSINESSCITY',
+          BUSINESSSTATE: 'BUSINESSSTATE', BUSINESSCOUNTRY: 'BUSINESSCOUNTRY',
+          CONTEXT: 'CONTEXT', SOCIALUSERNAME: 'SOCIALUSERNAME',
+          SOCIALPLATFORM: 'SOCIALPLATFORM', PHONE: 'PHONE',
+        };
+        let anyFilled = false;
+        for (const [aiKey, colName] of Object.entries(colMap)) {
+          const ci = headers.indexOf(colName);
+          if (ci === -1) continue;
+          const val = aiResult[aiKey];
+          if (val && String(val).trim() !== '') {
+            batch[i][ci] = sanitizeForCsv(String(val));
+            anyFilled = true;
+          }
+        }
+        if (contextIdx !== -1 && !(batch[i][contextIdx] || '').trim()) {
+          const parts = [aiResult.summary, aiResult.industry ? `Industry: ${aiResult.industry}` : '', aiResult.services ? `Services: ${aiResult.services}` : ''].filter(Boolean);
+          if (parts.length) { batch[i][contextIdx] = sanitizeForCsv(parts.join('. ')); anyFilled = true; }
+        }
+        const reviewed = await reviewBatchWithAI([aiResult], [batch[i]]);
+        if (reviewed && reviewed[0]) {
+          for (const [aiKey, colName] of Object.entries(colMap)) {
+            const ci = headers.indexOf(colName);
+            if (ci === -1) continue;
+            const val = reviewed[0][aiKey];
+            if (val && String(val).trim() !== '') {
+              batch[i][ci] = sanitizeForCsv(String(val));
+            } else if (reviewed[0].confidence === 'none' && aiKey !== 'FIRSTNAME' && aiKey !== 'LASTNAME') {
+              batch[i][ci] = '';
+            }
+          }
+        }
+        if (enrichStatusIdx !== -1) {
+          batch[i][enrichStatusIdx] = (aiResult.confidence === 'none' || !anyFilled) ? 'no_data' : 'enriched';
+        }
+        log.info(`[Row AI] batch item ${i}: confidence=${aiResult.confidence || 'low'} filled=${anyFilled}`);
       }
     }
 
@@ -836,4 +1047,85 @@ export async function OPTIONS() {
       "Access-Control-Allow-Headers": "Content-Type"
     }
   });
+}
+
+async function analyzeBatchWithAI(scrapeResults, targetColumns) {
+  if (scrapeResults.length === 0) return [];
+  const batchContent = scrapeResults.map((r, i) => {
+    const known = r.knownData ? 'KNOWN DATA: ' + JSON.stringify(r.knownData) : '';
+    const parts = [r.title, r.description, r.bodyText && r.bodyText.slice(0, 1500), (r.internalTexts || []).join(' ').slice(0, 1500)].filter(Boolean).join('. ');
+    return '[' + (i + 1) + '] ' + known + '\nCONTENT: ' + parts;
+  }).join('\n\n---\n\n');
+
+  const colList = targetColumns.join(', ');
+
+  const prompt = 'You are a data enrichment agent. For each row below, extract information into these columns: ' + colList + '.\n\n' + batchContent + '\n\nRules:\n1. Clean up FIRSTNAME if it contains "First Last" -> split into FIRSTNAME and LASTNAME.\n2. Only fill a field if directly supported by the scraped content or known data.\n3. For generic email domains (gmail, yahoo, etc.), try to find the person by name + email. For business domains, search the company site.\n4. If you cannot verify a field, leave it empty - do not guess.\n5. Return a JSON array with one object per row (same order). Each object has keys matching the target columns plus a "confidence" field ("high", "medium", "low", or "none").\n6. If confidence is "none", set all enriched fields to empty (except name cleanup).\n7. CONTEXT should contain a 2-3 sentence summary of what the person/company does.\n\nReturn ONLY valid JSON array.';
+
+  try {
+    const ai = new MultiProviderAI();
+    const text = await ai.generate(prompt, { maxTokens: 6000, jsonMode: true });
+    const parsed = ai.parseAiJson(text);
+    if (Array.isArray(parsed)) {
+      return parsed.map(r => {
+        if (!r || typeof r !== 'object') return null;
+        const out = {};
+        for (const col of targetColumns) {
+          out[col] = ai.sanitizeAiPlainText(String(r[col] || ''), 2000);
+        }
+        out.confidence = String(r.confidence || 'low').toLowerCase();
+        if (out.confidence === 'none') {
+          for (const col of targetColumns) {
+            if (col !== 'FIRSTNAME' && col !== 'LASTNAME') out[col] = '';
+          }
+        }
+        return out;
+      }).filter(Boolean);
+    }
+    if (typeof ai._salvageJsonArray === 'function') {
+      const salvaged = ai._salvageJsonArray(text);
+      if (Array.isArray(salvaged) && salvaged.length) {
+        return salvaged.map(r => {
+          const out = {};
+          for (const col of targetColumns) out[col] = ai.sanitizeAiPlainText(String(r && r[col] || ''), 2000);
+          out.confidence = String(r && r.confidence || 'low').toLowerCase();
+          return out;
+        });
+      }
+    }
+  } catch (err) {
+    logger.warn('[Enrich] Batch AI analysis failed: ' + err.message);
+  }
+  return [];
+}
+
+async function reviewBatchWithAI(extracted, scrapedData) {
+  if (!extracted || extracted.length === 0) return extracted;
+  const reviewContent = extracted.map((r, i) => {
+    const source = scrapedData[i] ? (scrapedData[i].bodyText || '').slice(0, 1000) : '';
+    return '[' + (i + 1) + '] EXTRACTED: ' + JSON.stringify(r) + '\nSOURCE: ' + source;
+  }).join('\n\n');
+
+  const prompt = 'Review these extracted data points against their source content. Remove any field not directly supported by the source. Adjust confidence. Return the corrected JSON array (same structure, same order).\n\n' + reviewContent + '\n\nReturn ONLY valid JSON array with the same keys plus "confidence".';
+
+  try {
+    const ai = new MultiProviderAI();
+    const text = await ai.generate(prompt, { maxTokens: 4000, jsonMode: true });
+    const parsed = ai.parseAiJson(text);
+    if (Array.isArray(parsed) && parsed.length === extracted.length) {
+      return parsed.map((r, i) => {
+        if (!r || typeof r !== 'object') return extracted[i];
+        const out = Object.assign({}, extracted[i]);
+        for (const key of Object.keys(r)) {
+          if (r[key] !== undefined && r[key] !== null && r[key] !== '') {
+            out[key] = (typeof r[key] === 'string') ? r[key] : String(r[key]);
+          }
+        }
+        out.confidence = String(r.confidence || extracted[i].confidence || 'low').toLowerCase();
+        return out;
+      });
+    }
+  } catch (err) {
+    logger.warn('[Enrich] Review pass failed: ' + err.message);
+  }
+  return extracted;
 }
