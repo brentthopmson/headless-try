@@ -414,37 +414,52 @@ async function enrichOneRow({ row, headers, ai, enrichmentContext, scrapeConcurr
   return { status, updated, confidence: finalRes.confidence || "none" };
 }
 
-async function runEnrichmentRange({ rows, headers, start, end, campaignId, enrichmentContext, log, fileId, onCheckpoint, stageUserIdForUsage }) {
+async function runEnrichmentRange({ rows, headers, start, end, campaignId, enrichmentContext, log, fileId, onCheckpoint, concurrency = 1 }) {
   ensureColumn(headers, rows, "enrichmentStatus");
-  const ai = new MultiProviderAI();
+  const limit = Math.max(1, parseInt(concurrency, 10) || 1);
   let processed = 0, enriched = 0, noData = 0, skipped = 0;
 
+  // Build pending row indexes in range (resumable)
+  const pending = [];
   for (let i = start; i < end; i++) {
     const idx = i + 1; // header offset
     if (idx >= rows.length) break;
     const row = rows[idx];
-
-    // do not pause mid-stage for validate/enrich/personalize (policy)
-    // resumability: skip finalized rows
     if (isRowEnrichedFinal(row, headers)) { skipped++; continue; }
+    pending.push(i);
+  }
 
+  const runOne = async (i) => {
+    const idx = i + 1;
+    const row = rows[idx];
+    const ai = new MultiProviderAI();
     try {
       const res = await enrichOneRow({ row, headers, ai, enrichmentContext, scrapeConcurrency: 6 });
-      setCell(row, headers, "enrichmentStatus", res.status);
-      if (res.status === "enriched") enriched++; else noData++;
-      processed++;
-      log.info(`[Row ${i}] enrichment ${res.status} conf=${res.confidence || "n/a"}`);
+      return { i, status: res.status || 'no_data', confidence: res.confidence || 'none' };
     } catch (e) {
-      // per-row isolation: mark no_data for now? better to leave unfinalized so resume can retry; but to avoid blocking completion forever on hard errors, mark no_data after logging
       log.warn(`[Row ${i}] enrichment error: ${e.message}`);
-      setCell(row, headers, "enrichmentStatus", "no_data");
-      noData++; processed++;
+      return { i, status: 'no_data', confidence: 'error', error: e.message };
+    }
+  };
+
+  for (let cursor = 0; cursor < pending.length; cursor += limit) {
+    const wave = pending.slice(cursor, cursor + limit);
+    const settled = await Promise.allSettled(wave.map(i => runOne(i)));
+    for (let w = 0; w < settled.length; w++) {
+      const i = wave[w];
+      const idx = i + 1;
+      if (idx >= rows.length) continue;
+      const row = rows[idx];
+      if (isRowEnrichedFinal(row, headers)) { skipped++; continue; }
+      const val = settled[w].status === 'fulfilled' ? settled[w].value : { i, status: 'no_data', confidence: 'error' };
+      setCell(row, headers, "enrichmentStatus", val.status === 'enriched' ? 'enriched' : 'no_data');
+      if (val.status === 'enriched') enriched++; else noData++;
+      processed++;
+      log.info(`[Row ${i}] enrichment ${val.status === 'enriched' ? 'enriched' : 'no_data'} conf=${val.confidence || "n/a"}`);
     }
 
-    if (processed % 5 === 0) {
-      if (onCheckpoint) await onCheckpoint(i + 1, { processed, enriched, noData, skipped });
-      else if (fileId) await mergeAndFlush(campaignId, 'enrich', rows, fileId);
-    }
+    if (onCheckpoint) await onCheckpoint(Math.min(wave[wave.length - 1] + 1, end), { processed, enriched, noData, skipped });
+    else if (fileId) await mergeAndFlush(campaignId, 'enrich', rows, fileId);
   }
 
   // final checkpoint flush
@@ -486,18 +501,19 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
   ensureColumn(headers, rows, "enrichmentStatus");
   const dataRows = rows.slice(1);
 
-  // quota/limits
+  // batch limits = concurrency over FULL dataset (never total scope/truncation)
   const campaignLimits = await getCampaignLimits();
   if (!(campaignLimits.enrichLimit > 0)) {
     return NextResponse.json({ success: true, limitReached: true, message: "Enrichment blocked: enrichBatchLimit is 0 - set it in the SETTINGS sheet" });
   }
-  const maxRows = Math.min(dataRows.length, campaignLimits.enrichLimit);
+  const enrichConcurrency = Math.max(1, parseInt(campaignLimits.enrichLimit, 10) || 1);
+  const totalRows = dataRows.length;
 
-  // multi-server dispatch only if nothing processed yet (simple heuristic)
+  // multi-server dispatch over full dataset when nothing processed yet
   if (await isMultiServerEnabled()) {
-    const noneProcessed = dataRows.slice(0, maxRows).every(r => !String(getCell(r, headers, "enrichmentStatus") || "").trim());
+    const noneProcessed = dataRows.every(r => !String(getCell(r, headers, "enrichmentStatus") || "").trim());
     if (noneProcessed) {
-      const dispatchResult = await dispatchToServers(campaignId, 'enrich', fileUrl, maxRows);
+      const dispatchResult = await dispatchToServers(campaignId, 'enrich', fileUrl, totalRows);
       if (dispatchResult) {
         return NextResponse.json({ success: true, processing: true, dispatched: true, servers: dispatchResult.servers });
       }
@@ -505,20 +521,20 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
   }
 
   const stats = await runEnrichmentRange({
-    rows, headers, start: 0, end: maxRows, campaignId, enrichmentContext, log, fileId,
+    rows, headers, start: 0, end: totalRows, campaignId, enrichmentContext, log, fileId, concurrency: enrichConcurrency,
   });
 
-  const complete = isRangeFullyEnriched(rows, headers, 0, maxRows);
+  const complete = isRangeFullyEnriched(rows, headers, 0, totalRows);
   if (!complete) {
     await updateCampaignSettings(campaignId, { enrichmentStatus: "processing" });
     return NextResponse.json({ success: true, processing: true, completed: false, message: "Enrichment incomplete - remaining rows pending", stats });
   }
 
   await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
-  if (stageUserId && maxRows > 0) {
-    try { await updateUserUsage(stageUserId, "enrichUsage", maxRows); } catch (e) { log.warn(`[user-limit] enrichUsage increment failed: ${e.message}`); }
+  if (stageUserId && totalRows > 0) {
+    try { await updateUserUsage(stageUserId, "enrichUsage", totalRows); } catch (e) { log.warn(`[user-limit] enrichUsage increment failed: ${e.message}`); }
   }
-  return NextResponse.json({ success: true, completed: true, message: "Campaign enrichment completed", total: maxRows, stats });
+  return NextResponse.json({ success: true, completed: true, message: "Campaign enrichment completed", total: totalRows, stats });
 }
 
 async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
@@ -541,10 +557,13 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
 
   const rowStart = Math.max(0, parseInt(serverBatch?.rowStart || 0));
   const rowEnd = Math.min(rows.length - 1, parseInt(serverBatch?.rowEnd || (rows.length - 1)));
+  const campaignLimits = await getCampaignLimits();
+  const enrichConcurrency = Math.max(1, parseInt(campaignLimits.enrichLimit || 1, 10) || 1);
 
   try {
     const stats = await runEnrichmentRange({
       rows, headers, start: rowStart, end: rowEnd, campaignId, enrichmentContext, log, fileId,
+      concurrency: enrichConcurrency,
       onCheckpoint: async (processedUpTo, s) => {
         await updateMyAssignment(campaignId, 'enrich', { processedUpTo, ...s });
         await mergeAndFlush(campaignId, 'enrich', rows, fileId);

@@ -351,20 +351,62 @@ async function verifyEmailWithRetries(email, platformName, config, log, maxAttem
   return last;
 }
 
+const PLATFORM_CHECKED_INCONCLUSIVE = '|pv=inconclusive';
+function hasPlatformInconclusiveMarker(row, providerMXIdx) {
+  return String(row?.[providerMXIdx] || '').includes(PLATFORM_CHECKED_INCONCLUSIVE);
+}
+function markPlatformInconclusive(row, providerMXIdx, platformName) {
+  const base = String(row[providerMXIdx] || platformName || 'mx').replace(PLATFORM_CHECKED_INCONCLUSIVE, '').trim();
+  row[providerMXIdx] = `${base}${PLATFORM_CHECKED_INCONCLUSIVE}`;
+}
 function isMxFinal(status) {
   return status === 'invalid_domain' || status === 'no_mx' || status === 'invalid_format' || status === 'empty';
 }
 function isPlatformFinal(status) {
   return status === 'verified_exists' || status === 'not_exists' || status === 'platform_no_selector';
 }
-function isRowValidationFinal(status, platformEligible) {
+function isRowValidationFinal(status, platformEligible, platformCheckedInconclusive = false) {
   if (!status) return false;
   if (status === 'duplicate' || status === 'social_valid' || status === 'social_no_platform') return true;
   if (isMxFinal(status)) return true;
-  if (status === 'valid_mx') return !platformEligible; // valid_mx is final only when not platform-eligible
+  if (status === 'valid_mx') return !platformEligible || platformCheckedInconclusive; // inconclusive after platform check => terminal resolved valid_mx
   if (isPlatformFinal(status)) return true;
-  // 'unverifiable' treated as not-final to force retry unless we explicitly decide; but we avoid producing it now.
   return false;
+}
+
+async function mapWithConcurrency(items, concurrency, fn) {
+  const limit = Math.max(1, parseInt(concurrency, 10) || 1);
+  const results = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const idx = next++;
+      try { results[idx] = await fn(items[idx], idx); }
+      catch (e) { results[idx] = { __error: e }; }
+    }
+  };
+  const workers = Array.from({ length: Math.min(limit, items.length || 1) }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
+
+async function resolveMxCached(domain, mxCache) {
+  if (mxCache.has(domain)) return mxCache.get(domain);
+  try {
+    const mxRecords = await resolveMx(domain);
+    if (mxRecords && mxRecords.length > 0) {
+      const val = { status: 'valid_mx', mx: mxRecords[0].exchange || 'mx' };
+      mxCache.set(domain, val);
+      return val;
+    }
+    const val = { status: 'no_mx', mx: 'none' };
+    mxCache.set(domain, val);
+    return val;
+  } catch (err) {
+    const val = { status: 'invalid_domain', mx: 'error', err: err.message };
+    mxCache.set(domain, val);
+    return val;
+  }
 }
 
 async function runMxValidation({ rows, rowStart, rowEnd, emailColIdx, validationIdx, providerMXIdx, campaignId, log, fileId, mxBatchSize, onCheckpoint }) {
@@ -372,19 +414,34 @@ async function runMxValidation({ rows, rowStart, rowEnd, emailColIdx, validation
   let validCount = 0;
   let invalidCount = 0;
   let paused = false;
-  let processedUpTo = rowStart;
+  const concurrency = Math.max(1, parseInt(mxBatchSize, 10) || 1);
 
+  // Prefill cache from already-resolved rows in range (resumable)
   for (let i = rowStart; i < rowEnd; i++) {
     const fullIdx = i + 1;
     if (fullIdx >= rows.length) break;
     const row = rows[fullIdx];
-    processedUpTo = i;
+    const existing = String(row[validationIdx] || '').trim();
+    const email = String(row[emailColIdx] || '').trim();
+    if (existing === 'valid_mx' || isMxFinal(existing) || isPlatformFinal(existing)) {
+      if (existing === 'valid_mx') validCount++; else if (isMxFinal(existing)) invalidCount++;
+      const parts = email.split('@');
+      if (parts.length === 2) {
+        const domain = parts[1].toLowerCase().trim();
+        if (domain && !mxCache.has(domain)) {
+          mxCache.set(domain, { status: existing === 'valid_mx' ? 'valid_mx' : existing, mx: row[providerMXIdx] || (existing === 'valid_mx' ? '' : 'error') });
+        }
+      }
+    }
+  }
 
-    if (await isCampaignPaused(campaignId, 'validate')) { paused = true; break; }
-
+  const pendingIndexes = [];
+  for (let i = rowStart; i < rowEnd; i++) {
+    const fullIdx = i + 1;
+    if (fullIdx >= rows.length) break;
+    const row = rows[fullIdx];
     const existing = String(row[validationIdx] || '').trim();
     if (existing === 'duplicate') continue;
-
     const email = String(row[emailColIdx] || '').trim();
     if (!email) {
       row[validationIdx] = 'empty';
@@ -392,76 +449,68 @@ async function runMxValidation({ rows, rowStart, rowEnd, emailColIdx, validation
       log.info(`[Row MX] (row ${i + 1}) empty: empty`);
       continue;
     }
-
-    // Skip if MX already resolved (resumable)
-    if (existing === 'valid_mx' || isMxFinal(existing) || isPlatformFinal(existing)) {
-      if (existing === 'valid_mx') validCount++; else if (isMxFinal(existing)) invalidCount++;
-      // cache domain result if possible
-      const parts = email.split('@');
-      if (parts.length === 2) {
-        const domain = parts[1].toLowerCase().trim();
-        if (domain && !mxCache.has(domain) && (existing === 'valid_mx' || isMxFinal(existing))) {
-          mxCache.set(domain, { status: existing === 'valid_mx' ? 'valid_mx' : existing, mx: row[providerMXIdx] || (existing === 'valid_mx' ? '' : 'error') });
-        }
-      }
-      continue;
-    }
-
-    const parts = email.split('@');
-    if (parts.length !== 2) {
-      row[validationIdx] = 'invalid_format';
-      log.info(`[Row MX] ${email}: invalid_format`);
-      invalidCount++;
-      continue;
-    }
-
-    const domain = parts[1].toLowerCase().trim();
-
-    if (mxCache.has(domain)) {
-      const cached = mxCache.get(domain);
-      row[validationIdx] = cached.status;
-      row[providerMXIdx] = cached.mx;
-      if (cached.status === 'valid_mx') validCount++; else invalidCount++;
-      log.info(`[Row MX] ${email}: ${cached.status} (cached)`);
-    } else {
-      try {
-        const mxRecords = await resolveMx(domain);
-        if (mxRecords && mxRecords.length > 0) {
-          row[validationIdx] = 'valid_mx';
-          row[providerMXIdx] = mxRecords[0].exchange || 'mx';
-          mxCache.set(domain, { status: 'valid_mx', mx: row[providerMXIdx] });
-          log.info(`[Row MX] ${email}: valid_mx (${row[providerMXIdx]})`);
-          validCount++;
-        } else {
-          row[validationIdx] = 'no_mx';
-          row[providerMXIdx] = 'none';
-          mxCache.set(domain, { status: 'no_mx', mx: 'none' });
-          log.info(`[Row MX] ${email}: no_mx`);
-          invalidCount++;
-        }
-      } catch (err) {
-        row[validationIdx] = 'invalid_domain';
-        row[providerMXIdx] = 'error';
-        mxCache.set(domain, { status: 'invalid_domain', mx: 'error' });
-        log.info(`[Row MX] ${email}: invalid_domain (${err.message})`);
-        invalidCount++;
-      }
-    }
-
-    if ((i - rowStart + 1) % mxBatchSize === 0) {
-      if (onCheckpoint) await onCheckpoint(i + 1);
-      else if (fileId) await mergeAndFlush(campaignId, 'validate', rows, fileId);
-    }
+    if (existing === 'valid_mx' || isMxFinal(existing) || isPlatformFinal(existing)) continue;
+    pendingIndexes.push(i);
   }
 
-  return { paused, processedUpTo: paused ? processedUpTo : rowEnd, validCount, invalidCount, mxCache };
+  for (let cursor = 0; cursor < pendingIndexes.length; cursor += concurrency) {
+    if (await isCampaignPaused(campaignId, 'validate')) { paused = true; break; }
+    const wave = pendingIndexes.slice(cursor, cursor + concurrency);
+
+    // Resolve unique domains in parallel for this wave
+    const domainsToResolve = [];
+    const seen = new Set();
+    for (const i of wave) {
+      const row = rows[i + 1];
+      const email = String(row[emailColIdx] || '').trim();
+      const parts = email.split('@');
+      if (parts.length !== 2) continue;
+      const domain = parts[1].toLowerCase().trim();
+      if (!domain || mxCache.has(domain) || seen.has(domain)) continue;
+      seen.add(domain);
+      domainsToResolve.push(domain);
+    }
+    await mapWithConcurrency(domainsToResolve, concurrency, async (domain) => resolveMxCached(domain, mxCache));
+
+    // Apply results
+    for (const i of wave) {
+      const fullIdx = i + 1;
+      const row = rows[fullIdx];
+      const email = String(row[emailColIdx] || '').trim();
+      const parts = email.split('@');
+      if (parts.length !== 2) {
+        row[validationIdx] = 'invalid_format';
+        log.info(`[Row MX] ${email}: invalid_format`);
+        invalidCount++;
+        continue;
+      }
+      const domain = parts[1].toLowerCase().trim();
+      const cached = mxCache.get(domain);
+      if (!cached) continue;
+      row[validationIdx] = cached.status;
+      row[providerMXIdx] = cached.mx;
+      if (cached.status === 'valid_mx') {
+        validCount++;
+        log.info(`[Row MX] ${email}: valid_mx (${cached.mx})`);
+      } else {
+        invalidCount++;
+        log.info(`[Row MX] ${email}: ${cached.status}${cached.err ? ` (${cached.err})` : ''}`);
+      }
+    }
+
+    // checkpoint/flush each wave
+    if (onCheckpoint) await onCheckpoint(Math.min(wave[wave.length - 1] + 1, rowEnd));
+    else if (fileId) await mergeAndFlush(campaignId, 'validate', rows, fileId).catch(() => uploadCsvText(fileId, stringifyCSV(rows)).catch(()=>{}));
+  }
+
+  return { paused, processedUpTo: paused ? -1 : rowEnd, validCount, invalidCount, mxCache };
 }
 
 async function runPlatformVerification({ rows, rowStart, rowEnd, emailColIdx, validationIdx, providerMXIdx, campaignId, log, fileId, platformBatchSize, onCheckpoint }) {
   let paused = false;
-  let processedUpTo = rowStart;
+  const concurrency = Math.max(1, parseInt(platformBatchSize, 10) || 1);
 
-  // Build list of rows needing platform verification
+  // Build list of rows needing platform verification (skip already-checked inconclusive terminal)
   const pending = [];
   for (let i = rowStart; i < rowEnd; i++) {
     const fullIdx = i + 1;
@@ -469,6 +518,7 @@ async function runPlatformVerification({ rows, rowStart, rowEnd, emailColIdx, va
     const row = rows[fullIdx];
     const status = String(row[validationIdx] || '').trim();
     if (status !== 'valid_mx') continue; // only verify rows still at valid_mx
+    if (hasPlatformInconclusiveMarker(row, providerMXIdx)) continue; // terminal resolved (MX-valid, inconclusive platform)
     const email = String(row[emailColIdx] || '').trim();
     if (!email || !email.includes('@')) continue;
     const domain = email.split('@')[1].toLowerCase().trim();
@@ -479,51 +529,54 @@ async function runPlatformVerification({ rows, rowStart, rowEnd, emailColIdx, va
 
   if (pending.length === 0) return { paused: false, processedUpTo: rowEnd, verified: 0, notExists: 0, inconclusive: 0 };
 
-  log.info(` Platform verification: ${pending.length} eligible valid_mx row(s)`);
+  log.info(` Platform verification: ${pending.length} eligible valid_mx row(s), concurrency=${concurrency}`);
 
-  const batchCount = Math.ceil(pending.length / platformBatchSize);
   let verified = 0, notExists = 0, inconclusive = 0;
 
-  for (let b = 0; b < batchCount; b++) {
+  for (let start = 0; start < pending.length; start += concurrency) {
     if (await isCampaignPaused(campaignId, 'validate')) { paused = true; break; }
-    const start = b * platformBatchSize;
-    const end = Math.min(start + platformBatchSize, pending.length);
-    const batch = pending.slice(start, end);
+    const batch = pending.slice(start, start + concurrency);
 
-    for (const item of batch) {
-      if (await isCampaignPaused(campaignId, 'validate')) { paused = true; break; }
-      processedUpTo = item.i;
-
+    const results = await mapWithConcurrency(batch, concurrency, async (item) => {
       // Re-check in case state changed
-      if (String(item.row[validationIdx] || '').trim() !== 'valid_mx') continue;
-
+      if (String(item.row[validationIdx] || '').trim() !== 'valid_mx' || hasPlatformInconclusiveMarker(item.row, providerMXIdx)) {
+        return { status: 'skipped' };
+      }
       const result = await verifyEmailWithRetries(item.email, item.platformName, item.config, log, 2);
-      if (result.status === 'not_exists') {
+      return { status: result.status, detail: result.detail, item };
+    });
+
+    for (let bi = 0; bi < batch.length; bi++) {
+      const res = results[bi] || { status: 'skipped' };
+      const item = batch[bi];
+      if (res.status === 'skipped') continue;
+      if (res.status === 'not_exists') {
         item.row[validationIdx] = 'not_exists';
-        item.row[providerMXIdx] = item.row[providerMXIdx] || item.platformName;
+        item.row[providerMXIdx] = String(item.row[providerMXIdx] || '').replace(PLATFORM_CHECKED_INCONCLUSIVE, '') || item.platformName;
         notExists++;
-      } else if (result.status === 'verified_exists') {
+      } else if (res.status === 'verified_exists') {
         item.row[validationIdx] = 'verified_exists';
-        // keep MX host in providerMXResult if present, otherwise set platform
-        if (!item.row[providerMXIdx]) item.row[providerMXIdx] = item.platformName;
+        const cleaned = String(item.row[providerMXIdx] || '').replace(PLATFORM_CHECKED_INCONCLUSIVE, '').trim();
+        item.row[providerMXIdx] = cleaned || item.platformName;
         verified++;
       } else {
-        // Inconclusive after retries: keep valid_mx floor (do NOT mark unverifiable/contradict valid MX)
+        // Inconclusive after retries: finalize as terminal valid_mx (MX-valid, resolved, send-eligible)
+        // Mark so we don't re-verify forever and completion can be reached without false not_exists.
         item.row[validationIdx] = 'valid_mx';
+        markPlatformInconclusive(item.row, providerMXIdx, item.platformName);
         inconclusive++;
-        log.warn(`[Row verify] ${item.email} @${item.platformName}: inconclusive after retries (${result.detail}) - keeping valid_mx`);
+        log.warn(`[Row verify] ${item.email} @${item.platformName}: inconclusive after retries (${res.detail || 'unknown'}) - finalizing as valid_mx (terminal)`);
       }
-
-      // Flush periodically per row-batch checkpoint
     }
 
     if (paused) break;
 
-    if (onCheckpoint) await onCheckpoint(batch[batch.length - 1].i + 1);
-    else if (fileId) await mergeAndFlush(campaignId, 'validate', rows, fileId);
+    const checkpointIdx = batch[batch.length - 1].i + 1;
+    if (onCheckpoint) await onCheckpoint(checkpointIdx);
+    else if (fileId) await mergeAndFlush(campaignId, 'validate', rows, fileId).catch(() => uploadCsvText(fileId, stringifyCSV(rows)).catch(()=>{}));
   }
 
-  return { paused, processedUpTo: paused ? processedUpTo : rowEnd, verified, notExists, inconclusive };
+  return { paused, processedUpTo: paused ? -1 : rowEnd, verified, notExists, inconclusive };
 }
 
 function computeValidationStats(dataRows, validationIdx) {
@@ -557,7 +610,7 @@ function computeValidationStats(dataRows, validationIdx) {
   return stats;
 }
 
-function isValidationFullyComplete(dataRows, emailColIdx, validationIdx) {
+function isValidationFullyComplete(dataRows, emailColIdx, validationIdx, providerMXIdx = -1) {
   for (const row of dataRows) {
     const status = String(row[validationIdx] || '').trim();
     if (!status) return false;
@@ -565,7 +618,9 @@ function isValidationFullyComplete(dataRows, emailColIdx, validationIdx) {
       const email = String(row[emailColIdx] || '').trim();
       const domain = email.includes('@') ? email.split('@')[1].toLowerCase().trim() : '';
       const platformEligible = domain ? !!detectPlatform(domain) : false;
-      if (platformEligible) return false; // still needs platform verification
+      if (platformEligible && (providerMXIdx === -1 || !hasPlatformInconclusiveMarker(row, providerMXIdx))) {
+        return false; // still needs platform verification (not yet checked/finalized)
+      }
     }
     // any non-final transitional states
     if (status === 'unverifiable' || status === 'processing') return false;
@@ -655,22 +710,17 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   const providerMXIdx = headers.indexOf("providerMXResult");
   if (emailColIdx === -1) throw new Error("EMAIL column not found in 88-column schema");
 
-  const dataRows = normalizedRows.slice(1);
-
-  // Per-run cap from SETTINGS (validateBatchLimit)
+  // IMPORTANT: batch limits are concurrency/parallelism over the FULL dataset (never truncation/total caps).
   const campaignLimits = await getCampaignLimits();
   if (!(campaignLimits.validateLimit > 0)) {
     log.info(` validateBatchLimit is 0 or unavailable, blocking validation`);
     return NextResponse.json({ success: true, limitReached: true, message: "Validation blocked: validateBatchLimit is 0 - set it in the SETTINGS sheet" });
   }
+  const validateConcurrency = Math.max(1, parseInt(campaignLimits.validateLimit, 10) || 1);
+
+  const dataRows = normalizedRows.slice(1);
   const originalCount = dataRows.length;
-  let limitApplied = false;
-  if (dataRows.length > campaignLimits.validateLimit) {
-    dataRows.length = campaignLimits.validateLimit;
-    normalizedRows.length = campaignLimits.validateLimit + 1; // header + limited rows
-    limitApplied = true;
-    log.info(` validateLimit (${campaignLimits.validateLimit}) applied: ${originalCount} → ${dataRows.length} rows`);
-  }
+  const limitApplied = false; // no truncation
 
   // Dedup by email (only for rows not already finalized as duplicate)
   const uniqueEmails = new Map();
@@ -682,7 +732,6 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
     if (!email) continue;
     if (existing === 'duplicate') { duplicateCount++; uniqueEmails.set(email, i); continue; }
     if (uniqueEmails.has(email)) {
-      // don't overwrite if this row is already fully finalized for some reason; but duplicates take precedence as dedup marker
       row[validationIdx] = "duplicate";
       log.info(`[Row ${i + 1}] ${email}: duplicate`);
       duplicateCount++;
@@ -712,7 +761,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   // Mark processing (do not mark completed yet)
   await updateCampaignSettings(campaignId, { validationStatus: "processing" });
 
-  // Multi-server dispatch (only if starting fresh enough? keep existing behavior)
+  // Multi-server dispatch over full dataset
   if (await isMultiServerEnabled()) {
     const dispatchResult = await dispatchToServers(campaignId, 'validate', fileUrl, dataRows.length);
     if (dispatchResult) {
@@ -726,17 +775,17 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
     }
   }
 
-  log.info(` MX batch=${MX_BATCH_SIZE}, platform batch=${PLATFORM_BATCH_SIZE}, platform verification=${PLATFORM_VERIFICATION_ENABLED}`);
-  log.info(` Processing ${dataRows.length} rows (single-server)`);
+  log.info(` MX/platform concurrency=${validateConcurrency} (MX batch=${MX_BATCH_SIZE}, platform batch=${PLATFORM_BATCH_SIZE}, platform verification=${PLATFORM_VERIFICATION_ENABLED})`);
+  log.info(` Processing ${dataRows.length} rows (single-server, full dataset)`);
 
-  // MX validation (resumable - skips finalized rows)
+  // MX validation (resumable - skips finalized rows), concurrent waves over full dataset
   const mxResult = await runMxValidation({
     rows: normalizedRows,
     rowStart: 0,
     rowEnd: dataRows.length,
     emailColIdx, validationIdx, providerMXIdx,
     campaignId, log, fileId,
-    mxBatchSize: MX_BATCH_SIZE,
+    mxBatchSize: validateConcurrency,
   });
 
   if (mxResult.paused || await isCampaignPaused(campaignId, 'validate')) {
@@ -748,7 +797,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   // Flush after MX
   await mergeAndFlush(campaignId, 'validate', normalizedRows, fileId).catch(() => uploadCsvText(fileId, stringifyCSV(normalizedRows)).catch(()=>{}));
 
-  // Platform verification (only for rows still valid_mx and eligible)
+  // Platform verification (concurrent), terminal resolution for inconclusive as valid_mx
   let platformResult = { paused: false, verified: 0, notExists: 0, inconclusive: 0 };
   if (PLATFORM_VERIFICATION_ENABLED) {
     platformResult = await runPlatformVerification({
@@ -757,7 +806,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
       rowEnd: dataRows.length,
       emailColIdx, validationIdx, providerMXIdx,
       campaignId, log, fileId,
-      platformBatchSize: Math.max(1, PLATFORM_BATCH_SIZE),
+      platformBatchSize: Math.max(1, validateConcurrency),
     });
   }
 
@@ -770,9 +819,9 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   // Final flush
   await mergeAndFlush(campaignId, 'validate', normalizedRows, fileId).catch(() => uploadCsvText(fileId, stringifyCSV(normalizedRows)).catch(()=>{}));
 
-  const complete = isValidationFullyComplete(dataRows, emailColIdx, validationIdx);
+  const complete = isValidationFullyComplete(dataRows, emailColIdx, validationIdx, providerMXIdx);
   const stats = computeValidationStats(dataRows, validationIdx);
-  log.info(` Validation stats: ${JSON.stringify(stats)} complete=${complete}`);
+  log.info(` Validation stats: ${JSON.stringify(stats)} complete=${complete} rows=${dataRows.length}`);
 
   if (!complete) {
     // Do NOT mark completed or advance; leave for retry/resume
@@ -781,20 +830,20 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
       success: true,
       processing: true,
       completed: false,
-      message: "Validation incomplete - some rows still pending platform verification",
+      message: "Validation incomplete - remaining rows pending/resumable",
       stats,
     });
   }
 
-  // Only now mark completed
+  // Only now mark completed (all rows resolved)
   await updateCampaignSettings(campaignId, { validationStatus: "completed" });
 
-  // Usage accounting (single-server run)
+  // Usage accounting (single-server run over full dataset)
   if (stageUserId && dataRows.length > 0) {
     try { await updateUserUsage(stageUserId, "validateUsage", dataRows.length); } catch (e) { log.warn(`[user-limit] validateUsage increment failed: ${e.message}`); }
   }
 
-  return NextResponse.json({ success: true, completed: true, message: "Campaign email validation completed successfully", stats, limitApplied, originalCount: originalCount, processedCount: dataRows.length });
+  return NextResponse.json({ success: true, completed: true, message: "Campaign email validation completed successfully", stats, limitApplied, originalCount, processedCount: dataRows.length });
 }
 
 async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
@@ -830,7 +879,9 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
   if (emailColIdx === -1) throw new Error("EMAIL column not found");
 
   const { rowStart, rowEnd } = serverBatch;
-  log.info(`[Worker] Processing rows ${rowStart}-${rowEnd - 1}`);
+  const campaignLimits = await getCampaignLimits();
+  const validateConcurrency = Math.max(1, parseInt(campaignLimits.validateLimit || MX_BATCH_SIZE || 1, 10) || 1);
+  log.info(`[Worker] Processing rows ${rowStart}-${rowEnd - 1} (concurrency=${validateConcurrency})`);
 
   let wasPaused = false;
   let mxResult = { validCount: 0, invalidCount: 0 };
@@ -842,10 +893,10 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
       rowStart, rowEnd,
       emailColIdx, validationIdx, providerMXIdx,
       campaignId, log, fileId,
-      mxBatchSize: MX_BATCH_SIZE,
+      mxBatchSize: validateConcurrency,
       onCheckpoint: async (processedUpTo) => {
         await updateMyAssignment(campaignId, 'validate', { processedUpTo });
-        await mergeAndFlush(campaignId, 'validate', normalizedRows, fileId);
+        await mergeAndFlush(campaignId, 'validate', normalizedRows, fileId).catch(() => uploadCsvText(fileId, stringifyCSV(normalizedRows)).catch(()=>{}));
       }
     });
 
@@ -857,10 +908,10 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
         rowStart, rowEnd,
         emailColIdx, validationIdx, providerMXIdx,
         campaignId, log, fileId,
-        platformBatchSize: Math.max(1, PLATFORM_BATCH_SIZE),
+        platformBatchSize: validateConcurrency,
         onCheckpoint: async (processedUpTo) => {
           await updateMyAssignment(campaignId, 'validate', { processedUpTo });
-          await mergeAndFlush(campaignId, 'validate', normalizedRows, fileId);
+          await mergeAndFlush(campaignId, 'validate', normalizedRows, fileId).catch(() => uploadCsvText(fileId, stringifyCSV(normalizedRows)).catch(()=>{}));
         }
       });
       if (platformResult.paused || await isCampaignPaused(campaignId, 'validate')) wasPaused = true;
@@ -875,7 +926,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
 
   const assignmentUpdates = {
     status: wasPaused ? 'paused' : 'completed',
-    processedUpTo: wasPaused ? Math.max(rowStart, mxResult.processedUpTo || rowStart) : rowEnd,
+    processedUpTo: wasPaused ? Math.max(rowStart, typeof mxResult.processedUpTo === 'number' && mxResult.processedUpTo >= 0 ? mxResult.processedUpTo : rowStart) : rowEnd,
     validMx: mxResult.validCount || 0,
     invalidMx: mxResult.invalidCount || 0,
   };
@@ -887,7 +938,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
     if (allDone) {
       // Verify global completion before marking/advancing
       const allDataRows = normalizedRows.slice(1);
-      const complete = isValidationFullyComplete(allDataRows, emailColIdx, validationIdx);
+      const complete = isValidationFullyComplete(allDataRows, emailColIdx, validationIdx, providerMXIdx);
       if (complete) {
         await updateCampaignSettings(campaignId, { validationStatus: "completed" });
         log.info(` All workers complete — validation finished`);

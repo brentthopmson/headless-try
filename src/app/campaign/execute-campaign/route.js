@@ -27,10 +27,10 @@ import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
 import { calculateScheduleTimes } from "../../../utils/scheduleCalculator.js";
 import { detectEmailProvider } from "../../../utils/sendRateLimiter.js";
 
-// â”€â”€ Re-entrancy guard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬ Re-entrancy guard Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 // The orchestrator retries a timed-out execute POST (~300s undici
 // headersTimeout). Without this guard the retry re-runs the whole campaign
-// (duplicate queueSocialTask â†’ duplicate profile downloads). A second POST
+// (duplicate queueSocialTask Ã¢â€ â€™ duplicate profile downloads). A second POST
 // for a campaignId that is already executing short-circuits to skipped.
 const _executingCampaigns = new Set();
 
@@ -76,7 +76,7 @@ function normalizeRestingState(settings, finalStatus, { defaultMs = 15 * 60 * 10
  * Per-server fan-out completion bookkeeping. Each scoped run registers its
  * finished accounts under its serverScope; the campaign-level `status` column
  * flips only once every account in the FULL list has been covered by some
- * scope â€” no premature "completed" while sibling servers still run.
+ * scope Ã¢â‚¬â€ no premature "completed" while sibling servers still run.
  * @returns {Promise<{ allDone: boolean }>}
  */
 async function finalizeScopedRun(campaignId, serverScope, scopedAccounts, finalStatus, restMeta = {}) {
@@ -257,7 +257,7 @@ function columnIndexToLetter(index) {
 const KNOWN_SOCIAL_PLATFORMS = ['tiktok', 'twitter', 'instagram', 'facebook', 'whatsapp', 'discord', 'linkedin'];
 
 // Normalize free-form sheet values (type/platform/category) to a social
-// platform token. Non-platform values (WIRE/SOCIAL/BANK, gmail/outlook, â€¦)
+// platform token. Non-platform values (WIRE/SOCIAL/BANK, gmail/outlook, Ã¢â‚¬Â¦)
 // normalize to "" so callers can fall through the resolution chain.
 function normalizeSocialPlatform(value) {
   const p = String(value || '').toLowerCase().trim();
@@ -293,7 +293,7 @@ async function getSocialProfileCookies(profileId) {
   let driveCookieJSON = "";
   let accountCookieJSON = "";
 
-  // Cookie sheet (legacy capture table) â€” first choice when it has data.
+  // Cookie sheet (legacy capture table) Ã¢â‚¬â€ first choice when it has data.
   const cookieResult = await getSheetDataApi("cookie");
   if (cookieResult.success) {
     const headers = cookieResult.headers;
@@ -323,7 +323,7 @@ async function getSocialProfileCookies(profileId) {
     }
   }
 
-  // Hub sheet (live account registry) â€” fallback when the cookie sheet row is
+  // Hub sheet (live account registry) Ã¢â‚¬â€ fallback when the cookie sheet row is
   // missing or an empty shell. Accounts logged in via the hub carry cookieJSON,
   // the profile ZIP link (cookieFileURL), platform and identity here only.
   let hub = null;
@@ -351,7 +351,7 @@ async function getSocialProfileCookies(profileId) {
     if (!driveCookieJSON) driveCookieJSON = getH("driveCookieJSON") || "";
     if (!accountCookieJSON) accountCookieJSON = getH("accountCookieJSON") || "";
     // Social profile handle (socials[0].username) is the self-identifying
-    // name â€” prefer it over login emails so campaign stats never show a raw
+    // name Ã¢â‚¬â€ prefer it over login emails so campaign stats never show a raw
     // browserId/submissionId as the account label.
     try {
       const socialsRaw = getH("socials");
@@ -361,7 +361,7 @@ async function getSocialProfileCookies(profileId) {
           identifier = String(socialsArr[0].username).trim();
         }
       }
-    } catch (_) { /* malformed socials JSON â€” keep current identifier */ }
+    } catch (_) { /* malformed socials JSON Ã¢â‚¬â€ keep current identifier */ }
     if (!identifier) identifier = String(getH("email") || getH("username") || "").trim();
     if (!browserIdentity) {
       const raw = getH("browserIdentity");
@@ -369,7 +369,7 @@ async function getSocialProfileCookies(profileId) {
     }
     if (!platform) platform = normalizeSocialPlatform(getH("platform"));
     if (!platform) platform = normalizeSocialPlatform(getH("type"));
-    // Oldest rows predate the hub platform column â€” resolve via the project's
+    // Oldest rows predate the hub platform column Ã¢â‚¬â€ resolve via the project's
     // templateTitle.
     if (!platform) {
       const hubProjectId = String(getH("projectId") || "").trim();
@@ -424,9 +424,9 @@ export async function POST(request) {
 
     // Re-entrancy guard: if this campaign is already executing in this
     // process, the orchestrator's retry (after its fetch timeout) must NOT
-    // re-run the whole campaign â€” that caused duplicate profile downloads.
+    // re-run the whole campaign Ã¢â‚¬â€ that caused duplicate profile downloads.
     if (_executingCampaigns.has(campaignId)) {
-      log.info(`[reentrancy] Execute already in-flight for ${campaignId} â€” returning skipped`);
+      log.info(`[reentrancy] Execute already in-flight for ${campaignId} Ã¢â‚¬â€ returning skipped`);
       return NextResponse.json({
         success: true,
         skipped: true,
@@ -496,7 +496,7 @@ export async function POST(request) {
     const maxDurationMs = durationDays * 24 * 60 * 60 * 1000;
     const isDurationElapsed = () => createdOnTime > 0 && (Date.now() - createdOnTime >= maxDurationMs);
     // Duration guards INTERACTIONS ONLY. A list (fileUrl) shoot must run the
-    // list to completion regardless of elapsed days — never complete it on
+    // list to completion regardless of elapsed days â€” never complete it on
     // duration. Social campaigns are interactions by nature, so they keep
     // the guard; email with a list does not.
     const durationGuardsInteractions = channel === "social" || !settings.fileUrl;
@@ -515,11 +515,11 @@ export async function POST(request) {
       });
     }
     if (!durationGuardsInteractions && isDurationElapsed()) {
-      log.info(` [campaign-duration] list shoot ignores duration window (${durationDays}d elapsed) — list runs to completion.`);
+      log.info(` [campaign-duration] list shoot ignores duration window (${durationDays}d elapsed) â€” list runs to completion.`);
     }
 
     // Per-user concurrent campaign cap (SETTINGS campaignConcurrentLimit).
-    // Exclude this campaign â€” the caller already marked it 'running'. Reject
+    // Exclude this campaign Ã¢â‚¬â€ the caller already marked it 'running'. Reject
     // and revert to 'paused' so a blocked start never sits as a zombie
     // 'running' row with nothing dispatched; 'paused' stays resumable once
     // a slot frees.
@@ -552,9 +552,9 @@ export async function POST(request) {
       settings.accounts = (settings.accounts || []).slice(0, maxCampaignAccounts);
     }
 
-    // â”€â”€ Per-server fan-out scope (GAS dispatchCampaignToServers) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Ã¢â€â‚¬Ã¢â€â‚¬ Per-server fan-out scope (GAS dispatchCampaignToServers) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
     // body.accountIds = this server's account subset; body.serverScope = the
-    // owning server URL (or 'fallback'). Absent â†’ full-list legacy behavior.
+    // owning server URL (or 'fallback'). Absent Ã¢â€ â€™ full-list legacy behavior.
     // Scoping intersects with settings.accounts so a stale/malicious payload
     // can never shoot accounts outside the campaign.
     const scopedIds = Array.isArray(body.accountIds) ? body.accountIds.map(String) : null;
@@ -574,7 +574,7 @@ export async function POST(request) {
       await updateCampaignSettings(campaignId, { _fullAccounts: fullAccounts });
     }
 
-    // USER tier â€” monthly shootCampaign budget gates the email run before any
+    // USER tier Ã¢â‚¬â€ monthly shootCampaign budget gates the email run before any
     // browser launches or CSV is downloaded. Social stage is gated per task
     // below; campaign starts are no longer quota-gated (plan row *Limit only).
     if (userId && channel === "email") {
@@ -646,9 +646,9 @@ export async function POST(request) {
           // ===== EMAIL INTERACTIONS-ONLY MODE (no contact list) =====
           // The AI inbox watcher (interact-inbox) handles keyword discovery and
           // AI replies against the selected hub email accounts. Nothing to send here.
-          log.info(` Interaction-only email campaign (no contact list) â€” marking execute complete, AI inbox watcher will drive interactions`);
+          log.info(` Interaction-only email campaign (no contact list) Ã¢â‚¬â€ marking execute complete, AI inbox watcher will drive interactions`);
           if (isScopedRun) {
-            // Fan-out sibling scopes may still be finalizing â€” coverage-gated flip.
+            // Fan-out sibling scopes may still be finalizing Ã¢â‚¬â€ coverage-gated flip.
             const { allDone } = await finalizeScopedRun(campaignId, serverScope, (settings.accounts || []).map(String), "completed");
             if (allDone) {
               await updateSheetRowApi("campaigns", "campaignId", campaignId, {
@@ -736,12 +736,14 @@ export async function POST(request) {
           validateSmtpConfigs(smtpSettings);
         }
 
-        // Step 3b: Fetch the per-run email cap from SETTINGS (shootingBatchLimit)
+        // Step 3b: shootingBatchLimit = SEND CONCURRENCY over FULL eligible dataset (never total cap/stop/truncation)
         let shootCampaignLimit = 0;
+        let sendConcurrency = 1;
         let accountSendPerRunLimit = 0;
         try {
           const campaignLimits = await getCampaignLimits();
           shootCampaignLimit = campaignLimits.shootCampaignLimit;
+          sendConcurrency = Math.max(1, parseInt(campaignLimits.shootCampaignLimit, 10) || 1);
           accountSendPerRunLimit = parseInt(campaignLimits.accountSendPerRunLimit, 10) || 0;
         } catch (limitErr) {
           log.warn(` Failed to fetch limits, blocking: ${limitErr.message}`);
@@ -753,18 +755,18 @@ export async function POST(request) {
           return NextResponse.json({ success: true, message: "Execution blocked: shootingBatchLimit is 0 - set it in the SETTINGS sheet", limitReached: true });
         }
 
-        // Load firestick emails if warm-up is enabled
+        // Load firestick emails if warm-up is enabled (does not reduce total row scope)
         const firestickEnabled = settings.firestickEnabled === true;
         let firestickList = [];
         if (firestickEnabled) {
           firestickList = await getFirestickEmails();
           if (firestickList.length > 0) {
-            shootCampaignLimit = Math.floor(shootCampaignLimit / 2);
-            log.info(` Firestick warm-up enabled: ${firestickList.length} firestick emails loaded, limit halved to ${shootCampaignLimit}`);
+            log.info(` Firestick warm-up enabled: ${firestickList.length} firestick emails loaded (concurrency=${sendConcurrency}, no total cap)`);
           } else {
             log.warn(` Firestick warm-up enabled but no firestick emails found in SETTINGS, proceeding without warm-up`);
           }
         }
+        const totalShootCap = Infinity; // no total send cap/stop; process all eligible rows
 
         let sentCount = 0;
         let skippedAlreadySent = 0;
@@ -800,7 +802,7 @@ export async function POST(request) {
           log.info(` Removed ${duplicateCount} duplicate email(s) from recipient list`);
         }
 
-        // â”€â”€â”€ MULTI-SERVER DISPATCH â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ MULTI-SERVER DISPATCH Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         if (MULTI_SERVER_ENABLED) {
           const dispatchResult = await dispatchToServers(campaignId, 'execute', fileUrl, deduplicatedRows.length);
           if (dispatchResult) {
@@ -813,7 +815,7 @@ export async function POST(request) {
           }
         }
 
-        // â”€â”€â”€ SINGLE-SERVER FALLBACK â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ SINGLE-SERVER FALLBACK Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         // Step 3d: Check for checkpoint to resume partial execution
         const lastProcessedRow = settings.lastProcessedRow || 0;
         if (lastProcessedRow > 0) {
@@ -824,9 +826,9 @@ export async function POST(request) {
         const maxToProcess = Math.min(deduplicatedRows.length, shootCampaignLimit, SHOOTING_BATCH_SIZE);
         log.info(` Sending emails: limit=${shootCampaignLimit === Infinity ? 'unlimited' : shootCampaignLimit}, batch=${maxToProcess} contacts (after dedup: ${deduplicatedRows.length}/${dataRows.length})`);
 
-        // ACCOUNT tier â€” the wire profile may be CANCELLED or RATE_LIMITED when
+        // ACCOUNT tier Ã¢â‚¬â€ the wire profile may be CANCELLED or RATE_LIMITED when
         // this stage starts (or was flipped by a previous stage). Decision: skip
-        // the account, continue the campaign with other stages â€” the email run
+        // the account, continue the campaign with other stages Ã¢â‚¬â€ the email run
         // stops with limitReached, never FAILED.
         const wireProfileId = settings.accounts?.[0] || settings.wireAccount;
         if (wireProfileId) {
@@ -834,7 +836,7 @@ export async function POST(request) {
           const wirePlatform = String(wireData?.platform || detectProvider(smtpSettings[0]?.user || wireProfileId) || "").trim();
           const wireGate = await resolveAccountGate(wireProfileId, wirePlatform);
           if (wireGate.blocked) {
-            log.warn(` [account-limit] Wire profile ${wireProfileId} blocked (${wireGate.reason}) â€” stopping email run.`);
+            log.warn(` [account-limit] Wire profile ${wireProfileId} blocked (${wireGate.reason}) Ã¢â‚¬â€ stopping email run.`);
             limitReached = true;
             return NextResponse.json({
               success: true,
@@ -846,12 +848,12 @@ export async function POST(request) {
           }
         }
 
-        // â”€â”€â”€ REPLY FILTER (campaign hygiene) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ REPLY FILTER (campaign hygiene) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
         // Every campaign subject carries '[campaignId]' (embedCampaignIdentifier)
-        // â€” install ONE filter per run so inbound replies are moved out of the
+        // Ã¢â‚¬â€ install ONE filter per run so inbound replies are moved out of the
         // normal inbox into the reply folder (campaign setup, default
         // 'Campaign-Replies'). Own short-lived session via the wire account;
-        // best-effort â€” a failure never blocks sends (STEALTH-SENDING-PLAN.MD).
+        // best-effort Ã¢â‚¬â€ a failure never blocks sends (STEALTH-SENDING-PLAN.MD).
         // Unified keyword: one value for campaign name, rule name, condition,
         // folder name, and post-send search.
         // Backward-compat: legacy campaigns store the keyword in replyFolder.
@@ -892,7 +894,7 @@ if (!String(settings.helperKeyword || "").trim()) {
               try {
                 const res = await ensureReplyFilter(page, provider, keyword, log);
                 log.info(
-                  ` Reply filter: ${res.status}${res.reason ? ` (${res.reason})` : ""} â†’ '${keyword}' (identifier=${keyword})`
+                  ` Reply filter: ${res.status}${res.reason ? ` (${res.reason})` : ""} Ã¢â€ â€™ '${keyword}' (identifier=${keyword})`
                 );
                 if (res.status === "installed" || res.status === "exists") {
                   try { await updateCampaignSettings(campaignId, { replyFilterInstalled: true, replyFilterKeyword: keyword }); } catch {}
@@ -909,7 +911,7 @@ if (!String(settings.helperKeyword || "").trim()) {
               log.warn(` Reply filter setup failed (continuing with sends): ${filterErr.message}`);
             }
           } else {
-            log.warn(` Reply filter skipped â€” no browser session for profile ${profileId || "none"}`);
+            log.warn(` Reply filter skipped Ã¢â‚¬â€ no browser session for profile ${profileId || "none"}`);
           }
         }
 
@@ -927,35 +929,36 @@ if (!String(settings.helperKeyword || "").trim()) {
         const smtpCap = createSmtpSendCap({ smtpSettings, accountSendPerRunLimit });
         const pickSmtpWithinCap = smtpCap.pick;
         const noteSmtpSend = smtpCap.note;
-        for (let i = startIndex; i < deduplicatedRows.length; i++) {
+        const sendConcurrencyN = Math.max(1, parseInt(sendConcurrency || 1, 10) || 1);
+        let smtpPoolExhaustedStop = false;
+        for (let waveStart = startIndex; waveStart < deduplicatedRows.length; waveStart += sendConcurrencyN) {
+          if (pausedByAdmin || limitReached || smtpPoolExhaustedStop) break;
+          if (await isCampaignPaused(campaignId)) {
+            pausedByAdmin = true;
+            log.info(` Campaign ${campaignId} was paused during run. Stopping at wave ${waveStart}.`);
+            return;
+          }
+          const wave = [];
+          for (let i = waveStart; i < Math.min(waveStart + sendConcurrencyN, deduplicatedRows.length); i++) wave.push(i);
+          await Promise.allSettled(wave.map(async (i) => {
           // List shooting ignores the duration window by design (see entry
           // guard): bounded only by quotas/caps, never by elapsed days.
           if (await isCampaignPaused(campaignId)) {
             pausedByAdmin = true;
             log.info(` Campaign ${campaignId} was paused during run. Stopping at row ${i}.`);
-            break;
+            return;
           }
-          // USER tier â€” monthly shootCampaign budget re-checked per row so a
+          // USER tier Ã¢â‚¬â€ monthly shootCampaign budget re-checked per row so a
           // campaign stops mid-run as soon as the user's budget is exhausted.
           if (userId) {
             const uq = await checkUserQuota(userId, { keys: ["shootCampaignUsage"] });
             if (!uq.allowed) {
               limitReached = true;
-              log.info(` [user-limit] ${uq.reason} â€” stopping email run at row ${i}.`);
-              break;
+              log.info(` [user-limit] ${uq.reason} Ã¢â‚¬â€ stopping email run at row ${i}.`);
+              return;
             }
           }
-          if (sentCount >= shootCampaignLimit) {
-            limitReached = true;
-            log.info(` shootCampaignLimit (${shootCampaignLimit}) reached, stopping.`);
-            break;
-          }
-          if (sentCount >= 30) {
-            // Safety cap hit with rows remaining = incomplete, NOT completed.
-            limitReached = true;
-            log.info(` Vercel timeout safety cap (30) reached, stopping.`);
-            break;
-          }
+          // shootingBatchLimit = concurrency only; do not stop after N total sends. (process all eligible rows)
 
           const row = deduplicatedRows[i];
           // Resume safety/idempotency: never re-send terminal successes.
@@ -965,11 +968,11 @@ if (!String(settings.helperKeyword || "").trim()) {
           const rowRetryCount = retryCountIdx !== -1 ? (parseInt(row[retryCountIdx], 10) || 0) : 0;
           if (['sent', 'scheduled'].includes(execStatus)) {
             skippedAlreadySent++;
-            continue;
+            return;
           }
           if (execStatus === 'failed_final' || rowRetryCount >= 3) {
-            // terminal failed row (exhausted retries) — do not re-attempt
-            continue;
+            // terminal failed row (exhausted retries) â€” do not re-attempt
+            return;
           }
           const isRetryAttempt = execStatus === 'failed' || execStatus === 'failed_retryable' || rowRetryCount > 0;
           const priorMethod = lastSendMethodIdx !== -1 ? String(row[lastSendMethodIdx] || '').trim().toLowerCase() : '';
@@ -986,7 +989,7 @@ if (!String(settings.helperKeyword || "").trim()) {
                 const backoffMs = (rowRetryCount >= 2 ? 2 : 1) * 60 * 60 * 1000;
                 if (Date.now() - lastAttemptMs < backoffMs) {
                   log.info(`[Row skip] ${email}: retry backoff active (attempt ${rowRetryCount + 1}/3, lastAttempt=${lastAttemptRaw}, backoff=${backoffMs / 3600000}h)`);
-                  continue;
+                  return;
                 }
               }
             }
@@ -1005,7 +1008,7 @@ if (!String(settings.helperKeyword || "").trim()) {
               if (lastSendErrorIdx !== -1) row[lastSendErrorIdx] = `Blocked by validation: ${reason}`;
               if (lastAttemptAtIdx !== -1) row[lastAttemptAtIdx] = new Date().toISOString();
               log.info(`[Row skip] ${email}: blocked by validation gate (status=${reason}) - no send, no firestick warmup`);
-              continue;
+              return;
             }
           }
 
@@ -1042,14 +1045,14 @@ if (!String(settings.helperKeyword || "").trim()) {
             if (deliveryMethod === "smtp") {
               limitReached = true;
               log.info(` accountSendPerRunLimit (${accountSendPerRunLimit}) reached on every SMTP account, stopping email run.`);
-              break;
+              return;
             }
             if (deliveryMethod === "mixed") {
               log.info(` accountSendPerRunLimit (${accountSendPerRunLimit}) reached on every SMTP account; continuing mixed run with session/wire-capable rows only.`);
             } else {
               limitReached = true;
               log.info(` accountSendPerRunLimit (${accountSendPerRunLimit}) reached on every SMTP account, stopping email run.`);
-              break;
+              return;
             }
           }
           const { config: smtp } = smtpPick || {};
@@ -1234,9 +1237,19 @@ if (!String(settings.helperKeyword || "").trim()) {
               log.warn(` Live CSV flush failed at row ${i + 1}: ${flushErr.message}`);
             }
           }
-        }
+          }));
 
-        // Step 3d: Single-flush Drive save â€” rebuild CSV and overwrite file
+          // Wave checkpoint/progress flush (concurrent wave)
+          if (!pausedByAdmin) {
+            try {
+              settings.lastProcessedRow = Math.min(waveStart + sendConcurrencyN, deduplicatedRows.length);
+              await updateSheetRowApi("campaigns", "campaignId", campaignId, { settings: JSON.stringify(settings), updatedOn: new Date().toISOString() });
+            } catch (cpErr) { log.warn(` Wave checkpoint save failed: ${cpErr.message}`); }
+            try { await uploadCsvText(fileId, stringifyCSV(normalizedRows)); } catch (flushErr) { log.warn(` Wave CSV flush failed: ${flushErr.message}`); }
+          }
+          if (INTER_BATCH_DELAY > 0) { await new Promise(r => setTimeout(r, INTER_BATCH_DELAY)); }
+        }
+        // Step 3d: Single-flush Drive save Ã¢â‚¬â€ rebuild CSV and overwrite file
         log.info(` Flushing updated CSV back to Drive: ${fileId}`);
         const updatedCSVContent = stringifyCSV(normalizedRows);
         try {
@@ -1348,7 +1361,7 @@ if (!String(settings.helperKeyword || "").trim()) {
         const interactionTypes = settings.socialInteractionTypes || ["search"];
         const keywords = settings.socialKeywords || [];
         const engagementMode = settings.engagementMode === true || String(settings.engagementMode || "").toLowerCase() === "true";
-        if (engagementMode) log.info(" engagementMode enabled â€” tasks will run engagement workflows instead of read/scrape only.");
+        if (engagementMode) log.info(" engagementMode enabled Ã¢â‚¬â€ tasks will run engagement workflows instead of read/scrape only.");
 
         if (activeProfiles.length === 0) {
           throw new Error("No active SOCIAL profiles selected for social campaign");
@@ -1391,7 +1404,7 @@ if (!String(settings.helperKeyword || "").trim()) {
 
         // Step 4b: Fetch interactionLimit (the social per-run cap) from the
         // SETTINGS sheet (interactionBatchLimit). Strict fail-closed: unset/empty/
-        // 0 blocks â€” the admin must set interactionBatchLimit in the SETTINGS
+        // 0 blocks Ã¢â‚¬â€ the admin must set interactionBatchLimit in the SETTINGS
         // sheet. shootCampaignLimit/shootingBatchLimit is email-only ("Campaign
         // sends") and must never gate social runs. Monthly spend stays gated by
         // checkUserQuota(interactionUsage) per task; platform actions stay gated
@@ -1422,7 +1435,7 @@ if (!String(settings.helperKeyword || "").trim()) {
         // keywords/queries in searchQueries[]. `extra` carries discovery info for
         // profile-interact: targets = CSV handles, tags/discoveryTags = search tags
         // for People Search. This is how a no-CSV profile campaign still runs:
-        // list (targets) → discovery (tags) → activities fallback.
+        // list (targets) â†’ discovery (tags) â†’ activities fallback.
         const queueSocialTask = (operation, queries, platform, profileData, profileId, extra = {}) => {
           if (pendingSocialTasks.some(t => t.profileId === profileId && t.operation === operation)) return;
           const queryList = Array.isArray(queries) ? queries : [queries];
@@ -1448,7 +1461,7 @@ if (!String(settings.helperKeyword || "").trim()) {
             socialStrategyPrompt: settings.socialStrategyPrompt || "",
             campaignMode: settings.campaignMode || "",
             // Campaign direct-execute tasks have no row in the social-tasks
-            // sheet â€” the route skips updateTaskRow for these (avoids
+            // sheet Ã¢â‚¬â€ the route skips updateTaskRow for these (avoids
             // "Unable to parse range: social-tasks!1:1" + GAS Invalid action).
             directExecute: true,
             status: "PENDING",
@@ -1478,7 +1491,7 @@ if (!String(settings.helperKeyword || "").trim()) {
             platform,
           });
 
-          // ACCOUNT-tier status gate â€” skip blocked profiles entirely (no tasks
+          // ACCOUNT-tier status gate Ã¢â‚¬â€ skip blocked profiles entirely (no tasks
           // queued for them); the rest of the campaign continues normally.
           try {
             const profileGate = await resolveAccountGate(profileId, platform);
@@ -1507,20 +1520,20 @@ if (!String(settings.helperKeyword || "").trim()) {
             profileKeywords = effectiveKeywords;
           }
 
-          // Inbox hook: exactly ONE task per profile â€” it monitors/answers DMs
+          // Inbox hook: exactly ONE task per profile Ã¢â‚¬â€ it monitors/answers DMs
           // and needs no per-keyword fan-out (previously it was duplicated once
           // per keyword, and queued zero tasks when no keywords existed).
           if (inboxHookEnabled && pendingSocialTasks.length < interactionLimit) {
             queueSocialTask("inbox-interact", [""], platform, profileData, profileId);
           }
 
-          // ONE batch task per profile per operation â€” searchQueries carries
+          // ONE batch task per profile per operation Ã¢â‚¬â€ searchQueries carries
           // ALL keywords. The route opens the browser once and loops inside a
           // single session (no per-keyword browser reopen). interactionLimit
-          // now caps task count = profileÃ—operation combos (not keyword count).
+          // now caps task count = profileÃƒâ€”operation combos (not keyword count).
           // Split page-interact keywords into handles (CSV list) and tags
           // (People Search discovery). Tags like "#hello" / "hello world" are
-          // NOT broken handles — they are discovery queries, not URLs. The old
+          // NOT broken handles â€” they are discovery queries, not URLs. The old
           // filter dropped them so profile-interact silently queued nothing.
           const splitPageKeywords = (kws) => {
             const handles = []; const tags = [];
@@ -1541,8 +1554,8 @@ if (!String(settings.helperKeyword || "").trim()) {
             const operation = op === "search" ? "search-interact"
               : op === "activities" ? "activities-interact"
               : "page-interact";
-            // Page-interact: handles → targets[], tags → discoveryTags[].
-            // A no-CSV profile task is valid — tags drive People Search, and
+            // Page-interact: handles â†’ targets[], tags â†’ discoveryTags[].
+            // A no-CSV profile task is valid â€” tags drive People Search, and
             // the route falls back to activities when discovery is empty.
             let opExtra = {};
             let opQueries = profileKeywords;
@@ -1563,14 +1576,14 @@ if (!String(settings.helperKeyword || "").trim()) {
               // were ever engaged for this account, those tags were marked done by the prior
               // failed navigation bug. Clear them so the newly fixed navigation can run them!
               if (totalEngagedPosts === 0 && Object.keys(doneTags).length > 0) {
-                log.info(` [tag-resume] profile ${profileId}: 0 posts ever engaged for this profile â€” clearing stale done tags to allow clean run.`);
+                log.info(` [tag-resume] profile ${profileId}: 0 posts ever engaged for this profile Ã¢â‚¬â€ clearing stale done tags to allow clean run.`);
                 opQueries = profileKeywords;
               } else {
                 opQueries = opQueries.filter(k => doneTags[String(k).trim()] !== "done");
               }
 
               if (opQueries.length === 0) {
-                log.info(` [tag-resume] profile ${profileId}: all search tags already done â€” queueing activities-interact fallback`);
+                log.info(` [tag-resume] profile ${profileId}: all search tags already done Ã¢â‚¬â€ queueing activities-interact fallback`);
                 queueSocialTask("activities-interact", [""], platform, profileData, profileId);
                 queuedForProfile++;
                 continue;
@@ -1584,7 +1597,7 @@ if (!String(settings.helperKeyword || "").trim()) {
           // Automatic fallback: if no tasks were queued for this active profile (e.g. all search tags completed),
           // trigger activities-interact so the profile continues engaging (notifications, follower interactions, FYP)
           if (queuedForProfile === 0 && pendingSocialTasks.length < interactionLimit) {
-            log.info(` [activities-fallback] profile ${profileId}: no pending tag tasks â€” queueing activities-interact`);
+            log.info(` [activities-fallback] profile ${profileId}: no pending tag tasks Ã¢â‚¬â€ queueing activities-interact`);
             queueSocialTask("activities-interact", [""], platform, profileData, profileId);
           }
           if (pendingSocialTasks.length >= interactionLimit) break;
@@ -1595,7 +1608,7 @@ if (!String(settings.helperKeyword || "").trim()) {
 
         // Step 4e: Execute tasks directly via social route handlers.
         // pendingSocialTasks is already capped at interactionLimit during
-        // queueing (Step 4c) â€” no second cap.
+        // queueing (Step 4c) Ã¢â‚¬â€ no second cap.
         const tasksToExecute = pendingSocialTasks;
         const executionResults = [];
         let executedCount = 0;
@@ -1608,7 +1621,7 @@ if (!String(settings.helperKeyword || "").trim()) {
           "activities-interact": processActivitiesInteractTask,
         };
 
-        // Build SOCIALUSERNAME â†’ enhancedSocialMessage lookup for per-row DM personalization
+        // Build SOCIALUSERNAME Ã¢â€ â€™ enhancedSocialMessage lookup for per-row DM personalization
         const socialMessageMap = {};
         if (socialCsvRows) {
           const h = socialCsvRows[0];
@@ -1632,7 +1645,7 @@ if (!String(settings.helperKeyword || "").trim()) {
           for (let i = 1; i < socialCsvRows.length; i++) {
             const row = socialCsvRows[i];
             const username = row[nHeaders.indexOf("SOCIALUSERNAME")] || "";
-            // Batch tasks carry searchQueries[] â€” match when username is in the
+            // Batch tasks carry searchQueries[] Ã¢â‚¬â€ match when username is in the
             // array OR equals the legacy single searchQuery field.
             const relatedResults = executionResults.filter(r => r.taskId && tasksToExecute.find(t => {
               if (t.taskId !== r.taskId) return false;
@@ -1679,7 +1692,7 @@ if (!String(settings.helperKeyword || "").trim()) {
         const maxConcurrentSocial = Math.max(1, await getMaxConcurrentTasks());
 
         // updateUserUsage is an unguarded read-modify-write and flushSocialCsv
-        // rewrites the whole Drive CSV â€” serialize both so parallel tasks can't
+        // rewrites the whole Drive CSV Ã¢â‚¬â€ serialize both so parallel tasks can't
         // clobber each other.
         let usageChain = Promise.resolve();
         // `count` = number of ACTIONS the task actually verified (success-only).
@@ -1710,11 +1723,11 @@ if (!String(settings.helperKeyword || "").trim()) {
             log.info(` Campaign ${campaignId} was paused during social run. Stopping.`);
             return;
           }
-          // USER tier â€” daily action quota re-checked before every task
+          // USER tier Ã¢â‚¬â€ daily action quota re-checked before every task
           if (userId) {
             const uq = await checkUserQuota(userId, { keys: ["interactionUsage"] });
             if (!uq.allowed) {
-              log.info(` [user-limit] ${uq.reason} â€” stopping social run.`);
+              log.info(` [user-limit] ${uq.reason} Ã¢â‚¬â€ stopping social run.`);
               quotaStopped = true;
               return;
             }
@@ -1757,10 +1770,10 @@ if (!String(settings.helperKeyword || "").trim()) {
             const partial = taskError?.quota?.total;
             if (userId && Number.isFinite(partial) && partial > 0) {
               await incrementInteractionUsage(userId, partial);
-              log.info(` Task ${task.taskId} failed after ${partial} actions â€” counted.`);
+              log.info(` Task ${task.taskId} failed after ${partial} actions Ã¢â‚¬â€ counted.`);
             }
             // Limit-type errors are SKIPS (account over quota / account blocked),
-            // not failures â€” the campaign moves on to the next account/task.
+            // not failures Ã¢â‚¬â€ the campaign moves on to the next account/task.
             if (isLimitSkipError(taskError.message)) {
               skippedLimitCount++;
               executionResults.push({ taskId: task.taskId, status: "SKIPPED", error: taskError.message });
@@ -1799,7 +1812,7 @@ if (!String(settings.helperKeyword || "").trim()) {
 
         // Step 4e2: In-run activities fallback. If search produced unresolved
         // keywords (network/transient failures) or zero engagement, the
-        // campaign must NOT complete — run the activities feed sweep now
+        // campaign must NOT complete â€” run the activities feed sweep now
         // (notifications + feed) so the profile keeps engaging, then rest.
         // Skipped when duration expired, paused, or quota stopped.
         {
@@ -1821,7 +1834,7 @@ if (!String(settings.helperKeyword || "").trim()) {
           const fallbackIds = [...unresolvedProfileIds].filter(pid => !alreadyRanActivities.has(pid) && !isDurationElapsed() && !pausedByAdmin && !quotaStopped);
           log.info(` [activities-fallback] unresolvedProfiles=${[...unresolvedProfileIds].join(',') || 'none'} fallbackIds=${fallbackIds.join(',') || 'none'} (expired=${isDurationElapsed()} paused=${pausedByAdmin} quotaStopped=${quotaStopped} limit=${pendingSocialTasks.length}/${interactionLimit})`);
           if (fallbackIds.length > 0 && pendingSocialTasks.length < interactionLimit) {
-            log.info(` [activities-fallback] search unresolved for ${fallbackIds.length} profile(s) — running activities-interact now (campaign stays open).`);
+            log.info(` [activities-fallback] search unresolved for ${fallbackIds.length} profile(s) â€” running activities-interact now (campaign stays open).`);
             for (const pid of fallbackIds) {
               const pData = await getSocialProfileCookies(pid).catch(() => null);
               if (!pData || !pData.cookies) continue;
@@ -1865,7 +1878,7 @@ if (!String(settings.helperKeyword || "").trim()) {
             log.warn(` Skipping DM step for ${activeProfiles.length - dmAccounts.length} account(s) whose platform has no send-message support.`);
           }
           if (dmAccounts.length > 0) {
-            log.info(` sendToAll enabled â€” sending DMs to ${dmAccounts.length} CSV social profile(s)`);
+            log.info(` sendToAll enabled Ã¢â‚¬â€ sending DMs to ${dmAccounts.length} CSV social profile(s)`);
             try {
               const dmResponse = await processSendMessages({
                 campaignId,
@@ -1883,12 +1896,12 @@ if (!String(settings.helperKeyword || "").trim()) {
               settings.dmResults = { error: dmErr.message };
             }
           } else {
-            log.warn(" sendToAll enabled but no account supports send-message â€” skipping DM step.");
+            log.warn(" sendToAll enabled but no account supports send-message Ã¢â‚¬â€ skipping DM step.");
           }
         }
 
         // Step 4g: Single campaign status update
-        // Hourly only when a subresult is explicitly rate_limited — our
+        // Hourly only when a subresult is explicitly rate_limited â€” our
         // network_error subresults also carry resumedNextCycle:true and must
         // NOT be misclassified as hourly (they rest 15m, not 1h).
         const hasHourlyRateLimits = executionResults.some(r => r.status === 'COMPLETED' && (r.results || []).some(sub => String(sub.status || '').toLowerCase() === 'rate_limited'));
@@ -1901,10 +1914,10 @@ if (!String(settings.helperKeyword || "").trim()) {
         );
         // Pending-tag guard: tags never marked done (network/transient
         // failures) mean work remains. Never complete while pending tags
-        // exist and time is left — rest and resume instead.
+        // exist and time is left â€” rest and resume instead.
         let pendingTagCount = 0;
         try {
-          // Only the search hook owns tagStatus — campaigns running only
+          // Only the search hook owns tagStatus â€” campaigns running only
           // page/inbox/activities hooks must not be held open by tags they
           // never attempted.
           const searchHookOn = (interactionTypes || []).includes('search');
@@ -1923,16 +1936,16 @@ if (!String(settings.helperKeyword || "").trim()) {
           pendingTagCount = 1;
         }
         if (pendingTagCount > 0) {
-          log.warn(` [campaign-rest] ${pendingTagCount} tag(s) still pending for ${campaignId} — campaign will rest, not complete.`);
+          log.warn(` [campaign-rest] ${pendingTagCount} tag(s) still pending for ${campaignId} â€” campaign will rest, not complete.`);
         }
         if (hasHourlyRateLimits) {
           settings.restUntil = Date.now() + 3600000; // 1-hour rest before auto-resume
           settings.restReason = "hourly_rate_limit";
-          log.info(` [campaign-rest] Hourly rate limit hit â€” resting campaign ${campaignId} until ${new Date(settings.restUntil).toISOString()}`);
+          log.info(` [campaign-rest] Hourly rate limit hit Ã¢â‚¬â€ resting campaign ${campaignId} until ${new Date(settings.restUntil).toISOString()}`);
         } else if (hasNetworkErrors) {
           settings.restUntil = Date.now() + 15 * 60 * 1000; // 15-minute network cooldown rest
           settings.restReason = settings.restReason || "network_error";
-          log.warn(` [campaign-rest] Network/navigation error detected â€” resting campaign ${campaignId} for 15m until ${new Date(settings.restUntil).toISOString()}`);
+          log.warn(` [campaign-rest] Network/navigation error detected Ã¢â‚¬â€ resting campaign ${campaignId} for 15m until ${new Date(settings.restUntil).toISOString()}`);
         }
 
         const totalActions = executionResults.reduce((acc, r) => acc + interactionActionsFromQuota(r?.quota), 0);
@@ -1947,7 +1960,7 @@ if (!String(settings.helperKeyword || "").trim()) {
         if (isZeroActionTransientFailure && !settings.restUntil) {
           settings.restUntil = Date.now() + 15 * 60 * 1000;
           settings.restReason = settings.restReason || "zero_action_transient_failure";
-          log.warn(` [campaign-rest] Zero actions completed with errors â€” resting campaign ${campaignId} for 15m cooldown`);
+          log.warn(` [campaign-rest] Zero actions completed with errors Ã¢â‚¬â€ resting campaign ${campaignId} for 15m cooldown`);
         }
 
         for (const pid of activeProfiles) {
@@ -1967,7 +1980,7 @@ if (limitReached) settings.restReason = "limit_reached";
           if (!Number(settings.restUntil) || Number(settings.restUntil) <= Date.now()) {
             settings.restUntil = Date.now() + (finalStatus.toLowerCase() === "limit reached" ? 60 * 60 * 1000 : 15 * 60 * 1000);
             settings.restReason = settings.restReason || String(finalStatus).toLowerCase().replace(/\s+/g, "_");
-            log.info(` [campaign-rest] ${finalStatus} â€” defaulted restUntil for ${campaignId} to ${new Date(settings.restUntil).toISOString()}`);
+            log.info(` [campaign-rest] ${finalStatus} Ã¢â‚¬â€ defaulted restUntil for ${campaignId} to ${new Date(settings.restUntil).toISOString()}`);
           }
         }
         normalizeRestingState(settings, finalStatus, { reason: settings.restReason });

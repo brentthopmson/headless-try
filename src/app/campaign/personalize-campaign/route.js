@@ -194,17 +194,14 @@ async function processPersonalizationBatches({ rows, headers, dataRows, scopeSta
 
   const scoped = dataRows.slice(scopeStart, scopeEnd);
   let personalizedCount = 0;
-  const batchCount = Math.ceil(scoped.length / BATCH_SIZE);
+  const itemsPerCall = 10; // contacts per AI call
+  const concurrency = Math.max(1, parseInt(BATCH_SIZE, 10) || 1); // BATCH_SIZE = parallel AI operations (concurrency)
+  const chunks = [];
+  for (let i = 0; i < scoped.length; i += itemsPerCall) chunks.push(scoped.slice(i, i + itemsPerCall));
 
-  for (let batchIdx = 0; batchIdx < batchCount; batchIdx++) {
-    // Non-interruptible by policy for validate/enrich/personalize
-    const start = batchIdx * BATCH_SIZE;
-    const end = Math.min(start + BATCH_SIZE, scoped.length);
-    const batch = scoped.slice(start, end);
-
+  const processChunk = async (batch, batchIdx) => {
     // Skip rows already personalized (resumable)
     const pendingRows = [];
-    const pendingMeta = [];
     for (let i = 0; i < batch.length; i++) {
       const row = batch[i];
       if (isRowPersonalized(row, channel, enhancedSubjectIdx, enhancedBodyIdx, enhancedSocialMsgIdx, personalizationStatusIdx)) {
@@ -212,40 +209,45 @@ async function processPersonalizationBatches({ rows, headers, dataRows, scopeSta
         continue;
       }
       pendingRows.push(row);
-      pendingMeta.push(i);
     }
-
-    if (pendingRows.length > 0) {
-      if (channel === 'social' && enhancedSocialMsgIdx !== -1) {
-        const contacts = pendingRows.map(row => ({
-          username: socialUsernameIdx !== -1 ? String(row[socialUsernameIdx] || '').trim() : '',
-          platform: socialPlatformIdx !== -1 ? String(row[socialPlatformIdx] || '').trim() : '',
+    if (pendingRows.length === 0) return 0;
+    if (channel === 'social' && enhancedSocialMsgIdx !== -1) {
+      const contacts = pendingRows.map(row => ({
+        username: socialUsernameIdx !== -1 ? String(row[socialUsernameIdx] || '').trim() : '',
+        platform: socialPlatformIdx !== -1 ? String(row[socialPlatformIdx] || '').trim() : '',
+        firstName: firstNameIdx !== -1 ? String(row[firstNameIdx] || '').trim() || 'there' : 'there',
+        context: contextIdx !== -1 ? String(row[contextIdx] || '').trim() : ''
+      }));
+      return await personalizeSocialRows(pendingRows, contacts, personalizationPrompt, enhancedSocialMsgIdx, personalizationStatusIdx);
+    } else {
+      const contacts = pendingRows.map(row => {
+        const link = linkIdx !== -1 ? buildPersonalizedLink(campaignSettings, row, headers) : '';
+        if (linkIdx !== -1) row[linkIdx] = link;
+        return {
+          email: emailIdx !== -1 ? String(row[emailIdx] || '').trim() : '',
           firstName: firstNameIdx !== -1 ? String(row[firstNameIdx] || '').trim() || 'there' : 'there',
-          context: contextIdx !== -1 ? String(row[contextIdx] || '').trim() : ''
-        }));
-        personalizedCount += await personalizeSocialRows(pendingRows, contacts, personalizationPrompt, enhancedSocialMsgIdx, personalizationStatusIdx);
-      } else {
-        const contacts = pendingRows.map(row => {
-          const link = linkIdx !== -1 ? buildPersonalizedLink(campaignSettings, row, headers) : '';
-          if (linkIdx !== -1) row[linkIdx] = link;
-          return {
-            email: emailIdx !== -1 ? String(row[emailIdx] || '').trim() : '',
-            firstName: firstNameIdx !== -1 ? String(row[firstNameIdx] || '').trim() || 'there' : 'there',
-            company: companyIdx !== -1 ? String(row[companyIdx] || '').trim() || 'your company' : 'your company',
-            context: contextIdx !== -1 ? String(row[contextIdx] || '').trim() : '',
-            link,
-          };
-        });
-        personalizedCount += await personalizeEmailRows(pendingRows, contacts, personalizationPrompt, enhancedSubjectIdx, enhancedBodyIdx, personalizationStatusIdx, log);
-      }
+          company: companyIdx !== -1 ? String(row[companyIdx] || '').trim() || 'your company' : 'your company',
+          context: contextIdx !== -1 ? String(row[contextIdx] || '').trim() : '',
+          link,
+        };
+      });
+      return await personalizeEmailRows(pendingRows, contacts, personalizationPrompt, enhancedSubjectIdx, enhancedBodyIdx, personalizationStatusIdx, log);
     }
+  };
 
+  for (let c = 0; c < chunks.length; c += concurrency) {
+    const wave = chunks.slice(c, c + concurrency);
+    const results = await Promise.allSettled(wave.map((chunk, wi) => processChunk(chunk, c + wi)));
+    for (const r of results) {
+      if (r.status === 'fulfilled') personalizedCount += (r.value || 0);
+      else log.warn(` Personalization chunk failed: ${r.reason?.message || r.reason}`);
+    }
     try {
       await uploadCsvText(fileId, stringifyCSV(rows));
     } catch (flushErr) {
-      log.warn(` Live flush failed at batch ${batchIdx + 1}: ${flushErr.message}`);
+      log.warn(` Live flush failed after wave ${Math.floor(c / concurrency) + 1}: ${flushErr.message}`);
     }
-    log.info(` Batch ${batchIdx + 1}/${batchCount} complete`);
+    log.info(` Personalization wave ${Math.floor(c / concurrency) + 1}/${Math.ceil(chunks.length / concurrency)} complete`);
   }
 
   // Verify full scope completion
@@ -293,11 +295,13 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   if (personalizationPrompt.length > PROMPT_MAX_CHARS) personalizationPrompt = personalizationPrompt.slice(0, PROMPT_MAX_CHARS);
 
   const dataRows = rows.slice(1);
+  // batch limits = concurrency over FULL dataset (never total scope/truncation)
   const campaignLimits = await getCampaignLimits();
   if (!(campaignLimits.personalizeLimit > 0)) {
     return NextResponse.json({ success: true, limitReached: true, message: "Personalization blocked: personalizeBatchLimit is 0 - set it in the SETTINGS sheet" });
   }
-  const scopeEnd = Math.min(dataRows.length, campaignLimits.personalizeLimit);
+  const personalizeConcurrency = Math.max(1, parseInt(campaignLimits.personalizeLimit, 10) || BATCH_SIZE || 1);
+  const scopeEnd = dataRows.length; // full dataset
 
   const multiEnabled = await isMultiServerEnabled();
   if (multiEnabled) {
@@ -308,7 +312,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   }
 
   const { personalizedCount, allDone } = await processPersonalizationBatches({
-    rows, headers, dataRows, scopeStart: 0, scopeEnd, channel, personalizationPrompt, campaignSettings, BATCH_SIZE, fileId, campaignId, log
+    rows, headers, dataRows, scopeStart: 0, scopeEnd, channel, personalizationPrompt, campaignSettings, BATCH_SIZE: personalizeConcurrency, fileId, campaignId, log
   });
 
   try { await uploadCsvText(fileId, stringifyCSV(rows)); } catch {}
@@ -319,8 +323,8 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   }
 
   await updateCampaignSettings(campaignId, { personalizationStatus: "completed" });
-  if (stageUserId && personalizedCount > 0) {
-    try { await updateUserUsage(stageUserId, "personalizeUsage", personalizedCount); } catch (e) { log.warn(`[user-limit] personalizeUsage increment failed: ${e.message}`); }
+  if (stageUserId && scopeEnd > 0) {
+    try { await updateUserUsage(stageUserId, "personalizeUsage", scopeEnd); } catch (e) { log.warn(`[user-limit] personalizeUsage increment failed: ${e.message}`); }
   }
   return NextResponse.json({ success: true, completed: true, message: "Campaign personalization completed successfully", total: scopeEnd, personalized: personalizedCount });
 }
@@ -360,9 +364,11 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
 
   const rowStart = serverBatch.rowStart || 0;
   const rowEnd = Math.min(serverBatch.rowEnd || dataRows.length, dataRows.length);
+  const campaignLimits = await getCampaignLimits();
+  const personalizeConcurrency = Math.max(1, parseInt(campaignLimits.personalizeLimit || BATCH_SIZE || 1, 10) || 1);
 
   const { personalizedCount, allDone } = await processPersonalizationBatches({
-    rows, headers, dataRows, scopeStart: rowStart, scopeEnd: rowEnd, channel, personalizationPrompt, campaignSettings, BATCH_SIZE, fileId, campaignId, log
+    rows, headers, dataRows, scopeStart: rowStart, scopeEnd: rowEnd, channel, personalizationPrompt, campaignSettings, BATCH_SIZE: personalizeConcurrency, fileId, campaignId, log
   });
 
   await mergeAndFlush(campaignId, 'personalize', rows, fileId);

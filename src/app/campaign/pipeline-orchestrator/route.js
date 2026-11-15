@@ -163,7 +163,30 @@ async function triggerStage(campaignId, stage, settings, scope) {
 
       clearTimeout(timeout);
 
-      const result = await response.json();
+      let result = null;
+      const rawText = await response.text().catch(() => "");
+      try {
+        result = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        const preview = String(rawText || "").slice(0, 200);
+        log.warn(`${config.label} returned non-JSON response (status ${response.status}): ${preview}`);
+        // Long-running/non-interruptible stages may be in-flight behind proxies/tunnels; treat ambiguous as wait, not hard failure.
+        if (config.statusField) {
+          try {
+            const currentSettings = await getCampaignSettings(campaignId);
+            const currentStatus = currentSettings?.[config.statusField];
+            if (currentStatus === "processing" || currentStatus === "completed" || currentStatus === "monitoring") {
+              return { success: false, skipped: true, processing: currentStatus === "processing" || currentStatus === "monitoring", message: `${config.label} returned non-JSON while ${currentStatus}; treating as in-flight/wait` };
+            }
+          } catch {}
+        } else if (stage === "execute") {
+          return { success: false, skipped: true, processing: true, message: `${config.label} returned non-JSON; treating execute as still running/wait` };
+        }
+        if (!response.ok) {
+          return { success: false, error: `non_json_response_${response.status}`, message: preview || "Non-JSON response" };
+        }
+        return { success: false, skipped: true, processing: true, message: `${config.label} returned ambiguous non-JSON response; wait and recheck` };
+      }
       log.info(`${config.label} response: ${JSON.stringify(result).slice(0, 500)}`);
       return result;
     } catch (err) {
