@@ -312,7 +312,7 @@ export async function processInboxInteract(body) {
 
     const interactionAccountIds = settings.interactionAccounts || [];
     const emailKeywords = settings.emailKeywords || [];
-    log.info(`Watcher start: accounts=${interactionAccountIds.length} keywords=[${emailKeywords.join(',')}] helperKeyword=${settings.helperKeyword || 'none'} linkAfterTurns=${settings.linkAfterTurns ?? 2} replyFolder=${settings.replyFolder || 'Campaign-Replies'}`);
+    log.info(`Watcher start: accounts=${interactionAccountIds.length} keywords=[${emailKeywords.join(',')}] helperKeyword=${settings.helperKeyword || 'none'} linkAfterTurns=${settings.linkAfterTurns ?? 2} replyFolder=${settings.campaignKeyword || settings.replyFolder || campaignId}`);
     if (interactionAccountIds.length === 0) {
       return NextResponse.json({ success: false, error: "No interaction accounts selected for interactions-only campaign" }, { status: 400 });
     }
@@ -502,7 +502,7 @@ export async function processInboxInteract(body) {
         scannedAccounts++;
         // Scan surfaces in priority order: campaignId search (finds replies
         // anywhere, incl. archived-by-filter), reply-folder label, inbox.
-        const replyFolder = String(settings.replyFolder || "").trim() || "Campaign-Replies";
+        const replyFolder = String(settings.campaignKeyword || settings.replyFolder || "").trim() || campaignId;
         const surfaces = [];
         if (typeof cfg.searchUrlTemplate === 'function') surfaces.push({ name: 'campaign-search', url: cfg.searchUrlTemplate(`[${campaignId}]`) });
         if (typeof cfg.labelUrlTemplate === 'function') surfaces.push({ name: 'reply-label', url: cfg.labelUrlTemplate(replyFolder) });

@@ -79,10 +79,10 @@ export const emailPlatforms = {
     labelsUrl: "https://outlook.live.com/mail/0/?path=/categories",
 
     selectors: {
-      // Compose
-      toInput: "input[aria-label*='To'], div[aria-label*='To'] input",
-      subjectInput: "input[aria-label*='Add a subject'], input[aria-label*='Subject']",
-      bodyInput: "div[role='textbox'][aria-label*='Message'], div[role='textbox'][contenteditable='true']",
+      // Compose (verified against live Outlook web UI)
+      toInput: "div[aria-label='To'][contenteditable='true'], .EditorClass, input[aria-label*='To'], div[aria-label*='To'] input",
+      subjectInput: "input[aria-label='Subject'], input[aria-label*='Add a subject'], input[aria-label*='Subject']",
+      bodyInput: "div[role='textbox'][aria-label='Message body'], div[role='textbox'][aria-label*='Message'], div[role='textbox'][contenteditable='true']",
       sendButton: "button[aria-label='Send']",
 
       // Inbox / Search

@@ -1595,3 +1595,51 @@ leaks into social surfaces:
   (`sample-social-targets.csv`: `SOCIALPLATFORM,SOCIALUSERNAME,socialMessage`).
 - **Validator** (`app/utils/campaignValidators.ts`) — social requires a
   strategy prompt; targets check allows keywords ∥ CSV ∥ inbox hook.
+
+---
+
+## Recent Changes (Changelog)
+
+### Campaign/Tunnel Routing & Execution Hardening (Nov 2026)
+
+**GAS Routing & Eligibility**
+- runCampaignPipeline now resolves dispatch server-type via pipelineChannel instead of undefined resumeSettings.channel.
+- Progress-aware revert: dispatch failure reverts campaign to paused (not draft) when progress exists.
+- markLinkServerUnhealthy sets severlessHealth=DOWN (not severlessStatus=FAILED).
+- tunnel-healer reconciles stale FAILED/DOWN -> ACTIVE/OK, heals 3001/4096 independently, syncs SETTINGS by aiSn.
+
+**Tunnel Management (distinct 3001 + 4096)**
+- sync-tunnels.js: startup sync, distinct URLs, cookie stamp migration.
+- tunnel-healer.js: independent health checks, targeted cloudflared restarts.
+- opencodeSettings.js: server-scoped resolution by aiSn.
+
+**Campaign State & Resume**
+- Campaigns no longer stick running on engine kill; resumable from checkpoint.
+- CMP-35923860 status corrected to paused.
+
+**Pipeline Stages (Validate -> Enrich -> Personalize -> Execute)**
+- Retry columns added to CSV schema (retryCount, lastSendMethod, lastSendStatus, lastSendError, lastAttemptAt, executionStatus).
+- Periodic CSV flush via uploadCsvText (Drive OAuth -> App Script fallback).
+- Backoff: 1h (first retry), 2h (subsequent).
+
+**Browser Wire Send (Outlook)**
+- wireSender.js: dialog/beforeunload suppression in sendViaBrowser and scheduleViaBrowser.
+- Fixed DOMHelpers.sleep is not a function (replaced with setTimeout promise).
+- Verified send completion via polling.
+
+**Per-Row Retry (max 3 attempts, method alternation)**
+- Retry eligibility and method alternation implemented; campaign stays paused (retry_pending) when retryable rows remain.
+
+**Warm-Up (Firestick) Alignment**
+- Method determination moved before firestick block; sendWarmupEmail accepts method.
+
+**Post-Send Hygiene (Outlook Web)**
+- ensureReplyFilter creates reply-routing rule at campaign start.
+- deleteSentMessage updated with full Sent -> Deleted -> Permanent flow.
+
+**Rate Limit Compliance**
+- pickSmtpWithinCap per SMTP account; accountSendPerRunLimit (default 5).
+
+**Frontend (WebFixx)**
+- Added Test SMTP button on each SMTP account card in CampaignAnalytics.tsx.
+- New route app/api/smtp/test/route.ts using nodemailer.

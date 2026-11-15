@@ -852,7 +852,22 @@ export async function POST(request) {
         // normal inbox into the reply folder (campaign setup, default
         // 'Campaign-Replies'). Own short-lived session via the wire account;
         // best-effort â€” a failure never blocks sends (STEALTH-SENDING-PLAN.MD).
-        const replyFolder = String(settings.replyFolder || "").trim() || "Campaign-Replies";
+        // Unified keyword: one value for campaign name, rule name, condition,
+        // folder name, and post-send search.
+        // Backward-compat: legacy campaigns store the keyword in replyFolder.
+// Migrate: copy replyFolder -> campaignKeyword on first run.
+const legacyKeyword = String(settings.replyFolder || "").trim();
+const keyword = String(settings.campaignKeyword || legacyKeyword || "").trim() || campaignId;
+if (legacyKeyword && !String(settings.campaignKeyword || "").trim()) {
+  settings.campaignKeyword = legacyKeyword;
+  try { await updateCampaignSettings(campaignId, { campaignKeyword: legacyKeyword }); } catch {}
+}
+// Helper keyword defaults to the unified campaign keyword so inbox
+// interaction detection uses the same value (user may override).
+if (!String(settings.helperKeyword || "").trim()) {
+  settings.helperKeyword = keyword;
+  try { await updateCampaignSettings(campaignId, { helperKeyword: keyword }); } catch {}
+}
         {
           const profileId = settings.accounts?.[0] || settings.wireAccount;
           const profileData = profileId ? await getSocialProfileCookies(profileId) : null;
@@ -875,10 +890,13 @@ export async function POST(request) {
                 false
               );
               try {
-                const res = await ensureReplyFilter(page, provider, campaignId, replyFolder, log);
+                const res = await ensureReplyFilter(page, provider, keyword, log);
                 log.info(
-                  ` Reply filter: ${res.status}${res.reason ? ` (${res.reason})` : ""} â†’ '${replyFolder}' (identifier=${campaignId})`
+                  ` Reply filter: ${res.status}${res.reason ? ` (${res.reason})` : ""} â†’ '${keyword}' (identifier=${keyword})`
                 );
+                if (res.status === "installed" || res.status === "exists") {
+                  try { await updateCampaignSettings(campaignId, { replyFilterInstalled: true, replyFilterKeyword: keyword }); } catch {}
+                }
               } finally {
                 await page.close().catch(() => {});
                 await browser.close().catch(() => {});
@@ -994,7 +1012,7 @@ export async function POST(request) {
           }
 
           // Embed campaign identifier for interaction tracking
-          const tagged = embedCampaignIdentifier(subject, message, campaignId);
+          const tagged = embedCampaignIdentifier(subject, message, keyword);
           subject = tagged.subject;
           message = tagged.body;
 
@@ -1134,6 +1152,7 @@ export async function POST(request) {
               if (sendStampIdx !== -1) row[sendStampIdx] = now.toISOString();
             }
             if (executionStatusIdx !== -1) row[executionStatusIdx] = isSchedule ? "scheduled" : "sent";
+            if (validationIdx !== -1) row[validationIdx] = isSchedule ? "scheduled" : "sent";
             if (providerMXIdx !== -1) row[providerMXIdx] = senderHost;
             if (lastSendMethodIdx !== -1) row[lastSendMethodIdx] = attemptedMethod || "";
             if (lastSendStatusIdx !== -1) row[lastSendStatusIdx] = isSchedule ? "scheduled" : "sent";
@@ -1150,6 +1169,7 @@ export async function POST(request) {
             failureDetails.push({ email, error: msg, host: senderHost || attemptedMethod || "unknown", attempt: nextRetryCount, terminal });
 
             if (executionStatusIdx !== -1) row[executionStatusIdx] = terminal ? "failed_final" : "failed_retryable";
+            if (validationIdx !== -1 && terminal) row[validationIdx] = "failed";
             if (providerMXIdx !== -1) row[providerMXIdx] = msg;
             if (retryCountIdx !== -1) row[retryCountIdx] = String(nextRetryCount);
             if (lastSendMethodIdx !== -1 && attemptedMethod) row[lastSendMethodIdx] = attemptedMethod;

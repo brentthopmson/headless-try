@@ -1,0 +1,8 @@
+
+> headless-try@0.1.0 start
+> next start --port 3001
+
+   ▲ Next.js 14.0.4
+   - Local:        http://localhost:3001
+
+ ✓ Ready in 1141ms

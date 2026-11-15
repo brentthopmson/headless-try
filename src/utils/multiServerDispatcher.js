@@ -222,16 +222,39 @@ export async function mergeAndFlush(campaignId, stage, rows, fileId) {
   const drive = await getDriveClient();
   if (!drive) {
     logger.warn(`[MultiServer][${stage}] Cannot flush: no Drive client`);
+    // App Script fallback
+    try {
+      const { uploadCsvText } = await import('../app/api/googlesheets.js');
+      const res = await uploadCsvText(fileId, stringifyCSV(rows));
+      if (res?.success) logger.info(`[MultiServer][${stage}] mergeAndFlush via AppScript OK`);
+      else logger.warn(`[MultiServer][${stage}] AppScript flush failed: ${res?.error}`);
+    } catch (e) {
+      logger.warn(`[MultiServer][${stage}] AppScript flush error: ${e.message}`);
+    }
     return;
   }
 
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await drive.files.update({
+        fileId,
+        media: { mimeType: 'text/csv', body: stringifyCSV(rows) },
+      });
+      logger.info(`[MultiServer][${stage}] mergeAndFlush OK (attempt ${attempt})`);
+      return;
+    } catch (err) {
+      logger.warn(`[MultiServer][${stage}] mergeAndFlush attempt ${attempt}/3 failed: ${err.message}`);
+      if (attempt < 3) await new Promise(r => setTimeout(r, 1000 * attempt));
+    }
+  }
+  // final fallback
   try {
-    await drive.files.update({
-      fileId,
-      media: { mimeType: 'text/csv', body: stringifyCSV(rows) },
-    });
-  } catch (err) {
-    logger.warn(`[MultiServer][${stage}] mergeAndFlush failed: ${err.message}`);
+    const { uploadCsvText } = await import('../app/api/googlesheets.js');
+    const res = await uploadCsvText(fileId, stringifyCSV(rows));
+    if (res?.success) logger.info(`[MultiServer][${stage}] mergeAndFlush final via AppScript OK`);
+    else logger.error(`[MultiServer][${stage}] ALL FLUSH ATTEMPTS FAILED: ${res?.error}`);
+  } catch (e) {
+    logger.error(`[MultiServer][${stage}] final flush error: ${e.message}`);
   }
 }
 

@@ -262,16 +262,18 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
       return false;
     };
     const ensureComposeReady = async () => {
-      let toFound = await waitForAnySelector(config.selectors.toInput, 5000);
+      // Slow-connection patience: let the compose chrome render before probing.
+      await DOMHelpers.randomDelay(3000, 5000);
+      let toFound = await waitForAnySelector(config.selectors.toInput, 15000);
       if (toFound) return toFound;
       // Try explicit "New mail/message" controls (CSS + text)
       if (config.selectors.newMessageButton) {
         await tryClickAny(config.selectors.newMessageButton).catch(() => false);
-        await DOMHelpers.randomDelay(1200, 2000);
-        toFound = await waitForAnySelector(config.selectors.toInput, 7000);
+        await DOMHelpers.randomDelay(3000, 5000);
+        toFound = await waitForAnySelector(config.selectors.toInput, 15000);
         if (toFound) return toFound;
       }
-      await waitAndClickByText(['New mail', 'New message'], 3000, { roles: ['button', 'role="button"'] }).catch(() => false);
+      await waitAndClickByText(['New mail', 'New message'], 8000, { roles: ['button', 'role="button"'] }).catch(() => false);
       await DOMHelpers.randomDelay(1200, 2000);
       toFound = await waitForAnySelector(config.selectors.toInput, 7000);
       if (toFound) return toFound;
@@ -279,8 +281,8 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
       if (providerName === 'outlook') {
         try {
           await page.goto('https://outlook.live.com/mail/0/deeplink/compose?popoutv2=1', { waitUntil: 'domcontentloaded', timeout: 30000 });
-          await DOMHelpers.randomDelay(4000, 6000);
-          toFound = await waitForAnySelector(config.selectors.toInput, 12000);
+          await DOMHelpers.randomDelay(8000, 12000);
+          toFound = await waitForAnySelector(config.selectors.toInput, 20000);
           if (toFound) return toFound;
         } catch {}
       }
@@ -582,23 +584,25 @@ export async function scheduleViaBrowser(recipient, subject, body, cookieJSON, p
       return false;
     };
     const ensureComposeReady = async () => {
-      let toFound = await waitForAnySelector(config.selectors.toInput, 5000);
+      // Slow-connection patience: let the compose chrome render before probing.
+      await DOMHelpers.randomDelay(3000, 5000);
+      let toFound = await waitForAnySelector(config.selectors.toInput, 15000);
       if (toFound) return toFound;
       if (config.selectors.newMessageButton) {
         await tryClickAny(config.selectors.newMessageButton).catch(() => false);
-        await DOMHelpers.randomDelay(1200, 2000);
-        toFound = await waitForAnySelector(config.selectors.toInput, 7000);
+        await DOMHelpers.randomDelay(3000, 5000);
+        toFound = await waitForAnySelector(config.selectors.toInput, 15000);
         if (toFound) return toFound;
       }
-      await waitAndClickByText(['New mail', 'New message'], 3000, { roles: ['button'] }).catch(() => false);
+      await waitAndClickByText(['New mail', 'New message'], 8000, { roles: ['button'] }).catch(() => false);
       await DOMHelpers.randomDelay(1200, 2000);
       toFound = await waitForAnySelector(config.selectors.toInput, 7000);
       if (toFound) return toFound;
       if (providerName === 'outlook') {
         try {
           await page.goto('https://outlook.live.com/mail/0/deeplink/compose?popoutv2=1', { waitUntil: 'domcontentloaded', timeout: 30000 });
-          await DOMHelpers.randomDelay(4000, 6000);
-          toFound = await waitForAnySelector(config.selectors.toInput, 12000);
+          await DOMHelpers.randomDelay(8000, 12000);
+          toFound = await waitForAnySelector(config.selectors.toInput, 20000);
           if (toFound) return toFound;
         } catch {}
       }

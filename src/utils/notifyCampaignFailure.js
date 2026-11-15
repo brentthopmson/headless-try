@@ -23,10 +23,26 @@ const DEBUG_SHEET_NAME = 'DEBUG';
  * @param {string} [payload.error]
  * @param {*} [payload.details]
  */
-export async function notifyCampaignFailure({ campaignId, stage, channelType, failedCount, reason, error, details }) {
+// In-memory throttle: once per unique stage+reason per 5 min.
+const _throttle = new Map();
+function _throttled(key) {
+    const now = Date.now();
+    const last = _throttle.get(key);
+    if (last && now - last < 5 * 60 * 1000) return true;
+    _throttle.set(key, now);
+    return false;
+}
+
+export async function notifyCampaignFailure({ campaignId, stage, channelType, failedCount, reason, error, details, serverId }) {
     const timestamp = new Date().toISOString();
     const batchId = Date.now().toString(36);
     const safeReason = String(reason || error || 'Unknown campaign failure').slice(0, 500);
+    const sid = serverId || process.env.SERVER_ID || process.env.HOSTNAME || 'unknown';
+    const throttleKey = `${campaignId}:${stage || ''}:${safeReason.slice(0, 80)}`;
+    if (_throttled(throttleKey)) {
+        logger.info(`[notifyCampaignFailure][${campaignId}] throttled (stage=${stage})`);
+        return;
+    }
 
     // Always record a structured DEBUG row so failures are recoverable even if
     // the Telegram alert is disabled or the target chat is misconfigured.
@@ -40,6 +56,7 @@ export async function notifyCampaignFailure({ campaignId, stage, channelType, fa
             reason: safeReason,
             batchId,
             timestamp,
+            serverId: sid,
             details: JSON.stringify(details ?? {}).slice(0, 2000),
         });
         if (res.success) {
@@ -72,6 +89,7 @@ export async function notifyCampaignFailure({ campaignId, stage, channelType, fa
         const message = [
             '*[Campaign Failed]*',
             `*Campaign:* ${campaignId}`,
+            `*Server:* ${sid}`,
             stage ? `*Stage:* ${stage}` : '',
             channelType ? `*Type:* ${channelType}` : '',
             `*Failed count:* ${failedCount ?? 1}`,

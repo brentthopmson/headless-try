@@ -36,15 +36,15 @@ async function pageHas(page, text) {
  * @param {string} folderName label/folder to route replies into (default applied by caller)
  * @param {object} log       logger (defaults to shared logger)
  */
-export async function ensureReplyFilter(page, platform, identifier, folderName, log = logger) {
-  const id = String(identifier || "").trim();
-  const folder = resolveFolderName(folderName);
-  if (!id) return { status: "skipped", reason: "no-identifier" };
+export async function ensureReplyFilter(page, platform, keyword, log = logger) {
+  const kw = String(keyword || "").trim();
+  const folder = resolveFolderName(kw);
+  if (!kw) return { status: "skipped", reason: "no-keyword" };
 
   try {
-    if (platform === "gmail") return await installGmail(page, id, folder, log);
-    if (platform === "outlook") return await installOutlook(page, id, folder, log);
-    if (platform === "yahoo" || platform === "aol") return await installYahooLike(page, platform, id, folder, log);
+    if (platform === "gmail") return await installGmail(page, kw, folder, log);
+    if (platform === "outlook") return await installOutlook(page, kw, folder, log);
+    if (platform === "yahoo" || platform === "aol") return await installYahooLike(page, platform, kw, folder, log);
     return { status: "skipped", reason: `unsupported-platform:${platform}` };
   } catch (err) {
     log.warn(`[replyFilter][${platform}] install failed: ${err.message}`);
@@ -152,92 +152,232 @@ async function installGmail(page, identifier, folder, log) {
 async function installOutlook(page, identifier, folder, log) {
   const config = getPlatformConfig("outlook");
 
-  // 1) Ensure destination folder exists
-  await page.goto(config.inboxUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-  await DOMHelpers.randomDelay(config.timing.afterNavigate, config.timing.afterNavigate * 1.3);
+  // 1) Navigate directly to the Outlook rules settings page (bypasses the
+  //    slow settings-gear → Mail tab → Rules tab chain on slow connections).
+  await page.goto("https://outlook.live.com/mail/0/options/mail/rules", {
+    waitUntil: "domcontentloaded",
+    timeout: 45000,
+  });
+  await DOMHelpers.randomDelay(5000, 9000);
 
-  if (!(await pageHas(page, folder))) {
-    const newFolder = await DOMHelpers.clickElement(
-      page,
-      `button:has-text("New folder"), div[role='button']:has-text("New folder"), span:has-text("New folder")`,
-      { timeout: 6000 }
-    );
-    if (newFolder) {
-      await DOMHelpers.typeText(
-        page,
-        `input[placeholder*='Folder name'], input[aria-label*='Folder name'], input[aria-label*='New folder name']`,
-        folder,
-        { delay: 30 }
-      );
-      await page.keyboard.press("Enter").catch(() => {});
-      await DOMHelpers.randomDelay(1500, 2500);
-    } else {
-      log.warn(`[replyFilter][outlook] New folder button not found — continuing (folder may exist)`);
-    }
+  // 2) Wait for the rules page to render its "Add rule" button.
+  const rulesPageDeadline = Date.now() + 40000;
+  while (Date.now() < rulesPageDeadline) {
+    const ready = await page.evaluate(() => {
+      const text = document.body ? document.body.innerText : "";
+      return text.includes("Add rule") || text.includes("Create rule") || text.includes("Add new rule");
+    }).catch(() => false);
+    if (ready) break;
+    await DOMHelpers.randomDelay(1500, 2500);
   }
+  await DOMHelpers.randomDelay(2000, 3500);
 
-  // 2) Rules UI
-  const gear = await DOMHelpers.clickElement(
-    page,
-    `button[aria-label='Settings'], div[role='button'][aria-label='Settings'], button[title='Settings']`,
-    { timeout: 8000 }
-  );
-  if (!gear) return { status: "failed", reason: "settings-gear-not-found" };
-  await DOMHelpers.randomDelay(1200, 2000);
-
-  const mailNav = await DOMHelpers.clickElement(page, `text="Mail"`, { timeout: 5000, delay: 800 });
-  if (!mailNav) return { status: "failed", reason: "mail-settings-not-found" };
-
-  const rulesNav = await DOMHelpers.clickElement(page, `text="Rules"`, { timeout: 5000, delay: 800 });
-  if (!rulesNav) return { status: "failed", reason: "rules-nav-not-found" };
-
+  // Already exists?
   if (await pageHas(page, identifier)) {
     log.info(`[replyFilter][outlook] rule for '${identifier}' already exists`);
     return { status: "exists" };
   }
 
-  const createRule = await DOMHelpers.clickElement(
-    page,
-    `button:has-text("Create rule"), div[role='button']:has-text("Create rule"), button:has-text("Add rule"), div[role='button']:has-text("Add rule")`,
-    { timeout: 6000 }
-  );
-  if (!createRule) return { status: "failed", reason: "create-rule-not-found" };
-  await DOMHelpers.randomDelay(1000, 1800);
+  // 5) Rules page readiness gate (already waited above; this is a no-op safety check).
+  //    Reuse the existing deadline variable name to avoid redeclaration.
+  while (Date.now() < rulesPageDeadline) {
+    const ready = await page.evaluate(() => {
+      const text = document.body ? document.body.innerText : "";
+      return text.includes("Add rule") || text.includes("Create rule");
+    }).catch(() => false);
+    if (ready) break;
+    await DOMHelpers.randomDelay(1500, 2500);
+  }
+  await DOMHelpers.randomDelay(2000, 3500);
 
-  // Condition: subject includes
-  const condPicked = await DOMHelpers.clickElement(
+  // 5b) Add rule (retry)
+  let addRule = null;
+  const addRuleDeadline = Date.now() + 40000;
+  while (Date.now() < addRuleDeadline && !addRule) {
+    try {
+      addRule = await page.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll("button, [role='button']"));
+        const btn = btns.find((b) => {
+          const t = (b.textContent || "").trim().toLowerCase();
+          return t === "add rule" || t.includes("add rule") || t.includes("create rule") || t.includes("add new rule");
+        });
+        if (btn) { btn.click(); return true; }
+        return false;
+      });
+    } catch (e) {
+      log.warn(`[replyFilter][outlook] add-rule click attempt failed: ${e.message}`);
+    }
+    if (!addRule) await DOMHelpers.randomDelay(2000, 3500);
+  }
+  if (!addRule) return { status: "failed", reason: "add-rule-not-found" };
+  await DOMHelpers.randomDelay(2000, 3500);
+
+  // 6) Rule name
+  const named = await DOMHelpers.typeText(
     page,
-    `div[role='button']:has-text("Subject includes"), div:has-text("Subject includes"), text="Subject includes"`,
-    { timeout: 5000, delay: 600 }
+    `input[placeholder='Name your rule']`,
+    folder || identifier,
+    { delay: 30 }
   );
-  const condTyped = await DOMHelpers.typeText(
+  if (!named) return { status: "failed", reason: "rule-name-input-not-found" };
+  await DOMHelpers.randomDelay(800, 1500);
+
+  // 7) Condition dropdown -> Subject or body includes (Down x10 then Enter)
+  const condDropdown = await DOMHelpers.clickElement(
     page,
-    `input[aria-label*='Subject'], input[placeholder*='subject'], input[name='subject']`,
+    `button[aria-label='Select a conditional']`,
+    { timeout: 12000, delay: 800 }
+  );
+  if (!condDropdown) return { status: "failed", reason: "condition-dropdown-not-found" };
+  await DOMHelpers.randomDelay(800, 1500);
+  for (let i = 0; i < 10; i++) await page.keyboard.press("ArrowDown").catch(() => {});
+  await page.keyboard.press("Enter").catch(() => {});
+  await DOMHelpers.randomDelay(1200, 2000);
+
+  // 8) Keyword input
+  const kwTyped = await DOMHelpers.typeText(
+    page,
+    `input[placeholder='Enter words to look for']`,
     identifier,
     { delay: 30 }
   );
-  if (!condPicked && !condTyped) return { status: "failed", reason: "condition-input-not-found" };
+  if (!kwTyped) return { status: "failed", reason: "keyword-input-not-found" };
+  await page.keyboard.press("Enter").catch(() => {});
+  await DOMHelpers.randomDelay(1200, 2000);
 
-  // Action: move to folder
-  const movePicked = await DOMHelpers.clickElement(
+  // 9) Action dropdown -> Move to (Right once then Enter)
+  const actionDropdown = await DOMHelpers.clickElement(
     page,
-    `div[role='button']:has-text("Move to"), div:has-text("Move to"), text="Move to"`,
-    { timeout: 5000, delay: 600 }
+    `button[aria-label='Select a action']`,
+    { timeout: 12000, delay: 800 }
   );
-  if (movePicked) {
-    await DOMHelpers.clickElement(
-      page,
-      `div[role='option']:has-text("${q(folder)}"), li:has-text("${q(folder)}"), [role='menuitem']:has-text("${q(folder)}")`,
-      { timeout: 5000, delay: 500 }
-    );
+  if (!actionDropdown) return { status: "failed", reason: "action-dropdown-not-found" };
+  await DOMHelpers.randomDelay(800, 1500);
+  await page.keyboard.press("ArrowRight").catch(() => {});
+  await page.keyboard.press("Enter").catch(() => {});
+  await DOMHelpers.randomDelay(1200, 2000);
+
+  // 10) Folder selector (inline creation): click "Select a folder", then
+  //     ArrowDown x5 + Enter to switch to new-folder-name input, type the
+  //     keyword, Enter to create + select the folder.
+  let folderBtn = false;
+  const folderBtnDeadline = Date.now() + 20000;
+  while (Date.now() < folderBtnDeadline && !folderBtn) {
+    try {
+      folderBtn = await page.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll("button, [role='button']"));
+        const btn = btns.find((b) => (b.textContent || "").trim().toLowerCase().includes("select a folder"));
+        if (btn) { btn.click(); return true; }
+        return false;
+      });
+    } catch (e) {
+      log.warn(`[replyFilter][outlook] folder-selector click attempt failed: ${e.message}`);
+    }
+    if (!folderBtn) await DOMHelpers.randomDelay(2000, 3000);
+  }
+  if (!folderBtn) return { status: "failed", reason: "folder-selector-not-found" };
+  await DOMHelpers.randomDelay(1200, 2000);
+
+  // Inline folder creation: type a long rubbish string to filter the folder
+  // list down to "No results" + "Create new folder", then ArrowDown x2 + Enter
+  // to switch to the new-folder-name input, type the real folder name, Enter.
+  const rubbish = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
+  const searchTyped = await DOMHelpers.typeText(
+    page,
+    `input[placeholder='Search folders']`,
+    rubbish,
+    { delay: 20 }
+  );
+  await DOMHelpers.randomDelay(1000, 1800);
+
+  await page.keyboard.press("ArrowDown").catch(() => {});
+  await page.keyboard.press("ArrowDown").catch(() => {});
+  await page.keyboard.press("Enter").catch(() => {});
+  await DOMHelpers.randomDelay(2000, 3000);
+
+  // Type folder name into the now-focused new-folder input (creates + selects).
+  // Use document.activeElement to be robust to placeholder differences.
+  let folderTyped = false;
+  try {
+    await page.evaluate(() => {
+      const el = document.activeElement;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) {
+        el.value = "";
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    });
+    await page.type("input:focus, textarea:focus", folder, { delay: 30 }).catch(async () => {
+      // fallback: type into whatever is focused
+      await page.keyboard.type(folder, { delay: 30 });
+    });
+    folderTyped = true;
+  } catch (e) {
+    log.warn(`[replyFilter][outlook] folder-name typing failed: ${e.message}`);
+    // last resort
+    try { await page.keyboard.type(folder, { delay: 30 }); folderTyped = true; } catch {}
+  }
+  if (folderTyped) {
+    await page.keyboard.press("Enter").catch(() => {});
+    await DOMHelpers.randomDelay(1500, 2500);
   }
 
-  const saved = await DOMHelpers.clickElement(page, `button:has-text("Save"), div[role='button']:has-text("Save")`, {
-    timeout: 6000,
-  });
-  if (!saved) return { status: "failed", reason: "rule-save-not-found" };
+  // 11+12) Toggle checkboxes via page.evaluate (Puppeteer has no getAttribute on ElementHandle)
+  try {
+    await page.evaluate(() => {
+      const labels = Array.from(document.querySelectorAll("label"));
+      const stopLbl = labels.find((l) => (l.textContent || "").includes("Stop processing more rules"));
+      if (stopLbl) {
+        const cb = document.getElementById(stopLbl.getAttribute("for"));
+        if (cb && cb.checked) cb.click();
+      }
+      const runLbl = labels.find((l) => (l.textContent || "").includes("Run rule now"));
+      if (runLbl) {
+        const cb = document.getElementById(runLbl.getAttribute("for"));
+        if (cb && !cb.checked) cb.click();
+      }
+    });
+  } catch (e) {
+    log.warn(`[replyFilter][outlook] checkbox toggle failed: ${e.message}`);
+  }
+  await DOMHelpers.randomDelay(500, 900);
 
-  await DOMHelpers.randomDelay(1500, 2500);
+  // 13) Save
+  let saved = false;
+  const saveDeadline = Date.now() + 20000;
+  while (Date.now() < saveDeadline && !saved) {
+    try {
+      saved = await page.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll("button, [role='button']"));
+        const btn = btns.find((b) => (b.textContent || "").trim().toLowerCase() === "save");
+        if (btn) { btn.click(); return true; }
+        return false;
+      });
+    } catch (e) {
+      log.warn(`[replyFilter][outlook] save click attempt failed: ${e.message}`);
+    }
+    if (!saved) await DOMHelpers.randomDelay(2000, 3000);
+  }
+  if (!saved) return { status: "failed", reason: "rule-save-not-found" };
+  await DOMHelpers.randomDelay(2500, 4000);
+
+  // 14) "Folder name already exists" dialog -> OK
+  try {
+    const hasDialog = await page.evaluate(() => {
+      const text = document.body ? document.body.innerText : "";
+      return text.includes("Folder name already exists");
+    });
+    if (hasDialog) {
+      await page.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll("button, [role='button']"));
+        const btn = btns.find((b) => (b.textContent || "").trim().toLowerCase() === "ok");
+        if (btn) btn.click();
+      });
+      await DOMHelpers.randomDelay(800, 1400);
+    }
+  } catch (e) {
+    log.warn(`[replyFilter][outlook] already-exists dialog handling failed: ${e.message}`);
+  }
+
   log.info(`[replyFilter][outlook] installed rule '${identifier}' → folder '${folder}'`);
   return { status: "installed" };
 }

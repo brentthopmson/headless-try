@@ -156,7 +156,7 @@ export async function shootEmailContacts(body) {
   try {
     const gate = await requireFeature('allowShooting', 'email shooting');
     if (gate) return gate;
-    const { browserId, contacts, subject, body: emailBody, method, mailMerge, projectId, sendMode, scheduleStartTime, replyFolder } = body;
+    const { browserId, contacts, subject, body: emailBody, method, mailMerge, projectId, sendMode, scheduleStartTime, replyFolder, campaignKeyword } = body;
 
     if (!browserId || !contacts || !Array.isArray(contacts) || contacts.length === 0) {
       return NextResponse.json({ success: false, error: "Missing browserId or contacts" }, { status: 400 });
@@ -227,7 +227,7 @@ export async function shootEmailContacts(body) {
     // Stealth sending is MANDATORY for the dashboard shoot — no feature flag,
     // no SETTINGS row (STEALTH-SENDING-PLAN.MD D4/D10 revision). Score
     // threshold = module default (60).
-    const filterFolder = resolveFolderName(replyFolder);
+    const filterFolder = resolveFolderName(campaignKeyword || replyFolder);
     log.info(`[shoot] Stealth sending: always-on (threshold=default, replyFolder='${filterFolder}')`);
 
     // 4. If schedule mode — calculate auto-populated sendDateAndTime per contact
