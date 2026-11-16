@@ -9,10 +9,15 @@ import MultiProviderAI from "../../../utils/multiProviderAI.js";
 
 const execFileAsync = promisify(execFile);
 import logger from "../../../utils/logger.js";
-import { getSetting } from "../../../utils/settingsCache.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, sanitizeForCsv, getPerformancePresets } from "../_shared/pipelineUtils.js";
-import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, startStageLease } from "../_shared/pipelineUtils.js";
+import {
+  SCHEMA_ROLES, WRITE_POLICIES, normHeader, normKey, cleanText,
+  normalizeEmailValue, getEmailDomain, clampStr, headerHint, isSystemHeader,
+  ensureColumn, getCell, setCell, hygieneRow, buildColumnStats,
+  validateAndApplyPatches, planEnrichmentWaves,
+} from "../_shared/enrichmentCore.mjs";
+import { getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
 import { updateUserUsage } from "../../socials/_shared/hubUpdater.js";
 
@@ -26,254 +31,48 @@ const GENERIC_EMAIL_DOMAINS = new Set([
   "mail.ru", "live.com", "msn.com", "googlemail.com", "me.com"
 ]);
 
-function normHeader(h) { return String(h || "").trim().toUpperCase(); }
-function normKey(h) { return String(h || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
-const HEADER_ALIASES = {
-  EMAIL: ["email", "e-mail", "mail", "emailaddress", "workemail", "businessemail"],
-  FIRSTNAME: ["firstname", "first_name", "first name", "givenname", "fname", "contactfirstname"],
-  LASTNAME: ["lastname", "last_name", "last name", "surname", "familyname", "lname", "contactlastname"],
-  FULLNAME: ["fullname", "full_name", "full name", "name", "contactname", "personname", "leadname"],
-  BUSINESSNAME: ["businessname", "company", "companyname", "organization", "org", "business", "employer"],
-  BUSINESSPHONE: ["businessphone", "companyphone", "workphone", "officephone"],
-  PHONE: ["phone", "mobile", "cell", "telephone", "phonenumber"],
-  URL: ["url", "website", "site", "domain", "web", "companyurl", "homepage"],
-  CONTEXT: ["context", "notes", "note", "description", "about", "bio"],
-  JOBTITLE: ["jobtitle", "title", "position", "role"],
-  CITY: ["city", "town"],
-  STATE: ["state", "region", "province"],
-  COUNTRY: ["country"],
-};
-function resolveHeaderIndex(headers, nameOrAliases) {
-  const want = Array.isArray(nameOrAliases) ? nameOrAliases : (HEADER_ALIASES[normHeader(nameOrAliases)] || [nameOrAliases]);
-  const keys = new Set(want.map(normKey));
-  for (let i = 0; i < headers.length; i++) {
-    if (keys.has(normKey(headers[i]))) return i;
-  }
-  // fallback exact normalized header
-  if (!Array.isArray(nameOrAliases)) {
-    const n = normHeader(nameOrAliases);
-    const idx = headers.indexOf(n);
-    if (idx >= 0) return idx;
-  }
-  return -1;
-}
-function getCell(row, headers, nameOrAliases) {
-  const idx = resolveHeaderIndex(headers, nameOrAliases);
-  return idx >= 0 ? String(row[idx] || "").trim() : "";
-}
-function setCell(row, headers, nameOrAliases, value) {
-  const idx = resolveHeaderIndex(headers, nameOrAliases);
-  if (idx >= 0) row[idx] = sanitizeForCsv(String(value ?? ""));
-}
-function ensureColumn(headers, rows, name) {
-  const n = normHeader(name);
-  let idx = headers.indexOf(n);
-  if (idx === -1) {
-    headers.push(n);
-    idx = headers.length - 1;
-    for (const r of rows) r[idx] = "";
-  }
-  return idx;
-}
-function cleanText(v) { return String(v ?? "").replace(/\s+/g, " ").trim(); }
-function isPlaceholder(v) {
-  const s = cleanText(v).toLowerCase();
-  return !s || ["n/a", "na", "none", "null", "undefined", "-", "--", "unknown", "not available", "n.a."].includes(s);
-}
-function normalizeEmailValue(v) {
-  const s = cleanText(v).toLowerCase().replace(/^mailto:/, "");
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)) return "";
-  return s;
-}
-function getEmailDomain(email) {
-  const e = normalizeEmailValue(email);
-  const at = e.lastIndexOf("@");
-  return at > 0 ? e.slice(at + 1).toLowerCase() : "";
-}
-const NAME_SUFFIXES = new Set(["jr", "sr", "ii", "iii", "iv", "v"]);
-function splitFullName(full) {
-  const s = cleanText(full).replace(/,+/g, " ");
-  if (!s) return { first: "", last: "" };
-  const parts = s.split(/\s+/).filter(Boolean);
-  if (parts.length === 1) return { first: parts[0], last: "" };
-  if (parts.length === 2) return { first: parts[0], last: parts[1] };
-  let lastParts = [parts[parts.length - 1]];
-  let rest = parts.slice(0, -1);
-  const lastTok = lastParts[0].toLowerCase().replace(/\./g, "");
-  if (NAME_SUFFIXES.has(lastTok) && rest.length >= 2) {
-    lastParts = [rest[rest.length - 1], parts[parts.length - 1]];
-    rest = rest.slice(0, -1);
-  }
-  // keep multi-part surnames common patterns (de/van/von/da/del/la/st) as part of last when present
-  if (rest.length >= 2) {
-    const prev = rest[rest.length - 1].toLowerCase().replace(/\./g, "");
-    if (["de", "del", "da", "dos", "das", "van", "von", "der", "den", "la", "le", "st", "st."].includes(prev)) {
-      lastParts = [rest[rest.length - 1], ...lastParts];
-      rest = rest.slice(0, -1);
-    }
-  }
-  return { first: rest.join(" "), last: lastParts.join(" ") };
-}
-function namesLooselyEqual(a, b) {
-  const na = cleanText(a).toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
-  const nb = cleanText(b).toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
-  return !!na && na === nb;
-}
-function containsWordPhrase(hay, needle) {
-  const h = cleanText(hay).toLowerCase();
-  const n = cleanText(needle).toLowerCase();
-  if (!h || !n) return false;
-  return h === n || h.endsWith(" " + n) || h.startsWith(n + " ") || h.includes(" " + n + " ");
-}
-function preNormalizeRow(row, headers) {
-  const notes = [];
-  const get = (n) => getCell(row, headers, n);
-  const set = (n, v) => setCell(row, headers, n, v);
-
-  // basic cleanup
-  for (let i = 0; i < headers.length; i++) {
-    const v = String(row[i] ?? "");
-    if (!v) continue;
-    const cleaned = cleanText(v);
-    if (isPlaceholder(cleaned)) { row[i] = ""; continue; }
-    if (cleaned !== v) row[i] = sanitizeForCsv(cleaned);
-  }
-
-  // normalize email
-  const emailIdx = resolveHeaderIndex(headers, "EMAIL");
-  if (emailIdx >= 0) {
-    const raw = String(row[emailIdx] || "").trim();
-    const ne = normalizeEmailValue(raw);
-    if (ne && ne !== raw) { row[emailIdx] = sanitizeForCsv(ne); notes.push("normalized email"); }
-  }
-
-  let first = get("FIRSTNAME");
-  let last = get("LASTNAME");
-  const full = get("FULLNAME");
-
-  // derive from FULLNAME if missing
-  if ((!first || !last) && full) {
-    const sp = splitFullName(full);
-    if (!first && sp.first) { set("FIRSTNAME", sp.first); first = sp.first; notes.push("derived first from full name"); }
-    if (!last && sp.last) { set("LASTNAME", sp.last); last = sp.last; notes.push("derived last from full name"); }
-  }
-
-  // repair FIRSTNAME containing full name / duplicated LASTNAME (reported case)
-  if (first) {
-    const fParts = cleanText(first).split(/\s+/).filter(Boolean);
-    if (last) {
-      const lClean = cleanText(last);
-      const fClean = cleanText(first);
-      if (fParts.length >= 2 && (namesLooselyEqual(fClean, lClean) ? false : (fClean.toLowerCase().endsWith(" " + lClean.toLowerCase()) || namesLooselyEqual(fParts[fParts.length - 1], lClean)))) {
-        // if first ends with last (or last token equals last) and first has extra tokens -> split
-        if (fClean.toLowerCase() !== lClean.toLowerCase()) {
-          const newLast = lClean; // keep provided last (may be multi-part)
-          let newFirst = fClean;
-          if (fClean.toLowerCase().endsWith(" " + lClean.toLowerCase())) {
-            newFirst = fClean.slice(0, fClean.length - lClean.length).trim();
-          } else if (namesLooselyEqual(fParts[fParts.length - 1], lClean) && fParts.length >= 2) {
-            newFirst = fParts.slice(0, -1).join(" ");
-          }
-          if (newFirst && newFirst.toLowerCase() !== fClean.toLowerCase()) {
-            set("FIRSTNAME", newFirst); first = newFirst; notes.push("split first/last (removed duplicated last from first)");
-          }
-        }
-      } else if (fParts.length >= 2 && fClean.toLowerCase() === lClean.toLowerCase()) {
-        // identical first/last -> try split
-        const sp = splitFullName(fClean);
-        if (sp.first && sp.last) { set("FIRSTNAME", sp.first); set("LASTNAME", sp.last); first = sp.first; last = sp.last; notes.push("split identical first/last"); }
-      } else if (fParts.length >= 2 && !lClean) {
-        const sp = splitFullName(fClean); if (sp.last) { set("FIRSTNAME", sp.first); set("LASTNAME", sp.last); first = sp.first; last = sp.last; notes.push("split full name in first"); }
-      }
-    } else if (fParts.length >= 2) {
-      const sp = splitFullName(first);
-      if (sp.first && sp.last) { set("FIRSTNAME", sp.first); set("LASTNAME", sp.last); first = sp.first; last = sp.last; notes.push("split full name in first (no last)"); }
-    }
-  }
-
-  // if FIRSTNAME still empty but LASTNAME contains full name
-  first = get("FIRSTNAME"); last = get("LASTNAME");
-  if (!first && last && cleanText(last).split(/\s+/).length >= 2) {
-    const sp = splitFullName(last); if (sp.first && sp.last) { set("FIRSTNAME", sp.first); set("LASTNAME", sp.last); notes.push("split full name in last"); }
-  }
-
-  // trim company/context basic
-  const biz = get("BUSINESSNAME"); if (biz) { const b = cleanText(biz); if (b !== biz) set("BUSINESSNAME", b); }
-  const ctx = get("CONTEXT"); if (ctx) { const c = cleanText(ctx); if (c !== ctx) set("CONTEXT", c); }
-
-  return { changed: notes.length > 0, notes };
-}
-
-function rowKnownData(row, headers) {
+function rowKnownData(row, headers, schema) {
+  const ignoreHeaders = new Set((schema || []).filter(c => c.role === "ignore_system" || c.role === "ignore_template" || c.write_policy === "never_touch").map(c => c.header));
   const data = {};
   headers.forEach((h, i) => {
-    const v = String(row[i] || "").trim();
-    if (!v) return;
-    // exclude large/template/system-ish fields
-    if (["EMAILSUBJECT","EMAILBODY","SOCIALMESSAGE","REPLYTO","ENHANCEDSUBJECT","ENHANCEDBODY","ENHANCEDSOCIALMESSAGE"].includes(h)) return;
-    if (h.startsWith("__")) return;
-    data[h] = v.slice(0, 300);
+    if (ignoreHeaders.has(h)) return;
+    if (/^(EMAILSUBJECT|EMAILBODY|SOCIALMESSAGE|REPLYTO|ENHANCEDSUBJECT|ENHANCEDBODY|ENHANCEDSOCIALMESSAGE)$/i.test(h)) return;
+    const v = cleanText(row[i]);
+    if (v) data[h] = v.slice(0, 300);
   });
   return data;
 }
 
-function hasSearchableData(row, headers) {
-  const email = normalizeEmailValue(getCell(row, headers, "EMAIL"));
-  const first = getCell(row, headers, "FIRSTNAME");
-  const last = getCell(row, headers, "LASTNAME");
-  const company = getCell(row, headers, "BUSINESSNAME") || getCell(row, headers, "COMPANY");
-  const url = getCell(row, headers, "URL") || getCell(row, headers, "WEBSITE");
-  const social = getCell(row, headers, "SOCIALUSERNAME");
-  if (email || first || last || company || url || social) return true;
-  const ignore = new Set(["SN","CAMPAIGNTYPE","ENGINE","PROVIDER","SMTP","PORT","USERNAME","PASSWORD","APPPASSWORD","BACKUPCODE","OAUTH2CLIENTID","OAUTH2CLIENTSECRET","OAUTH2REFRESHTOKEN","SHOULDVALIDATE","SHOULDENHANCE","SHOULDSEARCHINTERACT","SHOULDPAGEINTERACT","SHOULDINBOXINTERACT","SHOULDACTIVITIESINTERACT","SHOULDSENDMESSAGE","VALIDATION","PROVIDERMXRESULT","ENRICHMENTSTATUS","SENDDATE","SENDTIME","SENDSTAMP","SEARCHKEYS","SEARCHCOUNT","SEARCHSTATUS","SEARCHSTAMP","PROFILETOINTERACT","INTERACTCOUNT","INTERACTSTATUS","INTERACTSTAMP","PERSONALIZATIONSTATUS","EXECUTIONSTATUS","ENHANCEDSUBJECT","ENHANCEDBODY","ENHANCEDSOCIALMESSAGE","EMAILSUBJECT","EMAILBODY","SOCIALMESSAGE","REPLYTO"]);
-  for (let i = 0; i < headers.length; i++) {
-    const h = normHeader(headers[i]);
-    if (ignore.has(h) || h.startsWith("__")) continue;
-    if (cleanText(row[i])) return true;
+function hasSearchableData(row, headers, schema) {
+  const safe = schema ? schema.filter(c => c.write_policy !== "never_touch" && c.role !== "ignore_system" && c.role !== "ignore_template") : headers.map(h => ({ header: h }));
+  for (const c of safe) {
+    const v = cleanText(getCell(row, headers, c.header));
+    if (v) return true;
   }
   return false;
 }
 
-function getIdentity(row, headers) {
-  const email = normalizeEmailValue(getCell(row, headers, "EMAIL"));
-  const first = cleanText(getCell(row, headers, "FIRSTNAME"));
-  const last = cleanText(getCell(row, headers, "LASTNAME"));
-  const full = cleanText(getCell(row, headers, "FULLNAME")) || [first, last].filter(Boolean).join(" ").trim();
-  const company = cleanText(getCell(row, headers, "BUSINESSNAME") || getCell(row, headers, "COMPANY"));
-  const url = cleanText(getCell(row, headers, "URL") || getCell(row, headers, "WEBSITE"));
-  const domain = getEmailDomain(email);
-  return { email, first, last, full, company, url, domain };
+function isRowEnrichedFinal(row, headers) {
+  const s = String(getCell(row, headers, "enrichmentStatus") || "").toLowerCase().trim();
+  return s === "enriched" || s === "no_data" || s === "skipped";
 }
 
-function buildHeuristicQueries(row, headers) {
-  const { email, first, last, full, company, url, domain } = getIdentity(row, headers);
-  const social = getCell(row, headers, "SOCIALUSERNAME");
-  const platform = getCell(row, headers, "SOCIALPLATFORM");
-  const fullName = full || [first, last].filter(Boolean).join(" ").trim();
-  const queries = [];
-  if (domain && !GENERIC_EMAIL_DOMAINS.has(domain)) {
-    queries.push(`site:${domain} about OR contact OR team`);
-    queries.push(`"${domain}" company ${company || fullName || ""}`.trim());
-    if (fullName) queries.push(`"${fullName}" "${domain}"`);
-  }
-  if (email) {
-    queries.push(`"${email}"`);
-    if (GENERIC_EMAIL_DOMAINS.has(domain) && fullName) queries.push(`"${fullName}" ${domain.split(".")[0] || ""} profile`.trim());
-  }
-  if (fullName && company) queries.push(`"${fullName}" "${company}" contact OR profile`);
-  else if (fullName) queries.push(`"${fullName}" ${company || ""} profile OR linkedin`.trim());
-  if (company) queries.push(`"${company}" official website contact email`);
-  if (social) queries.push(`${platform || ""} "${social}" profile`.trim());
-  if (url) {
-    try { const u = new URL(url.startsWith("http") ? url : `https://${url}`); queries.push(`site:${u.hostname} about OR contact OR team`); } catch { queries.push(`"${url}" contact about`); }
-  }
-  if (domain && GENERIC_EMAIL_DOMAINS.has(domain) && !fullName) {
-    const user = email.split("@")[0] || "";
-    if (user) queries.push(`"${user}" ${domain} profile`);
-  }
-  return Array.from(new Set(queries.map(q => cleanText(q)).filter(Boolean))).slice(0, 8);
+function parseJsonLoose(ai, text) {
+  const parsed = ai.parseAiJson ? ai.parseAiJson(text) : null;
+  if (parsed) return parsed;
+  try {
+    const m = String(text || "").match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+    if (m) return JSON.parse(m[0]);
+  } catch {}
+  return null;
 }
 
+async function aiGenerateJson(ai, prompt, maxTokens = 2500) {
+  const text = await ai.generate(prompt, { maxTokens, jsonMode: true });
+  return parseJsonLoose(ai, text);
+}
+
+// ---------------- Search (ddgs + scrapers, no SearXNG/CXNG) ----------------
 async function scrapeUrl(url) {
   try {
     const resp = await axios.get(url, {
@@ -299,11 +98,8 @@ async function scrapeUrl(url) {
       try { const abs = new URL(href, url).toString(); if (abs.startsWith("http")) links.push(abs); } catch {}
     });
     return { url, title, description, bodyText, links };
-  } catch (err) {
-    return null;
-  }
+  } catch { return null; }
 }
-
 async function deepScrape(url) {
   const main = await scrapeUrl(url);
   if (!main) return null;
@@ -324,15 +120,13 @@ async function deepScrape(url) {
   }
   return { ...main, internalTexts };
 }
-
 async function googleSearch(query) {
   try {
     const resp = await axios.get("https://www.google.com/search", {
       params: { q: query, num: 5, hl: "en" }, timeout: 10000,
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36", "Accept-Language": "en-US,en;q=0.9" },
     });
-    const $ = cheerio.load(resp.data || "");
-    const results = [];
+    const $ = cheerio.load(resp.data || ""); const results = [];
     $("div.g, div[data-sokoban-container]").each((_, el) => {
       if (results.length >= 5) return false;
       const a = $(el).find("a[href^='http']").first();
@@ -364,23 +158,8 @@ async function duckDuckGoSearch(query) {
     }); return results;
   } catch { return []; }
 }
-let _searxngWarned = false;
 let _ddgsWarned = false;
-async function searxngSearch(query) {
-  const base = (process.env.SEARXNG_URL || process.env.SEARX_URL || process.env.CXNG_URL || "").trim();
-  if (!base) return [];
-  try {
-    const resp = await axios.get(`${base.replace(/\/$/, "")}/search`, { params: { q: query, format: "json" }, timeout: 12000 });
-    const results = (resp.data?.results || []).slice(0, 8).map(r => ({ url: r.url, title: r.title, snippet: r.content || r.snippet }));
-    return results.filter(r => r.url);
-  } catch (e) {
-    if (!_searxngWarned) { _searxngWarned = true; try { logger.warn(`[enrich] SearXNG search failed (${base}): ${e.message}`); } catch {} }
-    return [];
-  }
-}
 async function ddgsSearch(query) {
-  // Local metasearch fallback via Python `ddgs` package (no external instance/Docker required).
-  // Portable: works wherever Python + `pip install -r requirements-enrichment.txt` is available.
   const q = String(query || "").trim();
   if (!q) return [];
   const configured = (process.env.PYTHON_BIN || "").trim();
@@ -396,18 +175,13 @@ async function ddgsSearch(query) {
       const parsed = JSON.parse(jsonText);
       if (!Array.isArray(parsed)) return [];
       return parsed.map(r => ({ url: r?.url, title: r?.title, snippet: r?.snippet })).filter(r => r.url).slice(0, 6);
-    } catch (e) {
-      // try next interpreter candidate
-      if (e && e.code === "ENOENT") continue;
-      // package missing/runtime error: try next candidate once, but don't spam
-      continue;
-    }
+    } catch (e) { if (e && e.code === "ENOENT") continue; continue; }
   }
   if (!_ddgsWarned) { _ddgsWarned = true; try { logger.warn(`[enrich] ddgs local search unavailable (install with: pip install -r requirements-enrichment.txt)`); } catch {} }
   return [];
 }
 async function multiSearch(query) {
-  const settled = await Promise.allSettled([searxngSearch(query), ddgsSearch(query), googleSearch(query), bingSearch(query), duckDuckGoSearch(query)]);
+  const settled = await Promise.allSettled([ddgsSearch(query), googleSearch(query), bingSearch(query), duckDuckGoSearch(query)]);
   const out = []; const seen = new Set();
   for (const r of settled) {
     if (r.status !== "fulfilled") continue;
@@ -418,20 +192,7 @@ async function multiSearch(query) {
   return out.slice(0, 12);
 }
 
-function parseJsonLoose(ai, text) {
-  const parsed = ai.parseAiJson(text);
-  if (parsed) return parsed;
-  try {
-    const m = String(text || "").match(/\{[\s\S]*\}|\[[\s\S]*\]/);
-    if (m) return JSON.parse(m[0]);
-  } catch {}
-  return null;
-}
-
-function cleanEmail(v) {
-  return normalizeEmailValue(v);
-}
-
+// ---------------- Evidence helpers (Gravatar + domain intel) ----------------
 async function gravatarLookup(email) {
   const e = normalizeEmailValue(email);
   if (!e) return null;
@@ -448,375 +209,257 @@ async function gravatarLookup(email) {
     const location = cleanText(entry.currentLocation || "");
     const about = cleanText(entry.aboutMe || "");
     const profileUrl = entry.profileUrl || `https://gravatar.com/${hash}`;
-    return { email: e, hash, displayName, givenName: cleanText(nameObj.givenName || ""), familyName: cleanText(nameObj.familyName || ""), location, about, profileUrl, accounts, urls, thumbnailUrl: entry.thumbnailUrl || "" };
-  } catch {
-    return null;
-  }
+    return { email: e, displayName, location, about, profileUrl, accounts, urls };
+  } catch { return null; }
 }
 
-async function gatherEmailSignals(row, headers) {
-  const id = getIdentity(row, headers);
+async function gatherEmailSignals(row, headers, schema) {
   const evidence = [];
-  const fills = {};
+  const emailCol = (schema || []).find(c => c.role === "email")?.header || headers.find(h => normKey(h) === "email") || "EMAIL";
+  const email = normalizeEmailValue(getCell(row, headers, emailCol));
+  if (!email) return { evidence, notes: [] };
   const notes = [];
-  if (!id.email) return { evidence, fills, notes };
-
-  // Gravatar (free, verifiable profile signal)
-  const g = await gravatarLookup(id.email);
+  const g = await gravatarLookup(email);
   if (g) {
-    const gTextParts = [g.displayName && `Name: ${g.displayName}`, g.location && `Location: ${g.location}`, g.about && `About: ${g.about}`,
+    const gText = [g.displayName && `Name: ${g.displayName}`, g.location && `Location: ${g.location}`, g.about && `About: ${g.about}`,
       (g.accounts || []).slice(0, 5).map(a => `${a.domain || "account"}: ${a.url || a.username}`).join("; "),
       (g.urls || []).slice(0, 5).map(u => u.value).join("; ")
-    ].filter(Boolean);
-    evidence.push({ url: g.profileUrl, title: `Gravatar: ${g.displayName || id.email}`, description: g.about || "", bodyText: gTextParts.join("\n").slice(0, 4000), internalTexts: [], snippet: "Gravatar public profile" });
-    const sp = splitFullName(g.displayName || "");
-    if (!id.first && sp.first) fills.FIRSTNAME = sp.first;
-    if (!id.last && sp.last) fills.LASTNAME = sp.last;
-    if (!getCell(row, headers, "CONTEXT")) {
-      const bits = [g.displayName, g.about, g.location].filter(Boolean).join(" — ");
-      if (bits) fills.CONTEXT = cleanText(bits).slice(0, 300);
-    }
-    // if gravatar exposes accounts, keep as evidence (not blindly writing platform fields)
+    ].filter(Boolean).join("\n");
+    evidence.push({ url: g.profileUrl, title: `Gravatar: ${g.displayName || email}`, description: g.about || "", bodyText: gText.slice(0, 4000), internalTexts: [], snippet: "Gravatar public profile (verified)" });
     notes.push("gravatar");
   }
-
-  // Domain/company intelligence for non-generic emails
-  if (id.domain && !GENERIC_EMAIL_DOMAINS.has(id.domain)) {
-    const baseUrl = `https://${id.domain}`;
-    const scraped = await deepScrape(baseUrl);
-    if (scraped) {
-      evidence.push({ ...scraped, snippet: "Company domain site" });
-      // try to infer business name from title if missing
-      if (!id.company) {
-        const t = cleanText(scraped.title || "").split(/[|\-–—:]/)[0].trim();
-        if (t && t.length >= 2 && t.length <= 80) fills.BUSINESSNAME = t;
-      }
-    }
+  const domain = getEmailDomain(email);
+  if (domain && !GENERIC_EMAIL_DOMAINS.has(domain)) {
+    const scraped = await deepScrape(`https://${domain}`);
+    if (scraped) evidence.push({ ...scraped, snippet: "Company domain site (verified)" });
     notes.push("domain");
   }
-
-  return { evidence, fills, notes };
+  return { evidence, notes };
 }
 
-async function aiSuggestQueries(ai, row, headers, enrichmentContext, missingTargets = []) {
-  const known = rowKnownData(row, headers);
-  const prompt = `You generate web search queries to enrich a lead/contact/company record.
-Known row data (JSON): ${JSON.stringify(known).slice(0, 4000)}
-Enrichment context/instructions: ${enrichmentContext || "(none)"}
-Still missing or low-confidence targets: ${missingTargets.join(", ") || "(general enrichment)"}
+// ---------------- Pass A: Schema comprehension ----------------
+async function aiSchemaPass(ai, headers, rows, enrichmentContext, log) {
+  const stats = buildColumnStats(rows, headers);
+  const prompt = `You are a CSV schema analyst for a B2B outreach enrichment engine.
 
-Return ONLY a JSON array of 3 to 8 short, specific search query strings.
-Prioritize: verifiable identity (name/company), public profiles, official company/about/contact/team pages, and verifiable email/contact details. Use quoted names/emails/domains where useful. Do not invent facts.`;
+You receive: (1) the campaign enrichment context, (2) every column header in a CSV,
+(3) per-column statistics: fill rate, distinct-value count, detected data type, and a
+few raw sample values.
+
+Your job is NOT to enrich rows. Your job is to determine what each column MEANS and how
+the engine must treat it. Schemas vary wildly: headers may be abbreviations, localized,
+pluralized, mislabeled, or contain data that does not match the label. Judge by BOTH the
+header and the actual values.
+
+SEMANTIC ROLES (choose exactly one per column):
+email, first_name, last_name, full_name, company, job_title, phone, mobile_phone,
+url, address, city, state, region, country, postal_code, context_notes,
+social_handle, social_platform, location_text, industry, employee_count,
+ignore_system, ignore_template, unknown.
+
+Also assign:
+- confidence: 0..1
+- write_policy: overwrite_if_clearly_misfilled | fill_if_empty | verify_only | never_touch
+- data_type: text | email | phone | url | number | date | enum | mixed
+- notes: max 20 words
+
+HARD RULES
+- Judge values over labels. If "NAME" contains full names, role = full_name.
+- Never assume a first/last split exists. Mononyms, compound surnames, honorifics,
+  suffixes, and non-Latin scripts are valid.
+- Credentials/tokens/engine state/tracking/template columns = ignore_system/never_touch.
+- If unsure, use "unknown" with low confidence; never guess.
+- Never invent columns.
+- write_policy guidance: identity/format-normalizable columns (names, company, phone,
+  URL) = overwrite_if_clearly_misfilled; descriptive columns (title, location, context,
+  industry) = fill_if_empty; source-of-truth identifier columns (email) = fill_if_empty
+  unless values are visibly malformed; system/template = never_touch.
+
+enrichmentContext: ${String(enrichmentContext || "(none)").slice(0, 2000)}
+columns: ${JSON.stringify(stats).slice(0, 18000)}
+
+Return ONLY valid JSON:
+{"columns":[{"header":"<exact header>","role":"<role>","confidence":0.0,
+"write_policy":"<policy>","data_type":"<type>","notes":"<short>"}]}`;
+  let parsed = null;
+  try { parsed = await aiGenerateJson(ai, prompt, 3000); } catch (e) { log && log.warn(`[enrich] schema AI failed: ${e.message}`); }
+  const byHeader = new Map();
+  if (parsed && Array.isArray(parsed.columns)) {
+    for (const c of parsed.columns) {
+      const header = headers.find(h => h === c?.header) || headers.find(h => normKey(h) === normKey(c?.header));
+      if (!header) continue;
+      const role = SCHEMA_ROLES.has(c.role) ? c.role : (headerHint(header) || "unknown");
+      const write_policy = WRITE_POLICIES.has(c.write_policy) ? c.write_policy : (role.startsWith("ignore") ? "never_touch" : "fill_if_empty");
+      byHeader.set(header, { header, role, write_policy, confidence: Math.max(0, Math.min(1, Number(c.confidence) || 0.5)), data_type: String(c.data_type || "text"), notes: clampStr(c.notes, 120) });
+    }
+  }
+  // fallback defaults
+  const schema = headers.map(h => {
+    if (byHeader.has(h)) return byHeader.get(h);
+    const hint = headerHint(h);
+    const role = hint === "unknown" ? "unknown" : hint;
+    const write_policy = role === "unknown" ? "fill_if_empty" : "fill_if_empty";
+    return { header: h, role, write_policy, confidence: hint === "unknown" ? 0.3 : 0.6, data_type: "text", notes: "fallback" };
+  });
+  // Engine/system columns are never writable by AI (deterministic guardrail).
+  for (const c of schema) {
+    if (isSystemHeader(c.header)) { c.role = "ignore_system"; c.write_policy = "never_touch"; }
+  }
+  return schema;
+}
+
+// ---------------- Pass B + C ----------------
+function schemaForPrompt(schema) {
+  return schema.filter(c => c.write_policy !== "never_touch").map(c => ({ header: c.header, role: c.role, write_policy: c.write_policy, data_type: c.data_type || "text" }));
+}
+
+async function aiNormalizeBatch(ai, batchRows, schema, enrichmentContext) {
+  const prompt = `You are a data normalization engine for a B2B outreach system. You NEVER invent facts.
+You restructure and clean data that is already present; you add new values only under the
+evidence rules below.
+
+INPUTS: enrichmentContext; schema [{header,role,write_policy,data_type}];
+rows [{rowId, values:{header:value}}]; optional evidenceByRow.
+
+TASKS
+1) Fill missing values and correct clearly misfilled values within each write_policy.
+2) Derive identity fields when information already exists in the row, even if stored
+   under the wrong column (full name in a first-name column, duplicated first/last,
+   name in a generic column, company/person swapped). Derivation must be a pure
+   restructuring of existing text: never add tokens not present.
+3) Normalize formats: whitespace, casing, email lowercase/trim, phone formatting,
+   URLs (scheme, strip tracking), locations, job titles, company names.
+4) Descriptive fields (company, job title, location, context) may be filled by inference
+   from the row and campaign context (basis "inferred") when empty or clearly wrong.
+5) Identifiers (email, phone, URL/domain) must exist in the row or evidence; NEVER invent.
+6) CONTEXT: short factual summary from row/evidence only.
+
+DATA QUALITY RULES (hard, never override)
+- The literal words Personal, self, private, individual, N/A, unknown, none or "-" are
+  NOT company/business names and NOT websites. If no employer/organization is present
+  in the row or evidence, leave BUSINESSNAME (company role) EMPTY. Do not infer a
+  company from a note such as "Personal contact: Jane Doe (jane@example.com)".
+- URL must be a real http(s) web address that appears in the row or evidence.
+  If none is available, leave URL EMPTY. Never write a label, name, keyword or
+  "Personal" into a URL column.
+- CONTEXT is a short factual sentence about the person or business based only on
+  row/evidence. Never turn "Personal contact: ..." into an employer claim.
+- Company and URL may only use basis restructure | derived | verified. Never use
+  "inferred" for them. Other descriptive fields may use "inferred" when empty.
+
+THREE EXAMPLES OF THE EXPECTED OUTPUT SHAPE
+Example 1 - no employer or site in the row:
+  input:  {FIRSTNAME:"Jane", LASTNAME:"Doe", EMAIL:"jane@gmail.com",
+           CONTEXT:"Personal contact: Jane Doe (jane@gmail.com)."}
+  output: {"rowId":"1","status":"enriched","patches":[],
+           "notes":"No verifiable company or URL; left empty."}
+Example 2 - verified company and site in the row:
+  input:  {FIRSTNAME:"Sam", LASTNAME:"Lee", EMAIL:"sam@acme.com",
+           BUSINESSNAME:"acme inc", URL:"www.acme.com/about"}
+  output: {"rowId":"2","status":"enriched","patches":[
+    {"header":"BUSINESSNAME","value":"Acme Inc","basis":"restructure","confidence":0.9,"reason":"Normalize company casing"},
+    {"header":"URL","value":"https://www.acme.com/about","basis":"restructure","confidence":0.9,"reason":"Add https scheme"}]}
+Example 3 - misfilled full name in FIRSTNAME:
+  input:  {FIRSTNAME:"Maria Garcia", LASTNAME:"", EMAIL:"maria@example.org"}
+  output: {"rowId":"3","status":"enriched","patches":[
+    {"header":"FIRSTNAME","value":"Maria","basis":"derived","confidence":0.9,"reason":"Split existing full name"},
+    {"header":"LASTNAME","value":"Garcia","basis":"derived","confidence":0.9,"reason":"Split existing full name"}]}
+
+NAMING / IDENTITY RULES (general)
+- Do not assume two-part names. Single token is a valid name.
+- Honorifics/titles are not names; suffixes attach only when clearly part of the family name.
+- Preserve diacritics and original script.
+- If first/last cannot be separated without adding text, keep the full value in the most
+  appropriate role and leave the other blank.
+- Never fabricate email, phone, URL, company, title, or location.
+
+EVIDENCE RULES
+- restructure = rearrangement/cleanup of the row's own text.
+- derived     = identity split implied by the row's own values.
+- inferred    = reasonable deduction from row + context (descriptive fields only).
+- verified    = supported by evidenceByRow (cite the snippet reference).
+- Conflicts: keep original, confidence < 0.5, reason "conflict".
+
+enrichmentContext: ${String(enrichmentContext || "(none)").slice(0, 2500)}
+schema: ${JSON.stringify(schemaForPrompt(schema)).slice(0, 12000)}
+rows: ${JSON.stringify(batchRows.map(r => ({ rowId: r.rowId, values: r.values }))).slice(0, 18000)}
+evidenceByRow: ${JSON.stringify(Object.fromEntries(batchRows.map(r => [r.rowId, (r.evidence || []).slice(0, 4).map(e => ({ url: e.url, title: e.title, snippet: e.snippet, text: (e.bodyText || '').slice(0, 500) }))]))).slice(0, 12000)}
+
+OUTPUT valid JSON only:
+{"rows":[{"rowId":"<id>","patches":[{"header":"<header>","value":"<new>",
+"basis":"restructure|derived|inferred|verified","confidence":0.0,
+"reason":"<max 15 words>"}],"status":"enriched|no_data","notes":"<optional>"}]}
+One entry per input rowId in order. Empty patches = unchanged. Never modify never_touch.
+No markdown.`;
+  return aiGenerateJson(ai, prompt, 3500);
+}
+
+async function aiVerifyBatch(ai, batchRows, proposedById, schema) {
+  const prompt = `You are a verification reviewer for normalized CSV rows. Inputs: original row, proposed
+patches, schema, evidence.
+
+For each patch: ACCEPT or REJECT.
+ACCEPT if it is a faithful restructuring of the row's own text (restructure/derived), OR
+a reasonable non-identifier inference consistent with row+context (inferred), OR directly
+supported by evidence (verified), AND it does not conflict with other row values.
+REJECT invented identifiers/facts, unsupported tokens, contradictions, never_touch
+writes, or confidence < 0.5 without evidence.
+ALWAYS REJECT a company/URL patch with basis "inferred", a company value of
+Personal/self/private/individual/N/A/unknown, or a URL that is not a real http(s)
+address present in the row or evidence. A "Personal contact: ..." note is NOT an
+employer; leave BUSINESSNAME and URL empty in that case.
+If a first/last split would require adding text, REJECT it and keep the original.
+
+schema: ${JSON.stringify(schemaForPrompt(schema)).slice(0, 10000)}
+rows: ${JSON.stringify(batchRows.map(r => ({ rowId: r.rowId, original: r.values, proposed: proposedById.get(r.rowId) || { patches: [], status: 'no_data' }, evidence: (r.evidence || []).slice(0, 3).map(e => ({ url: e.url, title: e.title, text: (e.bodyText || '').slice(0, 400) })) }))).slice(0, 20000)}
+
+Return ONLY JSON:
+{"rows":[{"rowId":"<id>","decisions":[{"header":"<header>",
+"decision":"accept|reject","reason":"<max 15 words>"}]}]}`;
+  return aiGenerateJson(ai, prompt, 2500);
+}
+
+async function enrichBatch({ batch, schema, schemaByHeader, headers, ai, enrichmentContext, log }) {
+  // batch: [{i,row,rowId,values,evidence}]
+  let proposed = null;
+  let verified = null;
+  try { proposed = await aiNormalizeBatch(ai, batch, schema, enrichmentContext); } catch (e) { log.warn(`[enrich] normalize batch failed: ${e.message}`); }
+  if (!proposed || !Array.isArray(proposed.rows)) {
+    // AI/parse failure: leave rows unresolved (resumable, never false completion)
+    log.warn(`[enrich] normalize batch produced no usable rows - deferring ${batch.length} row(s)`);
+    return batch.map(r => ({ i: r.i, failed: true }));
+  }
+  const proposedRows = proposed.rows;
+  const proposedById = new Map(proposedRows.map(r => [String(r.rowId), r]));
+  // ensure every row present
+  for (const r of batch) { if (!proposedById.has(r.rowId)) proposedById.set(r.rowId, { rowId: r.rowId, patches: [], status: "no_data" }); }
+  try { verified = await aiVerifyBatch(ai, batch, proposedById, schema); } catch (e) { log.warn(`[enrich] verify batch failed: ${e.message}`); }
+  if (!verified || !Array.isArray(verified.rows)) {
+    log.warn(`[enrich] verifier produced no usable decisions - deferring ${batch.length} row(s)`);
+    return batch.map(r => ({ i: r.i, failed: true }));
+  }
+  const decisionsById = new Map();
+  for (const vr of verified.rows) decisionsById.set(String(vr.rowId), vr);
+  const results = [];
+  for (const r of batch) {
+    const prop = proposedById.get(r.rowId) || { patches: [], status: "no_data" };
+    const dec = decisionsById.get(r.rowId) || null;
+    const { changed, status, failed } = validateAndApplyPatches(r.row, headers, schemaByHeader, prop, dec, true);
+    // final hygiene on touched row (non-semantic)
+    hygieneRow(r.row);
+    results.push({ i: r.i, status, changed, failed });
+  }
+  return results;
+}
+
+async function flushRows(campaignId, rows, fileId, log) {
   try {
-    const text = await ai.generate(prompt, { maxTokens: 700, jsonMode: true });
-    const parsed = parseJsonLoose(ai, text);
-    if (Array.isArray(parsed)) {
-      const qs = parsed.map(x => String(x || "").trim()).filter(Boolean).slice(0, 8);
-      if (qs.length) return qs;
-    }
-  } catch {}
-  return buildHeuristicQueries(row, headers).slice(0, 8);
-}
-
-async function aiExtractRow(ai, row, headers, evidence, enrichmentContext, targetColumns) {
-  const known = rowKnownData(row, headers);
-  const ev = (evidence || []).slice(0, 10).map((e, i) => ({
-    i: i + 1,
-    url: e.url, title: e.title, snippet: e.snippet,
-    description: e.description,
-    text: (e.bodyText || "").slice(0, 1800),
-    internal: (e.internalTexts || []).join(" ").slice(0, 1400)
-  }));
-  const prompt = `You are a precise data enrichment agent. Extract ONLY verifiable information from evidence for this row.
-
-Target columns (fill only if supported): ${targetColumns.join(", ")}
-Known row data: ${JSON.stringify(known).slice(0, 3500)}
-Enrichment context/instructions: ${enrichmentContext || "General enrichment: extract all available verifiable business/personal information."}
-
-Evidence (JSON): ${JSON.stringify(ev).slice(0, 14000)}
-
-Rules:
-- Only fill fields directly supported by known data or evidence. If not verifiable, leave empty.
-- Correct/split identity when evident: if FIRSTNAME contains a full name and LASTNAME duplicates/should be split, return corrected FIRSTNAME and LASTNAME.
-- If EMAIL is missing/empty and a verifiable email is found in evidence, include EMAIL.
-- CONTEXT should be a concise 1-3 sentence factual summary grounded in evidence (who they are/company/role/location/contact hints) when supported.
-- Follow enrichment context priorities when provided.
-- Return ONLY a JSON object with keys from target columns plus "confidence" ("high"|"medium"|"low"|"none") and "missing" (array of target columns still unknown/unverified).
-- When confidence is "none", return empty values for unverified fields.`;
-  try {
-    const text = await ai.generate(prompt, { maxTokens: 2500, jsonMode: true });
-    const parsed = parseJsonLoose(ai, text);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
-  } catch {}
-  return { confidence: "none", missing: targetColumns };
-}
-
-async function aiReviewRow(ai, extracted, row, headers, evidence, enrichmentContext, targetColumns) {
-  const known = rowKnownData(row, headers);
-  const prompt = `Review this enrichment extraction for correctness and unsupported claims.
-Target columns: ${targetColumns.join(", ")}
-Known row data: ${JSON.stringify(known).slice(0, 2500)}
-Enrichment context: ${enrichmentContext || "(none)"}
-Evidence snippets: ${JSON.stringify((evidence||[]).slice(0,6).map(e=>({url:e.url,title:e.title,text:(e.bodyText||"").slice(0,500)}))).slice(0,6000)}
-Extraction: ${JSON.stringify(extracted).slice(0,4000)}
-
-Return ONLY a JSON object with the same target column keys plus "confidence" and "missing". Remove any value not supported by evidence/known data. Keep empty string for unknown. Correct obvious name-split errors if evidence supports.`;
-  try {
-    const text = await ai.generate(prompt, { maxTokens: 1800, jsonMode: true });
-    const parsed = parseJsonLoose(ai, text);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
-  } catch {}
-  return extracted;
-}
-
-function normalizeExtracted(extracted, targetColumns, headers) {
-  const out = { confidence: String(extracted?.confidence || "none").toLowerCase(), missing: Array.isArray(extracted?.missing) ? extracted.missing : [] };
-  for (const col of targetColumns) {
-    let v = extracted?.[col] ?? extracted?.[col.toLowerCase()] ?? extracted?.[col.toUpperCase()] ?? "";
-    if (col === "EMAIL") v = cleanEmail(v);
-    else if (typeof v === "string") v = cleanText(v);
-    out[col] = typeof v === "string" ? v : (v == null ? "" : String(v).trim());
+    await mergeAndFlush(campaignId, 'enrich', rows, fileId);
+  } catch (e) {
+    log.warn(`[enrich] batch flush (merge) failed: ${e.message} - trying direct upload`);
+    try { await uploadCsvText(fileId, stringifyCSV(rows)); }
+    catch (e2) { log.error(`[enrich] batch flush failed after retry: ${e2.message}`); throw e2; }
   }
-  if (headers.includes("EMAIL")) {
-    const ev = cleanEmail(extracted?.EMAIL || extracted?.email || out.EMAIL || "");
-    if (ev) out.EMAIL = ev;
-  }
-  if (!["high","medium","low","none"].includes(out.confidence)) out.confidence = "low";
-  // if model returns empty names under none, keep as-is (don't force blanks except truly empty)
-  if (out.confidence === "none") {
-    for (const col of targetColumns) {
-      if (col === "FIRSTNAME" || col === "LASTNAME" || col === "BUSINESSNAME") continue;
-      // keep CONTEXT only if meaningful
-      if (col === "CONTEXT" && String(out[col] || "").length < 20) out[col] = "";
-      else if (col !== "CONTEXT") out[col] = out[col] || "";
-    }
-  }
-  return out;
-}
-
-function getTargetColumns(headers) {
-  const preferred = ["FIRSTNAME","LASTNAME","JOBTITLE","BUSINESSNAME","BUSINESSCITY","BUSINESSSTATE","BUSINESSCOUNTRY","BUSINESSZIPCODE","BUSINESSPHONE","BUSINESSEMAIL","EMAIL","CONTEXT","SOCIALUSERNAME","SOCIALPLATFORM","URL","WEBSITE","ADDRESS","CITY","STATE","COUNTRY","ZIPCODE","PHONE"];
-  const targets = preferred.filter(c => headers.includes(c));
-  if (!targets.includes("EMAIL") && headers.includes("EMAIL")) targets.unshift("EMAIL");
-  if (!targets.includes("CONTEXT") && headers.includes("CONTEXT")) targets.push("CONTEXT");
-  // also allow alias-resolved logical targets to be written if present via aliases (handled in apply)
-  return Array.from(new Set(targets));
-}
-
-function isMisfilledName(first, last) {
-  const f = cleanText(first), l = cleanText(last);
-  if (!f || !l) return false;
-  const fParts = f.split(/\s+/);
-  if (fParts.length < 2) return false;
-  const fl = f.toLowerCase(), ll = l.toLowerCase();
-  return fl.endsWith(" " + ll) || namesLooselyEqual(fParts[fParts.length - 1], l) || fl === ll;
-}
-
-function applyField(row, headers, col, value, { allowCorrect = false } = {}) {
-  const v = cleanText(value);
-  if (!v) return false;
-  const existing = getCell(row, headers, col);
-  if (!existing) { setCell(row, headers, col, v); return true; }
-  if (col === "CONTEXT") {
-    if (v.length > existing.length + 15 && v.toLowerCase() !== existing.toLowerCase()) { setCell(row, headers, col, v); return true; }
-    return false;
-  }
-  if (!allowCorrect) return false;
-  if (col === "FIRSTNAME" || col === "LASTNAME") {
-    if (isMisfilledName(getCell(row, headers, "FIRSTNAME"), getCell(row, headers, "LASTNAME"))) {
-      // apply corrected split
-      if (v.toLowerCase() !== existing.toLowerCase()) { setCell(row, headers, col, v); return true; }
-    }
-    return false;
-  }
-  if ((col === "BUSINESSNAME" || col === "EMAIL") && isPlaceholder(existing)) { setCell(row, headers, col, v); return true; }
-  return false;
-}
-
-function isRowEnrichedFinal(row, headers) {
-  const s = String(getCell(row, headers, "enrichmentStatus") || "").toLowerCase();
-  return s === "enriched" || s === "no_data" || s === "skipped";
-}
-
-async function enrichOneRow({ row, headers, ai, enrichmentContext, scrapeConcurrency }) {
-  // 1) Deterministic normalization/repair (schema-agnostic, safe corrections) - persisted in-row
-  const norm = preNormalizeRow(row, headers);
-  let updated = norm.changed;
-  let anyValue = norm.changed; // normalization is a meaningful improvement when it changes data
-
-  const targetColumns = getTargetColumns(headers);
-  if (!hasSearchableData(row, headers)) {
-    return { status: "no_data", reason: "no_searchable_data", updated, confidence: "none" };
-  }
-
-  // 2) Free email-based signals (Gravatar + domain/company site) as verifiable evidence/fills
-  let evidence = [];
-  try {
-    const sig = await gatherEmailSignals(row, headers);
-    evidence = evidence.concat(sig.evidence || []);
-    for (const [k, v] of Object.entries(sig.fills || {})) {
-      if (!v) continue;
-      const existing = getCell(row, headers, k);
-      if (!existing) { setCell(row, headers, k, v); updated = true; anyValue = true; }
-      else if (k === "CONTEXT" && String(v).length > existing.length + 15) { setCell(row, headers, k, v); updated = true; anyValue = true; }
-    }
-  } catch {}
-
-  // 3) Known URL / domain evidence
-  const knownUrl = getCell(row, headers, "URL") || getCell(row, headers, "WEBSITE");
-  if (knownUrl) {
-    try {
-      const u = knownUrl.startsWith("http") ? knownUrl : `https://${knownUrl}`;
-      if (!evidence.some(e => e && e.url && e.url.includes(u.replace(/^https?:\/\//, "").split("/")[0]))) {
-        const scraped = await deepScrape(u);
-        if (scraped) evidence.push(scraped);
-      }
-    } catch {}
-  }
-
-  let queries = await aiSuggestQueries(ai, row, headers, enrichmentContext, []);
-  let extracted = null;
-  let reviewed = null;
-
-  for (let round = 0; round < 3; round++) { // initial + up to 2 refinements
-    const qset = (queries || []).slice(0, 8);
-    const searchSettled = await Promise.allSettled(qset.map(q => multiSearch(q)));
-    const found = [];
-    const seen = new Set(evidence.map(e => e && e.url).filter(Boolean));
-    for (const s of searchSettled) {
-      if (s.status !== "fulfilled") continue;
-      for (const item of (s.value || [])) {
-        if (!item?.url || seen.has(item.url)) continue;
-        seen.add(item.url); found.push(item);
-      }
-    }
-    const toScrape = found.slice(0, Math.max(4, Math.min(8, scrapeConcurrency || 6)));
-    const scrapedSettled = await Promise.allSettled(toScrape.map(it => deepScrape(it.url)));
-    for (let i = 0; i < scrapedSettled.length; i++) {
-      const r = scrapedSettled[i];
-      if (r.status === "fulfilled" && r.value) {
-        evidence.push({ ...r.value, snippet: toScrape[i]?.snippet || "", title: r.value.title || toScrape[i]?.title || "" });
-      }
-    }
-    evidence = evidence.filter(Boolean).slice(0, 12);
-
-    extracted = normalizeExtracted(await aiExtractRow(ai, row, headers, evidence, enrichmentContext, targetColumns), targetColumns, headers);
-    reviewed = normalizeExtracted(await aiReviewRow(ai, extracted, row, headers, evidence, enrichmentContext, targetColumns), targetColumns, headers);
-
-    const conf = reviewed.confidence || "none";
-    const missing = Array.isArray(reviewed.missing) ? reviewed.missing.filter(Boolean) : [];
-    const needsEmail = resolveHeaderIndex(headers, "EMAIL") >= 0 && !getCell(row, headers, "EMAIL") && !cleanEmail(reviewed.EMAIL || "");
-    const low = conf === "low" || conf === "none";
-    if (round >= 2 || (!low && !needsEmail)) break;
-    const missingTargets = Array.from(new Set([...missing, ...(needsEmail ? ["EMAIL"] : [])]));
-    queries = await aiSuggestQueries(ai, row, headers, enrichmentContext, missingTargets);
-    if (!queries || queries.length === 0) break;
-  }
-
-  const finalRes = reviewed || extracted || { confidence: "none" };
-  for (const col of targetColumns) {
-    const val = String(finalRes[col] || "").trim();
-    if (!val) continue;
-    if (col === "EMAIL") {
-      const ev = cleanEmail(val);
-      if (ev && applyField(row, headers, "EMAIL", ev, { allowCorrect: false })) { updated = true; anyValue = true; }
-      continue;
-    }
-    // allow safe correction for misfilled names; fill empties for others; improve CONTEXT
-    const allowCorrect = (col === "FIRSTNAME" || col === "LASTNAME");
-    if (applyField(row, headers, col, val, { allowCorrect })) { updated = true; anyValue = true; }
-  }
-  // discovered email fallback
-  if (resolveHeaderIndex(headers, "EMAIL") >= 0 && !getCell(row, headers, "EMAIL")) {
-    const evEmail = cleanEmail(finalRes.EMAIL || finalRes.email || "");
-    if (evEmail) { setCell(row, headers, "EMAIL", evEmail); updated = true; anyValue = true; }
-  }
-
-  // re-run name normalization if AI filled/changed names into a messy state
-  const post = preNormalizeRow(row, headers);
-  if (post.changed) { updated = true; anyValue = true; }
-
-  // mark enriched if we made a verifiable/useful improvement (incl. normalization) or have meaningful context/evidence-backed result
-  const ctx = getCell(row, headers, "CONTEXT");
-  const hasMeaningfulContext = cleanText(ctx).length >= 25;
-  const confident = (finalRes.confidence && finalRes.confidence !== "none");
-  const status = (updated || anyValue || (confident && hasMeaningfulContext)) ? "enriched" : "no_data";
-  return { status, updated, confidence: finalRes.confidence || (updated ? "low" : "none") };
-}
-
-async function runEnrichmentRange({ rows, headers, start, end, campaignId, enrichmentContext, log, fileId, onCheckpoint, concurrency = 1 }) {
-  ensureColumn(headers, rows, "enrichmentStatus");
-  const limit = Math.max(1, parseInt(concurrency, 10) || 1);
-  let processed = 0, enriched = 0, noData = 0, skipped = 0;
-
-  // Build pending row indexes in range (resumable)
-  const pending = [];
-  for (let i = start; i < end; i++) {
-    const idx = i + 1; // header offset
-    if (idx >= rows.length) break;
-    const row = rows[idx];
-    if (isRowEnrichedFinal(row, headers)) { skipped++; continue; }
-    pending.push(i);
-  }
-
-  const runOne = async (i) => {
-    const idx = i + 1;
-    const row = rows[idx];
-    const ai = new MultiProviderAI();
-    try {
-      const res = await enrichOneRow({ row, headers, ai, enrichmentContext, scrapeConcurrency: 6 });
-      return { i, status: res.status || 'no_data', confidence: res.confidence || 'none' };
-    } catch (e) {
-      log.warn(`[Row ${i}] enrichment error: ${e.message}`);
-      return { i, status: 'no_data', confidence: 'error', error: e.message };
-    }
-  };
-
-  for (let cursor = 0; cursor < pending.length; cursor += limit) {
-    const wave = pending.slice(cursor, cursor + limit);
-    const settled = await Promise.allSettled(wave.map(i => runOne(i)));
-    for (let w = 0; w < settled.length; w++) {
-      const i = wave[w];
-      const idx = i + 1;
-      if (idx >= rows.length) continue;
-      const row = rows[idx];
-      if (isRowEnrichedFinal(row, headers)) { skipped++; continue; }
-      const val = settled[w].status === 'fulfilled' ? settled[w].value : { i, status: 'no_data', confidence: 'error' };
-      setCell(row, headers, "enrichmentStatus", val.status === 'enriched' ? 'enriched' : 'no_data');
-      if (val.status === 'enriched') enriched++; else noData++;
-      processed++;
-      log.info(`[Row ${i}] enrichment ${val.status === 'enriched' ? 'enriched' : 'no_data'} conf=${val.confidence || "n/a"}`);
-    }
-
-    // Incremental per-batch commit: persist completed batch rows/status before next batch
-    const checkpointUpTo = Math.min(wave[wave.length - 1] + 1, end);
-    if (onCheckpoint) {
-      await onCheckpoint(checkpointUpTo, { processed, enriched, noData, skipped });
-    } else if (fileId) {
-      try {
-        await mergeAndFlush(campaignId, 'enrich', rows, fileId);
-      } catch (e) {
-        log.warn(`[enrich] batch flush (merge) failed: ${e.message} - trying direct upload`);
-        try { await uploadCsvText(fileId, stringifyCSV(rows)); }
-        catch (e2) { log.error(`[enrich] batch flush failed after retry: ${e2.message}`); }
-      }
-    }
-  }
-
-  // final checkpoint flush (ensure all processed rows persisted)
-  if (onCheckpoint) {
-    await onCheckpoint(end, { processed, enriched, noData, skipped });
-  } else if (fileId) {
-    try {
-      await mergeAndFlush(campaignId, 'enrich', rows, fileId);
-    } catch (e) {
-      log.warn(`[enrich] final flush (merge) failed: ${e.message} - trying direct upload`);
-      try { await uploadCsvText(fileId, stringifyCSV(rows)); }
-      catch (e2) { log.error(`[enrich] final flush failed after retry: ${e2.message}`); }
-    }
-  }
-
-  return { processed, enriched, noData, skipped };
 }
 
 function isRangeFullyEnriched(rows, headers, start, end) {
@@ -828,20 +471,93 @@ function isRangeFullyEnriched(rows, headers, start, end) {
   return true;
 }
 
+async function runEnrichmentRange({ rows, headers, start, end, campaignId, enrichmentContext, log, fileId, onCheckpoint, concurrency = 1, schema }) {
+  ensureColumn(headers, rows, "enrichmentStatus");
+  const N = Math.max(1, parseInt(concurrency, 10) || 1);
+  const schemaByHeader = new Map(schema.map(c => [c.header, c]));
+  let processed = 0, enriched = 0, noData = 0, skipped = 0;
+
+  // hygiene pass (non-semantic) on range
+  for (let i = start; i < end; i++) { const idx = i + 1; if (idx < rows.length) hygieneRow(rows[idx]); }
+
+  const pending = [];
+  for (let i = start; i < end; i++) {
+    const idx = i + 1; if (idx >= rows.length) break;
+    const row = rows[idx];
+    if (isRowEnrichedFinal(row, headers)) { skipped++; continue; }
+    pending.push(i);
+  }
+
+  let paused = false;
+  const waves = planEnrichmentWaves(pending, N);
+  for (const wave of waves) {
+    // Bounded concurrency: N rows per AI call, up to N AI calls (groups) in flight.
+    const settled = await Promise.allSettled(wave.map(async (idxs) => {
+      const batch = [];
+      for (const i of idxs) {
+        const idx = i + 1; if (idx >= rows.length) continue;
+        const row = rows[idx];
+        if (isRowEnrichedFinal(row, headers)) continue;
+        // gather light evidence (Gravatar/domain) per row (best-effort)
+        let evidence = [];
+        try { evidence = (await gatherEmailSignals(row, headers, schema)).evidence || []; } catch {}
+        batch.push({ i, row, rowId: String(i), values: rowKnownData(row, headers, schema), evidence });
+      }
+      if (batch.length === 0) return [];
+      const ai = new MultiProviderAI();
+      return enrichBatch({ batch, schema, schemaByHeader, headers, ai, enrichmentContext, log });
+    }));
+
+    for (const s of settled) {
+      if (s.status !== "fulfilled") {
+        log.warn(`[enrich] batch failed: ${s.reason?.message || s.reason}`);
+        continue;
+      }
+      for (const r of (s.value || [])) {
+        if (r.failed) {
+          log.warn(`[Row ${r.i}] enrichment deferred (AI/verifier unavailable) - row left unresolved`);
+          continue;
+        }
+        const idx = r.i + 1; if (idx >= rows.length) continue;
+        const row = rows[idx];
+        if (isRowEnrichedFinal(row, headers)) { skipped++; continue; }
+        setCell(row, headers, "enrichmentStatus", r.status === "enriched" ? "enriched" : "no_data");
+        if (r.status === "enriched") enriched++; else noData++;
+        processed++;
+        log.info(`[Row ${r.i}] enrichment ${r.status}${r.changed ? "" : " (no-change)"}`);
+      }
+    }
+
+    // Incremental per-wave commit: persist before next wave
+    const covered = wave.flat();
+    const checkpointUpTo = covered.length ? Math.min(Math.max(...covered) + 1, end) : end;
+    if (onCheckpoint) {
+      await onCheckpoint(checkpointUpTo, { processed, enriched, noData, skipped });
+    } else if (fileId) {
+      await flushRows(campaignId, rows, fileId, log);
+    }
+
+    // Pause only at safe checkpoints (after persistence)
+    if (await isCampaignPaused(campaignId, 'enrich')) { paused = true; break; }
+  }
+
+  // final flush (only when not paused: a paused run already flushed the last wave)
+  if (!paused) {
+    if (onCheckpoint) await onCheckpoint(end, { processed, enriched, noData, skipped });
+    else if (fileId) await flushRows(campaignId, rows, fileId, log);
+  }
+
+  return { processed, enriched, noData, skipped, paused };
+}
+
 async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
-  await updateCampaignSettings(campaignId, { enrichmentStatus: "processing" });
-  let enrichmentContext = '';
-  try {
-    const cs = await getCampaignSettings(campaignId);
-    enrichmentContext = cs?.settings?.enrichmentContext || cs?.enrichmentContext || '';
-  } catch {}
+  let enrichmentContext = "";
+  try { const cs = await getCampaignSettings(campaignId); enrichmentContext = cs?.settings?.enrichmentContext || cs?.enrichmentContext || ""; } catch {}
 
   const fileId = extractFileId(fileUrl);
   if (!fileId) return NextResponse.json({ success: false, error: "Invalid fileUrl or Drive file ID" }, { status: 400 });
 
   log.info(` Downloading CSV file: ${fileId}`);
-  const sx = (process.env.SEARXNG_URL || process.env.SEARX_URL || process.env.CXNG_URL || "").trim();
-  log.info(sx ? `[enrich] SearXNG configured: ${sx}` : `[enrich] SearXNG not configured (SEARXNG_URL missing) - using web scraping fallbacks + email/domain signals`);
   const dl = await downloadCsvText(fileId);
   if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
   let csvContent = dl.content;
@@ -853,13 +569,18 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
   ensureColumn(headers, rows, "enrichmentStatus");
   const dataRows = rows.slice(1);
 
-  // batch limits = concurrency over FULL dataset (never total scope/truncation)
   const campaignLimits = await getCampaignLimits();
   if (!(campaignLimits.enrichLimit > 0)) {
     return NextResponse.json({ success: true, limitReached: true, message: "Enrichment blocked: enrichBatchLimit is 0 - set it in the SETTINGS sheet" });
   }
-  const enrichConcurrency = Math.max(1, parseInt(campaignLimits.enrichLimit, 10) || 1);
+  const N = Math.max(1, parseInt(campaignLimits.enrichLimit, 10) || 1);
   const totalRows = dataRows.length;
+
+  // Pass A: schema comprehension (once per file)
+  log.info(`[enrich] Running schema comprehension (AI Pass A) on ${headers.length} columns, ${totalRows} rows`);
+  const schemaAi = new MultiProviderAI();
+  const schema = await aiSchemaPass(schemaAi, headers, rows, enrichmentContext, log);
+  log.info(`[enrich] Schema mapped: ${schema.filter(c=>c.write_policy!=='never_touch').length} writable columns`);
 
   // multi-server dispatch over full dataset when nothing processed yet
   if (await isMultiServerEnabled()) {
@@ -872,9 +593,13 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
     }
   }
 
-  const stats = await runEnrichmentRange({
-    rows, headers, start: 0, end: totalRows, campaignId, enrichmentContext, log, fileId, concurrency: enrichConcurrency,
-  });
+  await updateCampaignSettings(campaignId, { enrichmentStatus: "processing" });
+  const stats = await runEnrichmentRange({ rows, headers, start: 0, end: totalRows, campaignId, enrichmentContext, log, fileId, concurrency: N, schema });
+
+  if (stats.paused) {
+    await updateCampaignSettings(campaignId, { enrichmentStatus: "paused", status: "paused" });
+    return NextResponse.json({ success: true, paused: true, completed: false, message: "Enrichment paused at checkpoint", stats });
+  }
 
   const complete = isRangeFullyEnriched(rows, headers, 0, totalRows);
   if (!complete) {
@@ -886,22 +611,16 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
   if (stageUserId && totalRows > 0) {
     try { await updateUserUsage(stageUserId, "enrichUsage", totalRows); } catch (e) { log.warn(`[user-limit] enrichUsage increment failed: ${e.message}`); }
   }
-  // Notify orchestrator so it can advance (coordinator/single-server completion handoff)
   try {
     const selfUrl = getSelfUrlWithFallback();
-    fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ campaignId })
-    }).catch(() => {});
+    fetch(`${selfUrl}/campaign/pipeline-orchestrator`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaignId }) }).catch(() => {});
   } catch {}
   return NextResponse.json({ success: true, completed: true, message: "Campaign enrichment completed", total: totalRows, stats });
 }
 
 async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
-  await updateCampaignSettings(campaignId, { enrichmentStatus: "processing" });
-  let enrichmentContext = '';
-  try { const cs = await getCampaignSettings(campaignId); enrichmentContext = cs?.settings?.enrichmentContext || cs?.enrichmentContext || ''; } catch {}
+  let enrichmentContext = "";
+  try { const cs = await getCampaignSettings(campaignId); enrichmentContext = cs?.settings?.enrichmentContext || cs?.enrichmentContext || ""; } catch {}
 
   const myAssignment = await findMyAssignment(campaignId, 'enrich');
   if (!myAssignment) return NextResponse.json({ success: false, error: "No assignment found for this server" }, { status: 400 });
@@ -909,8 +628,6 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
 
   const fileId = extractFileId(fileUrl);
   if (!fileId) return NextResponse.json({ success: false, error: "Invalid fileUrl or Drive file ID" }, { status: 400 });
-  const sx = (process.env.SEARXNG_URL || process.env.SEARX_URL || process.env.CXNG_URL || "").trim();
-  log.info(sx ? `[enrich][worker] SearXNG configured: ${sx}` : `[enrich][worker] SearXNG not configured - using web scraping fallbacks + email/domain signals`);
   const dl = await downloadCsvText(fileId);
   if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
   let csvContent = dl.content; if (csvContent.charCodeAt(0) === 0xFEFF) csvContent = csvContent.slice(1);
@@ -921,23 +638,34 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
   const rowStart = Math.max(0, parseInt(serverBatch?.rowStart || 0));
   const rowEnd = Math.min(rows.length - 1, parseInt(serverBatch?.rowEnd || (rows.length - 1)));
   const campaignLimits = await getCampaignLimits();
-  const enrichConcurrency = Math.max(1, parseInt(campaignLimits.enrichLimit || 1, 10) || 1);
+  if (!(campaignLimits.enrichLimit > 0)) {
+    await updateMyAssignment(campaignId, 'enrich', { status: 'failed', error: 'enrichBatchLimit is 0' });
+    return NextResponse.json({ success: false, error: "Enrichment blocked: enrichBatchLimit is 0 - set it in the SETTINGS sheet", limitReached: true });
+  }
+  const N = Math.max(1, parseInt(campaignLimits.enrichLimit, 10) || 1);
+
+  const schemaAi = new MultiProviderAI();
+  const schema = await aiSchemaPass(schemaAi, headers, rows, enrichmentContext, log);
+  await updateCampaignSettings(campaignId, { enrichmentStatus: "processing" });
 
   try {
     const stats = await runEnrichmentRange({
-      rows, headers, start: rowStart, end: rowEnd, campaignId, enrichmentContext, log, fileId,
-      concurrency: enrichConcurrency,
+      rows, headers, start: rowStart, end: rowEnd, campaignId, enrichmentContext, log, fileId, concurrency: N, schema,
       onCheckpoint: async (processedUpTo, s) => {
         await updateMyAssignment(campaignId, 'enrich', { processedUpTo, ...s });
         await mergeAndFlush(campaignId, 'enrich', rows, fileId);
       }
     });
     const completeRange = isRangeFullyEnriched(rows, headers, rowStart, rowEnd);
+    if (stats.paused) {
+      await updateMyAssignment(campaignId, 'enrich', { status: 'paused', processedUpTo: rowEnd });
+      await updateCampaignSettings(campaignId, { enrichmentStatus: "paused", status: "paused" });
+      return NextResponse.json({ success: true, paused: true, completed: false, message: `Worker enrichment paused for rows ${rowStart}-${rowEnd - 1}`, stats });
+    }
     await updateMyAssignment(campaignId, 'enrich', { status: completeRange ? 'completed' : 'running', processedUpTo: rowEnd });
     if (completeRange) {
       const allDone = await checkAllComplete(campaignId, 'enrich');
       if (allDone) {
-        // verify whole file complete before marking
         const wholeComplete = isRangeFullyEnriched(rows, headers, 0, rows.length - 1);
         if (wholeComplete) {
           await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
@@ -957,6 +685,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
 export async function POST(request) {
   let log = logger.child({ campaignId: null, stage: 'enrich' });
   let campaignId;
+  let stageLease = null;
   try {
     await identifySelfFromHost(request.headers.get('host'));
     const body = await request.json();
@@ -969,8 +698,8 @@ export async function POST(request) {
 
     log = logger.child({ campaignId, stage: 'enrich' });
     log.info(`Received enrichment request${serverBatch ? ` [worker]` : ''}`);
+    stageLease = startStageLease(campaignId, 'enrich', log);
 
-    // USER tier — monthly enrichUsage gate
     let stageUserId = body.settings?.userId || body.userId || null;
     if (!stageUserId) { try { stageUserId = (await getCampaignSettings(campaignId))?.userId || null; } catch {} }
     if (stageUserId) {
@@ -987,6 +716,8 @@ export async function POST(request) {
     (log || logger).error(`Error: ${error.message}`, { stack: error.stack });
     try { if (campaignId) await updateCampaignSettings(campaignId, { enrichmentStatus: "processing" }); } catch {}
     return NextResponse.json({ success: false, error: error.message, processing: true }, { status: 500 });
+  } finally {
+    if (stageLease) stageLease.stop();
   }
 }
 

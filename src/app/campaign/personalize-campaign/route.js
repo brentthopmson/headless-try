@@ -4,7 +4,7 @@ import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, getPerformancePresets, buildPersonalizedLink, ensureLinkColumn } from "../_shared/pipelineUtils.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, buildPersonalizedLink, ensureLinkColumn, startStageLease } from "../_shared/pipelineUtils.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
 import { updateUserUsage } from "../../socials/_shared/hubUpdater.js";
@@ -226,8 +226,8 @@ async function processPersonalizationBatches({ rows, headers, dataRows, scopeSta
 
   const scoped = dataRows.slice(scopeStart, scopeEnd);
   let personalizedCount = 0;
-  const itemsPerCall = 10; // contacts per AI call
-  const concurrency = Math.max(1, parseInt(BATCH_SIZE, 10) || 1); // BATCH_SIZE = parallel AI operations (concurrency)
+  const concurrency = Math.max(1, parseInt(BATCH_SIZE, 10) || 1); // AI calls in flight AND contacts per AI call
+  const itemsPerCall = concurrency;
   const chunks = [];
   for (let i = 0; i < scoped.length; i += itemsPerCall) chunks.push(scoped.slice(i, i + itemsPerCall));
 
@@ -269,6 +269,7 @@ async function processPersonalizationBatches({ rows, headers, dataRows, scopeSta
     }
   };
 
+  let paused = false;
   for (let c = 0; c < chunks.length; c += concurrency) {
     const wave = chunks.slice(c, c + concurrency);
     const results = await Promise.allSettled(wave.map((chunk, wi) => processChunk(chunk, c + wi)));
@@ -282,13 +283,16 @@ async function processPersonalizationBatches({ rows, headers, dataRows, scopeSta
     } catch (flushErr) {
       log.warn(` Live flush (merge) failed after wave ${Math.floor(c / concurrency) + 1}: ${flushErr.message} - trying direct upload`);
       try { await uploadCsvText(fileId, stringifyCSV(rows)); }
-      catch (e2) { log.error(` Live flush failed after retry (wave ${Math.floor(c / concurrency) + 1}): ${e2.message}`); }
+      catch (e2) { log.error(` Live flush failed after retry (wave ${Math.floor(c / concurrency) + 1}): ${e2.message}`); throw e2; }
     }
     log.info(` Personalization wave ${Math.floor(c / concurrency) + 1}/${Math.ceil(chunks.length / concurrency)} complete (flushed)`);
+
+    // Pause only at safe checkpoints (after persistence)
+    if (await isCampaignPaused(campaignId, 'personalize')) { paused = true; break; }
   }
 
   // Verify full scope completion
-  const allDone = scoped.every(row => isRowPersonalized(row, channel, enhancedSubjectIdx, enhancedBodyIdx, enhancedSocialMsgIdx, personalizationStatusIdx));
+  const allDone = !paused && scoped.every(row => isRowPersonalized(row, channel, enhancedSubjectIdx, enhancedBodyIdx, enhancedSocialMsgIdx, personalizationStatusIdx));
   // ensure status marked for any legacy rows that already have personalized content but no terminal status
   if (personalizationStatusIdx !== -1) {
     for (const row of scoped) {
@@ -300,17 +304,10 @@ async function processPersonalizationBatches({ rows, headers, dataRows, scopeSta
       if (hasContent) row[personalizationStatusIdx] = 'personalized';
     }
   }
-  return { personalizedCount, allDone };
+  return { personalizedCount, allDone, paused };
 }
 
 async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUserId) {
-  const perfLevelSetting = await getSetting('performanceLevel');
-  const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
-  const batchSetting = await getSetting('personalizeBatchLimit');
-  const BATCH_SIZE = parseInt(batchSetting?.value1) || perfPresets.personalizationBatchLimit;
-
-  await updateCampaignSettings(campaignId, { personalizationStatus: "processing" });
-
   log.info(` Downloading CSV file: ${fileId}`);
   const dl = await downloadCsvText(fileId);
   if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
@@ -340,7 +337,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   if (!(campaignLimits.personalizeLimit > 0)) {
     return NextResponse.json({ success: true, limitReached: true, message: "Personalization blocked: personalizeBatchLimit is 0 - set it in the SETTINGS sheet" });
   }
-  const personalizeConcurrency = Math.max(1, parseInt(campaignLimits.personalizeLimit, 10) || BATCH_SIZE || 1);
+  const personalizeConcurrency = Math.max(1, parseInt(campaignLimits.personalizeLimit, 10) || 1);
   const scopeEnd = dataRows.length; // full dataset
 
   const multiEnabled = await isMultiServerEnabled();
@@ -351,9 +348,15 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
     }
   }
 
-  const { personalizedCount, allDone } = await processPersonalizationBatches({
+  await updateCampaignSettings(campaignId, { personalizationStatus: "processing" });
+  const { personalizedCount, allDone, paused } = await processPersonalizationBatches({
     rows, headers, dataRows, scopeStart: 0, scopeEnd, channel, personalizationPrompt, campaignSettings, BATCH_SIZE: personalizeConcurrency, fileId, campaignId, log
   });
+
+  if (paused) {
+    await updateCampaignSettings(campaignId, { personalizationStatus: "paused", status: "paused" });
+    return NextResponse.json({ success: true, paused: true, completed: false, message: "Personalization paused at checkpoint", total: scopeEnd, personalized: personalizedCount });
+  }
 
   try { await uploadCsvText(fileId, stringifyCSV(rows)); } catch {}
 
@@ -382,12 +385,6 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
   const myAssignment = await findMyAssignment(campaignId, 'personalize');
   if (!myAssignment) return NextResponse.json({ success: false, error: "No assignment found for this server" }, { status: 400 });
   await updateMyAssignment(campaignId, 'personalize', { status: 'running' });
-  await updateCampaignSettings(campaignId, { personalizationStatus: "processing" });
-
-  const perfLevelSetting = await getSetting('performanceLevel');
-  const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
-  const batchSetting = await getSetting('personalizeBatchLimit');
-  const BATCH_SIZE = parseInt(batchSetting?.value1) || perfPresets.personalizationBatchLimit;
 
   const dl = await downloadCsvText(fileId);
   if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
@@ -414,13 +411,23 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
   const rowStart = serverBatch.rowStart || 0;
   const rowEnd = Math.min(serverBatch.rowEnd || dataRows.length, dataRows.length);
   const campaignLimits = await getCampaignLimits();
-  const personalizeConcurrency = Math.max(1, parseInt(campaignLimits.personalizeLimit || BATCH_SIZE || 1, 10) || 1);
+  if (!(campaignLimits.personalizeLimit > 0)) {
+    await updateMyAssignment(campaignId, 'personalize', { status: 'failed', error: 'personalizeBatchLimit is 0' });
+    return NextResponse.json({ success: false, error: "Personalization blocked: personalizeBatchLimit is 0 - set it in the SETTINGS sheet" });
+  }
+  const personalizeConcurrency = Math.max(1, parseInt(campaignLimits.personalizeLimit, 10) || 1);
+  await updateCampaignSettings(campaignId, { personalizationStatus: "processing" });
 
-  const { personalizedCount, allDone } = await processPersonalizationBatches({
+  const { personalizedCount, allDone, paused } = await processPersonalizationBatches({
     rows, headers, dataRows, scopeStart: rowStart, scopeEnd: rowEnd, channel, personalizationPrompt, campaignSettings, BATCH_SIZE: personalizeConcurrency, fileId, campaignId, log
   });
 
   await mergeAndFlush(campaignId, 'personalize', rows, fileId);
+  if (paused) {
+    await updateMyAssignment(campaignId, 'personalize', { status: 'paused', processedUpTo: rowStart });
+    await updateCampaignSettings(campaignId, { personalizationStatus: "paused", status: "paused" });
+    return NextResponse.json({ success: true, paused: true, completed: false, message: `Worker personalization paused for rows ${rowStart}-${rowEnd - 1}`, personalized: personalizedCount });
+  }
   await updateMyAssignment(campaignId, 'personalize', { status: allDone ? 'completed' : 'running', processedUpTo: rowEnd });
 
   if (allDone) {
@@ -446,6 +453,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
 export async function POST(request) {
   let log = logger.child({ campaignId: null, stage: 'personalize' });
   let campaignId;
+  let stageLease = null;
   try {
     await identifySelfFromHost(request.headers.get('host'));
     const body = await request.json();
@@ -458,6 +466,7 @@ export async function POST(request) {
 
     log = logger.child({ campaignId, stage: 'personalize' });
     log.info(`Received personalization request`);
+    stageLease = startStageLease(campaignId, 'personalize', log);
 
     const fileId = extractFileId(fileUrl);
     if (!fileId) return NextResponse.json({ success: false, error: "Invalid fileUrl or Drive file ID" }, { status: 400 });
@@ -478,6 +487,8 @@ export async function POST(request) {
     (log || logger).error(`Error: ${error.message}`, { stack: error.stack });
     try { if (campaignId) await updateCampaignSettings(campaignId, { personalizationStatus: "processing" }); } catch {}
     return NextResponse.json({ success: false, processing: true, error: error.message }, { status: 500 });
+  } finally {
+    if (stageLease) stageLease.stop();
   }
 }
 

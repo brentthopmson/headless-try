@@ -581,7 +581,7 @@ export async function POST(request) {
       const userQuota = await checkUserQuota(userId, { keys: ["shootCampaignUsage"] });
       if (!userQuota.allowed) {
         log.warn(` [user-limit] Campaign ${campaignId} blocked: ${userQuota.reason}`);
-        await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "paused", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000 });
+        await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "resting", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000 });
         return NextResponse.json({
           success: true,
           message: `Execution blocked: ${userQuota.reason}`,
@@ -751,7 +751,7 @@ export async function POST(request) {
 
         if (shootCampaignLimit <= 0) {
           log.info(` shootingBatchLimit is 0 or unavailable, blocking execution - set shootingBatchLimit in the SETTINGS sheet`);
-          await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "paused", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000 });
+          await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "resting", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000 });
           return NextResponse.json({ success: true, message: "Execution blocked: shootingBatchLimit is 0 - set it in the SETTINGS sheet", limitReached: true });
         }
 
@@ -1270,7 +1270,9 @@ if (!String(settings.helperKeyword || "").trim()) {
         // Step 3e: Single campaign status update. Email list shooting is
         // never duration-completed: completed = loop finished the list.
         // If retryable failures remain, keep campaign resumable (paused) instead of completing.
-        let finalStatus = pausedByAdmin ? "paused" : (limitReached ? "paused" : "completed");
+        // A quota/limit pause is a REST, not a user pause. GAS auto-resumes rows
+        // whose status is 'resting' once restUntil elapses; 'paused' never wakes.
+        let finalStatus = pausedByAdmin ? "paused" : (limitReached ? "resting" : "completed");
         if (!pausedByAdmin && !limitReached && retryablePendingCount > 0) {
           finalStatus = "paused";
           settings.restReason = settings.restReason || "retry_pending";

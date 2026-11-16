@@ -1,6 +1,45 @@
 import { getSheetDataApi, updateSheetRowApi } from "../../api/googlesheets.js";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
+import { registerActiveCampaignRun, unregisterActiveCampaignRun } from "../../../utils/campaignConcurrency.js";
+
+/**
+ * Keeps a long-running stage visible to the engine's in-process liveness registry
+ * and to the GAS watchdog for the whole duration of the stage.
+ *
+ * The orchestrator's own registration ends as soon as it dispatches a stage;
+ * without a stage-level lease, `activeCampaignIds` is empty while validate/enrich/
+ * personalize are still running and the watchdog pauses the campaign mid-run.
+ * The heartbeat only refreshes the row's updatedOn/status (no settings version
+ * churn) and never overrides an explicit pause/rest/completion.
+ */
+export function startStageLease(campaignId, stage, log = null) {
+  try { registerActiveCampaignRun(campaignId, stage); } catch {}
+  let stopped = false;
+  const beat = async () => {
+    if (stopped) return;
+    try {
+      if (await isCampaignPaused(campaignId, stage)) return;
+      await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+        status: "running",
+        updatedOn: new Date().toISOString(),
+      });
+    } catch (e) {
+      log?.warn?.(`[lease] heartbeat failed for ${campaignId}/${stage}: ${e.message}`);
+    }
+  };
+  const timer = setInterval(beat, 45000);
+  if (typeof timer.unref === "function") timer.unref();
+  return {
+    beat,
+    stop: () => {
+      if (stopped) return;
+      stopped = true;
+      clearInterval(timer);
+      try { unregisterActiveCampaignRun(campaignId, stage); } catch {}
+    },
+  };
+}
 
 /**
  * Extracts a Google Drive file ID from a URL or returns the raw ID.
@@ -115,10 +154,15 @@ export async function updateCampaignSettings(campaignId, updates, retries = 3) {
       Object.assign(settings, updates);
       settings._settingsVersion = currentVersion + 1;
 
-      await updateSheetRowApi("campaigns", "campaignId", campaignId, {
+      const rowUpdate = {
         settings: JSON.stringify(settings),
         updatedOn: new Date().toISOString()
-      });
+      };
+      // settings.status was only a shadow copy; the sheet's `status` column is
+      // what the UI and GAS watchdog read. Keep them in lockstep whenever a
+      // caller changes campaign status through settings.
+      if (typeof updates.status === "string") rowUpdate.status = updates.status;
+      await updateSheetRowApi("campaigns", "campaignId", campaignId, rowUpdate);
       return; // success
     } catch (err) {
       if (attempt < retries - 1) {

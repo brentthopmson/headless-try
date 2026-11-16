@@ -7,7 +7,7 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import { launchBrowser } from "../../../utils/utils.js";
 import { platformConfigs } from "../../emails/cookie/cookie-api-login/platforms.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, getPerformancePresets } from "../_shared/pipelineUtils.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, startStageLease } from "../_shared/pipelineUtils.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
 import { updateUserUsage } from "../../socials/_shared/hubUpdater.js";
@@ -202,6 +202,46 @@ async function findVisibleErrorMessage(page, xpath) {
   } catch { return { matched: false, best: null }; }
 }
 
+// Provider-agnostic, evidence-based error signals. These are UI strings from the
+// sign-in page itself (never fabricated row data); they complement the per-platform
+// selectors in platformConfigs and cover localized/redesigned Google/Microsoft pages.
+const PLATFORM_ERROR_PATTERNS = [
+  /couldn'?t find (?:this|your|the) (?:google )?account/i,
+  /that (?:microsoft|msn|outlook|hotmail) account doesn'?t exist/i,
+  /(?:account|email|user) does not exist/i,
+  /no (?:account|user) (?:exists|found)/i,
+  /we couldn'?t find an account/i,
+  /enter a valid email/i,
+  /enter an email address/i,
+  /invalid email address/i,
+  /email (?:address )?not found/i,
+];
+
+async function detectGenericPlatformError(page) {
+  try {
+    return await page.evaluate((patternSources) => {
+      const regexes = patternSources.map(s => new RegExp(s, 'i'));
+      const nodes = document.querySelectorAll('[role="alert"], [aria-live="polite"], [aria-live="assertive"], [class*="error" i], [data-testid*="error" i]');
+      let best = null;
+      for (const el of nodes) {
+        if (!el || el.nodeType !== 1) continue;
+        const tag = (el.tagName || '').toLowerCase();
+        if (tag === 'html' || tag === 'body' || tag === 'script' || tag === 'style') continue;
+        if (el.hasAttribute('hidden') || el.getAttribute('aria-hidden') === 'true') continue;
+        const cs = window.getComputedStyle(el);
+        if (!cs || cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity || '1') === 0) continue;
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        const text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!text || text.length > 300) continue;
+        if (!regexes.some(re => re.test(text))) continue;
+        if (!best || text.length < best.len) best = { len: text.length, text };
+      }
+      return best ? { found: true, text: best.text } : { found: false, text: '' };
+    }, PLATFORM_ERROR_PATTERNS.map(p => p.source));
+  } catch { return { found: false, text: '' }; }
+}
+
 async function detectPlatformNotFoundError(page, config) {
   const selectors = normalizeSelectorList(config?.selectors?.errorMessage || config?.selectors?.incorrectEmailMessage);
   for (const sel of selectors) {
@@ -219,35 +259,71 @@ async function detectPlatformNotFoundError(page, config) {
       } catch {}
     }
   }
-  return { found: false, text: '' };
+  // Structural + text-based fallback for redesigned/localized pages.
+  return detectGenericPlatformError(page);
 }
 
-async function detectPostEmailProgress(page, config) {
-  // If password input, verification/code inputs, challenge/captcha, or obvious verification UI appears, email was accepted.
-  try {
-    const passwordSelectors = normalizeSelectorList(config?.selectors?.passwordInput);
-    for (const sel of passwordSelectors) {
-      if (typeof sel !== 'string') continue;
-      const h = sel.startsWith('//') ? (await page.$x(sel))[0] : await page.$(sel);
-      if (h && await isVisibleHandle(h)) return { progressed: true, reason: 'password_input' };
-    }
-    const progressed = await page.evaluate(() => {
-      const body = (document.body?.innerText || '').toLowerCase();
-      const signals = [
-        'verify it', "verify it's you", '2-step verification', 'enter the code', 'enter code',
-        'get a verification code', 'confirm your recovery', 'choose how you want to sign in',
-        'use your password', 'enter password', 'password', 'help us protect your account',
-        'verify your identity'
-      ];
-      if (signals.some(s => body.includes(s))) return true;
-      const codeSelectors = ['input[type="tel"]', 'input[name="ca"]', '#idvPinId', '#iOttText', 'input[id^="codeEntry-"]', '#phoneNumberId'];
-      for (const s of codeSelectors) { const el = document.querySelector(s); if (el) { const r = el.getBoundingClientRect(); if (r.width>0&&r.height>0) return true; } }
-      if (document.querySelector('iframe[src*="recaptcha"], iframe[title*="recaptcha" i], #captchaimg, img[alt*="captcha" i]')) return true;
-      return false;
-    });
-    if (progressed) return { progressed: true, reason: 'challenge_or_verification' };
-  } catch {}
-  return { progressed: false, reason: '' };
+async function hasVisibleSelectorNow(page, selectors) {
+  for (const sel of normalizeSelectorList(selectors)) {
+    if (typeof sel !== 'string') continue;
+    try {
+      if (sel.startsWith('//') || sel.startsWith('(//')) {
+        const handles = await page.$x(sel);
+        for (const h of handles) if (await isVisibleHandle(h)) return true;
+      } else {
+        const h = await page.$(sel);
+        if (h && await isVisibleHandle(h)) return true;
+      }
+    } catch {}
+  }
+  return false;
+}
+
+// Snapshot of the page AFTER submitting the identifier. `verified_exists` may only
+// be inferred from an observable transition (password step, challenge, or the
+// identifier step actually being replaced) - never from the word "password"
+// somewhere in the page body, which is present on Google's page before submit.
+async function readPostSubmitState(page, config, inputSelectors) {
+  const inputFound = await findFirstVisibleSelector(page, inputSelectors, 500);
+  let inputValue = '';
+  if (inputFound) {
+    try { inputValue = String(await inputFound.handle.evaluate(el => el.value || '')).trim(); } catch {}
+  }
+  const passwordVisible = await hasVisibleSelectorNow(page, [
+    ...normalizeSelectorList(config?.selectors?.passwordInput),
+    'input[type="password"]'
+  ]);
+  const challengeVisible = await hasVisibleSelectorNow(page, [
+    ...normalizeSelectorList(config?.selectors?.verificationCodeInput),
+    ...normalizeSelectorList(config?.selectors?.gmailEmailCodeInput),
+    ...normalizeSelectorList(config?.selectors?.smsCodeInput),
+    ...normalizeSelectorList(config?.selectors?.phoneNumberInput),
+    'input[type="tel"][name="ca"]', '#idvPinId', '#iOttText', 'input[id^="codeEntry-"]'
+  ]);
+  const captchaVisible = await hasVisibleSelectorNow(page, [
+    'iframe[src*="recaptcha"]', '.g-recaptcha', '#captchaimg', 'img[alt*="captcha" i]'
+  ]);
+  return {
+    url: page.url(),
+    inputVisible: !!inputFound,
+    inputValue,
+    passwordVisible,
+    challengeVisible,
+    captchaVisible
+  };
+}
+
+// A visible password field / challenge / captcha, or the identifier step actually
+// being replaced by a different URL, is real evidence the email was accepted.
+// The old `document.body.innerText.includes('password')` signal was a false
+// positive: Google's identifier page already contains "Forgot password?".
+function classifyPostSubmitState(state, initialUrl, transitionVotes) {
+  if (state.passwordVisible) return { status: 'verified_exists', detail: 'password_step_visible' };
+  if (state.challengeVisible || state.captchaVisible) return { status: 'verified_exists', detail: 'challenge_visible' };
+  if (!state.inputVisible && state.url && initialUrl && state.url !== initialUrl && transitionVotes >= 2) {
+    return { status: 'verified_exists', detail: 'identifier_step_transitioned' };
+  }
+  return null;
 }
 
 async function verifySingleEmailOnPlatform(browser, email, platformName, config, log, attempt = 1) {
@@ -261,11 +337,12 @@ async function verifySingleEmailOnPlatform(browser, email, platformName, config,
     const inputSelectors = normalizeSelectorList(config?.selectors?.input);
     const inputFound = await findFirstVisibleSelector(page, inputSelectors, 15000);
     if (!inputFound) {
-      // Sometimes challenge/redirect appears; check for error/progress before giving up
+      // Sometimes a challenge/redirect appears before we can find the identifier input.
       const err = await detectPlatformNotFoundError(page, config);
-      if (err.found) return { status: 'not_exists', detail: err.text };
-      const prog = await detectPostEmailProgress(page, config);
-      if (prog.progressed) return { status: 'verified_exists', detail: prog.reason };
+      if (err.found) return { status: 'not_exists', detail: `platform_error:${err.text}` };
+      const state = await readPostSubmitState(page, config, inputSelectors);
+      const accepted = classifyPostSubmitState(state, config.url, 2);
+      if (accepted) return accepted;
       return { status: 'inconclusive', detail: 'email_input_not_found' };
     }
 
@@ -283,7 +360,16 @@ async function verifySingleEmailOnPlatform(browser, email, platformName, config,
       return { status: 'inconclusive', detail: `type_failed:${e.message}` };
     }
 
-    // Click next/submit
+    // Confirm the identifier actually holds the value we typed before submitting.
+    let typedValue = '';
+    try {
+      typedValue = String(await inputFound.handle.evaluate(el => el.value || '')).trim().toLowerCase();
+    } catch {}
+    if (typedValue && typedValue !== String(email).trim().toLowerCase()) {
+      return { status: 'inconclusive', detail: 'email_input_mismatch' };
+    }
+
+    const initialUrl = page.url();
     const nextSelectors = normalizeSelectorList(config?.selectors?.nextButton);
     let clicked = false;
     if (nextSelectors.length) clicked = await clickFirstVisibleSelector(page, nextSelectors);
@@ -291,39 +377,36 @@ async function verifySingleEmailOnPlatform(browser, email, platformName, config,
       try { await page.keyboard.press('Enter'); clicked = true; } catch {}
     }
 
-    // Wait for result state to settle (error OR progress). Slow loads/CAPTCHA are expected.
-    const deadline = Date.now() + 25000;
+    // Wait for an OBSERVABLE result. Errors are checked first on every poll;
+    // "exists" requires a real post-submit transition (see classifyPostSubmitState).
+    const MIN_SETTLE_MS = 1500;
+    const RESULT_TIMEOUT_MS = 25000;
+    const deadline = Date.now() + RESULT_TIMEOUT_MS;
     let lastDetail = 'waiting_for_result';
+    let transitionVotes = 0;
+    await sleep(MIN_SETTLE_MS);
     while (Date.now() < deadline) {
       const err = await detectPlatformNotFoundError(page, config);
-      if (err.found) return { status: 'not_exists', detail: err.text };
-      const prog = await detectPostEmailProgress(page, config);
-      if (prog.progressed) return { status: 'verified_exists', detail: prog.reason };
+      if (err.found) return { status: 'not_exists', detail: `platform_error:${err.text}` };
 
-      // If email input disappeared and no error, likely progressed/loading into next step
-      const stillHasInput = await findFirstVisibleSelector(page, inputSelectors, 500);
-      if (!stillHasInput) {
-        lastDetail = 'email_input_gone_no_error';
-        // give it a bit more time to render password/challenge, but absence of error is strong
-      } else {
-        lastDetail = 'email_input_still_present';
-      }
+      const state = await readPostSubmitState(page, config, inputSelectors);
+      const accepted = classifyPostSubmitState(state, initialUrl, transitionVotes);
+      if (accepted) return accepted;
+
+      const urlChanged = !!(state.url && initialUrl && state.url !== initialUrl);
+      transitionVotes = (!state.inputVisible && urlChanged) ? transitionVotes + 1 : 0;
+      lastDetail = `url_changed=${urlChanged},input_visible=${state.inputVisible}`;
       await sleep(700);
     }
 
-    // Final checks
+    // Final checks (no "absence of error => exists" fallback).
     const errFinal = await detectPlatformNotFoundError(page, config);
-    if (errFinal.found) return { status: 'not_exists', detail: errFinal.text };
-    const progFinal = await detectPostEmailProgress(page, config);
-    if (progFinal.progressed) return { status: 'verified_exists', detail: progFinal.reason };
+    if (errFinal.found) return { status: 'not_exists', detail: `platform_error:${errFinal.text}` };
+    const stateFinal = await readPostSubmitState(page, config, inputSelectors);
+    const acceptedFinal = classifyPostSubmitState(stateFinal, initialUrl, Math.max(transitionVotes, 2));
+    if (acceptedFinal) return acceptedFinal;
 
-    const stillHasInputFinal = await findFirstVisibleSelector(page, inputSelectors, 800);
-    if (!stillHasInputFinal) {
-      // Per requirement: no detected platform error after submitting email => treat as exists.
-      return { status: 'verified_exists', detail: 'no_error_after_submit' };
-    }
-
-    return { status: 'inconclusive', detail: lastDetail };
+    return { status: 'inconclusive', detail: `no_confirmation:${lastDetail}` };
   } catch (err) {
     return { status: 'inconclusive', detail: `exception:${err.message}` };
   } finally {
@@ -357,13 +440,27 @@ async function verifyEmailWithRetriesOnSameBrowser(getBrowser, email, platformNa
   return last;
 }
 
-const PLATFORM_CHECKED_INCONCLUSIVE = '|pv=inconclusive';
-function hasPlatformInconclusiveMarker(row, providerMXIdx) {
+const PLATFORM_CHECKED_INCONCLUSIVE = '|pv=inconclusive';function hasPlatformInconclusiveMarker(row, providerMXIdx) {
   return String(row?.[providerMXIdx] || '').includes(PLATFORM_CHECKED_INCONCLUSIVE);
 }
 function markPlatformInconclusive(row, providerMXIdx, platformName) {
-  const base = String(row[providerMXIdx] || platformName || 'mx').replace(PLATFORM_CHECKED_INCONCLUSIVE, '').trim();
+  const base = String(row[providerMXIdx] || platformName || 'mx')
+    .replace(/\s*\|pv=[^|]*$/g, '')
+    .trim();
   row[providerMXIdx] = `${base}${PLATFORM_CHECKED_INCONCLUSIVE}`;
+}
+
+// Persist a short, auditable reason next to the MX result so the CSV itself shows
+// WHY a row was accepted/rejected by platform verification (e.g. password step,
+// provider error text). Identifiers are never rewritten by this marker.
+function attachPlatformEvidence(row, providerMXIdx, result) {
+  const base = String(row[providerMXIdx] || '')
+    .replace(PLATFORM_CHECKED_INCONCLUSIVE, '')
+    .replace(/\s*\|pv=[^|]*$/g, '')
+    .trim();
+  const status = String(result?.status || 'unknown').replace(/[|\r\n]/g, '');
+  const detail = String(result?.detail || 'unknown').replace(/[|\r\n]/g, ' ').slice(0, 120);
+  row[providerMXIdx] = `${base}|pv=${status}:${detail}`.trim();
 }
 function isMxFinal(status) {
   return status === 'invalid_domain' || status === 'no_mx' || status === 'invalid_format' || status === 'empty';
@@ -378,6 +475,15 @@ function isRowValidationFinal(status, platformEligible, platformCheckedInconclus
   if (status === 'valid_mx') return !platformEligible || platformCheckedInconclusive; // inconclusive after platform check => terminal resolved valid_mx
   if (isPlatformFinal(status)) return true;
   return false;
+}
+
+async function flushValidationCsv(campaignId, rows, fileId, log) {
+  try {
+    await mergeAndFlush(campaignId, 'validate', rows, fileId);
+  } catch (e) {
+    log?.warn?.(`[validate] CSV flush failed: ${e.message} - retrying direct upload`);
+    await uploadCsvText(fileId, stringifyCSV(rows));
+  }
 }
 
 async function mapWithConcurrency(items, concurrency, fn) {
@@ -506,7 +612,7 @@ async function runMxValidation({ rows, rowStart, rowEnd, emailColIdx, validation
 
     // checkpoint/flush each wave
     if (onCheckpoint) await onCheckpoint(Math.min(wave[wave.length - 1] + 1, rowEnd));
-    else if (fileId) await mergeAndFlush(campaignId, 'validate', rows, fileId).catch(() => uploadCsvText(fileId, stringifyCSV(rows)).catch(()=>{}));
+    else if (fileId) await flushValidationCsv(campaignId, rows, fileId, log);
   }
 
   return { paused, processedUpTo: paused ? -1 : rowEnd, validCount, invalidCount, mxCache };
@@ -548,7 +654,7 @@ async function runPlatformVerification({ rows, rowStart, rowEnd, emailColIdx, va
   async function flushCheckpoint(lastIdx) {
     const idx = Math.max(0, lastIdx || rowEnd);
     if (onCheckpoint) await onCheckpoint(idx);
-    else if (fileId) await mergeAndFlush(campaignId, 'validate', rows, fileId).catch(() => uploadCsvText(fileId, stringifyCSV(rows)).catch(()=>{}));
+    else if (fileId) await flushValidationCsv(campaignId, rows, fileId, log);
   }
 
   async function runWorker(workerId) {
@@ -599,16 +705,18 @@ async function runPlatformVerification({ rows, rowStart, rowEnd, emailColIdx, va
 
           if (result.status === 'not_exists') {
             item.row[validationIdx] = 'not_exists';
-            item.row[providerMXIdx] = String(item.row[providerMXIdx] || '').replace(PLATFORM_CHECKED_INCONCLUSIVE, '') || item.platformName;
+            if (!String(item.row[providerMXIdx] || '').trim()) item.row[providerMXIdx] = item.platformName;
+            attachPlatformEvidence(item.row, providerMXIdx, result);
             notExists++;
           } else if (result.status === 'verified_exists') {
             item.row[validationIdx] = 'verified_exists';
-            const cleaned = String(item.row[providerMXIdx] || '').replace(PLATFORM_CHECKED_INCONCLUSIVE, '').trim();
-            item.row[providerMXIdx] = cleaned || item.platformName;
+            if (!String(item.row[providerMXIdx] || '').trim()) item.row[providerMXIdx] = item.platformName;
+            attachPlatformEvidence(item.row, providerMXIdx, result);
             verified++;
           } else {
             // Inconclusive after retries: finalize as terminal valid_mx (MX-valid, resolved, send-eligible)
             item.row[validationIdx] = 'valid_mx';
+            attachPlatformEvidence(item.row, providerMXIdx, result);
             markPlatformInconclusive(item.row, providerMXIdx, item.platformName);
             inconclusive++;
             log.warn(`[Row verify] ${item.email} @${item.platformName}: inconclusive after retries (${result.detail || 'unknown'}) - finalizing as valid_mx (terminal)`);
@@ -683,6 +791,7 @@ function isValidationFullyComplete(dataRows, emailColIdx, validationIdx, provide
 
 export async function POST(request) {
   let browser = null;
+  let stageLease = null;
   let log = logger.child({ campaignId: null, stage: 'validate' });
   try {
     await identifySelfFromHost(request.headers.get('host'));
@@ -695,6 +804,7 @@ export async function POST(request) {
 
     log = logger.child({ campaignId, stage: 'validate' });
     log.info(`Received validation request${serverBatch ? ` [worker rowStart=${serverBatch.rowStart} rowEnd=${serverBatch.rowEnd}]` : ''}`);
+    stageLease = startStageLease(campaignId, 'validate', log);
 
     const fileId = extractFileId(fileUrl);
     if (!fileId) {
@@ -729,6 +839,7 @@ export async function POST(request) {
     } catch {}
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   } finally {
+    if (stageLease) stageLease.stop();
     if (browser) {
       try { await browser.close(); } catch {}
     }
@@ -736,13 +847,6 @@ export async function POST(request) {
 }
 
 async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUserId) {
-  const perfLevelSetting = await getSetting('performanceLevel');
-  const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
-
-  const mxBatchSetting = await getSetting('validateBatchLimit');
-  const MX_BATCH_SIZE = parseInt(mxBatchSetting?.value1) || perfPresets.validateMxBatchLimit;
-  const platformBatchSetting = await getSetting('platformVerificationBatchLimit');
-  const PLATFORM_BATCH_SIZE = parseInt(platformBatchSetting?.value1) || perfPresets.validatePlatformBatchLimit;
   const platformEnabledSetting = await getSetting('platformVerificationEnabled');
   const PLATFORM_VERIFICATION_ENABLED = platformEnabledSetting?.value1 !== 'false';
 
@@ -770,6 +874,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
     return NextResponse.json({ success: true, limitReached: true, message: "Validation blocked: validateBatchLimit is 0 - set it in the SETTINGS sheet" });
   }
   const validateConcurrency = Math.max(1, parseInt(campaignLimits.validateLimit, 10) || 1);
+  const platformBatchSize = Math.max(0, parseInt(campaignLimits.platformVerificationLimit, 10) || 0);
 
   const dataRows = normalizedRows.slice(1);
   const originalCount = dataRows.length;
@@ -828,7 +933,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
     }
   }
 
-  log.info(` MX/platform concurrency=${validateConcurrency} (MX batch=${MX_BATCH_SIZE}, platform batch=${PLATFORM_BATCH_SIZE}, platform verification=${PLATFORM_VERIFICATION_ENABLED})`);
+  log.info(` MX concurrency=${validateConcurrency}, platform workers=${platformBatchSize}, platform verification=${PLATFORM_VERIFICATION_ENABLED}`);
   log.info(` Processing ${dataRows.length} rows (single-server, full dataset)`);
 
   // MX validation (resumable - skips finalized rows), concurrent waves over full dataset
@@ -842,7 +947,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   });
 
   if (mxResult.paused || await isCampaignPaused(campaignId, 'validate')) {
-    await mergeAndFlush(campaignId, 'validate', normalizedRows, fileId).catch(() => uploadCsvText(fileId, stringifyCSV(normalizedRows)).catch(()=>{}));
+    await flushValidationCsv(campaignId, normalizedRows, fileId, log);
     await updateCampaignSettings(campaignId, { validationStatus: "paused", status: "paused" });
     try {
       const { updateSheetRowApi } = await import("../../api/googlesheets.js");
@@ -852,23 +957,25 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   }
 
   // Flush after MX
-  await mergeAndFlush(campaignId, 'validate', normalizedRows, fileId).catch(() => uploadCsvText(fileId, stringifyCSV(normalizedRows)).catch(()=>{}));
+  await flushValidationCsv(campaignId, normalizedRows, fileId, log);
 
   // Platform verification (concurrent), terminal resolution for inconclusive as valid_mx
   let platformResult = { paused: false, verified: 0, notExists: 0, inconclusive: 0 };
-  if (PLATFORM_VERIFICATION_ENABLED) {
+  if (PLATFORM_VERIFICATION_ENABLED && platformBatchSize > 0) {
     platformResult = await runPlatformVerification({
       rows: normalizedRows,
       rowStart: 0,
       rowEnd: dataRows.length,
       emailColIdx, validationIdx, providerMXIdx,
       campaignId, log, fileId,
-      platformBatchSize: Math.max(1, validateConcurrency),
+      platformBatchSize,
     });
+  } else if (PLATFORM_VERIFICATION_ENABLED) {
+    log.warn(` platformVerificationBatchLimit is 0 - skipping platform verification (set it in the SETTINGS sheet to enable)`);
   }
 
   if (platformResult.paused || await isCampaignPaused(campaignId, 'validate')) {
-    await mergeAndFlush(campaignId, 'validate', normalizedRows, fileId).catch(() => uploadCsvText(fileId, stringifyCSV(normalizedRows)).catch(()=>{}));
+    await flushValidationCsv(campaignId, normalizedRows, fileId, log);
     await updateCampaignSettings(campaignId, { validationStatus: "paused", status: "paused" });
     try {
       const { updateSheetRowApi } = await import("../../api/googlesheets.js");
@@ -878,7 +985,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   }
 
   // Final flush
-  await mergeAndFlush(campaignId, 'validate', normalizedRows, fileId).catch(() => uploadCsvText(fileId, stringifyCSV(normalizedRows)).catch(()=>{}));
+  await flushValidationCsv(campaignId, normalizedRows, fileId, log);
 
   const complete = isValidationFullyComplete(dataRows, emailColIdx, validationIdx, providerMXIdx);
   const stats = computeValidationStats(dataRows, validationIdx);
@@ -925,13 +1032,6 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
 
   await updateMyAssignment(campaignId, 'validate', { status: 'running' });
 
-  const perfLevelSetting = await getSetting('performanceLevel');
-  const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
-
-  const mxBatchSetting = await getSetting('validateBatchLimit');
-  const MX_BATCH_SIZE = parseInt(mxBatchSetting?.value1) || perfPresets.validateMxBatchLimit;
-  const platformBatchSetting = await getSetting('platformVerificationBatchLimit');
-  const PLATFORM_BATCH_SIZE = parseInt(platformBatchSetting?.value1) || perfPresets.validatePlatformBatchLimit;
   const platformEnabledSetting = await getSetting('platformVerificationEnabled');
   const PLATFORM_VERIFICATION_ENABLED = platformEnabledSetting?.value1 !== 'false';
 
@@ -951,8 +1051,9 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
 
   const { rowStart, rowEnd } = serverBatch;
   const campaignLimits = await getCampaignLimits();
-  const validateConcurrency = Math.max(1, parseInt(campaignLimits.validateLimit || MX_BATCH_SIZE || 1, 10) || 1);
-  log.info(`[Worker] Processing rows ${rowStart}-${rowEnd - 1} (concurrency=${validateConcurrency})`);
+  const validateConcurrency = Math.max(1, parseInt(campaignLimits.validateLimit, 10) || 1);
+  const platformBatchSize = Math.max(0, parseInt(campaignLimits.platformVerificationLimit, 10) || 0);
+  log.info(`[Worker] Processing rows ${rowStart}-${rowEnd - 1} (concurrency=${validateConcurrency}, platform workers=${platformBatchSize})`);
 
   let wasPaused = false;
   let mxResult = { validCount: 0, invalidCount: 0 };
@@ -967,22 +1068,22 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
       mxBatchSize: validateConcurrency,
       onCheckpoint: async (processedUpTo) => {
         await updateMyAssignment(campaignId, 'validate', { processedUpTo });
-        await mergeAndFlush(campaignId, 'validate', normalizedRows, fileId).catch(() => uploadCsvText(fileId, stringifyCSV(normalizedRows)).catch(()=>{}));
+        await flushValidationCsv(campaignId, normalizedRows, fileId, log);
       }
     });
 
     if (mxResult.paused || await isCampaignPaused(campaignId, 'validate')) {
       wasPaused = true;
-    } else if (PLATFORM_VERIFICATION_ENABLED) {
+    } else if (PLATFORM_VERIFICATION_ENABLED && platformBatchSize > 0) {
       platformResult = await runPlatformVerification({
         rows: normalizedRows,
         rowStart, rowEnd,
         emailColIdx, validationIdx, providerMXIdx,
         campaignId, log, fileId,
-        platformBatchSize: validateConcurrency,
+        platformBatchSize,
         onCheckpoint: async (processedUpTo) => {
           await updateMyAssignment(campaignId, 'validate', { processedUpTo });
-          await mergeAndFlush(campaignId, 'validate', normalizedRows, fileId).catch(() => uploadCsvText(fileId, stringifyCSV(normalizedRows)).catch(()=>{}));
+          await flushValidationCsv(campaignId, normalizedRows, fileId, log);
         }
       });
       if (platformResult.paused || await isCampaignPaused(campaignId, 'validate')) wasPaused = true;
@@ -993,7 +1094,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
     throw error;
   }
 
-  await mergeAndFlush(campaignId, 'validate', normalizedRows, fileId).catch(() => uploadCsvText(fileId, stringifyCSV(normalizedRows)).catch(()=>{}));
+  await flushValidationCsv(campaignId, normalizedRows, fileId, log);
 
   const assignmentUpdates = {
     status: wasPaused ? 'paused' : 'completed',

@@ -302,14 +302,12 @@ export async function POST(request) {
     const scopeServer = typeof body.serverScope === "string" && body.serverScope ? body.serverScope : null;
     const scope = scopeAccountIds ? { accountIds: scopeAccountIds, serverScope: scopeServer } : null;
 
-    // Mark campaign as running (row+settings) for UI/pause visibility, unless in a terminal/hold state
+    // Mark campaign as running (row) for UI/pause visibility, unless in a terminal/hold state
     try {
-      const rowNow = await getCampaignRow(campaignId);
-      const rowStatusNow = String(rowNow?.row?.status || '').trim().toLowerCase();
+      const rowStatusNow = String(campaignData?.status || '').trim().toLowerCase();
       const terminalOrHold = new Set(['completed', 'paused', 'limit reached', 'error', 'failed']);
       if (!terminalOrHold.has(rowStatusNow)) {
         await updateSheetRowApi("campaigns", "campaignId", campaignId, { status: "running", updatedOn: new Date().toISOString() });
-        await updateCampaignSettings(campaignId, { status: "running" }).catch(() => {});
       }
     } catch (e) {
       log.warn(`[orchestrator] Could not mark campaign running: ${e.message}`);
@@ -546,11 +544,10 @@ export async function POST(request) {
     if (action === "wait") {
       log.info(`Waiting for ${config.label} to complete`);
       try {
-        const rowNow = await getCampaignRow(campaignId);
-        const rs = String(rowNow?.row?.status || '').toLowerCase();
+        const fresh = await getCampaignSettings(campaignId);
+        const rs = String(fresh?.status || '').toLowerCase();
         if (rs !== 'paused' && rs !== 'completed' && rs !== 'limit reached') {
           await updateSheetRowApi("campaigns", "campaignId", campaignId, { status: "running", updatedOn: new Date().toISOString() });
-          await updateCampaignSettings(campaignId, { status: "running" }).catch(() => {});
         }
       } catch {}
       return NextResponse.json({
@@ -564,11 +561,10 @@ export async function POST(request) {
     if (config.statusField && settings[config.statusField] === "processing" && action !== "retry") {
       log.info(`${config.label} already processing, skipping duplicate call`);
       try {
-        const rowNow = await getCampaignRow(campaignId);
-        const rs = String(rowNow?.row?.status || '').toLowerCase();
+        const fresh = await getCampaignSettings(campaignId);
+        const rs = String(fresh?.status || '').toLowerCase();
         if (rs !== 'paused' && rs !== 'completed' && rs !== 'limit reached') {
           await updateSheetRowApi("campaigns", "campaignId", campaignId, { status: "running", updatedOn: new Date().toISOString() });
-          await updateCampaignSettings(campaignId, { status: "running" }).catch(() => {});
         }
       } catch {}
       return NextResponse.json({ success: true, message: `${config.label} already processing`, waitingStage: stage });
@@ -671,7 +667,8 @@ export async function POST(request) {
         const kind = classifyStageFailure(result?.error || result?.message || result);
         if (kind === 'limit' || result?.limitReached) {
           await clearStageError(campaignId);
-          await updateCampaignSettings(campaignId, { status: "paused", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000 });
+          await updateCampaignSettings(campaignId, { status: "resting", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000 });
+          await updateSheetRowApi("campaigns", "campaignId", campaignId, { status: "resting", updatedOn: new Date().toISOString() }).catch(() => {});
           return NextResponse.json({
             success: true,
             message: `${config.label} stopped: limit reached`,
@@ -744,7 +741,8 @@ export async function POST(request) {
       // interact already write the same value themselves.
       if (result.limitReached) {
         await clearStageError(campaignId);
-        await updateCampaignSettings(campaignId, { status: "paused", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000 });
+        await updateCampaignSettings(campaignId, { status: "resting", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000 });
+        await updateSheetRowApi("campaigns", "campaignId", campaignId, { status: "resting", updatedOn: new Date().toISOString() }).catch(() => {});
         return NextResponse.json({
           success: true,
           message: `${config.label} stopped: limit reached`,

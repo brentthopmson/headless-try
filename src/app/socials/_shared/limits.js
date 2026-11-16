@@ -183,6 +183,7 @@ export async function getPlanLimits(plan) {
 // account-protection default.
 const CAMPAIGN_CAP_SETTINGS_KEYS = {
     validateLimit: "validateBatchLimit",
+    platformVerificationLimit: "platformVerificationBatchLimit",
     enrichLimit: "enrichBatchLimit",
     personalizeLimit: "personalizeBatchLimit",
     shootCampaignLimit: "shootingBatchLimit",

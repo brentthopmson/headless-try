@@ -13,6 +13,7 @@
     "start": "next start",
     "lint": "next lint",
     "test": "jest",
+    "test:enrichment": "node scripts/test-enrichment-core.mjs",
     "ai:check": "node scripts/check-local-ai.mjs"
   },
   "dependencies": {
