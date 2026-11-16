@@ -88,6 +88,26 @@ $opencodeErrLog = Join-Path $PSScriptRoot 'opencode-serve.err.log'
 $opencodeTunnelLog = Join-Path $PSScriptRoot 'cloudflared.log'
 $serverTunnelLog = Join-Path $PSScriptRoot 'serverless-cloudflared.log'
 
+# Best-effort: install lightweight Python deps for enrichment/search (portable, no Docker required)
+$enrichReq = Join-Path $PSScriptRoot 'requirements-enrichment.txt'
+if (Test-Path $enrichReq) {
+  $pyCmd = Get-Command python -ErrorAction SilentlyContinue
+  if (-not $pyCmd) { $pyCmd = Get-Command py -ErrorAction SilentlyContinue }
+  if (-not $pyCmd) { $pyCmd = Get-Command python3 -ErrorAction SilentlyContinue }
+  if ($pyCmd) {
+    Write-Host '[launcher] Ensuring enrichment Python dependencies (best-effort)...'
+    try {
+      if ($pyCmd.Name -ieq 'py.exe' -or $pyCmd.Name -ieq 'py') {
+        & $pyCmd.Source -3 -m pip install --quiet -r $enrichReq 2>$null | Out-Null
+      } else {
+        & $pyCmd.Source -m pip install --quiet -r $enrichReq 2>$null | Out-Null
+      }
+    } catch { Write-Host "[launcher] Enrichment deps install skipped: $($_.Exception.Message)" }
+  } else {
+    Write-Host '[launcher] Python not found; enrichment will use HTTP fallbacks if local search deps are unavailable.'
+  }
+}
+
 Write-Host '[launcher] Starting OpenCode serve on port 4096...'
 Remove-Item -Force $opencodeOutLog, $opencodeErrLog -ErrorAction SilentlyContinue
 $opencodeProcess = Start-Process -FilePath $opencode.Source `

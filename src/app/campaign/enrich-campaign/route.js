@@ -3,7 +3,11 @@ import { downloadCsvText, uploadCsvText } from "../../api/googlesheets.js";
 import axios from "axios";
 import * as cheerio from "cheerio";
 import crypto from "crypto";
+import { execFile } from "child_process";
+import { promisify } from "util";
 import MultiProviderAI from "../../../utils/multiProviderAI.js";
+
+const execFileAsync = promisify(execFile);
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
@@ -361,6 +365,7 @@ async function duckDuckGoSearch(query) {
   } catch { return []; }
 }
 let _searxngWarned = false;
+let _ddgsWarned = false;
 async function searxngSearch(query) {
   const base = (process.env.SEARXNG_URL || process.env.SEARX_URL || process.env.CXNG_URL || "").trim();
   if (!base) return [];
@@ -373,8 +378,36 @@ async function searxngSearch(query) {
     return [];
   }
 }
+async function ddgsSearch(query) {
+  // Local metasearch fallback via Python `ddgs` package (no external instance/Docker required).
+  // Portable: works wherever Python + `pip install -r requirements-enrichment.txt` is available.
+  const q = String(query || "").trim();
+  if (!q) return [];
+  const configured = (process.env.PYTHON_BIN || "").trim();
+  const candidates = configured ? [configured] : (process.platform === "win32" ? ["python", "py", "python3"] : ["python3", "python"]);
+  const code = `import json,sys\ntry:\n  from ddgs import DDGS\nexcept Exception:\n  from duckduckgo_search import DDGS\nq=sys.argv[1]\ntry:\n  r=DDGS().text(q, max_results=6)\n  out=[]\n  for x in (r or []):\n    if isinstance(x,dict): out.append({'url':x.get('href') or x.get('url'),'title':x.get('title'),'snippet':x.get('body') or x.get('snippet')})\n  print(json.dumps(out, ensure_ascii=False))\nexcept Exception:\n  print('[]')`;
+  for (const py of candidates) {
+    const args = (py.toLowerCase() === "py" && process.platform === "win32") ? ["-3", "-c", code, q] : ["-c", code, q];
+    try {
+      const { stdout } = await execFileAsync(py, args, { timeout: 15000, windowsHide: true, maxBuffer: 1024 * 1024 });
+      const raw = String(stdout || "[]").trim();
+      const start = raw.indexOf("["); const end = raw.lastIndexOf("]");
+      const jsonText = (start >= 0 && end >= start) ? raw.slice(start, end + 1) : "[]";
+      const parsed = JSON.parse(jsonText);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map(r => ({ url: r?.url, title: r?.title, snippet: r?.snippet })).filter(r => r.url).slice(0, 6);
+    } catch (e) {
+      // try next interpreter candidate
+      if (e && e.code === "ENOENT") continue;
+      // package missing/runtime error: try next candidate once, but don't spam
+      continue;
+    }
+  }
+  if (!_ddgsWarned) { _ddgsWarned = true; try { logger.warn(`[enrich] ddgs local search unavailable (install with: pip install -r requirements-enrichment.txt)`); } catch {} }
+  return [];
+}
 async function multiSearch(query) {
-  const settled = await Promise.allSettled([searxngSearch(query), googleSearch(query), bingSearch(query), duckDuckGoSearch(query)]);
+  const settled = await Promise.allSettled([searxngSearch(query), ddgsSearch(query), googleSearch(query), bingSearch(query), duckDuckGoSearch(query)]);
   const out = []; const seen = new Set();
   for (const r of settled) {
     if (r.status !== "fulfilled") continue;

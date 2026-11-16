@@ -929,24 +929,24 @@ if (!String(settings.helperKeyword || "").trim()) {
         const smtpCap = createSmtpSendCap({ smtpSettings, accountSendPerRunLimit });
         const pickSmtpWithinCap = smtpCap.pick;
         const noteSmtpSend = smtpCap.note;
-        const sendConcurrencyN = Math.max(1, parseInt(sendConcurrency || 1, 10) || 1);
+        // Execute must run strictly sequentially (one row at a time) in campaign order.
+        // Do NOT parallelize/wave rows or open multiple browsers/sends concurrently.
+        const sendConcurrencyN = 1;
         let smtpPoolExhaustedStop = false;
-        for (let waveStart = startIndex; waveStart < deduplicatedRows.length; waveStart += sendConcurrencyN) {
+        log.info(` Execution mode: sequential (one-by-one), firestick=${firestickEnabled ? 'on' : 'off'}, delivery=${deliveryMethod}`);
+        for (let i = startIndex; i < deduplicatedRows.length; i++) {
           if (pausedByAdmin || limitReached || smtpPoolExhaustedStop) break;
           if (await isCampaignPaused(campaignId)) {
             pausedByAdmin = true;
-            log.info(` Campaign ${campaignId} was paused during run. Stopping at wave ${waveStart}.`);
-            return;
+            log.info(` Campaign ${campaignId} was paused during run. Stopping at row ${i}.`);
+            break;
           }
-          const wave = [];
-          for (let i = waveStart; i < Math.min(waveStart + sendConcurrencyN, deduplicatedRows.length); i++) wave.push(i);
-          await Promise.allSettled(wave.map(async (i) => {
           // List shooting ignores the duration window by design (see entry
           // guard): bounded only by quotas/caps, never by elapsed days.
           if (await isCampaignPaused(campaignId)) {
             pausedByAdmin = true;
             log.info(` Campaign ${campaignId} was paused during run. Stopping at row ${i}.`);
-            return;
+            break;
           }
           // USER tier Ã¢â‚¬â€ monthly shootCampaign budget re-checked per row so a
           // campaign stops mid-run as soon as the user's budget is exhausted.
@@ -954,8 +954,8 @@ if (!String(settings.helperKeyword || "").trim()) {
             const uq = await checkUserQuota(userId, { keys: ["shootCampaignUsage"] });
             if (!uq.allowed) {
               limitReached = true;
-              log.info(` [user-limit] ${uq.reason} Ã¢â‚¬â€ stopping email run at row ${i}.`);
-              return;
+              log.info(` [user-limit] ${uq.reason} - stopping email run at row ${i}.`);
+              break;
             }
           }
           // shootingBatchLimit = concurrency only; do not stop after N total sends. (process all eligible rows)
@@ -968,11 +968,11 @@ if (!String(settings.helperKeyword || "").trim()) {
           const rowRetryCount = retryCountIdx !== -1 ? (parseInt(row[retryCountIdx], 10) || 0) : 0;
           if (['sent', 'scheduled'].includes(execStatus)) {
             skippedAlreadySent++;
-            return;
+            continue;
           }
           if (execStatus === 'failed_final' || rowRetryCount >= 3) {
-            // terminal failed row (exhausted retries) â€” do not re-attempt
-            return;
+            // terminal failed row (exhausted retries) - do not re-attempt
+            continue;
           }
           const isRetryAttempt = execStatus === 'failed' || execStatus === 'failed_retryable' || rowRetryCount > 0;
           const priorMethod = lastSendMethodIdx !== -1 ? String(row[lastSendMethodIdx] || '').trim().toLowerCase() : '';
@@ -989,12 +989,12 @@ if (!String(settings.helperKeyword || "").trim()) {
                 const backoffMs = (rowRetryCount >= 2 ? 2 : 1) * 60 * 60 * 1000;
                 if (Date.now() - lastAttemptMs < backoffMs) {
                   log.info(`[Row skip] ${email}: retry backoff active (attempt ${rowRetryCount + 1}/3, lastAttempt=${lastAttemptRaw}, backoff=${backoffMs / 3600000}h)`);
-                  return;
+                  continue;
                 }
               }
             }
           }
-          if (!email) return;
+          if (!email) continue;
 
           // Validation/send gating: ONLY when validation is active/staged for this campaign.
           // Never send or firestick-warmup rows that are not validated/safe in that case.
@@ -1008,7 +1008,7 @@ if (!String(settings.helperKeyword || "").trim()) {
               if (lastSendErrorIdx !== -1) row[lastSendErrorIdx] = `Blocked by validation: ${reason}`;
               if (lastAttemptAtIdx !== -1) row[lastAttemptAtIdx] = new Date().toISOString();
               log.info(`[Row skip] ${email}: blocked by validation gate (status=${reason}) - no send, no firestick warmup`);
-              return;
+              continue;
             }
           }
 
@@ -1045,14 +1045,14 @@ if (!String(settings.helperKeyword || "").trim()) {
             if (deliveryMethod === "smtp") {
               limitReached = true;
               log.info(` accountSendPerRunLimit (${accountSendPerRunLimit}) reached on every SMTP account, stopping email run.`);
-              return;
+              break;
             }
             if (deliveryMethod === "mixed") {
               log.info(` accountSendPerRunLimit (${accountSendPerRunLimit}) reached on every SMTP account; continuing mixed run with session/wire-capable rows only.`);
             } else {
               limitReached = true;
               log.info(` accountSendPerRunLimit (${accountSendPerRunLimit}) reached on every SMTP account, stopping email run.`);
-              return;
+              break;
             }
           }
           const { config: smtp } = smtpPick || {};
@@ -1237,17 +1237,14 @@ if (!String(settings.helperKeyword || "").trim()) {
               log.warn(` Live CSV flush failed at row ${i + 1}: ${flushErr.message}`);
             }
           }
-          }));
-
-          // Wave checkpoint/progress flush (concurrent wave)
+          // Final progress checkpoint/flush after sequential run
           if (!pausedByAdmin) {
             try {
-              settings.lastProcessedRow = Math.min(waveStart + sendConcurrencyN, deduplicatedRows.length);
+              settings.lastProcessedRow = deduplicatedRows.length;
               await updateSheetRowApi("campaigns", "campaignId", campaignId, { settings: JSON.stringify(settings), updatedOn: new Date().toISOString() });
-            } catch (cpErr) { log.warn(` Wave checkpoint save failed: ${cpErr.message}`); }
-            try { await uploadCsvText(fileId, stringifyCSV(normalizedRows)); } catch (flushErr) { log.warn(` Wave CSV flush failed: ${flushErr.message}`); }
+            } catch (cpErr) { log.warn(` Final checkpoint save failed: ${cpErr.message}`); }
+            try { await uploadCsvText(fileId, stringifyCSV(normalizedRows)); } catch (flushErr) { log.warn(` Final CSV flush failed: ${flushErr.message}`); }
           }
-          if (INTER_BATCH_DELAY > 0) { await new Promise(r => setTimeout(r, INTER_BATCH_DELAY)); }
         }
         // Step 3d: Single-flush Drive save Ã¢â‚¬â€ rebuild CSV and overwrite file
         log.info(` Flushing updated CSV back to Drive: ${fileId}`);
