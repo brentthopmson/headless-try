@@ -363,6 +363,15 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   if (stageUserId && scopeEnd > 0) {
     try { await updateUserUsage(stageUserId, "personalizeUsage", scopeEnd); } catch (e) { log.warn(`[user-limit] personalizeUsage increment failed: ${e.message}`); }
   }
+  // Notify orchestrator so it can advance (coordinator/single-server completion handoff)
+  try {
+    const selfUrl = getSelfUrlWithFallback();
+    fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ campaignId })
+    }).catch(() => {});
+  } catch {}
   return NextResponse.json({ success: true, completed: true, message: "Campaign personalization completed successfully", total: scopeEnd, personalized: personalizedCount });
 }
 

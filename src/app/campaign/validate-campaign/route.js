@@ -843,7 +843,11 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
 
   if (mxResult.paused || await isCampaignPaused(campaignId, 'validate')) {
     await mergeAndFlush(campaignId, 'validate', normalizedRows, fileId).catch(() => uploadCsvText(fileId, stringifyCSV(normalizedRows)).catch(()=>{}));
-    await updateCampaignSettings(campaignId, { validationStatus: "processing" });
+    await updateCampaignSettings(campaignId, { validationStatus: "paused", status: "paused" });
+    try {
+      const { updateSheetRowApi } = await import("../../api/googlesheets.js");
+      await updateSheetRowApi("campaigns", "campaignId", campaignId, { status: "paused", updatedOn: new Date().toISOString() });
+    } catch {}
     return NextResponse.json({ success: true, processing: true, paused: true, message: "Validation paused during MX check", stats: computeValidationStats(dataRows, validationIdx) });
   }
 
@@ -865,7 +869,11 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
 
   if (platformResult.paused || await isCampaignPaused(campaignId, 'validate')) {
     await mergeAndFlush(campaignId, 'validate', normalizedRows, fileId).catch(() => uploadCsvText(fileId, stringifyCSV(normalizedRows)).catch(()=>{}));
-    await updateCampaignSettings(campaignId, { validationStatus: "processing" });
+    await updateCampaignSettings(campaignId, { validationStatus: "paused", status: "paused" });
+    try {
+      const { updateSheetRowApi } = await import("../../api/googlesheets.js");
+      await updateSheetRowApi("campaigns", "campaignId", campaignId, { status: "paused", updatedOn: new Date().toISOString() });
+    } catch {}
     return NextResponse.json({ success: true, processing: true, paused: true, message: "Validation paused during platform verification", stats: computeValidationStats(dataRows, validationIdx) });
   }
 
@@ -895,6 +903,16 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   if (stageUserId && dataRows.length > 0) {
     try { await updateUserUsage(stageUserId, "validateUsage", dataRows.length); } catch (e) { log.warn(`[user-limit] validateUsage increment failed: ${e.message}`); }
   }
+
+  // Notify orchestrator so it can advance (coordinator/single-server completion handoff)
+  try {
+    const selfUrl = getSelfUrlWithFallback();
+    fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ campaignId })
+    }).catch(() => {});
+  } catch {}
 
   return NextResponse.json({ success: true, completed: true, message: "Campaign email validation completed successfully", stats, limitApplied, originalCount, processedCount: dataRows.length });
 }

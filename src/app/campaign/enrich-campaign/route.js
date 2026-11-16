@@ -534,6 +534,15 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
   if (stageUserId && totalRows > 0) {
     try { await updateUserUsage(stageUserId, "enrichUsage", totalRows); } catch (e) { log.warn(`[user-limit] enrichUsage increment failed: ${e.message}`); }
   }
+  // Notify orchestrator so it can advance (coordinator/single-server completion handoff)
+  try {
+    const selfUrl = getSelfUrlWithFallback();
+    fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ campaignId })
+    }).catch(() => {});
+  } catch {}
   return NextResponse.json({ success: true, completed: true, message: "Campaign enrichment completed", total: totalRows, stats });
 }
 

@@ -288,7 +288,7 @@ export async function POST(request) {
 
     log = logger.child({ campaignId, stage: 'orchestrator' });
     registerActiveCampaignRun(campaignId, 'orchestrator');
-    const campaignData = await getCampaignSettings(campaignId);
+    let campaignData = await getCampaignSettings(campaignId);
     if (!campaignData) {
       return NextResponse.json({ success: false, error: "Campaign not found" }, { status: 404 });
     }
@@ -301,6 +301,19 @@ export async function POST(request) {
       : null;
     const scopeServer = typeof body.serverScope === "string" && body.serverScope ? body.serverScope : null;
     const scope = scopeAccountIds ? { accountIds: scopeAccountIds, serverScope: scopeServer } : null;
+
+    // Mark campaign as running (row+settings) for UI/pause visibility, unless in a terminal/hold state
+    try {
+      const rowNow = await getCampaignRow(campaignId);
+      const rowStatusNow = String(rowNow?.row?.status || '').trim().toLowerCase();
+      const terminalOrHold = new Set(['completed', 'paused', 'limit reached', 'error', 'failed']);
+      if (!terminalOrHold.has(rowStatusNow)) {
+        await updateSheetRowApi("campaigns", "campaignId", campaignId, { status: "running", updatedOn: new Date().toISOString() });
+        await updateCampaignSettings(campaignId, { status: "running" }).catch(() => {});
+      }
+    } catch (e) {
+      log.warn(`[orchestrator] Could not mark campaign running: ${e.message}`);
+    }
 
     const { settings } = campaignData;
     settings._campaignStatus = campaignData.status;
@@ -532,6 +545,14 @@ export async function POST(request) {
 
     if (action === "wait") {
       log.info(`Waiting for ${config.label} to complete`);
+      try {
+        const rowNow = await getCampaignRow(campaignId);
+        const rs = String(rowNow?.row?.status || '').toLowerCase();
+        if (rs !== 'paused' && rs !== 'completed' && rs !== 'limit reached') {
+          await updateSheetRowApi("campaigns", "campaignId", campaignId, { status: "running", updatedOn: new Date().toISOString() });
+          await updateCampaignSettings(campaignId, { status: "running" }).catch(() => {});
+        }
+      } catch {}
       return NextResponse.json({
         success: true,
         message: `Waiting for ${config.label} to complete`,
@@ -542,6 +563,14 @@ export async function POST(request) {
     // Race condition guard: if stage is already processing, skip duplicate call
     if (config.statusField && settings[config.statusField] === "processing" && action !== "retry") {
       log.info(`${config.label} already processing, skipping duplicate call`);
+      try {
+        const rowNow = await getCampaignRow(campaignId);
+        const rs = String(rowNow?.row?.status || '').toLowerCase();
+        if (rs !== 'paused' && rs !== 'completed' && rs !== 'limit reached') {
+          await updateSheetRowApi("campaigns", "campaignId", campaignId, { status: "running", updatedOn: new Date().toISOString() });
+          await updateCampaignSettings(campaignId, { status: "running" }).catch(() => {});
+        }
+      } catch {}
       return NextResponse.json({ success: true, message: `${config.label} already processing`, waitingStage: stage });
     }
 
@@ -578,7 +607,7 @@ export async function POST(request) {
     }
 
     try {
-      const result = await triggerStage(campaignId, stage, settings, scope);
+      let result = await triggerStage(campaignId, stage, settings, scope);
 
       if (!result || !result.success) {
         // If the route is still processing in background (fetch/proxy dropped but stage alive/completing),
@@ -606,9 +635,6 @@ export async function POST(request) {
           }
         }
       }
-
-      if (!result || !result.success) {          });
-        }
 
       // execute-campaign returns 202 {accepted,processing} and runs in background to
       // avoid client/proxy aborts. Treat as in-flight: do NOT mark completed or
@@ -641,6 +667,7 @@ export async function POST(request) {
         });
       }
 
+      if (!result || !result.success) {
         const kind = classifyStageFailure(result?.error || result?.message || result);
         if (kind === 'limit' || result?.limitReached) {
           await clearStageError(campaignId);
