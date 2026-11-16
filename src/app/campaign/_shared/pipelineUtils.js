@@ -174,9 +174,11 @@ export function classifyStageFailure(errorLike) {
     if (/transient|retry later|temporary/.test(s)) return 'transient';
     return 'limit';
   }
-  // transient/network
-  if (/(etimedout|econnreset|econnrefused|eai_again|fetch failed|socket hang up|timeout|deadline exceeded|network|connection)/.test(s)) return 'transient';
-  if (/(502|503|504|bad gateway|service unavailable|gateway timeout)/.test(s)) return 'transient';
+  // transient/network/proxy: gateway timeouts (incl. Cloudflare 524) and non-JSON HTML cutoffs
+  // from long-running stages must never be treated as permanent failures.
+  if (/(non_json_response|<!doctype\s+html|cloudflare|cf-ray|\b524\b)/.test(s)) return 'transient';
+  if (/(etimedout|econnreset|econnrefused|econnaborted|eai_again|fetch failed|socket hang up|timeout|timed out|deadline exceeded|network|connection|aborted)/.test(s)) return 'transient';
+  if (/(502|503|504|522|524|bad gateway|service unavailable|gateway timeout)/.test(s)) return 'transient';
   if (/(500|internal server error)/.test(s)) return 'transient';
   if (/(invalid_grant|token.*expired|refresh.*token)/.test(s)) return 'transient';
   if (/(429|too many requests|rate limit)/.test(s)) {

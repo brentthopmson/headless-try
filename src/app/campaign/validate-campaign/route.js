@@ -331,22 +331,28 @@ async function verifySingleEmailOnPlatform(browser, email, platformName, config,
   }
 }
 
-async function verifyEmailWithRetries(email, platformName, config, log, maxAttempts = 2) {
+async function verifyEmailWithBrowser(browser, email, platformName, config, log, attempt = 1) {
+  try {
+    const res = await verifySingleEmailOnPlatform(browser, email, platformName, config, log, attempt);
+    log.info(`[Row verify] ${email} @${platformName}: attempt ${attempt} => ${res.status} (${res.detail})`);
+    return res;
+  } catch (e) {
+    log.warn(`[Row verify] ${email} @${platformName}: attempt ${attempt} browser error (${e.message})`);
+    return { status: 'inconclusive', detail: `browser_exception:${e.message}` };
+  }
+}
+
+async function verifyEmailWithRetriesOnSameBrowser(getBrowser, email, platformName, config, log, maxAttempts = 2) {
   let last = { status: 'inconclusive', detail: 'not_attempted' };
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    let browser = null;
-    try {
-      browser = await launchBrowser({ headless: process.env.SHOW_BROWSER === 'true' || process.env.BROWSER_VISIBLE === 'true' || process.env.VISUAL === 'true' ? false : (process.env.HEADLESS === 'false' ? false : "new") });
-      last = await verifySingleEmailOnPlatform(browser, email, platformName, config, log, attempt);
-      log.info(`[Row verify] ${email} @${platformName}: attempt ${attempt} => ${last.status} (${last.detail})`);
-      if (last.status === 'verified_exists' || last.status === 'not_exists') return last;
-    } catch (e) {
-      last = { status: 'inconclusive', detail: `browser_exception:${e.message}` };
-      log.warn(`[Row verify] ${email} @${platformName}: attempt ${attempt} browser error (${e.message})`);
-    } finally {
-      if (browser) { try { await browser.close(); } catch {} }
+    const browser = await getBrowser();
+    if (!browser) {
+      last = { status: 'inconclusive', detail: 'browser_unavailable' };
+      break;
     }
-    if (attempt < maxAttempts) await sleep(1500);
+    last = await verifyEmailWithBrowser(browser, email, platformName, config, log, attempt);
+    if (last.status === 'verified_exists' || last.status === 'not_exists') return last;
+    if (attempt < maxAttempts) await sleep(1200);
   }
   return last;
 }
@@ -508,73 +514,120 @@ async function runMxValidation({ rows, rowStart, rowEnd, emailColIdx, validation
 
 async function runPlatformVerification({ rows, rowStart, rowEnd, emailColIdx, validationIdx, providerMXIdx, campaignId, log, fileId, platformBatchSize, onCheckpoint }) {
   let paused = false;
-  const concurrency = Math.max(1, parseInt(platformBatchSize, 10) || 1);
+  const maxWorkers = Math.max(1, parseInt(platformBatchSize, 10) || 1);
 
-  // Build list of rows needing platform verification (skip already-checked inconclusive terminal)
-  const pending = [];
+  // Build pending rows grouped by platform (skip already-checked inconclusive terminal)
+  const groups = new Map(); // platformName -> { config, items: [] }
+  let pendingCount = 0;
   for (let i = rowStart; i < rowEnd; i++) {
     const fullIdx = i + 1;
     if (fullIdx >= rows.length) break;
     const row = rows[fullIdx];
     const status = String(row[validationIdx] || '').trim();
     if (status !== 'valid_mx') continue; // only verify rows still at valid_mx
-    if (hasPlatformInconclusiveMarker(row, providerMXIdx)) continue; // terminal resolved (MX-valid, inconclusive platform)
+    if (hasPlatformInconclusiveMarker(row, providerMXIdx)) continue; // terminal resolved
     const email = String(row[emailColIdx] || '').trim();
     if (!email || !email.includes('@')) continue;
     const domain = email.split('@')[1].toLowerCase().trim();
     const platformName = detectPlatform(domain);
     if (!platformName || !platformConfigs[platformName]) continue;
-    pending.push({ i, row, email, domain, platformName, config: platformConfigs[platformName] });
+    if (!groups.has(platformName)) groups.set(platformName, { platformName, config: platformConfigs[platformName], items: [] });
+    groups.get(platformName).items.push({ i, row, email, domain, platformName, config: platformConfigs[platformName] });
+    pendingCount++;
   }
 
-  if (pending.length === 0) return { paused: false, processedUpTo: rowEnd, verified: 0, notExists: 0, inconclusive: 0 };
+  if (pendingCount === 0) return { paused: false, processedUpTo: rowEnd, verified: 0, notExists: 0, inconclusive: 0 };
 
-  log.info(` Platform verification: ${pending.length} eligible valid_mx row(s), concurrency=${concurrency}`);
+  const groupList = Array.from(groups.values());
+  const workerCount = Math.min(maxWorkers, groupList.length);
+  log.info(` Platform verification: ${pendingCount} eligible row(s) across ${groupList.length} platform(s), workers=${workerCount} (batch=${maxWorkers})`);
 
   let verified = 0, notExists = 0, inconclusive = 0;
+  let queueIdx = 0;
 
-  for (let start = 0; start < pending.length; start += concurrency) {
-    if (await isCampaignPaused(campaignId, 'validate')) { paused = true; break; }
-    const batch = pending.slice(start, start + concurrency);
-
-    const results = await mapWithConcurrency(batch, concurrency, async (item) => {
-      // Re-check in case state changed
-      if (String(item.row[validationIdx] || '').trim() !== 'valid_mx' || hasPlatformInconclusiveMarker(item.row, providerMXIdx)) {
-        return { status: 'skipped' };
-      }
-      const result = await verifyEmailWithRetries(item.email, item.platformName, item.config, log, 2);
-      return { status: result.status, detail: result.detail, item };
-    });
-
-    for (let bi = 0; bi < batch.length; bi++) {
-      const res = results[bi] || { status: 'skipped' };
-      const item = batch[bi];
-      if (res.status === 'skipped') continue;
-      if (res.status === 'not_exists') {
-        item.row[validationIdx] = 'not_exists';
-        item.row[providerMXIdx] = String(item.row[providerMXIdx] || '').replace(PLATFORM_CHECKED_INCONCLUSIVE, '') || item.platformName;
-        notExists++;
-      } else if (res.status === 'verified_exists') {
-        item.row[validationIdx] = 'verified_exists';
-        const cleaned = String(item.row[providerMXIdx] || '').replace(PLATFORM_CHECKED_INCONCLUSIVE, '').trim();
-        item.row[providerMXIdx] = cleaned || item.platformName;
-        verified++;
-      } else {
-        // Inconclusive after retries: finalize as terminal valid_mx (MX-valid, resolved, send-eligible)
-        // Mark so we don't re-verify forever and completion can be reached without false not_exists.
-        item.row[validationIdx] = 'valid_mx';
-        markPlatformInconclusive(item.row, providerMXIdx, item.platformName);
-        inconclusive++;
-        log.warn(`[Row verify] ${item.email} @${item.platformName}: inconclusive after retries (${res.detail || 'unknown'}) - finalizing as valid_mx (terminal)`);
-      }
-    }
-
-    if (paused) break;
-
-    const checkpointIdx = batch[batch.length - 1].i + 1;
-    if (onCheckpoint) await onCheckpoint(checkpointIdx);
+  async function flushCheckpoint(lastIdx) {
+    const idx = Math.max(0, lastIdx || rowEnd);
+    if (onCheckpoint) await onCheckpoint(idx);
     else if (fileId) await mergeAndFlush(campaignId, 'validate', rows, fileId).catch(() => uploadCsvText(fileId, stringifyCSV(rows)).catch(()=>{}));
   }
+
+  async function runWorker(workerId) {
+    while (true) {
+      if (paused) break;
+      if (await isCampaignPaused(campaignId, 'validate')) { paused = true; break; }
+      const myIdx = queueIdx++;
+      if (myIdx >= groupList.length) break;
+      const group = groupList[myIdx];
+      let browser = null;
+
+      const ensureBrowser = async () => {
+        if (browser && browser.isConnected && browser.isConnected()) return browser;
+        if (browser) { try { await browser.close(); } catch {} }
+        try {
+          browser = await launchBrowser({ headless: process.env.SHOW_BROWSER === 'true' || process.env.BROWSER_VISIBLE === 'true' || process.env.VISUAL === 'true' ? false : (process.env.HEADLESS === 'false' ? false : "new") });
+          return browser;
+        } catch (e) {
+          log.warn(`[Platform worker ${workerId}] failed to launch browser for ${group.platformName}: ${e.message}`);
+          browser = null;
+          return null;
+        }
+      };
+
+      try {
+        log.info(`[Platform worker ${workerId}] ${group.platformName}: ${group.items.length} email(s) on reused tab`);
+        let lastProcessed = rowEnd;
+        for (let k = 0; k < group.items.length; k++) {
+          if (paused) break;
+          if (await isCampaignPaused(campaignId, 'validate')) { paused = true; break; }
+          const item = group.items[k];
+          lastProcessed = item.i + 1;
+
+          // Re-check state (resumable)
+          if (String(item.row[validationIdx] || '').trim() !== 'valid_mx' || hasPlatformInconclusiveMarker(item.row, providerMXIdx)) {
+            continue;
+          }
+
+          // ensure browser available (relaunch if crashed)
+          const b = await ensureBrowser();
+          if (!b) {
+            // can't verify now; leave as valid_mx (pending) for resume, don't mark terminal
+            log.warn(`[Row verify] ${item.email} @${item.platformName}: browser unavailable, leaving pending`);
+            continue;
+          }
+
+          const result = await verifyEmailWithRetriesOnSameBrowser(ensureBrowser, item.email, item.platformName, item.config, log, 2);
+
+          if (result.status === 'not_exists') {
+            item.row[validationIdx] = 'not_exists';
+            item.row[providerMXIdx] = String(item.row[providerMXIdx] || '').replace(PLATFORM_CHECKED_INCONCLUSIVE, '') || item.platformName;
+            notExists++;
+          } else if (result.status === 'verified_exists') {
+            item.row[validationIdx] = 'verified_exists';
+            const cleaned = String(item.row[providerMXIdx] || '').replace(PLATFORM_CHECKED_INCONCLUSIVE, '').trim();
+            item.row[providerMXIdx] = cleaned || item.platformName;
+            verified++;
+          } else {
+            // Inconclusive after retries: finalize as terminal valid_mx (MX-valid, resolved, send-eligible)
+            item.row[validationIdx] = 'valid_mx';
+            markPlatformInconclusive(item.row, providerMXIdx, item.platformName);
+            inconclusive++;
+            log.warn(`[Row verify] ${item.email} @${item.platformName}: inconclusive after retries (${result.detail || 'unknown'}) - finalizing as valid_mx (terminal)`);
+          }
+
+          // periodic flush/checkpoint per item (keeps progress safe/resumable)
+          if ((k + 1) % 5 === 0 || k === group.items.length - 1) {
+            await flushCheckpoint(lastProcessed);
+          }
+        }
+        // final flush for this platform group
+        await flushCheckpoint(group.items.length ? (group.items[group.items.length - 1].i + 1) : rowEnd);
+      } finally {
+        if (browser) { try { await browser.close(); } catch {} }
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, (_, i) => runWorker(i + 1)));
 
   return { paused, processedUpTo: paused ? -1 : rowEnd, verified, notExists, inconclusive };
 }

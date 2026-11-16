@@ -16,11 +16,15 @@ export const dynamic = "force-dynamic";
 async function personalizeBatch(batch, personalizationPrompt) {
   if (batch.length === 0) return batch.map(() => null);
 
-  const batchDescription = batch.map((contact, i) =>
-    `${i + 1}. Name: ${contact.firstName}, Company: ${contact.company}, Email: ${contact.email}${contact.context ? `, Context: ${contact.context.slice(0, 200)}` : ""}${contact.link ? `, Personal link (use EXACTLY this URL when you include a CTA, never re-type the base URL): ${contact.link}` : ""}`
-  ).join("\n");
+  const batchDescription = batch.map((contact, i) => {
+    const base = `${i + 1}. Name: ${contact.firstName}, Company: ${contact.company}, Email: ${contact.email}`;
+    const extra = contact.rowData ? `\n   Row data (use any relevant fields to personalize; do not invent facts): ${contact.rowData}` : "";
+    const ctx = contact.context ? `\n   Context: ${contact.context.slice(0, 300)}` : "";
+    const link = contact.link ? `\n   Personal link (use EXACTLY this URL when you include a CTA, never re-type the base URL): ${contact.link}` : "";
+    return `${base}${extra}${ctx}${link}`;
+  }).join("\n");
 
-  const prompt = `You are an expert personalized outreach copywriter writing as the SENDER (our campaign account). Generate highly tailored cold email subject lines and email bodies for these ${batch.length} recipients. Each recipient below is the person RECEIVING this email (they have never seen it) — never write as if they already replied or agreed to anything. "You" (in the email) = that recipient; "I/we" = the sender.
+  const prompt = `You are an expert personalized outreach copywriter writing as the SENDER (our campaign account). Generate highly tailored, per-recipient cold email subject lines and bodies for these ${batch.length} recipients so messages do not look alike. Use the provided row data/headers and context for each recipient (including any enriched fields) to make each message specific; if enrichment/context is limited, still vary and personalize using whatever recipient data is available. Each recipient below is the person RECEIVING this email (they have never seen it) — never write as if they already replied or agreed to anything. "You" (in the email) = that recipient; "I/we" = the sender.
 
 ${batchDescription}
 
@@ -33,11 +37,10 @@ Return a JSON array with one object per recipient (same order):
 Rules:
 1. Each subject must be unique and engaging
 2. Each body must be professional, natural, concise, with clear CTA
-3. Reference the recipient's name and company
+3. Personalize using the recipient's available row data (name, company, role, website, industry, context, enriched fields, etc.) without inventing facts
 4. Keep body under 150 words
 5. If a "Personal link" is listed for a recipient, include that EXACT URL in the body as the CTA — do not invent, shorten, or re-type a different URL.
 6. Return ONLY the JSON array, no markdown or explanations`;
-
   try {
     const ai = new MultiProviderAI();
     const text = await ai.generate(prompt, { maxTokens: 4000, jsonMode: true });
@@ -61,11 +64,14 @@ Rules:
 async function personalizeSocialBatch(batch, personalizationPrompt) {
   if (batch.length === 0) return batch.map(() => null);
 
-  const batchDescription = batch.map((contact, i) =>
-    `${i + 1}. Name: ${contact.firstName}, Platform: ${contact.platform}, Username: ${contact.username}${contact.context ? `, About: ${contact.context.slice(0, 200)}` : ""}`
-  ).join("\n");
+  const batchDescription = batch.map((contact, i) => {
+    const base = `${i + 1}. Name: ${contact.firstName}, Platform: ${contact.platform}, Username: ${contact.username}`;
+    const extra = contact.rowData ? `\n   Row data (use any relevant fields to personalize; do not invent facts): ${contact.rowData}` : "";
+    const ctx = contact.context ? `\n   About: ${contact.context.slice(0, 300)}` : "";
+    return `${base}${extra}${ctx}`;
+  }).join("\n");
 
-  const prompt = `You are an expert social media outreach copywriter writing as the SENDER opening a COLD first DM. Generate personalized DM messages for these ${batch.length} social media contacts. Each contact below RECEIVES this message for the first time (they have never replied) — never write as if they already responded. "You" = that contact; "I" = the sender.
+  const prompt = `You are an expert social media outreach copywriter writing as the SENDER opening a COLD first DM. Generate personalized, per-recipient DM messages for these ${batch.length} contacts so messages do not look alike. Use the provided row data/headers and context (including any enriched fields) to make each message specific; if limited, still vary and personalize using whatever data is available. Each contact below RECEIVES this message for the first time (they have never replied) — never write as if they already responded. "You" = that contact; "I" = the sender.
 
 ${batchDescription}
 
@@ -76,11 +82,10 @@ Return a JSON array with one object per contact (same order):
 [{"message": "Personalized DM message"}, ...]
 
 Rules:
-1. Each message must be unique and reference something specific about the contact
+1. Each message must be unique and reference something specific about the contact using available row data
 2. Keep messages under 100 words
 3. Be conversational, not salesy
 4. Return ONLY the JSON array`;
-
   try {
     const ai = new MultiProviderAI();
     const text = await ai.generate(prompt, { maxTokens: 4000, jsonMode: true });
@@ -101,19 +106,20 @@ Rules:
   return batch.map(() => null);
 }
 
+const PERSONALIZATION_TERMINAL_DONE = new Set(['personalized', 'completed', 'fallback', 'ai_fallback', 'template_fallback', 'failed_fallback', 'skipped']);
+
 function isRowPersonalized(row, channel, enhancedSubjectIdx, enhancedBodyIdx, enhancedSocialMsgIdx, personalizationStatusIdx) {
-  if (personalizationStatusIdx !== -1 && String(row[personalizationStatusIdx] || '').toLowerCase().trim() === 'personalized') return true;
-  if (channel === 'social') {
-    return enhancedSocialMsgIdx !== -1 && String(row[enhancedSocialMsgIdx] || '').trim().length > 0;
+  if (personalizationStatusIdx !== -1) {
+    const st = String(row[personalizationStatusIdx] || '').toLowerCase().trim();
+    if (PERSONALIZATION_TERMINAL_DONE.has(st)) return true;
   }
-  // email: accept if body present (subject helpful but not strictly required)
-  const hasBody = enhancedBodyIdx !== -1 && String(row[enhancedBodyIdx] || '').trim().length > 0;
-  const hasSubject = enhancedSubjectIdx !== -1 && String(row[enhancedSubjectIdx] || '').trim().length > 0;
-  return hasBody || (hasSubject && enhancedBodyIdx === -1);
+  // Content alone (e.g. template mail-merge) is not sufficient: the personalize stage must run and set status.
+  // For legacy rows that already carry AI-personalized content but lack a status, treat as done once status is stamped.
+  return false;
 }
 
-function markRowPersonalized(row, personalizationStatusIdx) {
-  if (personalizationStatusIdx !== -1) row[personalizationStatusIdx] = 'personalized';
+function markRowPersonalized(row, personalizationStatusIdx, status = 'personalized') {
+  if (personalizationStatusIdx !== -1) row[personalizationStatusIdx] = status;
 }
 
 function fallbackEmail(firstName, company) {
@@ -141,14 +147,16 @@ async function personalizeEmailRows(batch, contacts, personalizationPrompt, enha
   for (let i = 0; i < batch.length; i++) {
     const result = aiResults && aiResults[i];
     const c = contacts[i];
-    const finalRes = (result && (result.subject || result.body)) ? result : fallbackEmail(c.firstName, c.company);
+    const aiOk = !!(result && (result.subject || result.body));
+    const finalRes = aiOk ? result : fallbackEmail(c.firstName, c.company);
     if (enhancedSubjectIdx !== -1) batch[i][enhancedSubjectIdx] = finalRes.subject || '';
     if (enhancedBodyIdx !== -1) {
       let body = finalRes.body || '';
       if (c.link) body = String(body).replace(/\{\{\s*(link|url)\s*\}\}/gi, c.link);
       batch[i][enhancedBodyIdx] = body;
     }
-    markRowPersonalized(batch[i], personalizationStatusIdx);
+    // AI-generated content when available; explicit fallback only when AI unavailable/fails.
+    markRowPersonalized(batch[i], personalizationStatusIdx, aiOk ? 'personalized' : 'fallback');
     count++;
   }
   return count;
@@ -169,9 +177,10 @@ async function personalizeSocialRows(batch, contacts, personalizationPrompt, enh
   for (let i = 0; i < batch.length; i++) {
     const result = aiResults && aiResults[i];
     const c = contacts[i];
-    const finalRes = (result && result.message) ? result : fallbackSocial(c.firstName, c.platform);
+    const aiOk = !!(result && result.message);
+    const finalRes = aiOk ? result : fallbackSocial(c.firstName, c.platform);
     if (enhancedSocialMsgIdx !== -1) batch[i][enhancedSocialMsgIdx] = finalRes.message || '';
-    markRowPersonalized(batch[i], personalizationStatusIdx);
+    markRowPersonalized(batch[i], personalizationStatusIdx, aiOk ? 'personalized' : 'fallback');
     count++;
   }
   return count;
@@ -191,6 +200,29 @@ async function processPersonalizationBatches({ rows, headers, dataRows, scopeSta
 
   const wantsLink = !!(campaignSettings.personalizeLink && campaignSettings.targetLink);
   const linkIdx = wantsLink ? ensureLinkColumn(rows) : -1;
+
+  const EXCLUDED_ROW_DATA = new Set([
+    'sn','email','firstname','lastname','first_name','last_name','mail','emailaddress','e-mail',
+    'enhancedsubject','enhancedbody','enhancedsocialmessage','personalizationstatus','enrichmentstatus','executionstatus',
+    'validation','providermxresult','sendstamp','senddate','sendtime','lastsendstatus','lastsenderror','helperkeyword','link',
+    'smtp','port','username','password','apppassword','backupcode','oauth2clientid','oauth2clientsecret','oauth2refreshtoken',
+    'engine','provider','campaigntype','replyto'
+  ]);
+  const buildRowData = (row) => {
+    const parts = [];
+    for (let i = 0; i < headers.length; i++) {
+      const h = String(headers[i] || '').trim();
+      if (!h) continue;
+      const key = h.toLowerCase().replace(/[\s_-]+/g, '');
+      if (EXCLUDED_ROW_DATA.has(key)) continue;
+      if (key.startsWith('shooter')) continue;
+      const v = String(row[i] ?? '').trim();
+      if (!v) continue;
+      parts.push(`${h}: ${v.slice(0, 180)}`);
+      if (parts.join('; ').length > 900) break;
+    }
+    return parts.join('; ').slice(0, 900);
+  };
 
   const scoped = dataRows.slice(scopeStart, scopeEnd);
   let personalizedCount = 0;
@@ -216,7 +248,8 @@ async function processPersonalizationBatches({ rows, headers, dataRows, scopeSta
         username: socialUsernameIdx !== -1 ? String(row[socialUsernameIdx] || '').trim() : '',
         platform: socialPlatformIdx !== -1 ? String(row[socialPlatformIdx] || '').trim() : '',
         firstName: firstNameIdx !== -1 ? String(row[firstNameIdx] || '').trim() || 'there' : 'there',
-        context: contextIdx !== -1 ? String(row[contextIdx] || '').trim() : ''
+        context: contextIdx !== -1 ? String(row[contextIdx] || '').trim() : '',
+        rowData: buildRowData(row),
       }));
       return await personalizeSocialRows(pendingRows, contacts, personalizationPrompt, enhancedSocialMsgIdx, personalizationStatusIdx);
     } else {
@@ -229,6 +262,7 @@ async function processPersonalizationBatches({ rows, headers, dataRows, scopeSta
           company: companyIdx !== -1 ? String(row[companyIdx] || '').trim() || 'your company' : 'your company',
           context: contextIdx !== -1 ? String(row[contextIdx] || '').trim() : '',
           link,
+          rowData: buildRowData(row),
         };
       });
       return await personalizeEmailRows(pendingRows, contacts, personalizationPrompt, enhancedSubjectIdx, enhancedBodyIdx, personalizationStatusIdx, log);
@@ -252,12 +286,15 @@ async function processPersonalizationBatches({ rows, headers, dataRows, scopeSta
 
   // Verify full scope completion
   const allDone = scoped.every(row => isRowPersonalized(row, channel, enhancedSubjectIdx, enhancedBodyIdx, enhancedSocialMsgIdx, personalizationStatusIdx));
-  // ensure status marked for any already-done rows
+  // ensure status marked for any legacy rows that already have personalized content but no terminal status
   if (personalizationStatusIdx !== -1) {
     for (const row of scoped) {
-      if (isRowPersonalized(row, channel, enhancedSubjectIdx, enhancedBodyIdx, enhancedSocialMsgIdx, personalizationStatusIdx)) {
-        row[personalizationStatusIdx] = 'personalized';
-      }
+      const st = String(row[personalizationStatusIdx] || '').toLowerCase().trim();
+      if (PERSONALIZATION_TERMINAL_DONE.has(st)) continue;
+      const hasContent = channel === 'social'
+        ? (enhancedSocialMsgIdx !== -1 && String(row[enhancedSocialMsgIdx] || '').trim())
+        : ((enhancedBodyIdx !== -1 && String(row[enhancedBodyIdx] || '').trim()) || (enhancedSubjectIdx !== -1 && String(row[enhancedSubjectIdx] || '').trim()));
+      if (hasContent) row[personalizationStatusIdx] = 'personalized';
     }
   }
   return { personalizedCount, allDone };

@@ -91,6 +91,13 @@ export async function POST(request) {
       }
     }
 
+    // When AI personalization is staged for email, do NOT pre-fill enhancedSubject/enhancedBody
+    // with template text: that would preempt the personalize stage (it skips rows that look
+    // personalized) and mislead progress/UI. Personalize writes AI-generated content (or an
+    // explicit fallback) and sets personalizationStatus; templates remain the fallback source.
+    const aiPersonalizationStaged = settings.aiPersonalizationStaged === true;
+    const writeTemplateEnhancedEmail = channel === "email" && !aiPersonalizationStaged;
+
     let processed = 0;
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
@@ -101,7 +108,7 @@ export async function POST(request) {
         row[helperIdx] = campaignHelperKeyword;
       }
 
-      if (channel === "email") {
+      if (writeTemplateEnhancedEmail) {
         if (enhancedSubjectIdx !== -1 && subjectTemplate) {
           row[enhancedSubjectIdx] = mergeTemplate(subjectTemplate, row, headers);
         }
@@ -111,6 +118,7 @@ export async function POST(request) {
       }
 
       if (channel === "social") {
+        // Social execution/interactions do not run a separate AI-personalization stage; template merge is final.
         if (enhancedSocialMsgIdx !== -1 && socialTemplate) {
           row[enhancedSocialMsgIdx] = mergeTemplate(socialTemplate, row, headers);
         }
@@ -120,7 +128,7 @@ export async function POST(request) {
     }
 
     mlog.info(`Columns after merge-prep: [${rows[0].join(', ')}]`);
-    mlog.info(`link column: ${linkIdx === -1 ? 'not requested' : 'computed per row'}; helper column: ${helperIdx === -1 ? 'not requested' : 'stamped per row'}`);
+    mlog.info(`link column: ${linkIdx === -1 ? 'not requested' : 'computed per row'}; helper column: ${helperIdx === -1 ? 'not requested' : 'stamped per row'}; templateEnhancedEmail=${writeTemplateEnhancedEmail} (aiPersonalizationStaged=${aiPersonalizationStaged})`);
 
     await uploadCsvText(fileId, stringifyCSV(rows));
 

@@ -72,7 +72,13 @@ function resolveCurrentStage(settings) {
         continue;
       }
       if (status === "processing") return { stage, action: "wait" };
-      if (status === "retry") return { stage, action: "retry" };
+      // A stale lastError from a proxy/gateway cutoff (e.g. 524) must not block a stage that is idle/ready to run.
+      if (status === "retry") {
+        const le = settings.lastError;
+        const staleGateway = le && le.stage === stage && /non_json_response|524|502|503|504|522|timeout|gateway|cloudflare|aborted/i.test(String(le.reason || ""));
+        if (staleGateway) return { stage, action: "run" };
+        return { stage, action: "retry" };
+      }
       // Treat failed as resumable/retryable so campaigns can continue from checkpoint
       // (e.g. after engine crash, Drive flush error, or manual resume of a paused run).
       if (status === "failed") return { stage, action: "retry", wasFailed: true };
@@ -168,93 +174,89 @@ async function triggerStage(campaignId, stage, settings, scope) {
       try {
         result = rawText ? JSON.parse(rawText) : {};
       } catch {
-        const preview = String(rawText || "").slice(0, 200);
+        const preview = String(rawText || "").slice(0, 300);
+        const statusNum = Number(response.status) || 0;
+        const isGatewayLike = statusNum === 502 || statusNum === 503 || statusNum === 504 || statusNum === 522 || statusNum === 524
+          || /<!doctype\s+html|<html|cloudflare|cf-ray|bad gateway|gateway timeout|service unavailable/i.test(rawText || "");
         log.warn(`${config.label} returned non-JSON response (status ${response.status}): ${preview}`);
-        // Long-running/non-interruptible stages may be in-flight behind proxies/tunnels; treat ambiguous as wait, not hard failure.
-        if (config.statusField) {
-          try {
-            const currentSettings = await getCampaignSettings(campaignId);
-            const currentStatus = currentSettings?.[config.statusField];
-            if (currentStatus === "processing" || currentStatus === "completed" || currentStatus === "monitoring") {
-              return { success: false, skipped: true, processing: currentStatus === "processing" || currentStatus === "monitoring", message: `${config.label} returned non-JSON while ${currentStatus}; treating as in-flight/wait` };
+        // Long-running/resumable stages often outlive proxy/client connections (Cloudflare 524/502).
+        // Never treat ambiguous/gateway cutoffs as a stage failure: trust persisted stage status.
+        try {
+          if (config.statusField) {
+            const current = await getCampaignSettings(campaignId);
+            const currentStatus = String(current?.settings?.[config.statusField] || current?.[config.statusField] || "").toLowerCase();
+            if (currentStatus === "completed") {
+              return { success: true, completed: true, message: `${config.label} completed (request ended with non-JSON/gateway response but persisted status is completed)` };
             }
-          } catch {}
-        } else if (stage === "execute") {
-          return { success: false, skipped: true, processing: true, message: `${config.label} returned non-JSON; treating execute as still running/wait` };
+            if (currentStatus === "processing" || currentStatus === "monitoring" || currentStatus === "running") {
+              return { success: false, skipped: true, processing: true, message: `${config.label} returned non-JSON response but stage status is ${currentStatus}` };
+            }
+            if (currentStatus === "paused" || currentStatus === "waiting_quota" || currentStatus === "resting" || currentStatus === "retry") {
+              return { success: false, skipped: true, paused: true, message: `${config.label} returned non-JSON response but stage status is ${currentStatus}` };
+            }
+            if (currentStatus === "failed") {
+              return { success: false, error: `non_json_response_${response.status}`, message: `${config.label} failed (non-JSON response, status ${response.status})` };
+            }
+          }
+        } catch (se) {
+          log.warn(`${config.label} status check after non-JSON failed: ${se.message}`);
         }
-        if (!response.ok) {
-          return { success: false, error: `non_json_response_${response.status}`, message: preview || "Non-JSON response" };
-        }
-        return { success: false, skipped: true, processing: true, message: `${config.label} returned ambiguous non-JSON response; wait and recheck` };
+        // idle/unknown/no-status-field/gateway: treat as in-flight/wait to avoid false fail/advance.
+        return { success: false, skipped: true, processing: true, gatewayCutoff: isGatewayLike, message: `${config.label} returned non-JSON/gateway response (status ${response.status}) - treating as in-flight` };
       }
       log.info(`${config.label} response: ${JSON.stringify(result).slice(0, 500)}`);
       return result;
     } catch (err) {
       const errName = err.name || "";
       const errMsg = err.message || "unknown error";
+      const isDisconnect = errName === "AbortError" || /aborted|timeout|timed out|terminated|socket|econnreset|fetch failed|network|gateway/i.test(errMsg);
 
-      if (errName === "AbortError") {
-        log.error(`${config.label} timed out after ${timeoutMs}ms`);
-        // Don't retry on timeout — the route may still be running; check status below
-        if (!config.statusField && stage === "execute") {
-          // Execute has no status field to verify against, but a timeout does
-          // NOT mean the route died — it keeps executing server-side. Don't
-          // mark failed or alert; the campaign run continues in the background.
-          log.info(`${config.label} timed out but execute has no status field — treating as still-running, not marking failed`);
-          return { success: false, skipped: true, message: `${config.label} still running in background (timed out waiting)` };
-        }
-      } else {
-        // Long-running stage routes (execute) can exceed fetch/undici's socket
-        // timeout (~300s) while still executing server-side. The stage was
-        // already marked "processing" before the POST — if it still is, the
-        // route never died: DON'T retry (a retry re-triggers the whole stage
-        // and double-runs the batch).
-        if (config.statusField) {
-          try {
-            const currentSettings = await getCampaignSettings(campaignId);
-            if (currentSettings?.[config.statusField] === "processing") {
-              log.info(`${config.label} fetch dropped (${errMsg}) but stage is still processing — not retrying`);
-              return { success: false, skipped: true, message: `${config.label} still processing in background` };
-            }
-          } catch (_) { /* status check is best-effort; fall through to retry */ }
-        } else if (stage === "execute") {
-          // Execute has no statusField, but it is the longest-running stage.
-          // A non-abort fetch error here almost always means the socket
-          // dropped while the route was STILL executing. Retrying re-fires
-          // the whole campaign (duplicate profile downloads). The route now
-          // also has its own re-entrancy guard — treat like timeout: don't
-          // retry, don't mark failed, don't alert. The run continues
-          // server-side.
-          log.info(`${config.label} fetch dropped (${errMsg}) — execute has no status field; treating as still-running, not retrying`);
-          return { success: false, skipped: true, message: `${config.label} still running in background (fetch dropped)` };
-        }
+      log.warn(`${config.label} fetch error: ${errMsg} (disconnect=${isDisconnect})`);
 
-        if (attempt < maxRetries) {
-          log.warn(`${config.label} fetch failed (attempt ${attempt + 1}/${maxRetries + 1}): ${errMsg} — retrying in 30s`);
-          await new Promise(r => setTimeout(r, 30_000));
-          continue;
-        }
-        log.error(`${config.label} failed: ${errMsg}`);
-      }
-
-      // Before marking as failed, check if the route is still processing
-      // (it may have continued running after the fetch failed)
+      // A dropped client/proxy connection does not mean the server-side stage stopped.
+      // Trust persisted stage status; never fail/notify/retry while processing or already completed.
       if (config.statusField) {
         try {
-          const currentSettings = await getCampaignSettings(campaignId);
-          const currentStatus = currentSettings?.[config.statusField];
-          if (currentStatus === "processing") {
-            log.info(`${config.label} still processing — not marking as failed, skipping stage advancement`);
-            return { success: false, skipped: true, message: `${config.label} still processing in background` };
+          if (await isCampaignPaused(campaignId)) {
+            log.info(`${config.label} campaign paused during fetch-error check - aborting`);
+            return { success: false, skipped: true, paused: true, message: `${config.label} paused by user` };
+          }
+          const current = await getCampaignSettings(campaignId);
+          const currentStatus = String(current?.settings?.[config.statusField] || current?.[config.statusField] || "").toLowerCase();
+          if (currentStatus === "completed") {
+            return { success: true, completed: true, message: `${config.label} completed (request disconnected but persisted status is completed)` };
+          }
+          if (currentStatus === "processing" || currentStatus === "monitoring" || currentStatus === "running") {
+            return { success: false, skipped: true, processing: true, message: `${config.label} still processing in background after request disconnect` };
+          }
+          if (currentStatus === "paused" || currentStatus === "waiting_quota" || currentStatus === "resting" || currentStatus === "retry") {
+            return { success: false, skipped: true, paused: true, message: `${config.label} status is ${currentStatus} after request disconnect` };
+          }
+          if (isDisconnect) {
+            return { success: false, skipped: true, processing: true, message: `${config.label} request disconnected (${errMsg || 'network'}) - treating as in-flight` };
           }
         } catch (checkErr) {
-          log.warn(`Failed to check stage status: ${checkErr.message}`);
+          log.warn(`Status check after fetch error failed: ${checkErr.message}`);
+          if (isDisconnect) {
+            return { success: false, skipped: true, processing: true, message: `${config.label} request disconnected; status check failed - treating as in-flight` };
+          }
         }
-
-        await updateCampaignSettings(campaignId, { [config.statusField]: "failed" });
+      } else if (stage === "execute") {
+        return { success: false, skipped: true, processing: true, message: `${config.label} request disconnected - treating as in-flight` };
       }
 
-      // Alert the admin for pipeline stage failures (debug sheet + Telegram).
+      if (!isDisconnect && attempt < maxRetries) {
+        log.warn(`${config.label} fetch failed (attempt ${attempt + 1}/${maxRetries + 1}): ${errMsg} — retrying in 30s`);
+        await new Promise(r => setTimeout(r, 30_000));
+        continue;
+      }
+
+      log.error(`${config.label} failed: ${errMsg}`);
+      try {
+        if (config.statusField) await updateCampaignSettings(campaignId, { [config.statusField]: "failed" });
+      } catch (e) {
+        log.warn(` Failed to set ${config.statusField} to failed: ${e.message}`);
+      }
       await notifyCampaignFailure({
         campaignId,
         stage,
@@ -263,7 +265,7 @@ async function triggerStage(campaignId, stage, settings, scope) {
         error: errMsg,
         details: { route: config.route, statusField: config.statusField, stack: err.stack },
       });
-      return null;
+      return { success: false, error: errMsg || `${config.label} request failed` };
     }
   }
   return null;
@@ -579,14 +581,33 @@ export async function POST(request) {
       const result = await triggerStage(campaignId, stage, settings, scope);
 
       if (!result || !result.success) {
-        // If the route is still processing in background (fetch failed but route alive),
-        // don't treat as failure — return success so caller knows to poll again later.
+        // If the route is still processing in background (fetch/proxy dropped but stage alive/completing),
+        // don't treat as failure — return success so caller knows to poll/wait and we can re-evaluate.
         if (result?.skipped) {
-          return NextResponse.json({
-            success: true,
-            message: result.message || `${config.label} still processing`,
-            waitingStage: stage,
-          });
+          // If background work actually completed, clear stale cutoff errors and advance via normal success path.
+          if (result.completed && config.statusField) {
+            try {
+              const freshAfter = await getCampaignSettings(campaignId);
+              const le = freshAfter?.settings?.lastError;
+              if (!le || le.stage === stage || /non_json_response|524|502|503|504|522|timeout|gateway|cloudflare|aborted/i.test(String(le.reason || ""))) {
+                await clearStageError(campaignId);
+              }
+            } catch {}
+            result = { ...(result || {}), success: true, completed: true };
+          } else {
+            return NextResponse.json({
+              success: true,
+              message: result.message || `${config.label} still processing`,
+              waitingStage: stage,
+              processing: !!result.processing,
+              paused: !!result.paused,
+              completed: result.completed,
+            });
+          }
+        }
+      }
+
+      if (!result || !result.success) {          });
         }
 
       // execute-campaign returns 202 {accepted,processing} and runs in background to
@@ -718,10 +739,21 @@ export async function POST(request) {
         });
       }
 
-      // Clear errors on successful stage completion
+      // Clear errors on successful/verified stage completion (including completed detected after a proxy cutoff).
       try {
-        if (config.statusField && result && result.success) {
-          await clearStageError(campaignId);
+        let stageCompletedNow = !!(result && result.success && result.completed !== false && !result.processing && !result.paused);
+        if (!stageCompletedNow && config.statusField) {
+          const freshNow = await getCampaignSettings(campaignId);
+          const s = String(freshNow?.settings?.[config.statusField] || "").toLowerCase();
+          stageCompletedNow = s === "completed";
+        }
+        if (stageCompletedNow) {
+          const freshErr = await getCampaignSettings(campaignId);
+          const le = freshErr?.settings?.lastError;
+          // Clear stale/transient artifacts (e.g. prior 524/non-JSON cutoff) once this stage is actually completed.
+          if (!le || le.stage === stage || /non_json_response|524|502|503|504|522|timeout|gateway|cloudflare|aborted/i.test(String(le.reason || ""))) {
+            await clearStageError(campaignId);
+          }
         }
       } catch {}
 

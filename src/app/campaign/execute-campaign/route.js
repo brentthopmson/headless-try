@@ -994,7 +994,7 @@ if (!String(settings.helperKeyword || "").trim()) {
               }
             }
           }
-          if (!email) continue;
+          if (!email) return;
 
           // Validation/send gating: ONLY when validation is active/staged for this campaign.
           // Never send or firestick-warmup rows that are not validated/safe in that case.
