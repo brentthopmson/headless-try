@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { downloadCsvText, uploadCsvText } from "../../api/googlesheets.js";
 import axios from "axios";
 import * as cheerio from "cheerio";
+import crypto from "crypto";
 import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
@@ -22,12 +23,42 @@ const GENERIC_EMAIL_DOMAINS = new Set([
 ]);
 
 function normHeader(h) { return String(h || "").trim().toUpperCase(); }
-function getCell(row, headers, name) {
-  const idx = headers.indexOf(normHeader(name));
+function normKey(h) { return String(h || "").toLowerCase().replace(/[^a-z0-9]/g, ""); }
+const HEADER_ALIASES = {
+  EMAIL: ["email", "e-mail", "mail", "emailaddress", "workemail", "businessemail"],
+  FIRSTNAME: ["firstname", "first_name", "first name", "givenname", "fname", "contactfirstname"],
+  LASTNAME: ["lastname", "last_name", "last name", "surname", "familyname", "lname", "contactlastname"],
+  FULLNAME: ["fullname", "full_name", "full name", "name", "contactname", "personname", "leadname"],
+  BUSINESSNAME: ["businessname", "company", "companyname", "organization", "org", "business", "employer"],
+  BUSINESSPHONE: ["businessphone", "companyphone", "workphone", "officephone"],
+  PHONE: ["phone", "mobile", "cell", "telephone", "phonenumber"],
+  URL: ["url", "website", "site", "domain", "web", "companyurl", "homepage"],
+  CONTEXT: ["context", "notes", "note", "description", "about", "bio"],
+  JOBTITLE: ["jobtitle", "title", "position", "role"],
+  CITY: ["city", "town"],
+  STATE: ["state", "region", "province"],
+  COUNTRY: ["country"],
+};
+function resolveHeaderIndex(headers, nameOrAliases) {
+  const want = Array.isArray(nameOrAliases) ? nameOrAliases : (HEADER_ALIASES[normHeader(nameOrAliases)] || [nameOrAliases]);
+  const keys = new Set(want.map(normKey));
+  for (let i = 0; i < headers.length; i++) {
+    if (keys.has(normKey(headers[i]))) return i;
+  }
+  // fallback exact normalized header
+  if (!Array.isArray(nameOrAliases)) {
+    const n = normHeader(nameOrAliases);
+    const idx = headers.indexOf(n);
+    if (idx >= 0) return idx;
+  }
+  return -1;
+}
+function getCell(row, headers, nameOrAliases) {
+  const idx = resolveHeaderIndex(headers, nameOrAliases);
   return idx >= 0 ? String(row[idx] || "").trim() : "";
 }
-function setCell(row, headers, name, value) {
-  const idx = headers.indexOf(normHeader(name));
+function setCell(row, headers, nameOrAliases, value) {
+  const idx = resolveHeaderIndex(headers, nameOrAliases);
   if (idx >= 0) row[idx] = sanitizeForCsv(String(value ?? ""));
 }
 function ensureColumn(headers, rows, name) {
@@ -39,6 +70,134 @@ function ensureColumn(headers, rows, name) {
     for (const r of rows) r[idx] = "";
   }
   return idx;
+}
+function cleanText(v) { return String(v ?? "").replace(/\s+/g, " ").trim(); }
+function isPlaceholder(v) {
+  const s = cleanText(v).toLowerCase();
+  return !s || ["n/a", "na", "none", "null", "undefined", "-", "--", "unknown", "not available", "n.a."].includes(s);
+}
+function normalizeEmailValue(v) {
+  const s = cleanText(v).toLowerCase().replace(/^mailto:/, "");
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)) return "";
+  return s;
+}
+function getEmailDomain(email) {
+  const e = normalizeEmailValue(email);
+  const at = e.lastIndexOf("@");
+  return at > 0 ? e.slice(at + 1).toLowerCase() : "";
+}
+const NAME_SUFFIXES = new Set(["jr", "sr", "ii", "iii", "iv", "v"]);
+function splitFullName(full) {
+  const s = cleanText(full).replace(/,+/g, " ");
+  if (!s) return { first: "", last: "" };
+  const parts = s.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) return { first: parts[0], last: "" };
+  if (parts.length === 2) return { first: parts[0], last: parts[1] };
+  let lastParts = [parts[parts.length - 1]];
+  let rest = parts.slice(0, -1);
+  const lastTok = lastParts[0].toLowerCase().replace(/\./g, "");
+  if (NAME_SUFFIXES.has(lastTok) && rest.length >= 2) {
+    lastParts = [rest[rest.length - 1], parts[parts.length - 1]];
+    rest = rest.slice(0, -1);
+  }
+  // keep multi-part surnames common patterns (de/van/von/da/del/la/st) as part of last when present
+  if (rest.length >= 2) {
+    const prev = rest[rest.length - 1].toLowerCase().replace(/\./g, "");
+    if (["de", "del", "da", "dos", "das", "van", "von", "der", "den", "la", "le", "st", "st."].includes(prev)) {
+      lastParts = [rest[rest.length - 1], ...lastParts];
+      rest = rest.slice(0, -1);
+    }
+  }
+  return { first: rest.join(" "), last: lastParts.join(" ") };
+}
+function namesLooselyEqual(a, b) {
+  const na = cleanText(a).toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
+  const nb = cleanText(b).toLowerCase().replace(/[^a-z0-9\s]/g, "").trim();
+  return !!na && na === nb;
+}
+function containsWordPhrase(hay, needle) {
+  const h = cleanText(hay).toLowerCase();
+  const n = cleanText(needle).toLowerCase();
+  if (!h || !n) return false;
+  return h === n || h.endsWith(" " + n) || h.startsWith(n + " ") || h.includes(" " + n + " ");
+}
+function preNormalizeRow(row, headers) {
+  const notes = [];
+  const get = (n) => getCell(row, headers, n);
+  const set = (n, v) => setCell(row, headers, n, v);
+
+  // basic cleanup
+  for (let i = 0; i < headers.length; i++) {
+    const v = String(row[i] ?? "");
+    if (!v) continue;
+    const cleaned = cleanText(v);
+    if (isPlaceholder(cleaned)) { row[i] = ""; continue; }
+    if (cleaned !== v) row[i] = sanitizeForCsv(cleaned);
+  }
+
+  // normalize email
+  const emailIdx = resolveHeaderIndex(headers, "EMAIL");
+  if (emailIdx >= 0) {
+    const raw = String(row[emailIdx] || "").trim();
+    const ne = normalizeEmailValue(raw);
+    if (ne && ne !== raw) { row[emailIdx] = sanitizeForCsv(ne); notes.push("normalized email"); }
+  }
+
+  let first = get("FIRSTNAME");
+  let last = get("LASTNAME");
+  const full = get("FULLNAME");
+
+  // derive from FULLNAME if missing
+  if ((!first || !last) && full) {
+    const sp = splitFullName(full);
+    if (!first && sp.first) { set("FIRSTNAME", sp.first); first = sp.first; notes.push("derived first from full name"); }
+    if (!last && sp.last) { set("LASTNAME", sp.last); last = sp.last; notes.push("derived last from full name"); }
+  }
+
+  // repair FIRSTNAME containing full name / duplicated LASTNAME (reported case)
+  if (first) {
+    const fParts = cleanText(first).split(/\s+/).filter(Boolean);
+    if (last) {
+      const lClean = cleanText(last);
+      const fClean = cleanText(first);
+      if (fParts.length >= 2 && (namesLooselyEqual(fClean, lClean) ? false : (fClean.toLowerCase().endsWith(" " + lClean.toLowerCase()) || namesLooselyEqual(fParts[fParts.length - 1], lClean)))) {
+        // if first ends with last (or last token equals last) and first has extra tokens -> split
+        if (fClean.toLowerCase() !== lClean.toLowerCase()) {
+          const newLast = lClean; // keep provided last (may be multi-part)
+          let newFirst = fClean;
+          if (fClean.toLowerCase().endsWith(" " + lClean.toLowerCase())) {
+            newFirst = fClean.slice(0, fClean.length - lClean.length).trim();
+          } else if (namesLooselyEqual(fParts[fParts.length - 1], lClean) && fParts.length >= 2) {
+            newFirst = fParts.slice(0, -1).join(" ");
+          }
+          if (newFirst && newFirst.toLowerCase() !== fClean.toLowerCase()) {
+            set("FIRSTNAME", newFirst); first = newFirst; notes.push("split first/last (removed duplicated last from first)");
+          }
+        }
+      } else if (fParts.length >= 2 && fClean.toLowerCase() === lClean.toLowerCase()) {
+        // identical first/last -> try split
+        const sp = splitFullName(fClean);
+        if (sp.first && sp.last) { set("FIRSTNAME", sp.first); set("LASTNAME", sp.last); first = sp.first; last = sp.last; notes.push("split identical first/last"); }
+      } else if (fParts.length >= 2 && !lClean) {
+        const sp = splitFullName(fClean); if (sp.last) { set("FIRSTNAME", sp.first); set("LASTNAME", sp.last); first = sp.first; last = sp.last; notes.push("split full name in first"); }
+      }
+    } else if (fParts.length >= 2) {
+      const sp = splitFullName(first);
+      if (sp.first && sp.last) { set("FIRSTNAME", sp.first); set("LASTNAME", sp.last); first = sp.first; last = sp.last; notes.push("split full name in first (no last)"); }
+    }
+  }
+
+  // if FIRSTNAME still empty but LASTNAME contains full name
+  first = get("FIRSTNAME"); last = get("LASTNAME");
+  if (!first && last && cleanText(last).split(/\s+/).length >= 2) {
+    const sp = splitFullName(last); if (sp.first && sp.last) { set("FIRSTNAME", sp.first); set("LASTNAME", sp.last); notes.push("split full name in last"); }
+  }
+
+  // trim company/context basic
+  const biz = get("BUSINESSNAME"); if (biz) { const b = cleanText(biz); if (b !== biz) set("BUSINESSNAME", b); }
+  const ctx = get("CONTEXT"); if (ctx) { const c = cleanText(ctx); if (c !== ctx) set("CONTEXT", c); }
+
+  return { changed: notes.length > 0, notes };
 }
 
 function rowKnownData(row, headers) {
@@ -55,50 +214,60 @@ function rowKnownData(row, headers) {
 }
 
 function hasSearchableData(row, headers) {
-  const keys = ["EMAIL","FIRSTNAME","LASTNAME","BUSINESSNAME","URL","SOCIALUSERNAME","SOCIALPLATFORM","CONTEXT","WEBSITE","COMPANY","DOMAIN"];
-  for (const k of keys) {
-    const idx = headers.indexOf(k);
-    if (idx >= 0 && String(row[idx] || "").trim()) return true;
-  }
-  // fallback: any non-empty non-system cell
-  const ignore = new Set(["SN","CAMPAIGNTYPE","ENGINE","PROVIDER","SMTP","PORT","USERNAME","PASSWORD","APPPASSWORD","BACKUPCODE","OAUTH2CLIENTID","OAUTH2CLIENTSECRET","OAUTH2REFRESHTOKEN","SHOULDVALIDATE","SHOULDENHANCE","SHOULDSEARCHINTERACT","SHOULDPAGEINTERACT","SHOULDINBOXINTERACT","SHOULDACTIVITIESINTERACT","SHOULDSENDMESSAGE","VALIDATION","PROVIDERMXRESULT","ENRICHMENTSTATUS","SENDDATE","SENDTIME","SENDSTAMP","SEARCHKEYS","SEARCHCOUNT","SEARCHSTATUS","SEARCHSTAMP","PROFILETOINTERACT","INTERACTCOUNT","INTERACTSTATUS","INTERACTSTAMP","PERSONALIZATIONSTATUS","EXECUTIONSTATUS"]);
-  for (let i = 0; i < headers.length; i++) {
-    if (ignore.has(headers[i])) continue;
-    if (String(row[i] || "").trim()) return true;
-  }
-  return false;
-}
-
-function buildHeuristicQueries(row, headers) {
-  const email = getCell(row, headers, "EMAIL");
+  const email = normalizeEmailValue(getCell(row, headers, "EMAIL"));
   const first = getCell(row, headers, "FIRSTNAME");
   const last = getCell(row, headers, "LASTNAME");
   const company = getCell(row, headers, "BUSINESSNAME") || getCell(row, headers, "COMPANY");
   const url = getCell(row, headers, "URL") || getCell(row, headers, "WEBSITE");
   const social = getCell(row, headers, "SOCIALUSERNAME");
+  if (email || first || last || company || url || social) return true;
+  const ignore = new Set(["SN","CAMPAIGNTYPE","ENGINE","PROVIDER","SMTP","PORT","USERNAME","PASSWORD","APPPASSWORD","BACKUPCODE","OAUTH2CLIENTID","OAUTH2CLIENTSECRET","OAUTH2REFRESHTOKEN","SHOULDVALIDATE","SHOULDENHANCE","SHOULDSEARCHINTERACT","SHOULDPAGEINTERACT","SHOULDINBOXINTERACT","SHOULDACTIVITIESINTERACT","SHOULDSENDMESSAGE","VALIDATION","PROVIDERMXRESULT","ENRICHMENTSTATUS","SENDDATE","SENDTIME","SENDSTAMP","SEARCHKEYS","SEARCHCOUNT","SEARCHSTATUS","SEARCHSTAMP","PROFILETOINTERACT","INTERACTCOUNT","INTERACTSTATUS","INTERACTSTAMP","PERSONALIZATIONSTATUS","EXECUTIONSTATUS","ENHANCEDSUBJECT","ENHANCEDBODY","ENHANCEDSOCIALMESSAGE","EMAILSUBJECT","EMAILBODY","SOCIALMESSAGE","REPLYTO"]);
+  for (let i = 0; i < headers.length; i++) {
+    const h = normHeader(headers[i]);
+    if (ignore.has(h) || h.startsWith("__")) continue;
+    if (cleanText(row[i])) return true;
+  }
+  return false;
+}
+
+function getIdentity(row, headers) {
+  const email = normalizeEmailValue(getCell(row, headers, "EMAIL"));
+  const first = cleanText(getCell(row, headers, "FIRSTNAME"));
+  const last = cleanText(getCell(row, headers, "LASTNAME"));
+  const full = cleanText(getCell(row, headers, "FULLNAME")) || [first, last].filter(Boolean).join(" ").trim();
+  const company = cleanText(getCell(row, headers, "BUSINESSNAME") || getCell(row, headers, "COMPANY"));
+  const url = cleanText(getCell(row, headers, "URL") || getCell(row, headers, "WEBSITE"));
+  const domain = getEmailDomain(email);
+  return { email, first, last, full, company, url, domain };
+}
+
+function buildHeuristicQueries(row, headers) {
+  const { email, first, last, full, company, url, domain } = getIdentity(row, headers);
+  const social = getCell(row, headers, "SOCIALUSERNAME");
   const platform = getCell(row, headers, "SOCIALPLATFORM");
-  const fullName = [first, last].filter(Boolean).join(" ").trim();
+  const fullName = full || [first, last].filter(Boolean).join(" ").trim();
   const queries = [];
-  if (email && email.includes("@")) {
-    const [user, domain] = email.split("@");
-    const d = (domain || "").toLowerCase();
-    if (d && !GENERIC_EMAIL_DOMAINS.has(d)) {
-      queries.push(`${d} company about contact`);
-      queries.push(`${d} team leadership services`);
-    } else {
-      if (fullName) queries.push(`"${fullName}" "${email}" profile contact`);
-      else if (user) queries.push(`"${user}" ${d} profile`);
-    }
+  if (domain && !GENERIC_EMAIL_DOMAINS.has(domain)) {
+    queries.push(`site:${domain} about OR contact OR team`);
+    queries.push(`"${domain}" company ${company || fullName || ""}`.trim());
+    if (fullName) queries.push(`"${fullName}" "${domain}"`);
   }
-  if (fullName && company) queries.push(`"${fullName}" "${company}" profile email contact`);
-  else if (fullName) queries.push(`"${fullName}" profile linkedin contact`);
+  if (email) {
+    queries.push(`"${email}"`);
+    if (GENERIC_EMAIL_DOMAINS.has(domain) && fullName) queries.push(`"${fullName}" ${domain.split(".")[0] || ""} profile`.trim());
+  }
+  if (fullName && company) queries.push(`"${fullName}" "${company}" contact OR profile`);
+  else if (fullName) queries.push(`"${fullName}" ${company || ""} profile OR linkedin`.trim());
   if (company) queries.push(`"${company}" official website contact email`);
-  if (social) queries.push(`${platform || ""} ${social} profile contact`.trim());
+  if (social) queries.push(`${platform || ""} "${social}" profile`.trim());
   if (url) {
-    try { const u = new URL(url.startsWith("http") ? url : `https://${url}`); queries.push(`${u.hostname} about contact team`); } catch { queries.push(`${url} contact about`); }
+    try { const u = new URL(url.startsWith("http") ? url : `https://${url}`); queries.push(`site:${u.hostname} about OR contact OR team`); } catch { queries.push(`"${url}" contact about`); }
   }
-  // dedupe
-  return Array.from(new Set(queries.map(q => q.replace(/\s+/g, " ").trim()).filter(Boolean))).slice(0, 6);
+  if (domain && GENERIC_EMAIL_DOMAINS.has(domain) && !fullName) {
+    const user = email.split("@")[0] || "";
+    if (user) queries.push(`"${user}" ${domain} profile`);
+  }
+  return Array.from(new Set(queries.map(q => cleanText(q)).filter(Boolean))).slice(0, 8);
 }
 
 async function scrapeUrl(url) {
@@ -114,13 +283,13 @@ async function scrapeUrl(url) {
       validateStatus: s => s >= 200 && s < 400,
     });
     const $ = cheerio.load(resp.data || "");
-    $("script, style, noscript, svg").remove();
+    $("script, style, noscript, svg, nav, footer").remove();
     const title = $("title").first().text().trim() || $("meta[property='og:title']").attr("content") || "";
     const description = $("meta[name='description']").attr("content") || $("meta[property='og:description']").attr("content") || "";
-    const bodyText = $("body").text().replace(/\s+/g, " ").trim().slice(0, 4000);
+    const bodyText = $("body").text().replace(/\s+/g, " ").trim().slice(0, 4500);
     const links = [];
     $("a[href]").each((_, el) => {
-      if (links.length >= 20) return false;
+      if (links.length >= 25) return false;
       const href = $(el).attr("href");
       if (!href) return;
       try { const abs = new URL(href, url).toString(); if (abs.startsWith("http")) links.push(abs); } catch {}
@@ -139,14 +308,14 @@ async function deepScrape(url) {
   const interesting = (main.links || []).filter(l => {
     try {
       const u = new URL(l); if (baseHost && u.hostname !== baseHost) return false;
-      return /about|contact|team|company|services|profile|people|leadership|impressum/i.test(u.pathname + u.search);
+      return /about|contact|team|company|services|profile|people|leadership|impressum|staff|who-we-are|our-team/i.test(u.pathname + u.search);
     } catch { return false; }
-  }).slice(0, 3);
+  }).slice(0, 4);
   const extras = await Promise.allSettled(interesting.map(l => scrapeUrl(l)));
   for (const r of extras) {
     if (r.status === "fulfilled" && r.value) {
       const v = r.value;
-      internalTexts.push([v.title, v.description, v.bodyText].filter(Boolean).join(" ").slice(0, 1500));
+      internalTexts.push([v.title, v.description, v.bodyText].filter(Boolean).join(" ").slice(0, 1800));
     }
   }
   return { ...main, internalTexts };
@@ -191,15 +360,21 @@ async function duckDuckGoSearch(query) {
     }); return results;
   } catch { return []; }
 }
+let _searxngWarned = false;
 async function searxngSearch(query) {
-  const base = process.env.SEARXNG_URL; if (!base) return [];
+  const base = (process.env.SEARXNG_URL || process.env.SEARX_URL || process.env.CXNG_URL || "").trim();
+  if (!base) return [];
   try {
-    const resp = await axios.get(`${base.replace(/\/$/, "")}/search`, { params: { q: query, format: "json" }, timeout: 10000 });
-    return (resp.data?.results || []).slice(0, 5).map(r => ({ url: r.url, title: r.title, snippet: r.content }));
-  } catch { return []; }
+    const resp = await axios.get(`${base.replace(/\/$/, "")}/search`, { params: { q: query, format: "json" }, timeout: 12000 });
+    const results = (resp.data?.results || []).slice(0, 8).map(r => ({ url: r.url, title: r.title, snippet: r.content || r.snippet }));
+    return results.filter(r => r.url);
+  } catch (e) {
+    if (!_searxngWarned) { _searxngWarned = true; try { logger.warn(`[enrich] SearXNG search failed (${base}): ${e.message}`); } catch {} }
+    return [];
+  }
 }
 async function multiSearch(query) {
-  const settled = await Promise.allSettled([googleSearch(query), bingSearch(query), duckDuckGoSearch(query), searxngSearch(query)]);
+  const settled = await Promise.allSettled([searxngSearch(query), googleSearch(query), bingSearch(query), duckDuckGoSearch(query)]);
   const out = []; const seen = new Set();
   for (const r of settled) {
     if (r.status !== "fulfilled") continue;
@@ -207,7 +382,7 @@ async function multiSearch(query) {
       const u = String(item?.url || ""); if (!u || seen.has(u)) continue; seen.add(u); out.push(item);
     }
   }
-  return out.slice(0, 10);
+  return out.slice(0, 12);
 }
 
 function parseJsonLoose(ai, text) {
@@ -221,9 +396,73 @@ function parseJsonLoose(ai, text) {
 }
 
 function cleanEmail(v) {
-  const s = String(v || "").trim().toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)) return "";
-  return s;
+  return normalizeEmailValue(v);
+}
+
+async function gravatarLookup(email) {
+  const e = normalizeEmailValue(email);
+  if (!e) return null;
+  const hash = crypto.createHash("md5").update(e).digest("hex");
+  try {
+    const resp = await axios.get(`https://en.gravatar.com/${hash}.json`, { timeout: 8000, validateStatus: s => s === 200 || s === 404 });
+    if (resp.status !== 200 || !resp.data) return null;
+    const entry = (resp.data.entry && resp.data.entry[0]) || null;
+    if (!entry) return null;
+    const accounts = Array.isArray(entry.accounts) ? entry.accounts.map(a => ({ domain: a.domain, username: a.username, url: a.url, display: a.display })).filter(a => a.url || a.username) : [];
+    const urls = Array.isArray(entry.urls) ? entry.urls.map(u => ({ title: u.title, value: u.value })).filter(u => u.value) : [];
+    const nameObj = entry.name || {};
+    const displayName = cleanText(entry.displayName || entry.preferredUsername || [nameObj.givenName, nameObj.familyName].filter(Boolean).join(" "));
+    const location = cleanText(entry.currentLocation || "");
+    const about = cleanText(entry.aboutMe || "");
+    const profileUrl = entry.profileUrl || `https://gravatar.com/${hash}`;
+    return { email: e, hash, displayName, givenName: cleanText(nameObj.givenName || ""), familyName: cleanText(nameObj.familyName || ""), location, about, profileUrl, accounts, urls, thumbnailUrl: entry.thumbnailUrl || "" };
+  } catch {
+    return null;
+  }
+}
+
+async function gatherEmailSignals(row, headers) {
+  const id = getIdentity(row, headers);
+  const evidence = [];
+  const fills = {};
+  const notes = [];
+  if (!id.email) return { evidence, fills, notes };
+
+  // Gravatar (free, verifiable profile signal)
+  const g = await gravatarLookup(id.email);
+  if (g) {
+    const gTextParts = [g.displayName && `Name: ${g.displayName}`, g.location && `Location: ${g.location}`, g.about && `About: ${g.about}`,
+      (g.accounts || []).slice(0, 5).map(a => `${a.domain || "account"}: ${a.url || a.username}`).join("; "),
+      (g.urls || []).slice(0, 5).map(u => u.value).join("; ")
+    ].filter(Boolean);
+    evidence.push({ url: g.profileUrl, title: `Gravatar: ${g.displayName || id.email}`, description: g.about || "", bodyText: gTextParts.join("\n").slice(0, 4000), internalTexts: [], snippet: "Gravatar public profile" });
+    const sp = splitFullName(g.displayName || "");
+    if (!id.first && sp.first) fills.FIRSTNAME = sp.first;
+    if (!id.last && sp.last) fills.LASTNAME = sp.last;
+    if (!getCell(row, headers, "CONTEXT")) {
+      const bits = [g.displayName, g.about, g.location].filter(Boolean).join(" — ");
+      if (bits) fills.CONTEXT = cleanText(bits).slice(0, 300);
+    }
+    // if gravatar exposes accounts, keep as evidence (not blindly writing platform fields)
+    notes.push("gravatar");
+  }
+
+  // Domain/company intelligence for non-generic emails
+  if (id.domain && !GENERIC_EMAIL_DOMAINS.has(id.domain)) {
+    const baseUrl = `https://${id.domain}`;
+    const scraped = await deepScrape(baseUrl);
+    if (scraped) {
+      evidence.push({ ...scraped, snippet: "Company domain site" });
+      // try to infer business name from title if missing
+      if (!id.company) {
+        const t = cleanText(scraped.title || "").split(/[|\-–—:]/)[0].trim();
+        if (t && t.length >= 2 && t.length <= 80) fills.BUSINESSNAME = t;
+      }
+    }
+    notes.push("domain");
+  }
+
+  return { evidence, fills, notes };
 }
 
 async function aiSuggestQueries(ai, row, headers, enrichmentContext, missingTargets = []) {
@@ -233,27 +472,27 @@ Known row data (JSON): ${JSON.stringify(known).slice(0, 4000)}
 Enrichment context/instructions: ${enrichmentContext || "(none)"}
 Still missing or low-confidence targets: ${missingTargets.join(", ") || "(general enrichment)"}
 
-Return ONLY a JSON array of 3 to 6 short, specific search query strings.
-Prioritize finding verifiable identity/company/contact info (including email if missing and verifiable). Do not invent facts.`;
+Return ONLY a JSON array of 3 to 8 short, specific search query strings.
+Prioritize: verifiable identity (name/company), public profiles, official company/about/contact/team pages, and verifiable email/contact details. Use quoted names/emails/domains where useful. Do not invent facts.`;
   try {
-    const text = await ai.generate(prompt, { maxTokens: 600, jsonMode: true });
+    const text = await ai.generate(prompt, { maxTokens: 700, jsonMode: true });
     const parsed = parseJsonLoose(ai, text);
     if (Array.isArray(parsed)) {
-      const qs = parsed.map(x => String(x || "").trim()).filter(Boolean).slice(0, 6);
+      const qs = parsed.map(x => String(x || "").trim()).filter(Boolean).slice(0, 8);
       if (qs.length) return qs;
     }
   } catch {}
-  return buildHeuristicQueries(row, headers).slice(0, 6);
+  return buildHeuristicQueries(row, headers).slice(0, 8);
 }
 
 async function aiExtractRow(ai, row, headers, evidence, enrichmentContext, targetColumns) {
   const known = rowKnownData(row, headers);
-  const ev = (evidence || []).slice(0, 8).map((e, i) => ({
+  const ev = (evidence || []).slice(0, 10).map((e, i) => ({
     i: i + 1,
     url: e.url, title: e.title, snippet: e.snippet,
     description: e.description,
     text: (e.bodyText || "").slice(0, 1800),
-    internal: (e.internalTexts || []).join(" ").slice(0, 1200)
+    internal: (e.internalTexts || []).join(" ").slice(0, 1400)
   }));
   const prompt = `You are a precise data enrichment agent. Extract ONLY verifiable information from evidence for this row.
 
@@ -261,13 +500,13 @@ Target columns (fill only if supported): ${targetColumns.join(", ")}
 Known row data: ${JSON.stringify(known).slice(0, 3500)}
 Enrichment context/instructions: ${enrichmentContext || "General enrichment: extract all available verifiable business/personal information."}
 
-Evidence (JSON): ${JSON.stringify(ev).slice(0, 12000)}
+Evidence (JSON): ${JSON.stringify(ev).slice(0, 14000)}
 
 Rules:
 - Only fill fields directly supported by known data or evidence. If not verifiable, leave empty.
-- If FIRSTNAME contains "First Last", split into FIRSTNAME and LASTNAME when appropriate.
-- If EMAIL is missing/empty in known data and a verifiable email is found in evidence, include EMAIL.
-- CONTEXT should be a concise 1-3 sentence factual summary when supported.
+- Correct/split identity when evident: if FIRSTNAME contains a full name and LASTNAME duplicates/should be split, return corrected FIRSTNAME and LASTNAME.
+- If EMAIL is missing/empty and a verifiable email is found in evidence, include EMAIL.
+- CONTEXT should be a concise 1-3 sentence factual summary grounded in evidence (who they are/company/role/location/contact hints) when supported.
 - Follow enrichment context priorities when provided.
 - Return ONLY a JSON object with keys from target columns plus "confidence" ("high"|"medium"|"low"|"none") and "missing" (array of target columns still unknown/unverified).
 - When confidence is "none", return empty values for unverified fields.`;
@@ -285,10 +524,10 @@ async function aiReviewRow(ai, extracted, row, headers, evidence, enrichmentCont
 Target columns: ${targetColumns.join(", ")}
 Known row data: ${JSON.stringify(known).slice(0, 2500)}
 Enrichment context: ${enrichmentContext || "(none)"}
-Evidence snippets: ${JSON.stringify((evidence||[]).slice(0,5).map(e=>({url:e.url,title:e.title,text:(e.bodyText||"").slice(0,500)}))).slice(0,5000)}
+Evidence snippets: ${JSON.stringify((evidence||[]).slice(0,6).map(e=>({url:e.url,title:e.title,text:(e.bodyText||"").slice(0,500)}))).slice(0,6000)}
 Extraction: ${JSON.stringify(extracted).slice(0,4000)}
 
-Return ONLY a JSON object with the same target column keys plus "confidence" and "missing". Remove any value not supported by evidence/known data. Keep empty string for unknown.`;
+Return ONLY a JSON object with the same target column keys plus "confidence" and "missing". Remove any value not supported by evidence/known data. Keep empty string for unknown. Correct obvious name-split errors if evidence supports.`;
   try {
     const text = await ai.generate(prompt, { maxTokens: 1800, jsonMode: true });
     const parsed = parseJsonLoose(ai, text);
@@ -301,18 +540,22 @@ function normalizeExtracted(extracted, targetColumns, headers) {
   const out = { confidence: String(extracted?.confidence || "none").toLowerCase(), missing: Array.isArray(extracted?.missing) ? extracted.missing : [] };
   for (const col of targetColumns) {
     let v = extracted?.[col] ?? extracted?.[col.toLowerCase()] ?? extracted?.[col.toUpperCase()] ?? "";
-    if (col === "EMAIL") v = cleanEmail(v) || (String(v || "").trim() ? cleanEmail(String(v)) : "");
-    out[col] = typeof v === "string" ? v.trim() : (v == null ? "" : String(v).trim());
+    if (col === "EMAIL") v = cleanEmail(v);
+    else if (typeof v === "string") v = cleanText(v);
+    out[col] = typeof v === "string" ? v : (v == null ? "" : String(v).trim());
   }
-  if (!targetColumns.includes("EMAIL") && headers.includes("EMAIL")) {
-    const ev = cleanEmail(extracted?.EMAIL || extracted?.email || "");
+  if (headers.includes("EMAIL")) {
+    const ev = cleanEmail(extracted?.EMAIL || extracted?.email || out.EMAIL || "");
     if (ev) out.EMAIL = ev;
   }
   if (!["high","medium","low","none"].includes(out.confidence)) out.confidence = "low";
+  // if model returns empty names under none, keep as-is (don't force blanks except truly empty)
   if (out.confidence === "none") {
     for (const col of targetColumns) {
-      if (col === "FIRSTNAME" || col === "LASTNAME") continue;
-      out[col] = "";
+      if (col === "FIRSTNAME" || col === "LASTNAME" || col === "BUSINESSNAME") continue;
+      // keep CONTEXT only if meaningful
+      if (col === "CONTEXT" && String(out[col] || "").length < 20) out[col] = "";
+      else if (col !== "CONTEXT") out[col] = out[col] || "";
     }
   }
   return out;
@@ -321,10 +564,40 @@ function normalizeExtracted(extracted, targetColumns, headers) {
 function getTargetColumns(headers) {
   const preferred = ["FIRSTNAME","LASTNAME","JOBTITLE","BUSINESSNAME","BUSINESSCITY","BUSINESSSTATE","BUSINESSCOUNTRY","BUSINESSZIPCODE","BUSINESSPHONE","BUSINESSEMAIL","EMAIL","CONTEXT","SOCIALUSERNAME","SOCIALPLATFORM","URL","WEBSITE","ADDRESS","CITY","STATE","COUNTRY","ZIPCODE","PHONE"];
   const targets = preferred.filter(c => headers.includes(c));
-  // ensure some core targets exist if columns present; if not, still allow EMAIL/CONTEXT if present
   if (!targets.includes("EMAIL") && headers.includes("EMAIL")) targets.unshift("EMAIL");
   if (!targets.includes("CONTEXT") && headers.includes("CONTEXT")) targets.push("CONTEXT");
+  // also allow alias-resolved logical targets to be written if present via aliases (handled in apply)
   return Array.from(new Set(targets));
+}
+
+function isMisfilledName(first, last) {
+  const f = cleanText(first), l = cleanText(last);
+  if (!f || !l) return false;
+  const fParts = f.split(/\s+/);
+  if (fParts.length < 2) return false;
+  const fl = f.toLowerCase(), ll = l.toLowerCase();
+  return fl.endsWith(" " + ll) || namesLooselyEqual(fParts[fParts.length - 1], l) || fl === ll;
+}
+
+function applyField(row, headers, col, value, { allowCorrect = false } = {}) {
+  const v = cleanText(value);
+  if (!v) return false;
+  const existing = getCell(row, headers, col);
+  if (!existing) { setCell(row, headers, col, v); return true; }
+  if (col === "CONTEXT") {
+    if (v.length > existing.length + 15 && v.toLowerCase() !== existing.toLowerCase()) { setCell(row, headers, col, v); return true; }
+    return false;
+  }
+  if (!allowCorrect) return false;
+  if (col === "FIRSTNAME" || col === "LASTNAME") {
+    if (isMisfilledName(getCell(row, headers, "FIRSTNAME"), getCell(row, headers, "LASTNAME"))) {
+      // apply corrected split
+      if (v.toLowerCase() !== existing.toLowerCase()) { setCell(row, headers, col, v); return true; }
+    }
+    return false;
+  }
+  if ((col === "BUSINESSNAME" || col === "EMAIL") && isPlaceholder(existing)) { setCell(row, headers, col, v); return true; }
+  return false;
 }
 
 function isRowEnrichedFinal(row, headers) {
@@ -333,18 +606,38 @@ function isRowEnrichedFinal(row, headers) {
 }
 
 async function enrichOneRow({ row, headers, ai, enrichmentContext, scrapeConcurrency }) {
+  // 1) Deterministic normalization/repair (schema-agnostic, safe corrections) - persisted in-row
+  const norm = preNormalizeRow(row, headers);
+  let updated = norm.changed;
+  let anyValue = norm.changed; // normalization is a meaningful improvement when it changes data
+
   const targetColumns = getTargetColumns(headers);
   if (!hasSearchableData(row, headers)) {
-    return { status: "no_data", reason: "no_searchable_data", updated: false };
+    return { status: "no_data", reason: "no_searchable_data", updated, confidence: "none" };
   }
 
-  const knownUrl = getCell(row, headers, "URL") || getCell(row, headers, "WEBSITE");
+  // 2) Free email-based signals (Gravatar + domain/company site) as verifiable evidence/fills
   let evidence = [];
+  try {
+    const sig = await gatherEmailSignals(row, headers);
+    evidence = evidence.concat(sig.evidence || []);
+    for (const [k, v] of Object.entries(sig.fills || {})) {
+      if (!v) continue;
+      const existing = getCell(row, headers, k);
+      if (!existing) { setCell(row, headers, k, v); updated = true; anyValue = true; }
+      else if (k === "CONTEXT" && String(v).length > existing.length + 15) { setCell(row, headers, k, v); updated = true; anyValue = true; }
+    }
+  } catch {}
+
+  // 3) Known URL / domain evidence
+  const knownUrl = getCell(row, headers, "URL") || getCell(row, headers, "WEBSITE");
   if (knownUrl) {
     try {
       const u = knownUrl.startsWith("http") ? knownUrl : `https://${knownUrl}`;
-      const scraped = await deepScrape(u);
-      if (scraped) evidence.push(scraped);
+      if (!evidence.some(e => e && e.url && e.url.includes(u.replace(/^https?:\/\//, "").split("/")[0]))) {
+        const scraped = await deepScrape(u);
+        if (scraped) evidence.push(scraped);
+      }
     } catch {}
   }
 
@@ -353,10 +646,10 @@ async function enrichOneRow({ row, headers, ai, enrichmentContext, scrapeConcurr
   let reviewed = null;
 
   for (let round = 0; round < 3; round++) { // initial + up to 2 refinements
-    const qset = (queries || []).slice(0, 6);
+    const qset = (queries || []).slice(0, 8);
     const searchSettled = await Promise.allSettled(qset.map(q => multiSearch(q)));
     const found = [];
-    const seen = new Set(evidence.map(e => e.url));
+    const seen = new Set(evidence.map(e => e && e.url).filter(Boolean));
     for (const s of searchSettled) {
       if (s.status !== "fulfilled") continue;
       for (const item of (s.value || [])) {
@@ -372,46 +665,50 @@ async function enrichOneRow({ row, headers, ai, enrichmentContext, scrapeConcurr
         evidence.push({ ...r.value, snippet: toScrape[i]?.snippet || "", title: r.value.title || toScrape[i]?.title || "" });
       }
     }
-    // cap evidence
-    evidence = evidence.slice(0, 10);
+    evidence = evidence.filter(Boolean).slice(0, 12);
 
     extracted = normalizeExtracted(await aiExtractRow(ai, row, headers, evidence, enrichmentContext, targetColumns), targetColumns, headers);
     reviewed = normalizeExtracted(await aiReviewRow(ai, extracted, row, headers, evidence, enrichmentContext, targetColumns), targetColumns, headers);
 
     const conf = reviewed.confidence || "none";
     const missing = Array.isArray(reviewed.missing) ? reviewed.missing.filter(Boolean) : [];
-    const needsEmail = headers.includes("EMAIL") && !getCell(row, headers, "EMAIL") && !cleanEmail(reviewed.EMAIL || "");
+    const needsEmail = resolveHeaderIndex(headers, "EMAIL") >= 0 && !getCell(row, headers, "EMAIL") && !cleanEmail(reviewed.EMAIL || "");
     const low = conf === "low" || conf === "none";
     if (round >= 2 || (!low && !needsEmail)) break;
-    // refine: ask AI for alternative queries
     const missingTargets = Array.from(new Set([...missing, ...(needsEmail ? ["EMAIL"] : [])]));
     queries = await aiSuggestQueries(ai, row, headers, enrichmentContext, missingTargets);
     if (!queries || queries.length === 0) break;
   }
 
   const finalRes = reviewed || extracted || { confidence: "none" };
-  let updated = false;
-  let anyValue = false;
   for (const col of targetColumns) {
     const val = String(finalRes[col] || "").trim();
     if (!val) continue;
     if (col === "EMAIL") {
-      const existing = getCell(row, headers, "EMAIL");
-      if (!existing && cleanEmail(val)) { setCell(row, headers, "EMAIL", cleanEmail(val)); updated = true; anyValue = true; }
+      const ev = cleanEmail(val);
+      if (ev && applyField(row, headers, "EMAIL", ev, { allowCorrect: false })) { updated = true; anyValue = true; }
       continue;
     }
-    const existing = getCell(row, headers, col);
-    if (!existing) { setCell(row, headers, col, val); updated = true; anyValue = true; }
-    else if (col === "CONTEXT" && val.length > existing.length + 20) { setCell(row, headers, col, val); updated = true; anyValue = true; }
+    // allow safe correction for misfilled names; fill empties for others; improve CONTEXT
+    const allowCorrect = (col === "FIRSTNAME" || col === "LASTNAME");
+    if (applyField(row, headers, col, val, { allowCorrect })) { updated = true; anyValue = true; }
   }
-  // allow writing discovered email even if not in targetColumns list but header exists
-  if (headers.includes("EMAIL") && !getCell(row, headers, "EMAIL")) {
+  // discovered email fallback
+  if (resolveHeaderIndex(headers, "EMAIL") >= 0 && !getCell(row, headers, "EMAIL")) {
     const evEmail = cleanEmail(finalRes.EMAIL || finalRes.email || "");
     if (evEmail) { setCell(row, headers, "EMAIL", evEmail); updated = true; anyValue = true; }
   }
 
-  const status = (finalRes.confidence === "none" && !anyValue) ? "no_data" : "enriched";
-  return { status, updated, confidence: finalRes.confidence || "none" };
+  // re-run name normalization if AI filled/changed names into a messy state
+  const post = preNormalizeRow(row, headers);
+  if (post.changed) { updated = true; anyValue = true; }
+
+  // mark enriched if we made a verifiable/useful improvement (incl. normalization) or have meaningful context/evidence-backed result
+  const ctx = getCell(row, headers, "CONTEXT");
+  const hasMeaningfulContext = cleanText(ctx).length >= 25;
+  const confident = (finalRes.confidence && finalRes.confidence !== "none");
+  const status = (updated || anyValue || (confident && hasMeaningfulContext)) ? "enriched" : "no_data";
+  return { status, updated, confidence: finalRes.confidence || (updated ? "low" : "none") };
 }
 
 async function runEnrichmentRange({ rows, headers, start, end, campaignId, enrichmentContext, log, fileId, onCheckpoint, concurrency = 1 }) {
@@ -510,6 +807,8 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
   if (!fileId) return NextResponse.json({ success: false, error: "Invalid fileUrl or Drive file ID" }, { status: 400 });
 
   log.info(` Downloading CSV file: ${fileId}`);
+  const sx = (process.env.SEARXNG_URL || process.env.SEARX_URL || process.env.CXNG_URL || "").trim();
+  log.info(sx ? `[enrich] SearXNG configured: ${sx}` : `[enrich] SearXNG not configured (SEARXNG_URL missing) - using web scraping fallbacks + email/domain signals`);
   const dl = await downloadCsvText(fileId);
   if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
   let csvContent = dl.content;
@@ -577,6 +876,8 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
 
   const fileId = extractFileId(fileUrl);
   if (!fileId) return NextResponse.json({ success: false, error: "Invalid fileUrl or Drive file ID" }, { status: 400 });
+  const sx = (process.env.SEARXNG_URL || process.env.SEARX_URL || process.env.CXNG_URL || "").trim();
+  log.info(sx ? `[enrich][worker] SearXNG configured: ${sx}` : `[enrich][worker] SearXNG not configured - using web scraping fallbacks + email/domain signals`);
   const dl = await downloadCsvText(fileId);
   if (!dl.success) throw new Error(`Failed to download CSV: ${dl.error}`);
   let csvContent = dl.content; if (csvContent.charCodeAt(0) === 0xFEFF) csvContent = csvContent.slice(1);

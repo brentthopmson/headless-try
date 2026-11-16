@@ -765,6 +765,8 @@ POST /campaign/pipeline-orchestrator  { campaignId }
     │  2. USER tier:   checkConcurrentLimit(userId) → 429 concurrentLimit
     │                  (per-start quota removed — campaignStart gate gone)
     │  3. Mail merge pre-step (once, non-fatal on failure)
+    │     - When personalize is staged, merge must NOT pre-fill enhancedSubject/enhancedBody
+    │       as AI-personalization completion or block/skip the personalize stage
     │  4. resolveCurrentStage(settings)
     │     ├── all staged stages complete → { completed: true }
     │     ├── status=processing          → { waitingStage } (wait)
@@ -792,6 +794,18 @@ returns `{ dispatched: true, servers }` and workers report back.
 (`validateUsage` / `enrichUsage` / `personalizeUsage`) is therefore
 incremented only when the coordinator itself completes the stage;
 multi-server runs are not metered (fail-open direction, accepted).
+
+### Pipeline behavior (current)
+
+- **State visibility:** active/waiting pipeline work sets/keeps campaign **row + settings `status = running`** consistently (so UI can show Pause) and preserves paused/completed/held states correctly on transitions.
+- **Pause semantics:** `validate`, `enrich`, and `personalize` are **checkpoint-pausable** — they pause at safe checkpoints (between waves/batches/flushes), remain **resumable** from persisted progress, and must **not** false-complete or auto-advance on pause. `execute` and `interact` pause/rest for schedule/quota windows (interaction/`interactionBatchLimit` behavior unchanged).
+- **Batch limits = concurrency over full dataset:** `validateBatchLimit` / `enrichBatchLimit` / `personalizeBatchLimit` / `shootingBatchLimit` control **parallelism/wave size across the entire dataset** (never truncation/early stop). Staged `validate/enrich/personalize` run all rows/rules to completion.
+- **Incremental per-batch persistence:** each completed wave/batch sets per-row stage status/output for that batch then **flushes (merge + upload, with retry/fallback)** before the next batch (validate/enrich/personalize and batched row work). Progress is durable/visible, resumable, and idempotent (no waiting for full-stage completion).
+- **Stage completion & handoff:** stages finalize only when the scoped range/dataset is complete, persist terminal status, and notify the orchestrator to advance; proxy/non-JSON cutoffs are treated as in-flight/wait-reconcile (not permanent failure/false advance).
+- **Validation:** processes all rows to terminal outcomes (explicit not-found/invalid → `not_exists`; inconclusive/CAPTCHA/timeout after bounded attempts → terminal `valid_mx` with platform-checked marker, e.g. `|pv=inconclusive`). Platform checks use reused browser/tab per platform worker with sequential same-tab retries; batch limit = concurrent platform workers/tabs; MX checks run concurrently.
+- **Enrichment (smart, schema-agnostic):** deterministic pre/post normalization/repair (alias-aware columns, split/correct misfilled names such as full-name in `FIRSTNAME` with duplicated `LASTNAME`, safe cleanup of placeholders/email/URL/company; idempotent) + multi-source, evidence-gated enrichment (AI with row context/scraped evidence/`enrichmentContext`, multi-URL search+scrape, refinement) and **free email-based signals**: Gravatar lookup, non-generic email domain/company site (about/contact/team) intelligence, and public/profile discovery via search — verifiable only, `no_data` when nothing verifiable. `SEARXNG_URL` (or `SEARX_URL`/`CXNG_URL`) preferred for metasearch when configured/reachable, else best-effort scraper fallbacks. Per-row `enrichmentStatus`/outputs committed per batch.
+- **Personalization:** AI per-recipient (subject/body/message) using all available row headers + enriched data + campaign/prompt context (varied, not uniform) even when enrichment is sparse. **`personalizationStatus` is the source of truth** (`personalized` vs explicit `fallback` on AI unavailable/fail); mail-merge/template content must not be treated as AI-personalization completion or block/skip a staged personalize run. Per-batch commits/flushes.
+- **Progress/CSV:** UI/exports reflect **real per-stage status columns** (not template-filled enhanced fields). Resolved validation rows during an in-progress validation stage are shown as in-checking/awaiting (not finalized “Validated”) until `validationStatus` is completed.
 
 ### Key Files
 - `campaign/pipeline-orchestrator/route.js` — stage machine, locks, concurrent gate, chaining
