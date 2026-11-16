@@ -276,12 +276,15 @@ async function processPersonalizationBatches({ rows, headers, dataRows, scopeSta
       if (r.status === 'fulfilled') personalizedCount += (r.value || 0);
       else log.warn(` Personalization chunk failed: ${r.reason?.message || r.reason}`);
     }
+    // Incremental per-batch commit: persist completed batch rows/status before next batch
     try {
-      await uploadCsvText(fileId, stringifyCSV(rows));
+      await mergeAndFlush(campaignId, 'personalize', rows, fileId);
     } catch (flushErr) {
-      log.warn(` Live flush failed after wave ${Math.floor(c / concurrency) + 1}: ${flushErr.message}`);
+      log.warn(` Live flush (merge) failed after wave ${Math.floor(c / concurrency) + 1}: ${flushErr.message} - trying direct upload`);
+      try { await uploadCsvText(fileId, stringifyCSV(rows)); }
+      catch (e2) { log.error(` Live flush failed after retry (wave ${Math.floor(c / concurrency) + 1}): ${e2.message}`); }
     }
-    log.info(` Personalization wave ${Math.floor(c / concurrency) + 1}/${Math.ceil(chunks.length / concurrency)} complete`);
+    log.info(` Personalization wave ${Math.floor(c / concurrency) + 1}/${Math.ceil(chunks.length / concurrency)} complete (flushed)`);
   }
 
   // Verify full scope completion

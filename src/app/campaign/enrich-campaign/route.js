@@ -458,13 +458,33 @@ async function runEnrichmentRange({ rows, headers, start, end, campaignId, enric
       log.info(`[Row ${i}] enrichment ${val.status === 'enriched' ? 'enriched' : 'no_data'} conf=${val.confidence || "n/a"}`);
     }
 
-    if (onCheckpoint) await onCheckpoint(Math.min(wave[wave.length - 1] + 1, end), { processed, enriched, noData, skipped });
-    else if (fileId) await mergeAndFlush(campaignId, 'enrich', rows, fileId);
+    // Incremental per-batch commit: persist completed batch rows/status before next batch
+    const checkpointUpTo = Math.min(wave[wave.length - 1] + 1, end);
+    if (onCheckpoint) {
+      await onCheckpoint(checkpointUpTo, { processed, enriched, noData, skipped });
+    } else if (fileId) {
+      try {
+        await mergeAndFlush(campaignId, 'enrich', rows, fileId);
+      } catch (e) {
+        log.warn(`[enrich] batch flush (merge) failed: ${e.message} - trying direct upload`);
+        try { await uploadCsvText(fileId, stringifyCSV(rows)); }
+        catch (e2) { log.error(`[enrich] batch flush failed after retry: ${e2.message}`); }
+      }
+    }
   }
 
-  // final checkpoint flush
-  if (onCheckpoint) await onCheckpoint(end, { processed, enriched, noData, skipped });
-  else if (fileId) await mergeAndFlush(campaignId, 'enrich', rows, fileId);
+  // final checkpoint flush (ensure all processed rows persisted)
+  if (onCheckpoint) {
+    await onCheckpoint(end, { processed, enriched, noData, skipped });
+  } else if (fileId) {
+    try {
+      await mergeAndFlush(campaignId, 'enrich', rows, fileId);
+    } catch (e) {
+      log.warn(`[enrich] final flush (merge) failed: ${e.message} - trying direct upload`);
+      try { await uploadCsvText(fileId, stringifyCSV(rows)); }
+      catch (e2) { log.error(`[enrich] final flush failed after retry: ${e2.message}`); }
+    }
+  }
 
   return { processed, enriched, noData, skipped };
 }
