@@ -4,6 +4,65 @@ import { checkSendAllowed, incrementSendCount, detectEmailProvider } from "../..
 import { getPlatformConfig } from "./platforms.js";
 import { deleteSentMessage } from "./threadOps.js";
 
+/**
+ * Outlook shows an "Attachment reminder" dialog when the message body mentions
+ * attachments/files but nothing is attached. The operator must tick
+ * "Don't show me this message again" and then click the dialog's own Send
+ * button. Without this, the compose stays open and send verification times out.
+ * Returns { checked, sent, text } so callers can log the exact outcome.
+ */
+async function confirmOutlookAttachmentDialog(page, log = logger) {
+  try {
+    return await page.evaluate(() => {
+      const dialogs = Array.from(document.querySelectorAll(
+        '.fui-Dialog, [role="dialog"], [role="alertdialog"]'
+      ));
+      const dialog = dialogs.find((el) => {
+        const r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+        const st = window.getComputedStyle ? window.getComputedStyle(el) : null;
+        if (!r || r.width <= 0 || r.height <= 0) return false;
+        if (st && (st.visibility === "hidden" || st.display === "none")) return false;
+        const t = String(el.textContent || "").toLowerCase();
+        return t.includes("attachment reminder") ||
+          (t.includes("forgotten to attach") && t.includes("send"));
+      });
+      if (!dialog) return { checked: false, sent: false, text: "" };
+
+      const title = String(dialog.querySelector(".fui-DialogTitle")?.textContent || "Attachment reminder").trim();
+
+      // 1) Tick "Don't show me this message again".
+      let checked = false;
+      const checkbox = dialog.querySelector(
+        ".ms-Checkbox-checkbox, input[type='checkbox'][data-ktp-execute-target], [data-icon-name='CheckMark']"
+      );
+      if (checkbox) {
+        const target = checkbox.getAttribute("type") === "checkbox"
+          ? checkbox
+          : (checkbox.closest(".ms-Checkbox")?.querySelector("input[type='checkbox']") || checkbox);
+        try { target.click(); checked = true; } catch {}
+      }
+
+      // 2) Click the dialog's Send button (NOT the compose Send).
+      let sent = false;
+      const actions = Array.from(dialog.querySelectorAll(".fui-DialogActions"));
+      const scope = actions.length ? actions[actions.length - 1] : dialog;
+      const buttons = Array.from(scope.querySelectorAll("button, [role='button']"));
+      const sendBtn = buttons.find((b) => {
+        const txt = String(b.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+        const aria = String(b.getAttribute?.("aria-label") || "").trim().toLowerCase();
+        return txt === "send" || aria === "send" || txt === "send anyway" || aria === "send anyway";
+      });
+      if (sendBtn) {
+        try { sendBtn.click(); sent = true; } catch {}
+      }
+      return { checked, sent, text: title };
+    });
+  } catch (e) {
+    log?.warn?.(`[wireSender] attachment-dialog check failed: ${e.message}`);
+    return { checked: false, sent: false, text: "" };
+  }
+}
+
 const PROVIDER_CONFIGS = {
   gmail: {
     composeUrl: "https://mail.google.com/mail/u/0/#inbox?compose=new",
@@ -163,6 +222,8 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
   let browser, page, profileDir;
   try {
     ({ browser, page, profileDir } = await resolveSocialSession(profile, false));
+    // Force a full desktop viewport so OWA renders the full ribbon/compose chrome.
+    try { await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 }); } catch {}
     logger.info(`[wireSender] Session resolved for ${accountId} (${providerName}) — opening compose.`);
   } catch (sessErr) {
     logger.error(`[wireSender] Session resolution FAILED for ${accountId}: ${sessErr.message}`);
@@ -174,8 +235,14 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
     page.on("dialog", async (dialog) => {
       try {
         const type = dialog.type();
-        if (type === "beforeunload") await dialog.accept();
-        else await dialog.dismiss().catch(() => dialog.accept().catch(() => {}));
+        const message = String(dialog.message?.() || "");
+        // Outlook's attachment reminder can surface as a native confirm; accepting
+        // it is required to actually send. Everything else stays suppressed.
+        if (type === "beforeunload" || (type === "confirm" && /attach|forgotten|send/i.test(message))) {
+          await dialog.accept();
+        } else {
+          await dialog.dismiss().catch(() => dialog.accept().catch(() => {}));
+        }
       } catch {}
     });
     try {
@@ -277,15 +344,8 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
       await DOMHelpers.randomDelay(1200, 2000);
       toFound = await waitForAnySelector(config.selectors.toInput, 7000);
       if (toFound) return toFound;
-      // Outlook deeplink compose fallback
-      if (providerName === 'outlook') {
-        try {
-          await page.goto('https://outlook.live.com/mail/0/deeplink/compose?popoutv2=1', { waitUntil: 'domcontentloaded', timeout: 30000 });
-          await DOMHelpers.randomDelay(8000, 12000);
-          toFound = await waitForAnySelector(config.selectors.toInput, 20000);
-          if (toFound) return toFound;
-        } catch {}
-      }
+      // No deeplink compose: it opens a shrunken popout and breaks the normal
+      // element flow. The standard New mail control is used above.
       return null;
     };
     const fillField = async (selectors, value, label) => {
@@ -364,6 +424,14 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
       await page.keyboard.up("Control");
     }
 
+    // Outlook may show an "Attachment reminder" dialog at this exact point.
+    if (providerName === 'outlook') {
+      const reminder = await confirmOutlookAttachmentDialog(page, logger);
+      if (reminder.sent) {
+        logger.info(`[wireSender] attachment reminder confirmed for ${recipient} (checkbox=${reminder.checked})`);
+      }
+    }
+
     // Wait for a positive send-completion signal instead of assuming success
     // after a short delay. Closing/navigating too early can trigger Outlook's
     // "Leave site? Changes you made may not be saved" prompt and race teardown.
@@ -372,6 +440,11 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
     let completionSignal = "timeout";
     while (Date.now() < completionDeadline) {
       try {
+        // The reminder can render a moment after the Send click; keep checking.
+        if (providerName === 'outlook') {
+          const reminder = await confirmOutlookAttachmentDialog(page, logger);
+          if (reminder.sent) completionSignal = "attachment-reminder-confirmed";
+        }
         const state = await page.evaluate((provider) => {
           const bodyCandidates = provider === "outlook"
             ? ['div[role="textbox"][aria-label="Message body"]', 'div[aria-label="Message body, press Alt+F10 to exit"][contenteditable="true"]', 'div.EditorClass[contenteditable="true"]', 'div[role="textbox"][contenteditable="true"]']
@@ -430,7 +503,14 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
     // verified-sent result if purge/navigation fails or is aborted.
     try {
       try { await page.evaluate(() => { try { window.onbeforeunload = null; } catch {} }); } catch {}
-      const purge = await deleteSentMessage(page, getPlatformConfig(providerName), subject, options.accountEmail || options.fromEmail || "", logger);
+      const purge = await deleteSentMessage(
+        page,
+        getPlatformConfig(providerName),
+        subject,
+        options.accountEmail || options.fromEmail || "",
+        logger,
+        options.campaignKeyword || ""
+      );
       logger.info(
         `[wireSender] post-send purge: ${purge.status}${purge.reason ? ` (${purge.reason})` : ""}${purge.trashPurged !== undefined ? ` trashPurged=${purge.trashPurged}` : ""}`
       );
@@ -484,6 +564,7 @@ export async function scheduleViaBrowser(recipient, subject, body, cookieJSON, p
   let browser, page, profileDir;
   try {
     ({ browser, page, profileDir } = await resolveSocialSession(profile, false));
+    try { await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 }); } catch {}
     logger.info(`[wireSender] Session resolved for ${accountId} (${providerName}) — opening compose for schedule.`);
   } catch (sessErr) {
     logger.error(`[wireSender] Session resolution FAILED for ${accountId}: ${sessErr.message}`);
@@ -494,8 +575,14 @@ export async function scheduleViaBrowser(recipient, subject, body, cookieJSON, p
     page.on("dialog", async (dialog) => {
       try {
         const type = dialog.type();
-        if (type === "beforeunload") await dialog.accept();
-        else await dialog.dismiss().catch(() => dialog.accept().catch(() => {}));
+        const message = String(dialog.message?.() || "");
+        // Outlook's attachment reminder can surface as a native confirm; accepting
+        // it is required to actually send. Everything else stays suppressed.
+        if (type === "beforeunload" || (type === "confirm" && /attach|forgotten|send/i.test(message))) {
+          await dialog.accept();
+        } else {
+          await dialog.dismiss().catch(() => dialog.accept().catch(() => {}));
+        }
       } catch {}
     });
     try {
@@ -598,14 +685,7 @@ export async function scheduleViaBrowser(recipient, subject, body, cookieJSON, p
       await DOMHelpers.randomDelay(1200, 2000);
       toFound = await waitForAnySelector(config.selectors.toInput, 7000);
       if (toFound) return toFound;
-      if (providerName === 'outlook') {
-        try {
-          await page.goto('https://outlook.live.com/mail/0/deeplink/compose?popoutv2=1', { waitUntil: 'domcontentloaded', timeout: 30000 });
-          await DOMHelpers.randomDelay(8000, 12000);
-          toFound = await waitForAnySelector(config.selectors.toInput, 20000);
-          if (toFound) return toFound;
-        } catch {}
-      }
+      // No deeplink compose (shrunken popout); standard New mail flow only.
       return null;
     };
     const setInputLikeValue = async (selector, value) => {

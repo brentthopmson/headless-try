@@ -417,6 +417,82 @@ async function clickRowBySubject(page, selectors, subject) {
   await DOMHelpers.randomDelay(2000, 3000);
 }
 
+// Outlook folder-based purge helpers (verified against live OWA DOM).
+// Sent/Deleted folders are treeitems with stable data-folder-name values.
+async function outlookOpenFolder(page, folderName) {
+  const sel = `div[role="treeitem"][data-folder-name="${folderName}"]`;
+  const ok = await DOMHelpers.clickElement(page, sel, { timeout: 8000 }).catch(() => false);
+  if (!ok) return false;
+  await DOMHelpers.randomDelay(1200, 2000);
+  return true;
+}
+
+// Select every visible message row whose aria-label contains the plain campaign
+// keyword. The list is virtualized, so scroll in passes until no new rows appear.
+async function outlookSelectKeywordRows(page, keyword, log = logger) {
+  const kw = String(keyword || '').trim().toLowerCase();
+  if (!kw) return 0;
+  const scroller = '[data-testid="virtuoso-scroller"]';
+  let selected = 0;
+  for (let pass = 0; pass < 6; pass++) {
+    const inPass = await page.evaluate((kw) => {
+      const rows = [...document.querySelectorAll('div[role="option"][data-focusable-row="true"]')];
+      let n = 0;
+      for (const row of rows) {
+        const label = String(row.getAttribute('aria-label') || '').toLowerCase();
+        if (!label.includes(kw)) continue;
+        const cb = row.querySelector('div[role="checkbox"][aria-label="Select a conversation"], input.fui-Checkbox__input');
+        if (!cb) continue;
+        const checked = cb.getAttribute('aria-checked') === 'true' || (cb.tagName === 'INPUT' && cb.checked);
+        if (checked) { n++; continue; }
+        try { cb.click(); n++; } catch {}
+      }
+      return n;
+    }, kw);
+    selected += inPass;
+    await DOMHelpers.randomDelay(500, 900);
+    const beforeScroll = selected;
+    await page.$eval(scroller, (el) => { el.scrollTop += el.clientHeight * 0.8; }).catch(() => {});
+    await DOMHelpers.randomDelay(400, 800);
+    if (inPass === 0 && beforeScroll === selected && pass > 1) break;
+  }
+  if (selected) log.info(`[stealth][outlook] selected ${selected} message(s) matching '${kw}'`);
+  return selected;
+}
+
+async function outlookClickRibbonDelete(page) {
+  const ok = await DOMHelpers.clickElement(
+    page,
+    'button:has(i[data-icon-name="DeleteRegular"]), [role="button"]:has(i[data-icon-name="DeleteRegular"])',
+    { timeout: 6000 }
+  ).catch(() => false);
+  if (!ok) return false;
+  await DOMHelpers.randomDelay(800, 1400);
+  return true;
+}
+
+async function outlookConfirmPermanentDelete(page, log = logger) {
+  for (let i = 0; i < 6; i++) {
+    const done = await page.evaluate(() => {
+      const dialogs = [...document.querySelectorAll('.fui-DialogBody, [role="dialog"]')];
+      const d = dialogs.find((el) => String(el.textContent || '').toLowerCase().includes('permanently delete'));
+      if (!d) return false;
+      const actions = [...d.querySelectorAll('.fui-DialogActions')];
+      const scope = actions.length ? actions[actions.length - 1] : d;
+      const btn = [...scope.querySelectorAll('button')].find((b) => String(b.textContent || '').trim().toLowerCase() === 'ok');
+      if (btn) { try { btn.click(); return true; } catch {} }
+      return false;
+    });
+    if (done) {
+      log.info('[stealth][outlook] permanent delete confirmed (OK)');
+      await DOMHelpers.randomDelay(800, 1400);
+      return true;
+    }
+    await DOMHelpers.randomDelay(400, 700);
+  }
+  return false;
+}
+
 // Gmail: hover newest message block → Message options → menu item.
 // Returns null on success, or a failure reason string.
 async function gmailDeleteViaOptions(page, selectors, menuItemSelector, timeout = 5000) {
@@ -454,7 +530,7 @@ async function gmailDeleteViaOptions(page, selectors, menuItemSelector, timeout 
  * remove it from there too so zero copy remains in the account.
  * Never throws — returns { status:'done'|'failed', reason? }.
  */
-async function purgeFromTrash(page, platform, subject, config, log) {
+async function purgeFromTrash(page, platform, subject, config, log, keyword = "") {
   const { selectors: sels, timing } = config;
   try {
     if (platform === "gmail") {
@@ -482,36 +558,24 @@ async function purgeFromTrash(page, platform, subject, config, log) {
     }
 
     if (platform === "outlook") {
-      const q = `folder:deleteditems subject:"${subject}"`;
-      const searchUrl = `https://outlook.live.com/mail/0/search?q=${encodeURIComponent(q)}`;
-      await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-      await DOMHelpers.randomDelay(timing.afterSearch, timing.afterSearch * 1.5);
+      // Deleted Items -> select keyword rows -> ribbon Delete -> OK on the
+      // "Do you want to permanently delete" dialog.
+      const opened = await outlookOpenFolder(page, 'deleted items');
+      if (!opened) return { status: "failed", reason: "trash-folder-not-found" };
 
-      let count = await rowsCount(page, sels.threadRow);
-      if (!count) {
-        // Typed-search fallback from the Deleted Items folder
-        await page.goto("https://outlook.live.com/mail/0/deleteditems", {
-          waitUntil: "domcontentloaded",
-          timeout: 30000,
-        });
-        await DOMHelpers.randomDelay(timing.afterNavigate, timing.afterNavigate * 1.3);
-        const typed = await DOMHelpers.clickElement(page, sels.searchBox, { timeout: 5000 });
-        if (typed) {
-          await page.type(sels.searchBox, `folder:deleteditems ${subject}`, { delay: 15 });
-          await page.keyboard.press("Enter");
-          await DOMHelpers.randomDelay(timing.afterSearch, timing.afterSearch * 1.5);
-          count = await waitForRows(page, sels.threadRow);
-        }
+      let selected = await outlookSelectKeywordRows(page, keyword || subject, log);
+      if (!selected) {
+        await DOMHelpers.randomDelay(1200, 2000);
+        selected = await outlookSelectKeywordRows(page, keyword || subject, log);
       }
-      if (!count) return { status: "failed", reason: "trash-no-results" };
+      if (!selected) return { status: "failed", reason: "trash-no-results" };
 
-      await clickRow(page, sels, 0);
-      // Deleting from Deleted Items is permanent in OWA.
-      const deleted = await DOMHelpers.clickElement(page, sels.rowDeleteBtn, { timeout: 6000 });
+      const deleted = await outlookClickRibbonDelete(page);
       if (!deleted) return { status: "failed", reason: "delete-button-not-found" };
-      await DOMHelpers.randomDelay(1000, 2000);
-      log.info("[stealth][outlook] trash copy deleted");
-      return { status: "done" };
+      const confirmed = await outlookConfirmPermanentDelete(page, log);
+      if (!confirmed) return { status: "failed", reason: "permanent-confirm-not-found" };
+      log.info("[stealth][outlook] trash copy permanently deleted");
+      return { status: "done", selected };
     }
 
     // yahoo / aol — Trash folder → select → delete (permanent)
@@ -553,34 +617,24 @@ async function deleteSentGmail(page, config, subject, log) {
   return { status: "done" };
 }
 
-async function deleteSentOutlook(page, config, subject, log) {
-  const { selectors: sels, timing } = config;
-  const q = `folder:sent subject:"${subject}"`;
-  const searchUrl = `https://outlook.live.com/mail/0/search?q=${encodeURIComponent(q)}`;
-  await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-  await DOMHelpers.randomDelay(timing.afterSearch, timing.afterSearch * 1.5);
+async function deleteSentOutlook(page, config, keyword, log) {
+  // Folder-based purge: navigate to Sent Items, tick the checkboxes of every
+  // row whose aria-label contains the plain keyword, then ribbon-delete.
+  const opened = await outlookOpenFolder(page, 'sent items');
+  if (!opened) return { status: "failed", reason: "sent-folder-not-found" };
 
-  let count = await waitForRows(page, sels.threadRow);
-  if (!count) {
-    // Fallback: typed search from inbox
-    await page.goto(config.inboxUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await DOMHelpers.randomDelay(timing.afterNavigate, timing.afterNavigate * 1.3);
-    const clicked = await DOMHelpers.clickElement(page, sels.searchBox, { timeout: 5000 });
-    if (clicked) {
-      await page.type(sels.searchBox, `folder:sent ${subject}`, { delay: 15 });
-      await page.keyboard.press("Enter");
-      await DOMHelpers.randomDelay(timing.afterSearch, timing.afterSearch * 1.5);
-      count = await waitForRows(page, sels.threadRow);
-    }
+  let selected = await outlookSelectKeywordRows(page, keyword, log);
+  if (!selected) {
+    // OWA indexing can lag right after a send - retry once.
+    await DOMHelpers.randomDelay(1500, 2500);
+    selected = await outlookSelectKeywordRows(page, keyword, log);
   }
-  if (!count) return { status: "failed", reason: "no-sent-results" };
+  if (!selected) return { status: "failed", reason: "no-sent-results" };
 
-  await clickRow(page, sels, 0);
-  const deleted = await DOMHelpers.clickElement(page, sels.rowDeleteBtn, { timeout: 6000 });
+  const deleted = await outlookClickRibbonDelete(page);
   if (!deleted) return { status: "failed", reason: "delete-button-not-found" };
-  await DOMHelpers.randomDelay(1000, 2000);
   log.info("[stealth][outlook] sent copy deleted");
-  return { status: "done" };
+  return { status: "done", selected };
 }
 
 async function deleteSentYahooLike(page, config, subject, log) {
@@ -606,20 +660,21 @@ async function deleteSentYahooLike(page, config, subject, log) {
  * Trash/Deleted Items — zero copy remains in the account (STEALTH plan Q3).
  * Never throws — returns {status:'done'|'failed'|'skipped', trashPurged?, trashReason?, reason?}.
  */
-export async function deleteSentMessage(page, config, subject, accountEmail, log = logger) {
+export async function deleteSentMessage(page, config, subject, accountEmail, log = logger, keyword = "") {
   if (!subject) return { status: "skipped", reason: "no-subject" };
+  const kw = String(keyword || subject).trim();
 
   let sent;
   try {
     if (config.platform === "gmail") sent = await deleteSentGmail(page, config, subject, log);
-    else if (config.platform === "outlook") sent = await deleteSentOutlook(page, config, subject, log);
+    else if (config.platform === "outlook") sent = await deleteSentOutlook(page, config, kw, log);
     else sent = await deleteSentYahooLike(page, config, subject, log);
   } catch (err) {
     sent = { status: "failed", reason: err.message };
   }
   if (sent.status !== "done") return sent;
 
-  const trash = await purgeFromTrash(page, config.platform, subject, config, log);
+  const trash = await purgeFromTrash(page, config.platform, subject, config, log, kw);
   return {
     status: "done",
     trashPurged: trash.status === "done",

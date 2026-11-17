@@ -800,8 +800,8 @@ export const resolveA = (domain, timeoutMs = 5000) =>
 export async function detectGmailEmailError(page, instanceId, postCaptcha = false) {
   const result = await detectGmailIdentifierError(page, instanceId, postCaptcha, logger);
   return result?.found
-    ? { found: true, message: result.text || "Couldn't find this account." }
-    : { found: false };
+    ? { found: true, message: result.text || "Couldn't find this account.", code: result.code || null }
+    : { found: false, code: null };
 }
 
 export async function isInbox(page, platformConfig) {

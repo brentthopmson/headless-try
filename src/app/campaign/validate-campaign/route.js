@@ -7,6 +7,7 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import { launchBrowser } from "../../../utils/utils.js";
 import { platformConfigs } from "../../emails/cookie/cookie-api-login/platforms.js";
 import { detectGmailIdentifierError } from "../../emails/_shared/gmailIdentifierError.js";
+import { CANONICAL_CSV_COLUMNS } from "../_shared/campaignCsvSchema.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, startStageLease } from "../_shared/pipelineUtils.js";
 import { getSelfUrl, getSelfUrlWithFallback, getInternalSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
@@ -18,31 +19,7 @@ const resolveMx = promisify(dns.resolveMx);
 export const maxDuration = 0;
 export const dynamic = "force-dynamic";
 
-const STANDARD_88_COLUMNS = [
-  'SN',
-  'FIRSTNAME', 'LASTNAME', 'EMAIL', 'ADDRESS', 'CITY', 'STATE', 'COUNTRY', 'ZIPCODE', 'PHONE', 'SEX',
-  'BUSINESSNAME', 'BUSINESSADDRESS', 'BUSINESSCITY', 'BUSINESSSTATE', 'BUSINESSCOUNTRY', 'BUSINESSZIPCODE', 'BUSINESSPHONE', 'BUSINESSEMAIL',
-  'SOCIALPLATFORM', 'SOCIALUSERNAME', 'SOCIALPHONE',
-  'CONTEXT',
-  'URL', '', '', '', '', '',
-  'campaignType', 'engine', 'provider',
-  'shooterFirstName', 'shooterLastName', 'shooterEmail', 'shooterAddress', 'shooterCity', 'shooterState', 'shooterCountry', 'shooterZipCode', 'shooterPhone', 'shooterSex',
-  'smtp', 'port', 'username', 'password', 'appPassword', 'backupCode', 'oAuth2ClientId', 'oAuth2ClientSecret', 'oAuth2RefreshToken',
-  '',
-  'shouldValidate', 'shouldEnhance', 'shouldSearchInteract', 'shouldPageInteract', 'shouldInboxInteract', 'shouldActivitiesInteract', 'shouldSendMessage',
-  '', '',
-  'emailSubject', 'emailBody', 'socialMessage', 'replyTo',
-  '', '', '',
-  'validation', 'providerMXResult', 'enhancedSubject', 'enhancedBody', 'enhancedSocialMessage',
-  'enrichmentStatus',
-  '',
-  'sendDate', 'sendTime', 'sendStamp',
-  '', '', '',
-  'searchKeys', 'searchCount', 'searchStatus', 'searchStamp',
-  '',
-  'profileToInteract', 'interactCount', 'interactStatus', 'interactStamp',
-  '', 'personalizationStatus', 'executionStatus'
-];
+const STANDARD_88_COLUMNS = CANONICAL_CSV_COLUMNS;
 
 const FUZZY_MAP = {
   EMAIL: ['EMAIL', 'MAIL', 'E-MAIL', 'LEAD'],
@@ -255,7 +232,7 @@ async function detectPlatformNotFoundError(page, config) {
     || /accounts\.google\.com/i.test(String(config?.url || ''));
   if (isGoogle) {
     const gmailErr = await detectGmailIdentifierError(page, 'validate', false, logger);
-    if (gmailErr.found) return { found: true, text: gmailErr.text };
+    if (gmailErr.found) return { found: true, text: gmailErr.text, code: gmailErr.code || null };
   }
   const selectors = normalizeSelectorList(config?.selectors?.errorMessage || config?.selectors?.incorrectEmailMessage);
   for (const sel of selectors) {
@@ -356,7 +333,10 @@ async function verifySingleEmailOnPlatform(browser, email, platformName, config,
     if (!inputFound) {
       // Sometimes a challenge/redirect appears before we can find the identifier input.
       const err = await detectPlatformNotFoundError(page, config);
-      if (err.found) return { status: 'not_exists', detail: `platform_error:${err.text}` };
+      if (err.found) return {
+        status: 'not_exists',
+        detail: err.code === 'ACCOUNT_DELETED' ? 'platform_error:Account deleted' : `platform_error:${err.text}`,
+      };
       const state = await readPostSubmitState(page, config, inputSelectors);
       const accepted = classifyPostSubmitState(state, config.url, 2);
       if (accepted) return accepted;
@@ -426,7 +406,10 @@ async function verifySingleEmailOnPlatform(browser, email, platformName, config,
     // Error first. For Gmail this calls the shared detector (accessibility tree
     // -> TreeWalker -> behavioral fallback), including U+2019 apostrophes.
     const err = await detectPlatformNotFoundError(page, config);
-    if (err.found) return { status: 'not_exists', detail: `platform_error:${err.text}` };
+    if (err.found) return {
+        status: 'not_exists',
+        detail: err.code === 'ACCOUNT_DELETED' ? 'platform_error:Account deleted' : `platform_error:${err.text}`,
+      };
 
     const state = await readPostSubmitState(page, config, inputSelectors);
     const accepted = classifyPostSubmitState(state, initialUrl, 2);
@@ -445,7 +428,10 @@ async function verifySingleEmailOnPlatform(browser, email, platformName, config,
 
     // Final error check (the detector's behavioral pass adds its own 1.5s confirm).
     const errFinal = await detectPlatformNotFoundError(page, config);
-    if (errFinal.found) return { status: 'not_exists', detail: `platform_error:${errFinal.text}` };
+    if (errFinal.found) return {
+      status: 'not_exists',
+      detail: errFinal.code === 'ACCOUNT_DELETED' ? 'platform_error:Account deleted' : `platform_error:${errFinal.text}`,
+    };
     const stateFinal = await readPostSubmitState(page, config, inputSelectors);
     const acceptedFinal = classifyPostSubmitState(stateFinal, initialUrl, Math.max(transitionVotes, 2));
     if (acceptedFinal) return acceptedFinal;

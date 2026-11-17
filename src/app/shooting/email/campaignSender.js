@@ -136,6 +136,7 @@ export async function sendCampaignEmail({
   forceMethod = "",
   retryCount = 0,
   lastSendMethod = "",
+  campaignKeyword = "",
 }) {
   let senderHost = "WIRE";
   let delivered = 0;
@@ -222,6 +223,7 @@ export async function sendCampaignEmail({
         browserIdentity: profileData?.browserIdentity || null,
         driveUrl: profileData?.driveUrl || "",
         profileId,
+        campaignKeyword,
       });
       senderHost = `WIRE(${provider})`;
       actualMethod = "wire";

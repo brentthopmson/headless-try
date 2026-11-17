@@ -500,11 +500,13 @@ export async function processInboxInteract(body) {
           ({ browser, page } = await launchBrowserWithSession(account.cookieJSON, false));
         }
         scannedAccounts++;
-        // Scan surfaces in priority order: campaignId search (finds replies
-        // anywhere, incl. archived-by-filter), reply-folder label, inbox.
+        // Scan surfaces in priority order: plain-keyword search (the same
+        // keyword used for the reply folder/rule and appended to sent mail),
+        // reply-folder label, inbox.
         const replyFolder = String(settings.campaignKeyword || settings.replyFolder || "").trim() || campaignId;
+        const searchKeyword = String(settings.campaignKeyword || settings.helperKeyword || replyFolder || campaignId).trim();
         const surfaces = [];
-        if (typeof cfg.searchUrlTemplate === 'function') surfaces.push({ name: 'campaign-search', url: cfg.searchUrlTemplate(`[${campaignId}]`) });
+        if (typeof cfg.searchUrlTemplate === 'function') surfaces.push({ name: 'campaign-search', url: cfg.searchUrlTemplate(searchKeyword) });
         if (typeof cfg.labelUrlTemplate === 'function') surfaces.push({ name: 'reply-label', url: cfg.labelUrlTemplate(replyFolder) });
         surfaces.push({ name: 'inbox', url: cfg.inboxUrl });
 

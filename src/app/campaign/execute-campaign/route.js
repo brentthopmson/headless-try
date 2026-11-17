@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { CANONICAL_CSV_COLUMNS } from "../_shared/campaignCsvSchema.js";
 import { downloadCsvText, uploadCsvText, updateSheetRowApi, getSheetDataApi } from "../../api/googlesheets.js";
 import logger from "../../../utils/logger.js";
 import { detectProvider } from "../../emails/_shared/wireSender.js";
@@ -17,6 +18,23 @@ import { resolveAccountGate, isLimitSkipError } from "../../socials/_shared/acco
 import workflowOps from "../../socials/_shared/workflowOps.js";
 
 const { resolveSocialMessage } = workflowOps;
+
+/**
+ * Write a FULL settings JSON safely: re-read the sheet, apply only the supplied
+ * delta, then write. Prevents stale in-memory `settings` snapshots from
+ * clobbering independently-written flags such as replyFilterInstalled.
+ */
+async function writeFullCampaignSettings(campaignId, patch = {}, status = null, deleteKeys = []) {
+  const fresh = await getCampaignSettings(campaignId);
+  const merged = { ...(fresh?.settings || {}) };
+  for (const key of deleteKeys) delete merged[key];
+  Object.assign(merged, patch);
+  const rowUpdate = { settings: JSON.stringify(merged), updatedOn: new Date().toISOString() };
+  if (typeof status === "string") rowUpdate.status = status;
+  await updateSheetRowApi("campaigns", "campaignId", campaignId, rowUpdate);
+  return merged;
+}
+
 import { requireFeature } from "../../../utils/featureGate.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { getMaxConcurrentTasks, checkUserConcurrentCampaigns, registerActiveCampaignRun, unregisterActiveCampaignRun } from "../../../utils/campaignConcurrency.js";
@@ -34,13 +52,8 @@ import { detectEmailProvider } from "../../../utils/sendRateLimiter.js";
 // for a campaignId that is already executing short-circuits to skipped.
 const _executingCampaigns = new Set();
 
-function embedCampaignIdentifier(subject, body, campaignId) {
-  const identifier = `[${campaignId}]`;
-  const taggedSubject = subject.includes(identifier) ? subject : `${subject} ${identifier}`;
-  const identifierComment = `<!-- campaign:${campaignId} -->`;
-  const taggedBody = body.includes(identifierComment) ? body : `${body}\n\n${identifierComment}`;
-  return { subject: taggedSubject, body: taggedBody };
-}
+// No campaign identifier is appended to outgoing mail. Reply detection uses
+// the HELPERKEYWORD stamped on each CSV row and the inbox watcher.
 
 function isRestingLikeStatus(status) {
   const s = String(status || "").trim().toLowerCase();
@@ -119,35 +132,9 @@ async function finalizeScopedRun(campaignId, serverScope, scopedAccounts, finalS
   }
 }
 
-const STANDARD_88_COLUMNS = [
-  'SN',
-  'FIRSTNAME', 'LASTNAME', 'EMAIL', 'ADDRESS', 'CITY', 'STATE', 'COUNTRY', 'ZIPCODE', 'PHONE', 'SEX', 'JOBTITLE',
-  'BUSINESSNAME', 'BUSINESSADDRESS', 'BUSINESSCITY', 'BUSINESSSTATE', 'BUSINESSCOUNTRY', 'BUSINESSZIPCODE', 'BUSINESSPHONE', 'BUSINESSEMAIL',
-  'SOCIALPLATFORM', 'SOCIALUSERNAME', 'SOCIALPHONE',
-  'CONTEXT',
-  'URL', '', '', '', '', '',
-  'campaignType', 'engine', 'provider',
-  'shooterFirstName', 'shooterLastName', 'shooterEmail', 'shooterAddress', 'shooterCity', 'shooterState', 'shooterCountry', 'shooterZipCode', 'shooterPhone', 'shooterSex',
-  'smtp', 'port', 'username', 'password', 'appPassword', 'backupCode', 'oAuth2ClientId', 'oAuth2ClientSecret', 'oAuth2RefreshToken',
-  '',
-  'shouldValidate', 'shouldEnhance', 'shouldSearchInteract', 'shouldPageInteract', 'shouldInboxInteract', 'shouldActivitiesInteract', 'shouldSendMessage',
-  '', '',
-  'emailSubject', 'emailBody', 'socialMessage', 'replyTo',
-  '', '', '',
-  'validation', 'providerMXResult', 'enhancedSubject', 'enhancedBody', 'enhancedSocialMessage',
-  'enrichmentStatus',
-  '',
-  'sendDate', 'sendTime', 'sendStamp',
-  '', '', '',
-  'searchKeys', 'searchCount', 'searchStatus', 'searchStamp',
-  '',
-  'profileToInteract', 'interactCount', 'interactStatus', 'interactStamp',
-  '', 'personalizationStatus', 'executionStatus',
-  // LINK: baked per-recipient URL (kept separate from URL = reference URL
-  // used for AI/enrichment research). HELPERKEYWORD: campaign-wide keyword
-  // stamped on every row so interactions can detect our emails.
-  'LINK', 'HELPERKEYWORD'
-];
+// Canonical schema shared with validation/enrichment. Never insert columns in
+// the middle of the file - engine-owned columns are appended at the end.
+const STANDARD_88_COLUMNS = CANONICAL_CSV_COLUMNS;
 
 const FUZZY_MAP = {
   EMAIL: ['EMAIL', 'MAIL', 'E-MAIL', 'LEAD'],
@@ -596,7 +583,12 @@ export async function POST(request) {
     const perfPresets = getPerformancePresets(perfLevelSetting?.value1 || 'balanced');
 
     const shootingBatchSetting = await getSetting('shootingBatchLimit');
-    const SHOOTING_BATCH_SIZE = parseInt(shootingBatchSetting?.value1) || perfPresets.shootingBatchLimit;
+    // Strict SETTINGS-only batch size. No performance-preset fallback: a missing
+    // or zero value must block sending rather than silently using a hardcoded cap.
+    const SHOOTING_BATCH_SIZE = Math.max(0, parseInt(shootingBatchSetting?.value1, 10) || 0);
+    if (!SHOOTING_BATCH_SIZE) {
+      return NextResponse.json({ success: true, limitReached: true, message: "shootingBatchLimit is missing or 0 in SETTINGS - set it to enable sending/CSV flush" });
+    }
     const checkpointSetting = await getSetting('checkpointInterval');
     const CHECKPOINT_INTERVAL = parseInt(checkpointSetting?.value1) || perfPresets.checkpointInterval;
     const delaySetting = await getSetting('interBatchDelayMs');
@@ -729,6 +721,40 @@ export async function POST(request) {
           throw new Error("EMAIL column not found in 88-column schema");
         }
 
+        // Schedule waterfall: stamp a due date/time on every row at launch so
+        // the CSV always states when each recipient is due to be sent. Existing
+        // values are preserved so a resume does not rewrite history.
+        if (sendDateIdx !== -1 && sendTimeIdx !== -1) {
+          try {
+            const tz = String(settings.timezone || "UTC");
+            const baseMs = settings.scheduleStartTime
+              ? new Date(settings.scheduleStartTime).getTime()
+              : Date.now();
+            const spacingMin = Math.max(1, Number(settings.sendIntervalMinutes || settings.sendInterval || 1));
+            const dateFmt = new Intl.DateTimeFormat("en-CA", {
+              timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+            });
+            const timeFmt = new Intl.DateTimeFormat("en-US", {
+              timeZone: tz, hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true,
+            });
+            let stamped = 0;
+            dataRows.forEach((r, idx) => {
+              if (String(r[sendDateIdx] || "").trim() && String(r[sendTimeIdx] || "").trim()) return;
+              const due = new Date(baseMs + idx * spacingMin * 60000);
+              r[sendDateIdx] = dateFmt.format(due);
+              r[sendTimeIdx] = timeFmt.format(due);
+              if (sendStampIdx !== -1 && !String(r[sendStampIdx] || "").trim()) r[sendStampIdx] = due.toISOString();
+              stamped++;
+            });
+            if (stamped > 0) {
+              await uploadCsvText(fileId, stringifyCSV(normalizedRows));
+              log.info(`[execute] schedule waterfall stamped ${stamped} row(s) in ${tz}`);
+            }
+          } catch (stampErr) {
+            log.warn(`[execute] schedule waterfall stamping failed: ${stampErr.message}`);
+          }
+        }
+
         const deliveryMethod = settings.deliveryMethod || "smtp";
         const smtpSettings = settings.smtpSettings || [];
 
@@ -849,7 +875,8 @@ export async function POST(request) {
         }
 
         // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ REPLY FILTER (campaign hygiene) Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-        // Every campaign subject carries '[campaignId]' (embedCampaignIdentifier)
+        // No campaign identifier is written into outgoing subjects/bodies.
+        // Replies are detected via HELPERKEYWORD + the inbox watcher instead.
         // Ã¢â‚¬â€ install ONE filter per run so inbound replies are moved out of the
         // normal inbox into the reply folder (campaign setup, default
         // 'Campaign-Replies'). Own short-lived session via the wire account;
@@ -873,6 +900,9 @@ if (!String(settings.helperKeyword || "").trim()) {
         {
           const profileId = settings.accounts?.[0] || settings.wireAccount;
           const profileData = profileId ? await getSocialProfileCookies(profileId) : null;
+          // Reply filter (folder + rule) is essential for silent sending - the
+          // plain campaign keyword in every sent subject/body is what the rule
+          // matches and what the inbox watcher searches for.
           if (profileData?.cookies || profileData?.driveCookieJSON || profileData?.accountCookieJSON) {
             try {
               const provider = resolveWireProvider(profileData, profileId);
@@ -897,7 +927,16 @@ if (!String(settings.helperKeyword || "").trim()) {
                   ` Reply filter: ${res.status}${res.reason ? ` (${res.reason})` : ""} Ã¢â€ â€™ '${keyword}' (identifier=${keyword})`
                 );
                 if (res.status === "installed" || res.status === "exists") {
-                  try { await updateCampaignSettings(campaignId, { replyFilterInstalled: true, replyFilterKeyword: keyword }); } catch {}
+                  const filterPatch = {
+                    replyFilterInstalled: true,
+                    replyFilterKeyword: keyword,
+                    replyFilterAt: new Date().toISOString(),
+                  };
+                  // Keep the in-memory snapshot in sync so later full writes
+                  // don't drop the flag, and persist it through the fresh-merge
+                  // helper so no other concurrent setting update is overwritten.
+                  Object.assign(settings, filterPatch);
+                  try { await writeFullCampaignSettings(campaignId, filterPatch); } catch {}
                 }
               } finally {
                 await page.close().catch(() => {});
@@ -933,7 +972,10 @@ if (!String(settings.helperKeyword || "").trim()) {
         // Do NOT parallelize/wave rows or open multiple browsers/sends concurrently.
         const sendConcurrencyN = 1;
         let smtpPoolExhaustedStop = false;
-        log.info(` Execution mode: sequential (one-by-one), firestick=${firestickEnabled ? 'on' : 'off'}, delivery=${deliveryMethod}`);
+        // CSV is flushed once per shootingBatchLimit sends, not per send, to
+        // spare Drive/App Script quota (especially across multiple servers).
+        let sentSinceFlush = 0;
+        log.info(` Execution mode: sequential (one-by-one), firestick=${firestickEnabled ? 'on' : 'off'}, delivery=${deliveryMethod}, flushEvery=${SHOOTING_BATCH_SIZE}`);
         for (let i = startIndex; i < deduplicatedRows.length; i++) {
           if (pausedByAdmin || limitReached || smtpPoolExhaustedStop) break;
           if (await isCampaignPaused(campaignId)) {
@@ -1034,10 +1076,14 @@ if (!String(settings.helperKeyword || "").trim()) {
             message = message.replace(/\{\{\s*(link|url)\s*\}\}/gi, personalLink);
           }
 
-          // Embed campaign identifier for interaction tracking
-          const tagged = embedCampaignIdentifier(subject, message, keyword);
-          subject = tagged.subject;
-          message = tagged.body;
+          // Trackable PLAIN keyword - no brackets, no HTML comment. This is the
+          // same value used to create the reply folder/rule and the one the
+          // inbox watcher searches for (Subject or body includes).
+          const trackToken = String(keyword || '').trim();
+          if (trackToken) {
+            if (!subject.includes(trackToken)) subject = `${subject} ${trackToken}`.trim();
+            if (!message.includes(trackToken)) message = `${message}\n\n${trackToken}`.trim();
+          }
 
           let smtpPick = pickSmtpWithinCap(sentCount);
           const smtpPoolExhaustedByRunCap = !smtpPick && accountSendPerRunLimit > 0 && smtpSettings.length > 0;
@@ -1114,11 +1160,11 @@ if (!String(settings.helperKeyword || "").trim()) {
 
             let scheduleTime = null;
             if (isSchedule) {
-              // Use per-row sendDate/sendTime if available, else use scheduleStartTime
-              const rowSendDate = sendDateIdx !== -1 ? row[sendDateIdx] : "";
-              const rowSendTime = sendTimeIdx !== -1 ? row[sendTimeIdx] : "";
-              if (rowSendDate && rowSendTime) {
-                scheduleTime = new Date(`${rowSendDate} ${rowSendTime}`);
+              // sendStamp is the ISO source of truth set by the launch-time
+              // waterfall. Localized sendDate/sendTime are display-only.
+              const rowSendStamp = sendStampIdx !== -1 ? String(row[sendStampIdx] || '').trim() : "";
+              if (rowSendStamp && !Number.isNaN(Date.parse(rowSendStamp))) {
+                scheduleTime = new Date(rowSendStamp);
               } else if (settings.scheduleStartTime) {
                 scheduleTime = new Date(settings.scheduleStartTime);
                 // Offset by sentCount * 1 minute to space out
@@ -1143,6 +1189,7 @@ if (!String(settings.helperKeyword || "").trim()) {
               rowIndex: i,
               retryCount: isRetryAttempt ? rowRetryCount : 0,
               lastSendMethod: priorMethod,
+              campaignKeyword: keyword,
               preferredMethod: (deliveryMethod === "mixed" && isRetryAttempt && (priorMethod === "smtp" || priorMethod === "wire")) ? (priorMethod === "smtp" ? "wire" : "smtp") : "",
             });
             senderHost = sendResult.senderHost;
@@ -1175,14 +1222,21 @@ if (!String(settings.helperKeyword || "").trim()) {
               if (sendStampIdx !== -1) row[sendStampIdx] = now.toISOString();
             }
             if (executionStatusIdx !== -1) row[executionStatusIdx] = isSchedule ? "scheduled" : "sent";
-            if (validationIdx !== -1) row[validationIdx] = isSchedule ? "scheduled" : "sent";
-            if (providerMXIdx !== -1) row[providerMXIdx] = senderHost;
+            // Validation evidence is immutable: never overwrite VALIDATION or
+            // PROVIDERMXRESULT with send state/sender host.
             if (lastSendMethodIdx !== -1) row[lastSendMethodIdx] = attemptedMethod || "";
             if (lastSendStatusIdx !== -1) row[lastSendStatusIdx] = isSchedule ? "scheduled" : "sent";
             if (lastSendErrorIdx !== -1) row[lastSendErrorIdx] = "";
             if (lastAttemptAtIdx !== -1) row[lastAttemptAtIdx] = now.toISOString();
           } catch (err) {
             const msg = String(err?.message || err);
+            // A rate-limit/quota stop is a REST, not a per-row failure. Leave
+            // this and all remaining rows unattempted and let GAS auto-resume.
+            if (/rate.?limit|hourly_limit|\b429\b|limit reached|quota/i.test(msg)) {
+              log.warn(`[execute] rate limit hit on ${email}; resting campaign, remaining rows left unattempted: ${msg}`);
+              limitReached = true;
+              break;
+            }
             const nextRetryCount = (Number(rowRetryCount) || 0) + 1;
             const terminal = nextRetryCount >= 3;
             attemptedMethod = attemptedMethod || (String(senderHost).startsWith("WIRE") || String(senderHost).startsWith("SCHEDULE") ? "wire" : (deliveryMethod === "smtp" ? "smtp" : ""));
@@ -1192,8 +1246,8 @@ if (!String(settings.helperKeyword || "").trim()) {
             failureDetails.push({ email, error: msg, host: senderHost || attemptedMethod || "unknown", attempt: nextRetryCount, terminal });
 
             if (executionStatusIdx !== -1) row[executionStatusIdx] = terminal ? "failed_final" : "failed_retryable";
-            if (validationIdx !== -1 && terminal) row[validationIdx] = "failed";
-            if (providerMXIdx !== -1) row[providerMXIdx] = msg;
+            // Validation evidence is immutable - the error belongs only in the
+            // delivery columns (lastSendError / lastAttemptAt).
             if (retryCountIdx !== -1) row[retryCountIdx] = String(nextRetryCount);
             if (lastSendMethodIdx !== -1 && attemptedMethod) row[lastSendMethodIdx] = attemptedMethod;
             if (lastSendStatusIdx !== -1) row[lastSendStatusIdx] = terminal ? "failed_final" : "failed_retryable";
@@ -1201,13 +1255,17 @@ if (!String(settings.helperKeyword || "").trim()) {
             if (lastAttemptAtIdx !== -1) row[lastAttemptAtIdx] = new Date().toISOString();
           }
 
-          // Periodic CSV flush every 5 rows to prevent data loss on crash
-          if ((i + 1) % 5 === 0) {
+          // Flush the CSV only once per shootingBatchLimit send attempts.
+          // shootingBatchLimit is the engine-side flush cadence; sending itself
+          // stays strictly sequential (one row at a time).
+          sentSinceFlush++;
+          if (sentSinceFlush >= SHOOTING_BATCH_SIZE) {
+            log.info(`[Row ${i + 1}] batch flush after ${sentSinceFlush} sends (limit=${SHOOTING_BATCH_SIZE})`);
             try {
               await uploadCsvText(fileId, stringifyCSV(normalizedRows));
-              log.info("[Row " + (i + 1) + "] Periodic CSV flush completed");
+              sentSinceFlush = 0;
             } catch (flushErr) {
-              log.warn("[Row " + (i + 1) + "] Periodic CSV flush failed: " + flushErr.message);
+              log.warn(`[Row ${i + 1}] batch CSV flush failed: ${flushErr.message}`);
             }
           }
 
@@ -1216,32 +1274,22 @@ if (!String(settings.helperKeyword || "").trim()) {
             await new Promise(r => setTimeout(r, INTER_BATCH_DELAY));
           }
 
-          // Checkpoint: save progress every N rows (configurable from SETTINGS)
+          // Checkpoint: persist only the cursor/status. CSV upload is handled by
+          // the batch flush above to avoid double-hitting Drive/App Script.
           if ((i + 1) % CHECKPOINT_INTERVAL === 0) {
             log.info(` Checkpoint at row ${i + 1}/${deduplicatedRows.length}`);
             try {
               settings.lastProcessedRow = i + 1;
-              await updateSheetRowApi("campaigns", "campaignId", campaignId, {
-                settings: JSON.stringify(settings),
-                updatedOn: new Date().toISOString()
-              });
+              await writeFullCampaignSettings(campaignId, { lastProcessedRow: i + 1 });
             } catch (cpErr) {
               log.warn(` Checkpoint save failed at row ${i + 1}: ${cpErr.message}`);
-            }
-            // Live-progress flush: overwrite the Drive CSV so the file view reflects
-            // progress mid-run. Uses the Drive API directly (no Apps Script), so the
-            // backend/AppScript cache and quota are untouched.
-            try {
-              await uploadCsvText(fileId, stringifyCSV(normalizedRows));
-            } catch (flushErr) {
-              log.warn(` Live CSV flush failed at row ${i + 1}: ${flushErr.message}`);
             }
           }
           // Final progress checkpoint/flush after sequential run
           if (!pausedByAdmin) {
             try {
               settings.lastProcessedRow = deduplicatedRows.length;
-              await updateSheetRowApi("campaigns", "campaignId", campaignId, { settings: JSON.stringify(settings), updatedOn: new Date().toISOString() });
+              await writeFullCampaignSettings(campaignId, { lastProcessedRow: deduplicatedRows.length });
             } catch (cpErr) { log.warn(` Final checkpoint save failed: ${cpErr.message}`); }
             try { await uploadCsvText(fileId, stringifyCSV(normalizedRows)); } catch (flushErr) { log.warn(` Final CSV flush failed: ${flushErr.message}`); }
           }
@@ -1334,21 +1382,14 @@ if (!String(settings.helperKeyword || "").trim()) {
             await finalizeScopedRun(campaignId, serverScope, scopedRunAccounts, finalStatus, restMeta);
           }
         } else {
-          const statusUpdate = {
-            settings: JSON.stringify(settings),
-            updatedOn: new Date().toISOString()
-          };
           if (!pausedByAdmin) {
             delete settings.lastProcessedRow;
-            statusUpdate.settings = JSON.stringify(settings);
-            statusUpdate.status = finalStatus;
+            await writeFullCampaignSettings(campaignId, {}, finalStatus, ["lastProcessedRow"]);
           } else {
             // Preserve checkpoint so resume continues from where the pause interrupted.
             settings.lastProcessedRow = startIndex + sentCount;
-            statusUpdate.settings = JSON.stringify(settings);
-            statusUpdate.status = "paused";
+            await writeFullCampaignSettings(campaignId, { lastProcessedRow: startIndex + sentCount }, "paused");
           }
-          await updateSheetRowApi("campaigns", "campaignId", campaignId, statusUpdate);
         }
 
           log.info("Email campaign execution completed (background)");
@@ -2028,12 +2069,7 @@ if (limitReached) settings.restReason = "limit_reached";
           });
           await finalizeScopedRun(campaignId, serverScope, scopedRunAccounts, finalStatus, restMeta);
         } else {
-          const socialStatusUpdate = {
-            settings: JSON.stringify(settings),
-            status: finalStatus,
-            updatedOn: new Date().toISOString()
-          };
-          await updateSheetRowApi("campaigns", "campaignId", campaignId, socialStatusUpdate);
+          await writeFullCampaignSettings(campaignId, {}, finalStatus);
         }
 
           log.info("Social campaign execution completed (background)");

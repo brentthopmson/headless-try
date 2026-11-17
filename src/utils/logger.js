@@ -35,10 +35,35 @@ if (isDev && !globalThis.__engineLogTruncated) {
     } catch {}
 }
 
-// --- Async file write (dev only) ---
+// --- Async file write (production too, so visible/headless runs are inspectable) ---
+const MAX_LOG_BYTES = 20 * 1024 * 1024;
+
+function ensureLogDir() {
+    try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch {}
+}
+
+function rotateIfNeeded(filePath) {
+    try {
+        if (!fs.existsSync(filePath)) return;
+        const stat = fs.statSync(filePath);
+        if (stat.size <= MAX_LOG_BYTES) return;
+        try { fs.copyFileSync(filePath, `${filePath}.1`); } catch {}
+        fs.writeFileSync(filePath, `[log rotated] ${new Date().toISOString()}\n`, 'utf-8');
+    } catch {}
+}
+
 async function appendToFile(filePath, line) {
-    if (!isDev) return;
-    try { await fs.promises.appendFile(filePath, line, 'utf-8'); } catch {}
+    try {
+        ensureLogDir();
+        rotateIfNeeded(filePath);
+        await fs.promises.appendFile(filePath, line, 'utf-8');
+    } catch {}
+}
+
+// One process-start marker in both dev and production (no truncation in prod).
+if (!globalThis.__engineLogStarted) {
+    globalThis.__engineLogStarted = true;
+    appendToFile(LOG_FILE, `[engine start] ${new Date().toISOString()} pid=${process.pid} mode=${isProduction ? 'production' : 'dev'}\n`);
 }
 
 function formatLine(level, message, args) {
@@ -55,7 +80,7 @@ function logToEngine(level, message, args) {
 }
 
 function logToCampaign(campaignId, level, message, args) {
-    if (!campaignId || !isDev) return;
+    if (!campaignId) return;
     const line = formatLine(level, message, args);
     const campaignFile = path.join(LOG_DIR, `campaign-${campaignId}.log`);
     appendToFile(campaignFile, line);

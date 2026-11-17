@@ -10,6 +10,15 @@
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+function hasAccountDeleted(text) {
+  return /account deleted|account was recently deleted|recently deleted and may be recoverable/i.test(String(text || ''));
+}
+
+function accountDeletedResult(logger, layer, instanceId, url) {
+  logger?.info?.(`[detectGmailEmailError][${instanceId}] Account deleted detected via ${layer}. URL: ${String(url || '').substring(0, 120)}`);
+  return { found: true, code: 'ACCOUNT_DELETED', text: 'This Google account has been deleted.' };
+}
+
 function hasText(text, logger, layer, url) {
   const signals = [
     "Couldn't find",
@@ -34,11 +43,14 @@ function hasText(text, logger, layer, url) {
  */
 export async function detectGmailIdentifierError(page, instanceId, postCaptcha = false, logger = null) {
   const url = page.url();
-  if (!url.includes('/signin/identifier')) return { found: false, text: '' };
+  if (!url.includes('/signin/') && !url.includes('accounts.google.com')) return { found: false, text: '' };
 
   // Layer 1: accessibility snapshot reads rendered text through shadow DOM boundaries.
   try {
     const snapshot = await page.accessibility?.snapshot?.().catch(() => null);
+    if (snapshot && hasAccountDeleted(JSON.stringify(snapshot))) {
+      return accountDeletedResult(logger, 'accessibility', instanceId, url);
+    }
     if (snapshot && hasText(JSON.stringify(snapshot), logger, instanceId, url)) {
       return { found: true, text: "Couldn't find this account." };
     }
@@ -52,6 +64,9 @@ export async function detectGmailIdentifierError(page, instanceId, postCaptcha =
       while (walker.nextNode()) text += walker.currentNode.textContent + ' ';
       return text;
     });
+    if (hasAccountDeleted(pageText)) {
+      return accountDeletedResult(logger, 'text walker', instanceId, url);
+    }
     if (hasText(pageText, logger, instanceId, url)) {
       return { found: true, text: "Couldn't find this account." };
     }

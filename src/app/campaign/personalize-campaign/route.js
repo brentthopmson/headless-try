@@ -13,6 +13,19 @@ import { updateUserUsage } from "../../socials/_shared/hubUpdater.js";
 export const maxDuration = 0;
 export const dynamic = "force-dynamic";
 
+// AI output frequently appends a placeholder signature such as "[Your Name]"
+// even when no sender name is available. Strip these deterministically so the
+// sent mail never contains a visible placeholder.
+function stripPlaceholderSignatures(text) {
+  let s = String(text ?? "");
+  s = s.replace(/\[\s*(?:your|sender|recipient|my)?\s*(?:name|signature|company|title)\s*\]/gi, "");
+  s = s.replace(/\{\{[^}]*\}\}/g, "");
+  s = s.replace(/\[[A-Za-z][A-Za-z\s_-]{1,40}\]/g, "");
+  s = s.replace(/[ \t]+$/gm, "");
+  s = s.replace(/\n{3,}/g, "\n\n");
+  return s.trim();
+}
+
 async function personalizeBatch(batch, personalizationPrompt) {
   if (batch.length === 0) return batch.map(() => null);
 
@@ -40,21 +53,28 @@ Rules:
 3. Personalize using the recipient's available row data (name, company, role, website, industry, context, enriched fields, etc.) without inventing facts
 4. Keep body under 150 words
 5. If a "Personal link" is listed for a recipient, include that EXACT URL in the body as the CTA — do not invent, shorten, or re-type a different URL.
-6. Return ONLY the JSON array, no markdown or explanations`;
+6. NEVER include placeholder signatures such as [Your Name], [your name], {{name}}, or any bracketed/{{token}} placeholder. If the sender name is not provided, end with a natural sign-off only (for example "Best regards,") and no name line.
+7. Return ONLY the JSON array, no markdown or explanations`;
   try {
     const ai = new MultiProviderAI();
     const text = await ai.generate(prompt, { maxTokens: 4000, jsonMode: true });
     const parsed = ai.parseAiJson(text);
     if (Array.isArray(parsed)) {
       const clean = parsed.map(r => r && typeof r === 'object'
-        ? { subject: ai.sanitizeAiPlainText(String(r.subject || ''), 200), body: ai.sanitizeAiPlainText(String(r.body || ''), 4000) }
+        ? {
+            subject: stripPlaceholderSignatures(ai.sanitizeAiPlainText(String(r.subject || ''), 200)),
+            body: stripPlaceholderSignatures(ai.sanitizeAiPlainText(String(r.body || ''), 4000)),
+          }
         : null).filter(r => r && (r.subject || r.body));
       if (clean.length) return clean;
     }
     if (typeof ai._salvageJsonArray === 'function') {
       const salvaged = ai._salvageJsonArray(text);
       if (Array.isArray(salvaged) && salvaged.length) {
-        return salvaged.map(r => ({ subject: ai.sanitizeAiPlainText(String(r.subject || ''), 200), body: ai.sanitizeAiPlainText(String(r.body || ''), 4000) })).filter(r => r.subject || r.body);
+        return salvaged.map(r => ({
+          subject: stripPlaceholderSignatures(ai.sanitizeAiPlainText(String(r.subject || ''), 200)),
+          body: stripPlaceholderSignatures(ai.sanitizeAiPlainText(String(r.body || ''), 4000)),
+        })).filter(r => r.subject || r.body);
       }
     }
   } catch {}
@@ -85,21 +105,22 @@ Rules:
 1. Each message must be unique and reference something specific about the contact using available row data
 2. Keep messages under 100 words
 3. Be conversational, not salesy
-4. Return ONLY the JSON array`;
+4. NEVER include placeholder tokens such as [Your Name] or {{name}}; if no sender name is provided, just sign off naturally or omit the sign-off.
+5. Return ONLY the JSON array`;
   try {
     const ai = new MultiProviderAI();
     const text = await ai.generate(prompt, { maxTokens: 4000, jsonMode: true });
     const parsed = ai.parseAiJson(text);
     if (Array.isArray(parsed)) {
       const clean = parsed.map(r => r && typeof r === 'object'
-        ? { message: ai.sanitizeAiPlainText(String(r.message || ''), 2000) }
+        ? { message: stripPlaceholderSignatures(ai.sanitizeAiPlainText(String(r.message || ''), 2000)) }
         : null).filter(r => r && r.message);
       if (clean.length) return clean;
     }
     if (typeof ai._salvageJsonArray === 'function') {
       const salvaged = ai._salvageJsonArray(text);
       if (Array.isArray(salvaged) && salvaged.length) {
-        return salvaged.map(r => ({ message: ai.sanitizeAiPlainText(String(r.message || ''), 2000) })).filter(r => r.message);
+        return salvaged.map(r => ({ message: stripPlaceholderSignatures(ai.sanitizeAiPlainText(String(r.message || ''), 2000)) })).filter(r => r.message);
       }
     }
   } catch {}

