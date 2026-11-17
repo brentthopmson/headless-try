@@ -594,3 +594,226 @@
 [INFO] 2026-11-17T14:36:10.956Z - [execute]  Flushing updated CSV back to Drive: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
 [INFO] 2026-11-17T14:36:15.908Z - [execute] [execute-email] Run summary: sent=2 delivered=2 failedAttempts=1 terminalFailed=0 retryPending=1 sentOrScheduled=12 skippedAlreadySent=10 limitReached=true paused=false
 [INFO] 2026-11-17T14:36:46.315Z - [execute] Email campaign execution completed (background)
+[INFO] 2026-11-17T17:06:21.234Z - [mail-merge] Mail-merge start (channel=email, subject=yes, body=yes, personalizeLink=false, helperKeyword=yes)
+[INFO] 2026-11-17T17:06:25.521Z - [mail-merge] Columns after merge-prep: [SN, FIRSTNAME, LASTNAME, EMAIL, ADDRESS, CITY, STATE, COUNTRY, ZIPCODE, PHONE, SEX, BUSINESSNAME, BUSINESSADDRESS, BUSINESSCITY, BUSINESSSTATE, BUSINESSCOUNTRY, BUSINESSZIPCODE, BUSINESSPHONE, BUSINESSEMAIL, SOCIALPLATFORM, SOCIALUSERNAME, SOCIALPHONE, CONTEXT, URL, , , , , , campaignType, engine, provider, shooterFirstName, shooterLastName, shooterEmail, shooterAddress, shooterCity, shooterState, shooterCountry, shooterZipCode, shooterPhone, shooterSex, smtp, port, username, password, appPassword, backupCode, oAuth2ClientId, oAuth2ClientSecret, oAuth2RefreshToken, , shouldValidate, shouldEnhance, shouldSearchInteract, shouldPageInteract, shouldInboxInteract, shouldActivitiesInteract, shouldSendMessage, , , emailSubject, emailBody, socialMessage, replyTo, , , , validation, providerMXResult, enhancedSubject, enhancedBody, enhancedSocialMessage, enrichmentStatus, , sendDate, sendTime, sendStamp, , , , searchKeys, searchCount, searchStatus, searchStamp, , profileToInteract, interactCount, interactStatus, interactStamp, , personalizationStatus, executionStatus, LINK, HELPERKEYWORD, retryCount, lastSendMethod, lastSendStatus, lastSendError, lastAttemptAt, sentStatus, sendResult, sendError, deliveryStatus, STATUS]
+[INFO] 2026-11-17T17:06:25.521Z - [mail-merge] link column: not requested; helper column: stamped per row; templateEnhancedEmail=false (aiPersonalizationStaged=true)
+[INFO] 2026-11-17T17:06:29.316Z - [orchestrator] Mail merge result: {"success":true,"message":"Mail merge completed for 54 rows","processed":54,"channel":"email"}
+[INFO] 2026-11-17T17:06:44.072Z - [orchestrator] Triggering Validation
+[INFO] 2026-11-17T17:06:52.583Z - [validate] Received validation request
+[INFO] 2026-11-17T17:06:58.711Z - [validate]  Downloading CSV file: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T17:07:09.884Z - [validate]  MX concurrency=20, platform workers=5, platform verification=true
+[INFO] 2026-11-17T17:07:09.885Z - [validate]  Processing 54 rows (single-server, full dataset)
+[INFO] 2026-11-17T17:07:14.278Z - [validate] [Row MX] cfshelton99@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:14.280Z - [validate] [Row MX] gouravsingh@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:14.282Z - [validate] [Row MX] alper.ceyhan@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:14.283Z - [validate] [Row MX] lspardun@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:14.284Z - [validate] [Row MX] evaniperen@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:14.285Z - [validate] [Row MX] sharmahemant68@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:14.286Z - [validate] [Row MX] mayurtotla@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:14.286Z - [validate] [Row MX] sajidanaseem@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:14.287Z - [validate] [Row MX] jjmcgonnell@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:14.288Z - [validate] [Row MX] anantsuryavanshi91@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:14.289Z - [validate] [Row MX] shawn.mekkes@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:14.290Z - [validate] [Row MX] corinne.rochet@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:14.290Z - [validate] [Row MX] mingggchen@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:14.292Z - [validate] [Row MX] ccyr15@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:14.294Z - [validate] [Row MX] hunterpsherman@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:14.298Z - [validate] [Row MX] umesh.nikam@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:14.299Z - [validate] [Row MX] anadeosma@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:14.300Z - [validate] [Row MX] valecha.deepti@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:14.301Z - [validate] [Row MX] murphy.richardm@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:14.302Z - [validate] [Row MX] omarbenrouba@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:26.844Z - [validate] [Row MX] salvadorelias67@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:26.845Z - [validate] [Row MX] bahatd7@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:26.846Z - [validate] [Row MX] brunobaco@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:26.847Z - [validate] [Row MX] sarahmounea@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:26.851Z - [validate] [Row MX] themerritt@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:26.854Z - [validate] [Row MX] malinda.shaver@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:26.855Z - [validate] [Row MX] sheymouse@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:26.857Z - [validate] [Row MX] rawfashion@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:26.858Z - [validate] [Row MX] thind.sandy9@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:26.859Z - [validate] [Row MX] dineshdhungana@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:26.860Z - [validate] [Row MX] azdude68@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:26.861Z - [validate] [Row MX] fatema.maliha@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:26.863Z - [validate] [Row MX] denissejcruz@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:26.864Z - [validate] [Row MX] esther.bares@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:26.865Z - [validate] [Row MX] vinayextc@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:26.868Z - [validate] [Row MX] kagwiriairene@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:26.870Z - [validate] [Row MX] andreagangale@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:26.872Z - [validate] [Row MX] vrai.cse@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:26.873Z - [validate] [Row MX] edjohnwain@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:26.875Z - [validate] [Row MX] pscary1@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:37.476Z - [validate] [Row MX] bhenke16@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:37.479Z - [validate] [Row MX] poupon.flo@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:37.481Z - [validate] [Row MX] kevin.schnitzler@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:37.483Z - [validate] [Row MX] yair.tamir@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:37.484Z - [validate] [Row MX] vivekmgr2k4@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:37.486Z - [validate] [Row MX] sblack09@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:37.487Z - [validate] [Row MX] garyvelvet@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:37.488Z - [validate] [Row MX] ruchibhavsar123@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:37.489Z - [validate] [Row MX] katie.ziemann@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:37.491Z - [validate] [Row MX] mx.bad@invalid-domain-xyz.com: invalid_domain (queryMx ENOTFOUND invalid-domain-xyz.com)
+[INFO] 2026-11-17T17:07:37.492Z - [validate] [Row MX] no.such.user.839201@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:37.493Z - [validate] [Row MX] definitely.missing.472019@gmail.com: valid_mx (alt1.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T17:07:37.496Z - [validate] [Row MX] not.real.person.571920@outlook.com: valid_mx (outlook-com.olc.protection.outlook.com)
+[INFO] 2026-11-17T17:07:37.497Z - [validate] [Row MX] absent.account.648213@outlook.com: valid_mx (outlook-com.olc.protection.outlook.com)
+[INFO] 2026-11-17T17:07:49.514Z - [validate]  Platform verification: 53 eligible row(s) across 2 platform(s), workers=2 (batch=5)
+[INFO] 2026-11-17T17:07:53.009Z - [validate] [Platform worker 2] gmail: 51 email(s) on reused tab
+[INFO] 2026-11-17T17:07:53.523Z - [validate] [Platform worker 1] outlook: 2 email(s) on reused tab
+[WARN] 2026-11-17T17:08:13.309Z - [validate] [Row verify] cfshelton99@gmail.com @gmail: inconclusive detail=url_changed=false,input_visible=true url=https://accounts.google.com/v3/signin/identifier?continue=https://mail.google.com/mail/?service%3Dmail%26flowName%3DGlifWebSignIn%26flowEntr text=Loading Sign in with your Google Account. This account will be available to other Google apps in the browser. Email or phone Forgot email? Not your computer? Use Guest mode to sign in privately. Learn more about using Guest mode Next Create account English (United States) Help Privacy Terms
+[INFO] 2026-11-17T17:08:14.343Z - [validate] [Row verify] cfshelton99@gmail.com @gmail: attempt 1 => inconclusive (no_confirmation:url_changed=false,input_visible=true)
+[INFO] 2026-11-17T17:08:17.410Z - [validate] [Row verify] not.real.person.571920@outlook.com @outlook: attempt 1 => not_exists (platform_error:We couldn't find an account with that username. Try another, or get a new Microsoft account.)
+[INFO] 2026-11-17T17:08:31.197Z - [validate] [Row verify] absent.account.648213@outlook.com @outlook: attempt 1 => not_exists (platform_error:We couldn't find an account with that username. Try another, or get a new Microsoft account.)
+[INFO] 2026-11-17T17:08:31.473Z - [validate] [Row verify] cfshelton99@gmail.com @gmail: attempt 2 => verified_exists (challenge_visible)
+[INFO] 2026-11-17T17:08:40.632Z - [validate] [Row verify] gouravsingh@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:08:49.008Z - [validate] [Row verify] alper.ceyhan@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:08:58.771Z - [validate] [Row verify] lspardun@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:09:13.088Z - [validate] [Row verify] evaniperen@gmail.com @gmail: attempt 1 => verified_exists (identifier_step_transitioned)
+[INFO] 2026-11-17T17:09:27.474Z - [validate] [Row verify] sharmahemant68@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:09:40.490Z - [validate] [Row verify] mayurtotla@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:09:49.580Z - [validate] [Row verify] sajidanaseem@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:09:58.870Z - [validate] [Row verify] jjmcgonnell@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:10:08.682Z - [validate] [Row verify] anantsuryavanshi91@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:10:23.437Z - [validate] [Row verify] shawn.mekkes@gmail.com @gmail: attempt 1 => verified_exists (challenge_visible)
+[INFO] 2026-11-17T17:10:34.692Z - [validate] [Row verify] corinne.rochet@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:10:46.336Z - [validate] [Row verify] mingggchen@gmail.com @gmail: attempt 1 => verified_exists (challenge_visible)
+[INFO] 2026-11-17T17:10:54.105Z - [validate] [Row verify] ccyr15@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:11:04.152Z - [validate] [Row verify] hunterpsherman@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:11:19.404Z - [validate] [Row verify] umesh.nikam@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:11:27.918Z - [validate] [Row verify] anadeosma@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:11:37.041Z - [validate] [Row verify] valecha.deepti@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:11:45.920Z - [validate] [Row verify] murphy.richardm@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[WARN] 2026-11-17T17:11:52.647Z - [orchestrator] Validation fetch error: fetch failed (disconnect=true)
+[INFO] 2026-11-17T17:11:58.247Z - [validate] [Row verify] omarbenrouba@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:12:13.119Z - [validate] [Row verify] salvadorelias67@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:12:20.491Z - [validate] [Row verify] bahatd7@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:12:28.236Z - [validate] [Row verify] brunobaco@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:12:36.845Z - [validate] [Row verify] sarahmounea@gmail.com @gmail: attempt 1 => not_exists (platform_error:Account deleted)
+[INFO] 2026-11-17T17:12:45.861Z - [validate] [Row verify] themerritt@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:13:04.275Z - [validate] [Row verify] malinda.shaver@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:13:16.230Z - [validate] [Row verify] sheymouse@gmail.com @gmail: attempt 1 => verified_exists (identifier_step_transitioned)
+[INFO] 2026-11-17T17:13:24.734Z - [validate] [Row verify] rawfashion@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:13:34.823Z - [validate] [Row verify] thind.sandy9@gmail.com @gmail: attempt 1 => verified_exists (identifier_step_transitioned)
+[INFO] 2026-11-17T17:13:43.509Z - [validate] [Row verify] dineshdhungana@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:13:56.658Z - [validate] [Row verify] azdude68@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:14:07.436Z - [validate] [Row verify] fatema.maliha@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:14:17.106Z - [validate] [Row verify] denissejcruz@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:14:26.086Z - [validate] [Row verify] esther.bares@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:14:34.507Z - [validate] [Row verify] vinayextc@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:14:48.967Z - [validate] [Row verify] kagwiriairene@gmail.com @gmail: attempt 1 => verified_exists (challenge_visible)
+[INFO] 2026-11-17T17:14:57.993Z - [validate] [Row verify] andreagangale@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:15:06.307Z - [validate] [Row verify] vrai.cse@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:15:19.324Z - [validate] [Row verify] edjohnwain@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:15:28.750Z - [validate] [Row verify] pscary1@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:15:44.229Z - [validate] [Row verify] bhenke16@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:15:54.174Z - [validate] [Row verify] poupon.flo@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:16:03.682Z - [validate] [Row verify] kevin.schnitzler@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:16:12.464Z - [validate] [Row verify] yair.tamir@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:16:24.388Z - [validate] [Row verify] vivekmgr2k4@gmail.com @gmail: attempt 1 => verified_exists (challenge_visible)
+[INFO] 2026-11-17T17:16:38.512Z - [validate] [Row verify] sblack09@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:16:46.293Z - [validate] [Row verify] garyvelvet@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:16:56.940Z - [validate] [Row verify] ruchibhavsar123@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:17:06.855Z - [validate] [Row verify] katie.ziemann@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T17:17:15.257Z - [validate] [Row verify] no.such.user.839201@gmail.com @gmail: attempt 1 => not_exists (platform_error:Couldn't find this account.)
+[INFO] 2026-11-17T17:17:31.468Z - [validate] [Row verify] definitely.missing.472019@gmail.com @gmail: attempt 1 => not_exists (platform_error:Couldn't find this account.)
+[INFO] 2026-11-17T17:17:58.511Z - [validate]  Validation stats: {"total":54,"duplicates":0,"empty":0,"invalidFormat":0,"validMx":0,"invalidMx":1,"verifiedExists":48,"notExists":5,"unverifiable":0,"socialValid":0,"pending":0} complete=true rows=54
+[INFO] 2026-11-17T17:18:12.343Z - [orchestrator] Mail merge already done, skipping
+[INFO] 2026-11-17T17:18:19.868Z - [orchestrator] Triggering Enrichment
+[INFO] 2026-11-17T17:18:30.391Z - [enrich] Received enrichment request
+[INFO] 2026-11-17T17:18:38.234Z - [enrich]  Downloading CSV file: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T17:18:45.607Z - [enrich] [enrich] Running schema comprehension (AI Pass A) on 105 columns, 54 rows
+[INFO] 2026-11-17T17:21:29.131Z - [enrich] [enrich] Schema mapped: 39 writable columns
+[WARN] 2026-11-17T17:23:30.349Z - [orchestrator] Enrichment fetch error: This operation was aborted (disconnect=true)
+[INFO] 2026-11-17T17:26:14.806Z - [enrich] [Row 0] enrichment enriched
+[INFO] 2026-11-17T17:26:14.807Z - [enrich] [Row 1] enrichment enriched
+[INFO] 2026-11-17T17:26:14.810Z - [enrich] [Row 2] enrichment enriched
+[INFO] 2026-11-17T17:26:14.811Z - [enrich] [Row 3] enrichment enriched
+[INFO] 2026-11-17T17:26:14.812Z - [enrich] [Row 4] enrichment enriched
+[INFO] 2026-11-17T17:26:14.813Z - [enrich] [Row 5] enrichment enriched
+[INFO] 2026-11-17T17:26:14.814Z - [enrich] [Row 6] enrichment enriched
+[INFO] 2026-11-17T17:26:14.815Z - [enrich] [Row 7] enrichment enriched
+[INFO] 2026-11-17T17:26:14.816Z - [enrich] [Row 8] enrichment enriched
+[INFO] 2026-11-17T17:26:14.817Z - [enrich] [Row 9] enrichment enriched
+[INFO] 2026-11-17T17:26:14.818Z - [enrich] [Row 10] enrichment enriched
+[INFO] 2026-11-17T17:26:14.818Z - [enrich] [Row 11] enrichment enriched
+[INFO] 2026-11-17T17:26:14.819Z - [enrich] [Row 12] enrichment enriched
+[INFO] 2026-11-17T17:26:14.820Z - [enrich] [Row 13] enrichment enriched
+[INFO] 2026-11-17T17:26:14.821Z - [enrich] [Row 14] enrichment enriched
+[INFO] 2026-11-17T17:26:14.822Z - [enrich] [Row 15] enrichment enriched
+[INFO] 2026-11-17T17:26:14.823Z - [enrich] [Row 16] enrichment enriched
+[INFO] 2026-11-17T17:26:14.824Z - [enrich] [Row 17] enrichment enriched
+[INFO] 2026-11-17T17:26:14.825Z - [enrich] [Row 18] enrichment enriched
+[INFO] 2026-11-17T17:26:14.826Z - [enrich] [Row 19] enrichment enriched
+[INFO] 2026-11-17T17:26:14.827Z - [enrich] [Row 20] enrichment enriched
+[INFO] 2026-11-17T17:26:14.828Z - [enrich] [Row 21] enrichment enriched
+[INFO] 2026-11-17T17:26:14.829Z - [enrich] [Row 22] enrichment enriched
+[INFO] 2026-11-17T17:26:14.830Z - [enrich] [Row 23] enrichment enriched
+[INFO] 2026-11-17T17:26:14.831Z - [enrich] [Row 24] enrichment enriched
+[INFO] 2026-11-17T17:26:14.832Z - [enrich] [Row 25] enrichment enriched
+[INFO] 2026-11-17T17:26:14.832Z - [enrich] [Row 26] enrichment enriched
+[INFO] 2026-11-17T17:26:14.834Z - [enrich] [Row 27] enrichment enriched
+[INFO] 2026-11-17T17:26:14.835Z - [enrich] [Row 28] enrichment enriched
+[INFO] 2026-11-17T17:26:14.836Z - [enrich] [Row 29] enrichment enriched
+[INFO] 2026-11-17T17:26:14.837Z - [enrich] [Row 30] enrichment enriched
+[INFO] 2026-11-17T17:26:14.837Z - [enrich] [Row 31] enrichment enriched
+[INFO] 2026-11-17T17:26:14.838Z - [enrich] [Row 32] enrichment enriched
+[INFO] 2026-11-17T17:26:14.839Z - [enrich] [Row 33] enrichment enriched
+[INFO] 2026-11-17T17:26:14.840Z - [enrich] [Row 34] enrichment enriched
+[INFO] 2026-11-17T17:26:14.840Z - [enrich] [Row 35] enrichment enriched
+[INFO] 2026-11-17T17:26:14.841Z - [enrich] [Row 36] enrichment enriched
+[INFO] 2026-11-17T17:26:14.843Z - [enrich] [Row 37] enrichment enriched
+[INFO] 2026-11-17T17:26:14.844Z - [enrich] [Row 38] enrichment enriched
+[INFO] 2026-11-17T17:26:14.845Z - [enrich] [Row 39] enrichment no_data (no-change)
+[INFO] 2026-11-17T17:26:14.847Z - [enrich] [Row 40] enrichment enriched
+[INFO] 2026-11-17T17:26:14.848Z - [enrich] [Row 41] enrichment enriched
+[INFO] 2026-11-17T17:26:14.849Z - [enrich] [Row 42] enrichment enriched
+[INFO] 2026-11-17T17:26:14.850Z - [enrich] [Row 43] enrichment enriched
+[INFO] 2026-11-17T17:26:14.851Z - [enrich] [Row 44] enrichment enriched
+[INFO] 2026-11-17T17:26:14.852Z - [enrich] [Row 45] enrichment enriched
+[INFO] 2026-11-17T17:26:14.853Z - [enrich] [Row 46] enrichment enriched
+[INFO] 2026-11-17T17:26:14.854Z - [enrich] [Row 47] enrichment enriched
+[INFO] 2026-11-17T17:26:14.854Z - [enrich] [Row 48] enrichment enriched
+[INFO] 2026-11-17T17:26:14.855Z - [enrich] [Row 49] enrichment enriched
+[INFO] 2026-11-17T17:26:14.857Z - [enrich] [Row 50] enrichment enriched
+[INFO] 2026-11-17T17:26:14.858Z - [enrich] [Row 51] enrichment enriched
+[INFO] 2026-11-17T17:26:14.859Z - [enrich] [Row 52] enrichment enriched
+[INFO] 2026-11-17T17:26:14.860Z - [enrich] [Row 53] enrichment enriched
+[INFO] 2026-11-17T17:26:48.485Z - [orchestrator] Mail merge already done, skipping
+[INFO] 2026-11-17T17:26:56.021Z - [orchestrator] Triggering AI Personalization
+[INFO] 2026-11-17T17:27:04.233Z - [personalize] Received personalization request
+[INFO] 2026-11-17T17:27:08.550Z - [personalize]  Downloading CSV file: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T17:30:04.738Z - [personalize]  Personalization wave 1/1 complete (flushed)
+[INFO] 2026-11-17T17:30:21.863Z - [orchestrator] AI Personalization response: {"success":true,"completed":true,"message":"Campaign personalization completed successfully","total":54,"personalized":54}
+[INFO] 2026-11-17T17:30:33.753Z - [orchestrator] Mail merge already done, skipping
+[INFO] 2026-11-17T17:30:33.756Z - [orchestrator] Cannot acquire lock: already_locked_by_self
+[INFO] 2026-11-17T17:30:39.328Z - [orchestrator] Auto-advancing to Execute
+[INFO] 2026-11-17T17:30:39.329Z - [orchestrator] Triggering Execute
+[INFO] 2026-11-17T17:30:42.632Z - [execute] Received execution trigger
+[INFO] 2026-11-17T17:30:55.691Z - [execute]  shooting=20, checkpoint=5, delay=500ms, multiServer=false, level=balanced
+[INFO] 2026-11-17T17:30:59.551Z - [orchestrator] Execute response: {"success":true,"accepted":true,"processing":true,"campaignId":"CMP-35923860","channel":"email"}
+[INFO] 2026-11-17T17:31:12.177Z - [execute]  Downloading CSV file for campaign sending: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T17:31:20.400Z - [execute] [execute] schedule waterfall stamped 54 row(s) in America/New_York
+[INFO] 2026-11-17T17:31:24.000Z - [execute]  Firestick warm-up enabled: 71 firestick emails loaded (concurrency=20, no total cap)
+[INFO] 2026-11-17T17:31:24.000Z - [execute]  Sending emails: limit=20, batch=20 contacts (after dedup: 54/54)
+[INFO] 2026-11-17T17:32:54.774Z - [execute] [replyFilter][outlook] rule for '5R1234899' already exists
+[INFO] 2026-11-17T17:32:54.775Z - [execute]  Reply filter: exists Ã¢â€ â€™ '5R1234899' (identifier=5R1234899)
+[INFO] 2026-11-17T17:33:04.914Z - [execute]  Execution mode: sequential (one-by-one), firestick=on, delivery=mixed, flushEvery=20
+[INFO] 2026-11-17T17:35:46.150Z - [execute]  Firestick warm-up sent to gov.fintechusv@gmail.com via wire
+[INFO] 2026-11-17T17:35:46.662Z - [execute] [Row wire] cfshelton99@gmail.com: sending via session browser-1794011658491-lh5a0cnqsh (outlook)
+[INFO] 2026-11-17T17:37:35.752Z - [execute] [Row send] cfshelton99@gmail.com: sent via WIRE(outlook) (1/20)
+[INFO] 2026-11-17T17:38:32.135Z - [execute]  Firestick warm-up sent to gov.fintechassistancepay@gmail.com via smtp
+[INFO] 2026-11-17T17:38:40.380Z - [execute] [Row send] gouravsingh@gmail.com: sent via smtp.gmail.com (2/20)
+[INFO] 2026-11-17T17:41:03.731Z - [execute]  Firestick warm-up sent to gov.fintechassitancepay@gmail.com via wire
+[INFO] 2026-11-17T17:41:04.247Z - [execute] [Row wire] alper.ceyhan@gmail.com: sending via session browser-1794011658491-lh5a0cnqsh (outlook)
+[INFO] 2026-11-17T17:42:48.213Z - [execute] [Row send] alper.ceyhan@gmail.com: sent via WIRE(outlook) (3/20)
+[INFO] 2026-11-17T17:43:40.512Z - [execute]  Firestick warm-up sent to gov.communitydc@gmail.com via smtp
+[INFO] 2026-11-17T17:43:49.558Z - [execute] [Row send] lspardun@gmail.com: sent via smtp.gmail.com (4/20)
+[INFO] 2026-11-17T17:46:15.528Z - [execute]  Firestick warm-up sent to gov.helpingcommunities@gmail.com via wire
+[INFO] 2026-11-17T17:46:16.042Z - [execute] [Row wire] evaniperen@gmail.com: sending via session browser-1794011658491-lh5a0cnqsh (outlook)
+[ERROR] 2026-11-17T17:47:50.302Z - [execute]  Failed to send to evaniperen@gmail.com via WIRE (attempt 1/3): Send unverified (compose still open/ambiguous) for evaniperen@gmail.com via outlook undefined
+[INFO] 2026-11-17T17:47:50.817Z - [execute]  Checkpoint at row 5/54
+[INFO] 2026-11-17T17:48:39.873Z - [execute]  Firestick warm-up sent to gov.fintechgrantprogram@gmail.com via smtp
+[WARN] 2026-11-17T17:48:40.388Z - [execute] [execute] rate limit hit on sharmahemant68@gmail.com; resting campaign, remaining rows left unattempted: Rate limited: hourly_limit: 5/5
+[INFO] 2026-11-17T17:48:40.389Z - [execute]  Flushing updated CSV back to Drive: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T17:48:45.276Z - [execute] [execute-email] Run summary: sent=4 delivered=4 failedAttempts=1 terminalFailed=0 retryPending=1 sentOrScheduled=4 skippedAlreadySent=0 limitReached=true paused=false
+[INFO] 2026-11-17T17:48:55.753Z - [execute] Email campaign execution completed (background)

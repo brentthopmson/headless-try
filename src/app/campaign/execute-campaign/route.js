@@ -5,7 +5,7 @@ import { formatCampaignDate, formatCampaignTime, applyRowStatuses } from "../_sh
 import { downloadCsvText, uploadCsvText, updateSheetRowApi, getSheetDataApi } from "../../api/googlesheets.js";
 import logger from "../../../utils/logger.js";
 import { detectProvider } from "../../emails/_shared/wireSender.js";
-import { validateSmtpConfigs, createSmtpSendCap, sendWarmupEmail, sendCampaignEmail, resolveWireProvider } from "../../shooting/email/campaignSender.js";
+import { validateSmtpConfigs, createSmtpSendCap, sendWarmupEmail, sendCampaignEmail, resolveWireProvider, smtpAccountKey } from "../../shooting/email/campaignSender.js";
 import { resolveSocialSession } from "../../socials/_shared/routeHelper.js";
 import { ensureReplyFilter } from "../../emails/_shared/replyFilter.js";
 import { processSearchInteractTask } from "../../socials/search-interact/route.js";
@@ -797,6 +797,7 @@ export async function POST(request) {
         let deliveredCount = 0;
         let failedCount = 0;
         let limitReached = false;
+        let quotaRestDetail = ""; // human-readable cause of a full-exhaustion rest
         const failureDetails = [];
 
         // Step 3c: Deduplicate recipients by email address
@@ -966,6 +967,20 @@ if (!String(settings.helperKeyword || "").trim()) {
         const smtpCap = createSmtpSendCap({ smtpSettings, accountSendPerRunLimit });
         const pickSmtpWithinCap = smtpCap.pick;
         const noteSmtpSend = smtpCap.note;
+        // SMTP accounts whose real hourly/daily/monthly quota is exhausted are
+        // tracked here and skipped for the REST of this run, so one exhausted
+        // sender never stops the others (parity with interaction exhaustion:
+        // only full exhaustion of every path should rest the campaign).
+        const rateLimitedSmtpAccounts = new Set();
+        const pickAvailableSmtp = (seed) => {
+          for (let k = 0; k <= smtpSettings.length; k++) {
+            const candidate = pickSmtpWithinCap(seed + k);
+            if (!candidate) return null;
+            const key = smtpAccountKey(candidate.config);
+            if (!rateLimitedSmtpAccounts.has(key)) return candidate;
+          }
+          return null;
+        };
         // Execute must run strictly sequentially (one row at a time) in campaign order.
         // Do NOT parallelize/wave rows or open multiple browsers/sends concurrently.
         const sendConcurrencyN = 1;
@@ -1083,7 +1098,7 @@ if (!String(settings.helperKeyword || "").trim()) {
             if (!message.includes(trackToken)) message = `${message}\n\n${trackToken}`.trim();
           }
 
-          let smtpPick = pickSmtpWithinCap(sentCount);
+          let smtpPick = pickAvailableSmtp(sentCount);
           const smtpPoolExhaustedByRunCap = !smtpPick && accountSendPerRunLimit > 0 && smtpSettings.length > 0;
           if (smtpPoolExhaustedByRunCap) {
             if (deliveryMethod === "smtp") {
@@ -1105,13 +1120,14 @@ if (!String(settings.helperKeyword || "").trim()) {
           const isSchedule = settings.sendMode === "schedule";
 
           let attemptedMethod = "";
+          let canWireRow = false; // hoisted so the quota handler can decide fallback paths
           try {
             const needsBrowser = isSchedule || deliveryMethod === "wire" || deliveryMethod === "mixed";
             const profileId = needsBrowser ? (settings.accounts?.[0] || settings.wireAccount) : null;
             const profileData = profileId ? await getSocialProfileCookies(profileId) : null;
 
             // Determine preferred/attempted method for retries (esp. mixed)
-            const canWireRow = !!(profileData?.cookies || profileData?.driveCookieJSON || profileData?.accountCookieJSON);
+            canWireRow = !!(profileData?.cookies || profileData?.driveCookieJSON || profileData?.accountCookieJSON);
             const canSmtpRow = !!smtp;
             if (deliveryMethod === "smtp") attemptedMethod = "smtp";
             else if (deliveryMethod === "wire") attemptedMethod = "wire";
@@ -1139,7 +1155,7 @@ if (!String(settings.helperKeyword || "").trim()) {
                 subject,
                 message,
                 seed: sentCount,
-                pickSmtp: pickSmtpWithinCap,
+                pickSmtp: pickAvailableSmtp,
                 noteSmtp: noteSmtpSend,
                 method: attemptedMethod,
                 smtpAccount: smtp,
@@ -1230,29 +1246,53 @@ if (!String(settings.helperKeyword || "").trim()) {
             if (lastAttemptAtIdx !== -1) row[lastAttemptAtIdx] = now.toISOString();
           } catch (err) {
             const msg = String(err?.message || err);
-            // A rate-limit/quota stop is a REST, not a per-row failure. Leave
-            // this and all remaining rows unattempted and let GAS auto-resume.
-            if (/rate.?limit|hourly_limit|\b429\b|limit reached|quota/i.test(msg)) {
-              log.warn(`[execute] rate limit hit on ${email}; resting campaign, remaining rows left unattempted: ${msg}`);
-              limitReached = true;
-              break;
-            }
-            const nextRetryCount = (Number(rowRetryCount) || 0) + 1;
-            const terminal = nextRetryCount >= 3;
-            attemptedMethod = attemptedMethod || (String(senderHost).startsWith("WIRE") || String(senderHost).startsWith("SCHEDULE") ? "wire" : (deliveryMethod === "smtp" ? "smtp" : ""));
-            log.error(` Failed to send to ${email} via ${senderHost || attemptedMethod || "unknown"} (attempt ${nextRetryCount}/3): ${msg}`);
-            failedCount++;
-            // Failures do NOT burn the batch cap (only delivered sends do).
-            failureDetails.push({ email, error: msg, host: senderHost || attemptedMethod || "unknown", attempt: nextRetryCount, terminal });
+            // A quota stop on ONE sender is not a campaign stop. Mark only that
+            // account and keep sending via the remaining path(s) — parity with
+            // interactions, where exhausting one type does not stop the others.
+            if (/rate.?limit|hourly_limit|daily_limit|monthly_limit|\b429\b|limit reached|quota/i.test(msg)) {
+              if (smtp) {
+                const key = smtpAccountKey(smtp);
+                rateLimitedSmtpAccounts.add(key);
+                log.warn(`[execute] SMTP account ${key} quota reached on ${email}: ${msg}`);
+              }
+              const anotherSmtp = !!pickAvailableSmtp(sentCount + 1);
+              const canKeepSending =
+                (deliveryMethod === "mixed" && (canWireRow || anotherSmtp)) ||
+                (deliveryMethod === "smtp" && anotherSmtp);
+              if (canKeepSending) {
+                log.warn(`[execute] sender quota reached on ${email}; continuing with remaining sender(s) (wire=${canWireRow}, otherSmtp=${anotherSmtp}). Row left unattempted for a later retry.`);
+                // Leave this row retryable; it was not delivered and must not burn the batch cap.
+                if (executionStatusIdx !== -1) row[executionStatusIdx] = "failed_retryable";
+                if (lastSendStatusIdx !== -1) row[lastSendStatusIdx] = "failed_retryable";
+                if (lastSendErrorIdx !== -1) row[lastSendErrorIdx] = msg.slice(0, 500);
+                if (retryCountIdx !== -1) row[retryCountIdx] = String(Math.min(3, (Number(rowRetryCount) || 0) + 1));
+                if (lastAttemptAtIdx !== -1) row[lastAttemptAtIdx] = new Date().toISOString();
+                if (lastSendMethodIdx !== -1 && attemptedMethod) row[lastSendMethodIdx] = attemptedMethod;
+              } else {
+                // No path left: this is a genuine full exhaustion → rest.
+                log.warn(`[execute] all senders exhausted at ${email}; resting campaign, remaining rows left unattempted: ${msg}`);
+                quotaRestDetail = msg;
+                limitReached = true;
+                break;
+              }
+            } else {
+              const nextRetryCount = (Number(rowRetryCount) || 0) + 1;
+              const terminal = nextRetryCount >= 3;
+              attemptedMethod = attemptedMethod || (String(senderHost).startsWith("WIRE") || String(senderHost).startsWith("SCHEDULE") ? "wire" : (deliveryMethod === "smtp" ? "smtp" : ""));
+              log.error(` Failed to send to ${email} via ${senderHost || attemptedMethod || "unknown"} (attempt ${nextRetryCount}/3): ${msg}`);
+              failedCount++;
+              // Failures do NOT burn the batch cap (only delivered sends do).
+              failureDetails.push({ email, error: msg, host: senderHost || attemptedMethod || "unknown", attempt: nextRetryCount, terminal });
 
-            if (executionStatusIdx !== -1) row[executionStatusIdx] = terminal ? "failed_final" : "failed_retryable";
-            // Validation evidence is immutable - the error belongs only in the
-            // delivery columns (lastSendError / lastAttemptAt).
-            if (retryCountIdx !== -1) row[retryCountIdx] = String(nextRetryCount);
-            if (lastSendMethodIdx !== -1 && attemptedMethod) row[lastSendMethodIdx] = attemptedMethod;
-            if (lastSendStatusIdx !== -1) row[lastSendStatusIdx] = terminal ? "failed_final" : "failed_retryable";
-            if (lastSendErrorIdx !== -1) row[lastSendErrorIdx] = msg.slice(0, 500);
-            if (lastAttemptAtIdx !== -1) row[lastAttemptAtIdx] = new Date().toISOString();
+              if (executionStatusIdx !== -1) row[executionStatusIdx] = terminal ? "failed_final" : "failed_retryable";
+              // Validation evidence is immutable - the error belongs only in the
+              // delivery columns (lastSendError / lastAttemptAt).
+              if (retryCountIdx !== -1) row[retryCountIdx] = String(nextRetryCount);
+              if (lastSendMethodIdx !== -1 && attemptedMethod) row[lastSendMethodIdx] = attemptedMethod;
+              if (lastSendStatusIdx !== -1) row[lastSendStatusIdx] = terminal ? "failed_final" : "failed_retryable";
+              if (lastSendErrorIdx !== -1) row[lastSendErrorIdx] = msg.slice(0, 500);
+              if (lastAttemptAtIdx !== -1) row[lastAttemptAtIdx] = new Date().toISOString();
+            }
           }
 
           // Flush the CSV only once per shootingBatchLimit send attempts.
@@ -1334,6 +1374,7 @@ if (!String(settings.helperKeyword || "").trim()) {
         } else if (limitReached) {
           settings.restReason = settings.restReason || "limit_reached";
           settings.pauseReason = settings.pauseReason || settings.restReason;
+          if (quotaRestDetail) settings.restDetail = quotaRestDetail.slice(0, 500);
         }
         if (isRestingLikeStatus(finalStatus) && !Number(settings.restUntil)) {
           settings.restUntil = Date.now() + 60 * 60 * 1000;
@@ -1341,7 +1382,7 @@ if (!String(settings.helperKeyword || "").trim()) {
         }
         normalizeRestingState(settings, finalStatus, { reason: settings.restReason });
         if (finalStatus === "completed") {
-          delete settings.restUntil; delete settings.restReason; delete settings.restSetAt; delete settings.pauseReason;
+          delete settings.restUntil; delete settings.restReason; delete settings.restSetAt; delete settings.pauseReason; delete settings.restDetail;
         } else if (finalStatus === "paused") {
           // Preserve resumable pause reason/checkpoint context; clear timed-rest fields unless explicitly resting.
           delete settings.restUntil; delete settings.restSetAt;
