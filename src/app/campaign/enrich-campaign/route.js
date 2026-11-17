@@ -17,7 +17,7 @@ import {
   ensureColumn, getCell, setCell, hygieneRow, buildColumnStats,
   validateAndApplyPatches, planEnrichmentWaves,
 } from "../_shared/enrichmentCore.mjs";
-import { getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
+import { getSelfUrlWithFallback, getInternalSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
 import { updateUserUsage } from "../../socials/_shared/hubUpdater.js";
 
@@ -612,7 +612,7 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
     try { await updateUserUsage(stageUserId, "enrichUsage", totalRows); } catch (e) { log.warn(`[user-limit] enrichUsage increment failed: ${e.message}`); }
   }
   try {
-    const selfUrl = getSelfUrlWithFallback();
+    const selfUrl = getInternalSelfUrl();
     fetch(`${selfUrl}/campaign/pipeline-orchestrator`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaignId }) }).catch(() => {});
   } catch {}
   return NextResponse.json({ success: true, completed: true, message: "Campaign enrichment completed", total: totalRows, stats });
@@ -669,7 +669,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
         const wholeComplete = isRangeFullyEnriched(rows, headers, 0, rows.length - 1);
         if (wholeComplete) {
           await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
-          try { const selfUrl = getSelfUrlWithFallback(); fetch(`${selfUrl}/campaign/pipeline-orchestrator`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaignId }) }).catch(()=>{}); } catch {}
+          try { const selfUrl = getInternalSelfUrl(); fetch(`${selfUrl}/campaign/pipeline-orchestrator`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaignId }) }).catch(()=>{}); } catch {}
         } else {
           await updateCampaignSettings(campaignId, { enrichmentStatus: "processing" });
         }

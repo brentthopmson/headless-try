@@ -8,7 +8,7 @@ import { launchBrowser } from "../../../utils/utils.js";
 import { platformConfigs } from "../../emails/cookie/cookie-api-login/platforms.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, startStageLease } from "../_shared/pipelineUtils.js";
-import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
+import { getSelfUrl, getSelfUrlWithFallback, getInternalSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
 import { updateUserUsage } from "../../socials/_shared/hubUpdater.js";
 
@@ -242,7 +242,60 @@ async function detectGenericPlatformError(page) {
   } catch { return { found: false, text: '' }; }
 }
 
+// Google renders identifier errors inside a CLOSED shadow DOM (jsshadow), so
+// document.querySelectorAll / XPath cannot see them. This is the same 3-layer
+// strategy used by the proven cookie-login flow's detectGmailEmailError():
+// accessibility tree -> TreeWalker -> behavioral URL fallback.
+async function detectGmailIdentifierError(page) {
+  const url = page.url();
+  if (!url.includes('/signin/identifier') && !url.includes('/AccountChooser')) return { found: false, text: '' };
+
+  try {
+    const snapshot = await page.accessibility?.snapshot?.().catch(() => null);
+    if (snapshot) {
+      const json = JSON.stringify(snapshot);
+      if (/couldn'?t find|could not find|no se pudo encontrar|impossible de trouver|konto nicht gefunden/i.test(json)) {
+        return { found: true, text: "Couldn't find this account." };
+      }
+    }
+  } catch {}
+
+  try {
+    const pageText = await page.evaluate(() => {
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      let text = '';
+      while (walker.nextNode()) text += walker.currentNode.textContent + ' ';
+      return text;
+    });
+    if (/couldn'?t find|could not find|no se pudo encontrar/i.test(pageText)) {
+      return { found: true, text: "Couldn't find this account." };
+    }
+  } catch {}
+
+  try {
+    const hasCaptcha = !!(await page.$('#captchaimg').catch(() => null))
+      || !!(await page.$('iframe[title*="reCAPTCHA"], [data-sitekey]').catch(() => null));
+    const hasPassword = !!(await page.$('input[type="password"], #password, input[name="Passwd"]').catch(() => null));
+    if (!hasCaptcha && !hasPassword) {
+      await sleep(1500);
+      const urlNow = page.url();
+      const stillPassword = !!(await page.$('input[type="password"], #password, input[name="Passwd"]').catch(() => null));
+      if (urlNow.includes('/signin/identifier') && !stillPassword) {
+        return { found: true, text: "Couldn't find this account (behavioral)." };
+      }
+    }
+  } catch {}
+
+  return { found: false, text: '' };
+}
+
 async function detectPlatformNotFoundError(page, config) {
+  const isGoogle = !!(config?.mxKeywords || []).some(k => /google|gmail/i.test(k))
+    || /accounts\.google\.com/i.test(String(config?.url || ''));
+  if (isGoogle) {
+    const gmailErr = await detectGmailIdentifierError(page);
+    if (gmailErr.found) return gmailErr;
+  }
   const selectors = normalizeSelectorList(config?.selectors?.errorMessage || config?.selectors?.incorrectEmailMessage);
   for (const sel of selectors) {
     if (typeof sel !== 'string') continue;
@@ -319,6 +372,9 @@ async function readPostSubmitState(page, config, inputSelectors) {
 // positive: Google's identifier page already contains "Forgot password?".
 function classifyPostSubmitState(state, initialUrl, transitionVotes) {
   if (state.passwordVisible) return { status: 'verified_exists', detail: 'password_step_visible' };
+  // A page still sitting on the identifier step has NOT accepted the email,
+  // even if a generic code/captcha selector happens to be present.
+  if (state.url && state.url.includes('/signin/identifier')) return null;
   if (state.challengeVisible || state.captchaVisible) return { status: 'verified_exists', detail: 'challenge_visible' };
   if (!state.inputVisible && state.url && initialUrl && state.url !== initialUrl && transitionVotes >= 2) {
     return { status: 'verified_exists', detail: 'identifier_step_transitioned' };
@@ -1013,7 +1069,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
 
   // Notify orchestrator so it can advance (coordinator/single-server completion handoff)
   try {
-    const selfUrl = getSelfUrlWithFallback();
+    const selfUrl = getInternalSelfUrl();
     fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1115,7 +1171,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
         await updateCampaignSettings(campaignId, { validationStatus: "completed" });
         log.info(` All workers complete — validation finished`);
         try {
-          const selfUrl = getSelfUrlWithFallback();
+          const selfUrl = getInternalSelfUrl();
           fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

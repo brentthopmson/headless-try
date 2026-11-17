@@ -111,6 +111,21 @@ export function getSelfUrlWithFallback() {
 }
 
 /**
+ * Loopback URL for calls that stay INSIDE this Node process (orchestrator ->
+ * stage, stage -> orchestrator, mail merge, self health checks).
+ *
+ * getSelfUrl() is the public Cloudflare tunnel URL from the LINKS sheet. Using
+ * it for internal dispatch makes every long stage sit behind Cloudflare's ~100s
+ * timeout: at 23:29 a validation dispatch returned HTTP 524, the orchestrator
+ * lost its active-run registration, and the GAS watchdog paused the campaign
+ * mid-run. Loopback has no proxy timeout and the in-process active-run lease
+ * stays valid for the whole stage.
+ */
+export function getInternalSelfUrl() {
+    return `http://127.0.0.1:${process.env.PORT || 3001}`;
+}
+
+/**
  * Re-reads our own row from the links sheet so URL / limits / status edits
  * made by the operator take effect WITHOUT a server restart. Called lazily:
  * first resolution on the next call, then again only when the sheet timestamp

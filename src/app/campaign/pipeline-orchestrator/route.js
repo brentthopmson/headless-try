@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
-import { getSelfUrl, getSelfUrlWithFallback, getSelfId, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
+import { getSelfUrl, getSelfUrlWithFallback, getSelfId, getInternalSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignSettings, updateCampaignSettings, isCampaignPaused, classifyStageFailure, recordStageError, clearStageError, getRetryBudget } from "../_shared/pipelineUtils.js";
 import { acquireCampaignLock, releaseCampaignLock } from "../../../utils/campaignLock.js";
 import { checkUserConcurrentCampaigns, registerActiveCampaignRun, unregisterActiveCampaignRun } from "../../../utils/campaignConcurrency.js";
@@ -103,7 +103,7 @@ function resolveCurrentStage(settings) {
 
 async function triggerStage(campaignId, stage, settings, scope) {
   const config = STAGE_CONFIG[stage];
-  const selfUrl = getSelfUrlWithFallback();
+  const selfUrl = getInternalSelfUrl();
   let route = config.route;
   const log = logger.child({ campaignId, stage: 'orchestrator' });
 
@@ -417,7 +417,7 @@ export async function POST(request) {
         await updateCampaignSettings(campaignId, { mailMerged: true });
         log.info(`No CSV (fileUrl) — mail merge not applicable, marked as done`);
       } else {
-        const mailMergeUrl = getSelfUrlWithFallback();
+        const mailMergeUrl = getInternalSelfUrl();
         try {
           const mailMergeResp = await fetch(`${mailMergeUrl}/campaign/mail-merge`, {
             method: 'POST',
@@ -644,7 +644,7 @@ export async function POST(request) {
           const interactStatus = settings[interactConfig.statusField];
           if (!interactStatus || interactStatus === "idle") {
             // Fire-and-forget: trigger interact in background
-            const selfUrl = getSelfUrlWithFallback();
+            const selfUrl = getInternalSelfUrl();
             const interactUrl = `${selfUrl}${interactConfig.route}`;
             fetch(interactUrl, {
               method: 'POST',

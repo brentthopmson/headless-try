@@ -5,7 +5,7 @@ import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, buildPersonalizedLink, ensureLinkColumn, startStageLease } from "../_shared/pipelineUtils.js";
-import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
+import { getSelfUrl, getSelfUrlWithFallback, getInternalSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
 import { updateUserUsage } from "../../socials/_shared/hubUpdater.js";
 
@@ -371,7 +371,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   }
   // Notify orchestrator so it can advance (coordinator/single-server completion handoff)
   try {
-    const selfUrl = getSelfUrlWithFallback();
+    const selfUrl = getInternalSelfUrl();
     fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -441,7 +441,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
       const wholeDone = dataRows.every(r => isRowPersonalized(r, channel, enhancedSubjectIdx, enhancedBodyIdx, enhancedSocialMsgIdx, personalizationStatusIdx));
       if (wholeDone) {
         await updateCampaignSettings(campaignId, { personalizationStatus: "completed" });
-        try { const selfUrl = getSelfUrlWithFallback(); fetch(`${selfUrl}/campaign/pipeline-orchestrator`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaignId }) }).catch(()=>{}); } catch {}
+        try { const selfUrl = getInternalSelfUrl(); fetch(`${selfUrl}/campaign/pipeline-orchestrator`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaignId }) }).catch(()=>{}); } catch {}
       } else {
         await updateCampaignSettings(campaignId, { personalizationStatus: "processing" });
       }

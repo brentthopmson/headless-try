@@ -154,6 +154,19 @@ export async function updateCampaignSettings(campaignId, updates, retries = 3) {
       Object.assign(settings, updates);
       settings._settingsVersion = currentVersion + 1;
 
+      // Append-only audit trail for status transitions. Without this, a mid-run
+      // pause cannot be attributed (engine stage vs orchestrator vs GAS).
+      if (typeof updates.status === "string") {
+        const trail = Array.isArray(settings.statusAudit) ? settings.statusAudit.slice(-19) : [];
+        trail.push({
+          at: new Date().toISOString(),
+          status: updates.status,
+          writer: String(updates.writer || updates.stage || "engine"),
+          stage: Object.keys(updates).filter(k => k.endsWith("Status") && updates[k]).join(",") || null,
+        });
+        settings.statusAudit = trail;
+      }
+
       const rowUpdate = {
         settings: JSON.stringify(settings),
         updatedOn: new Date().toISOString()
