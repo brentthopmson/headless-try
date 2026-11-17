@@ -1,0 +1,247 @@
+SN,FIRSTNAME,LASTNAME,EMAIL,ADDRESS,CITY,STATE,COUNTRY,ZIPCODE,PHONE,SEX,BUSINESSNAME,BUSINESSADDRESS,BUSINESSCITY,BUSINESSSTATE,BUSINESSCOUNTRY,BUSINESSZIPCODE,BUSINESSPHONE,BUSINESSEMAIL,SOCIALPLATFORM,SOCIALUSERNAME,SOCIALPHONE,CONTEXT,URL,,,,,,campaignType,engine,provider,shooterFirstName,shooterLastName,shooterEmail,shooterAddress,shooterCity,shooterState,shooterCountry,shooterZipCode,shooterPhone,shooterSex,smtp,port,username,password,appPassword,backupCode,oAuth2ClientId,oAuth2ClientSecret,oAuth2RefreshToken,,shouldValidate,shouldEnhance,shouldSearchInteract,shouldPageInteract,shouldInboxInteract,shouldActivitiesInteract,shouldSendMessage,,,emailSubject,emailBody,socialMessage,replyTo,,,,validation,providerMXResult,enhancedSubject,enhancedBody,enhancedSocialMessage,enrichmentStatus,,sendDate,sendTime,sendStamp,,,,searchKeys,searchCount,searchStatus,searchStamp,,profileToInteract,interactCount,interactStatus,interactStamp,,personalizationStatus,executionStatus,LINK,HELPERKEYWORD,retryCount,lastSendMethod,lastSendStatus,lastSendError,lastAttemptAt,sentStatus,sendResult,sendError,deliveryStatus
+1,Charles,Shelton,cfshelton99@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:challenge_visible,"Quick hello, Charles","Hi Charles,
+I’m reaching out to see if there’s anything you’re currently working on where an extra set of hands or a fresh perspective could be useful.
+If you’re open to it, I’d be glad to hear a bit about your priorities and explore whether there’s a good fit to collaborate.
+Would you be open to a brief conversation this week?
+Best regards,",,enriched,,11/17/2026,3:58:32 AM,2026-11-17T08:58:32.426Z,,,,,,,,,,,,,,personalized,sent,,5R1234899,,wire,sent,,2026-11-17T08:58:32.426Z,,,,
+2,Gourav,Singh,gouravsingh@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Gourav, open to a short intro?","Hi Gourav,
+I wanted to connect and learn more about what you’re focused on right now. Even with limited context, I thought it would be worth reaching out to see if there’s room for a useful conversation.
+If it makes sense, I’d appreciate the chance to exchange a few ideas and understand your current goals.
+Are you available for a quick chat sometime soon?
+Best regards,",,enriched,,11/17/2026,4:03:09 AM,2026-11-17T09:03:09.675Z,,,,,,,,,,,,,,personalized,sent,,5R1234899,,smtp,sent,,2026-11-17T09:03:09.675Z,,,,
+3,Alper,Ceyhan,alper.ceyhan@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,Alper — worth a quick chat?,"Hi Alper,
+I’m getting in touch to introduce myself and see whether a conversation might be worthwhile. I’d be interested to hear what’s on your plate at the moment and where you’re aiming to make progress.
+If you’re open to it, we can keep it brief and focused.
+Would a short call this week work for you?
+Best regards,",,enriched,,11/17/2026,4:04:18 AM,2026-11-17T09:04:18.663Z,,,,,,,,,,,,,,personalized,sent,,5R1234899,,wire,sent,,2026-11-17T09:04:18.663Z,,,,
+4,Lindsey,Pardun,lspardun@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Lindsey, can I ask a quick question?","Hi Lindsey,
+I came across your contact and wanted to reach out directly. I’d love to learn a little about what you’re prioritizing right now and whether I can support any of it.
+No assumptions on my end—just an interest in starting a relevant conversation.
+Would you be open to a brief exchange over email or a quick call?
+Best regards,",,enriched,,11/17/2026,4:08:58 AM,2026-11-17T09:08:58.778Z,,,,,,,,,,,,,,personalized,sent,,5R1234899,,smtp,sent,,2026-11-17T09:08:58.778Z,,,,
+5,Eelco,Van Iperen,evaniperen@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:identifier_step_transitioned,"Eelco, exploring a possible connection","Hi Eelco,
+I’m reaching out to see if it would be helpful to connect. I’d be interested in hearing what initiatives or challenges are most important to you right now.
+If there’s overlap, I’d be glad to discuss how we might work together or share ideas that could be useful.
+Do you have time for a short conversation in the coming days?
+Best regards,",,enriched,,11/17/2026,5:43:14 AM,2026-11-17T10:43:14.158Z,,,,,,,,,,,,,,personalized,sent,,5R1234899,1,smtp,sent,,2026-11-17T10:43:14.158Z,,,,
+6,Hemant,Sharma,sharmahemant68@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Hemant, a brief introduction","Hi Hemant,
+I wanted to send a quick note to introduce myself and see if a conversation could be valuable. I’m curious to learn what you’re currently focused on and whether there’s an opportunity to support your efforts.
+If you’re open to it, I’d welcome a short, no-pressure chat.
+Would sometime this week be convenient for you?
+Best regards,",,enriched,,11/17/2026,5:44:17 AM,2026-11-17T10:44:17.273Z,,,,,,,,,,,,,,personalized,sent,,5R1234899,,smtp,sent,,2026-11-17T10:44:17.273Z,,,,
+7,Mayur,Totla,mayurtotla@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Mayur, interested in your current focus","Hi Mayur,
+I’m reaching out because I’d like to learn more about what you’re working on these days. Even without much background, I thought a direct conversation might be the best way to see if there’s a fit.
+If you’re available, I’d appreciate a few minutes to connect and hear your perspective.
+Could we schedule a quick call soon?
+Best regards,",,enriched,,11/17/2026,6:57:37 AM,2026-11-17T11:57:37.838Z,,,,,,,,,,,,,,personalized,sent,,5R1234899,1,smtp,sent,,2026-11-17T11:57:37.838Z,,,,
+8,Sajida,Naseem,sajidanaseem@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Sajida, would you be open to connecting?","Hi Sajida,
+I wanted to reach out and see if it makes sense for us to connect. I’d be interested to understand your current priorities and explore whether there’s anything I can help move forward.
+If now isn’t the right time, I completely understand—but I’d be glad to start a conversation if you’re open to it.
+Would you be willing to chat briefly this week?
+Best regards,",,enriched,,11/17/2026,6:58:37 AM,2026-11-17T11:58:37.766Z,,,,,,,,,,,,,,personalized,sent,,5R1234899,,smtp,sent,,2026-11-17T11:58:37.766Z,,,,
+9,Jeff,Mcgonnell,jjmcgonnell@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Jeff, checking in with a quick note","Hi Jeff,
+I’m sending a short note to see if there’s an opportunity for us to connect. I’d value learning what you’re concentrating on right now and whether a conversation could be useful.
+If you’re interested, I’m happy to keep it concise and focused on what matters most to you.
+Do you have a few minutes for a quick call?
+Best regards,",,enriched,,11/17/2026,8:13:54 AM,2026-11-17T13:13:54.744Z,,,,,,,,,,,,,,personalized,sent,,5R1234899,1,smtp,sent,,2026-11-17T13:13:54.744Z,,,,
+10,Anant,Suryavanshi,anantsuryavanshi91@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Anant, open to exchanging ideas?","Hi Anant,
+I’d like to connect and hear more about what you’re currently working toward. I’m always interested in thoughtful conversations that can lead to practical ways to help.
+If it sounds worthwhile, I’d be glad to set aside a few minutes to learn more about your goals.
+Would you be open to a brief conversation this week?
+Best regards,",,enriched,,11/17/2026,8:14:59 AM,2026-11-17T13:14:59.817Z,,,,,,,,,,,,,,personalized,sent,,5R1234899,,smtp,sent,,2026-11-17T13:14:59.817Z,,,,
+11,Shawn,Mekkes,shawn.mekkes@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:challenge_visible,"Shawn, quick question for you","Hi Shawn,
+I wanted to reach out directly and see if a short conversation might be useful. I’d be interested in hearing what’s top of mind for you right now and whether there’s any area where I could offer support.
+If you’re open to it, we can keep things simple and straightforward.
+Are you available for a quick chat soon?
+Best regards,",,enriched,,11/17/2026,9:28:36 AM,2026-11-17T14:28:36.717Z,,,,,,,,,,,,,,personalized,sent,,5R1234899,1,smtp,sent,,2026-11-17T14:28:36.717Z,,,,
+12,Corinne,Rochet,corinne.rochet@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Corinne, could we connect briefly?","Hi Corinne,
+I’m reaching out to introduce myself and explore whether there’s value in connecting. I’d appreciate the chance to learn what you’re focused on at the moment and see if our priorities align.
+If you have a few minutes, I’d welcome a short conversation.
+Would later this week work for you?
+Best regards,",,enriched,,11/17/2026,9:29:40 AM,2026-11-17T14:29:40.876Z,,,,,,,,,,,,,,personalized,sent,,5R1234899,,smtp,sent,,2026-11-17T14:29:40.876Z,,,,
+13,Ming-Chun,Chen,mingggchen@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:challenge_visible,"Ming-Chun, a note to connect","Hi Ming-Chun,
+I wanted to send a quick message to see if you’d be open to connecting. I’m interested in learning more about what you’re working on and whether there’s an opportunity to be helpful.
+If it makes sense, I’d be glad to have a brief, focused conversation.
+Could we find a few minutes to chat this week?
+Best regards,",,enriched,,2026-11-17,4:08:40 AM,2026-11-17T09:08:40.226Z,,,,,,,,,,,,,,personalized,failed_retryable,,5R1234899,1,wire,failed_retryable,Send unverified (compose still open/ambiguous) for mingggchen@gmail.com via outlook,2026-11-17T14:35:11.996Z,,,,
+14,Christopher,Cyr,ccyr15@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Christopher, open to a short conversation?","Hi Christopher,
+I’m getting in touch to see if there’s room for a quick conversation. I’d like to understand what you’re prioritizing right now and whether I can contribute in a meaningful way.
+If you’re open to it, I’ll keep it concise and relevant to your goals.
+Would you have time for a brief call soon?
+Best regards,",,enriched,,2026-11-17,4:09:40 AM,2026-11-17T09:09:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+15,Hunter,Sherman,hunterpsherman@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Hunter, would a quick intro be helpful?","Hi Hunter,
+I wanted to reach out and introduce myself. I’d be interested to hear what you’re currently focused on and whether a short conversation could uncover a useful way to collaborate.
+If now is a good time, I’d appreciate the opportunity to connect.
+Are you open to a quick chat this week?
+Best regards,",,enriched,,2026-11-17,4:10:40 AM,2026-11-17T09:10:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+16,Umesh,Nikam,umesh.nikam@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Umesh, touching base","Hi Umesh,
+I’m reaching out with a quick note to see if it would be worthwhile for us to connect. I’d like to learn more about your current priorities and where you’re looking to make progress.
+If you’re interested, I’d be happy to have a brief conversation at your convenience.
+Would you be available for a short call in the next few days?
+Best regards,",,enriched,,2026-11-17,4:11:40 AM,2026-11-17T09:11:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+17,Ana,De Osma Vargas-Machuca,anadeosma@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Ana, interested in connecting","Hi Ana,
+I wanted to reach out and see if you’d be open to a short introduction. I’m curious about what you’re working on right now and whether there’s a practical way I can support your efforts.
+If it sounds relevant, I’d welcome a quick conversation.
+Could we set aside a few minutes to connect this week?
+Best regards,",,enriched,,2026-11-17,4:12:40 AM,2026-11-17T09:12:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+18,Deepti,Valecha,valecha.deepti@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Deepti, can we find time to connect?","Hi Deepti,
+I’m sending this note to explore whether a brief conversation might be useful. I’d appreciate hearing about your current focus and seeing if there’s an opportunity to collaborate or exchange ideas.
+If you’re open to it, I’ll keep the conversation short and to the point.
+Would sometime this week work for a quick chat?
+Best regards,",,enriched,,2026-11-17,4:13:40 AM,2026-11-17T09:13:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+19,Richard,Murphy,murphy.richardm@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Richard, a quick outreach note","Hi Richard,
+I wanted to connect and learn a bit more about what’s on your agenda right now. I’d be interested to see whether there’s a way I can be helpful or add value.
+If you’re open to a brief conversation, I’d be glad to make it easy and efficient.
+Do you have a few minutes available this week?
+Best regards,",,enriched,,2026-11-17,4:14:40 AM,2026-11-17T09:14:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+20,Omar,Benrouba,omarbenrouba@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Omar, open to a brief introduction?","Hi Omar,
+I’m reaching out to see if you’d be open to a quick introduction. I’d like to hear what you’re currently focused on and whether there’s any overlap that could lead to a productive conversation.
+If now works, I’d appreciate the chance to connect.
+Would you be available for a short call soon?
+Best regards,",,enriched,,2026-11-17,4:15:40 AM,2026-11-17T09:15:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+21,Salvador,Elias,salvadorelias67@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Salvador, quick check-in","Hi Salvador,
+I wanted to send a brief note to see if connecting could be worthwhile. I’m interested in understanding what you’re prioritizing at the moment and whether I can support any of those efforts.
+If you’re open to it, I’d be glad to have a short, focused conversation.
+Could we find time for a quick chat this week?
+Best regards,",,enriched,,2026-11-17,4:16:40 AM,2026-11-17T09:16:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+22,Daphna,Bahat,bahatd7@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Daphna, exploring a quick connection","Hi Daphna,
+I’m reaching out to introduce myself and learn more about what you’re working on right now. I thought it could be helpful to start a conversation and see if there’s a natural fit to collaborate.
+If you’re interested, I’d appreciate a few minutes of your time.
+Would you be open to a brief call this week?
+Best regards,",,enriched,,2026-11-17,4:17:40 AM,2026-11-17T09:17:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+23,Bruno,De Oliveira,brunobaco@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Bruno, would you have time for a quick chat?","Hi Bruno,
+I wanted to connect and see what’s currently on your radar. I’d be interested to learn about your priorities and explore whether there’s a way I can be useful.
+If you’re open to a short conversation, I’ll keep it clear and respectful of your time.
+Are you available for a quick chat in the coming days?
+Best regards,",,enriched,,2026-11-17,4:18:40 AM,2026-11-17T09:18:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+24,Sarah,Rossi,sarahmounea@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,not_exists,alt3.gmail-smtp-in.l.google.com|pv=not_exists:platform_error:Account deleted,"Sarah, a short note to connect","Hi Sarah,
+I’m reaching out to see if it would make sense for us to connect. I’d love to hear what you’re focused on right now and whether a brief conversation could be helpful.
+If the timing is right, I’d be glad to learn more about your goals.
+Would you be open to a quick call this week?
+Best regards,",,enriched,,2026-11-17,4:19:40 AM,2026-11-17T09:19:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+25,Allen,Merritt,themerritt@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Allen, open to a quick exchange?","Hi Allen,
+I wanted to introduce myself and see if you’d be open to a brief exchange. I’m interested in understanding what you’re working toward and whether there’s an opportunity to support you in a meaningful way.
+If you’re available, I’d appreciate a short conversation.
+Could we connect for a few minutes soon?
+Best regards,",,enriched,,2026-11-17,4:20:40 AM,2026-11-17T09:20:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+26,Malinda,Spandikow,malinda.shaver@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Malinda, touching base with you","Hi Malinda,
+I’m sending a quick note to see if a short conversation might be valuable. I’d like to learn more about what you’re currently prioritizing and whether there’s room for us to collaborate.
+If you’re open to it, I’m happy to keep things brief and focused.
+Would you have time for a quick chat this week?
+Best regards,",,enriched,,2026-11-17,4:21:40 AM,2026-11-17T09:21:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+27,Shey,Crompton,sheymouse@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:identifier_step_transitioned,"Shey, could we start a quick conversation?","Hi Shey,
+I wanted to reach out and see if you’d be interested in connecting. I’d appreciate the chance to hear what you’re working on at the moment and explore whether I can be of help.
+If it feels relevant, I’d welcome a short conversation.
+Are you available for a brief call sometime this week?
+Best regards,",,enriched,,2026-11-17,4:22:40 AM,2026-11-17T09:22:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+28,Samad,Thalangara,rawfashion@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Samad, a brief introduction from my side","Hi Samad,
+I’m reaching out to introduce myself and see if a quick conversation could be useful. I’d be interested to learn about your current priorities and whether there’s an opportunity to work together or share ideas.
+If you’re open to it, I’ll keep it concise.
+Would you be open to a short chat this week?
+Best regards,",,enriched,,2026-11-17,4:23:40 AM,2026-11-17T09:23:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+29,Sandeep,Kaur,thind.sandy9@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:identifier_step_transitioned,"Sandeep, open to connecting this week?","Hi Sandeep,
+I wanted to send a quick message to see if you’d be open to connecting. I’m curious to hear what you’re focused on right now and whether a brief conversation could be worthwhile.
+If the timing works, I’d appreciate a few minutes to learn more.
+Could we schedule a short call soon?
+Best regards,",,enriched,,2026-11-17,4:24:40 AM,2026-11-17T09:24:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+30,Dinesh,Dhungana,dineshdhungana@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Dinesh, would you be open to a quick intro call?","Hi Dinesh,
+I’m reaching out to see if it would be helpful for us to connect. I’d like to understand what’s currently important to you and explore whether there’s a way I can support your goals.
+If you’re open to it, I’d be glad to have a brief conversation.
+Do you have a few minutes available this week?
+Best regards,",,enriched,,2026-11-17,4:25:40 AM,2026-11-17T09:25:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+31,Christopher,Kulp,azdude68@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Christopher, quick question for you","Hi Christopher,
+I’m reaching out to connect and see if there’s anything you’re currently working on where an extra set of hands or a fresh perspective could be helpful.
+If you’re open to it, would you be up for a brief conversation this week? Just reply with a time that works for you.
+Best regards,",,enriched,,2026-11-17,4:26:40 AM,2026-11-17T09:26:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+32,Fatema-Tuz-Zohra,Maliha,fatema.maliha@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Fatema-Tuz-Zohra, open to a short chat?","Hi Fatema-Tuz-Zohra,
+I came across your name and wanted to introduce myself. I’d love to learn a bit more about what you’re focused on right now and share a few ideas that might be useful.
+Would you be open to a quick exchange over email or a short call? Let me know what’s easiest for you.
+Kind regards,",,enriched,,2026-11-17,4:27:40 AM,2026-11-17T09:27:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+33,Denisse,Cruz,denissejcruz@gmail.com,,,,,,,,,,,,,,,,,,,Advertising and Marketing student at Baruch College.,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Denisse, a note for a Baruch advertising & marketing student","Hi Denisse,
+As an Advertising and Marketing student at Baruch College, you’re likely exploring how brands connect with audiences in creative, practical ways. I’d enjoy hearing what areas of marketing you’re most interested in right now.
+If you’re open to it, could we set up a brief chat to exchange ideas and perspectives? Feel free to reply with a time that suits you.
+Best,",,enriched,,2026-11-17,4:28:40 AM,2026-11-17T09:28:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+34,Esther,Bares,esther.bares@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Esther, would love to connect","Hi Esther,
+I’m reaching out because I enjoy connecting with people and learning about the projects or goals they’re currently prioritizing.
+If it sounds worthwhile, would you be willing to have a short conversation sometime soon? A quick reply with your availability would be great.
+Warm regards,",,enriched,,2026-11-17,4:29:40 AM,2026-11-17T09:29:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+35,Vinay,Rao,vinayextc@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Vinay, idea for a quick exchange","Hi Vinay,
+I wanted to drop you a note to see if you’d be interested in a brief conversation. I’d appreciate the chance to learn what you’re working on and explore whether there’s a way I can be helpful.
+Are you available for a short chat this week? Just let me know what day works best.
+Best regards,",,enriched,,2026-11-17,4:30:40 AM,2026-11-17T09:30:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+36,Irene,Kagiwira,kagwiriairene@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:challenge_visible,"Irene, can we find time to connect?","Hi Irene,
+I’m reaching out to start a conversation and see where our interests or goals might align. I always value hearing what others are focused on.
+Would you be open to a quick 10-minute chat? If so, please reply with a couple of times that work for you.
+Sincerely,",,enriched,,2026-11-17,4:31:40 AM,2026-11-17T09:31:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+37,Andrea,Gangale,andreagangale@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Andrea, hoping to hear what you’re working on","Hi Andrea,
+I’d love to learn more about what’s on your plate these days and whether there’s an opportunity to connect in a meaningful way.
+If you’re interested, could you reply with a good time for a brief call or email exchange? I’d be glad to keep it short and focused.
+Best,",,enriched,,2026-11-17,4:32:40 AM,2026-11-17T09:32:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+38,Varun,Raisinghani,vrai.cse@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Varun, a brief introduction","Hi Varun,
+I wanted to reach out and introduce myself. I’m interested in learning about your current priorities and seeing if there’s anything I can support or collaborate on.
+Would you be open to a quick conversation? Let me know when you might have a few minutes.
+Kind regards,",,enriched,,2026-11-17,4:33:40 AM,2026-11-17T09:33:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+39,Edward,Wainwright,edjohnwain@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Edward, worth a quick conversation?","Hi Edward,
+I’m connecting with a few people whose work and interests I’d like to learn more about, and I wanted to include you.
+If you have a moment this week, would you be open to a short chat? Please reply with your availability and I’ll follow up accordingly.
+Best regards,",,enriched,,2026-11-17,4:34:40 AM,2026-11-17T09:34:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+40,P,Scott Cary,pscary1@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"P, interested in connecting with you","Hi P,
+I hope your week is going well. I’m reaching out to see if you’d be open to a brief conversation—I’d enjoy learning more about what you’re focused on right now.
+If that sounds good, could you reply with a time that works for you?
+Warm regards,",,enriched,,2026-11-17,4:35:40 AM,2026-11-17T09:35:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+41,Blake,Henke,bhenke16@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Blake, quick hello and a question","Hi Blake,
+I wanted to say hello and see if you’d be open to connecting. I’m always interested in hearing what others are building or exploring.
+Would you have time for a short call or a quick email back-and-forth this week? Let me know what fits your schedule.
+Best,",,enriched,,2026-11-17,4:36:40 AM,2026-11-17T09:36:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+42,Florian,Poupon,poupon.flo@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Florian, open to exchanging ideas?","Hi Florian,
+I’m reaching out to see if you’d be interested in a brief exchange of ideas. I’d appreciate hearing about what you’re currently focused on and sharing a bit about what I’m working on.
+If you’re open to it, reply with a convenient time for a quick chat.
+Kind regards,",,enriched,,2026-11-17,4:37:40 AM,2026-11-17T09:37:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+43,Kevin,Schnitzler,kevin.schnitzler@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Kevin, could we connect briefly?","Hi Kevin,
+I wanted to reach out and explore whether a short conversation might be valuable. I’d like to learn more about your current goals and see if there’s any overlap.
+Would you be open to a quick chat sometime soon? Feel free to suggest a time that works for you.
+Best regards,",,enriched,,2026-11-17,4:38:40 AM,2026-11-17T09:38:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+44,Yair,Tamir,yair.tamir@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Yair, a quick note to connect","Hi Yair,
+I’m reaching out to introduce myself and see if you’d be open to connecting. I’d enjoy learning what you’re working toward at the moment.
+If you have a few minutes this week, would you reply with your availability for a short conversation?
+Sincerely,",,enriched,,2026-11-17,4:39:40 AM,2026-11-17T09:39:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+45,Vivek,Ranjan,vivekmgr2k4@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:challenge_visible,"Vivek, would you be open to a short call?","Hi Vivek,
+I’d like to connect and learn more about what you’re currently focused on. A brief conversation could be a great way to see if there’s anything useful we can share.
+Are you available for a quick chat this week? Please let me know what time works best.
+Best,",,enriched,,2026-11-17,4:40:40 AM,2026-11-17T09:40:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+46,Stacy,Fulton,sblack09@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Stacy, hoping to connect","Hi Stacy,
+I wanted to reach out and see if you’d be open to a short introduction. I’m interested in hearing about what’s important to you right now and exploring ways to be helpful.
+Would you mind replying with a time that suits you for a quick conversation?
+Warm regards,",,enriched,,2026-11-17,4:41:40 AM,2026-11-17T09:41:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+47,Gary,King,garyvelvet@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Gary, time for a brief introduction?","Hi Gary,
+I’m getting in touch to see if you’d be interested in connecting. I’d value the chance to hear what you’re working on and share a few thoughts.
+If you’re open to it, could you let me know when you’d have a few minutes for a quick chat?
+Best regards,",,enriched,,2026-11-17,4:42:40 AM,2026-11-17T09:42:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+48,Ruchi,Bhavsar,ruchibhavsar123@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Ruchi, would love a quick chat","Hi Ruchi,
+I wanted to reach out because I’d enjoy learning more about your current interests and priorities. Sometimes a short conversation can spark useful ideas.
+Would you be open to a brief call or email exchange this week? Just reply with your availability.
+Kind regards,",,enriched,,2026-11-17,4:43:40 AM,2026-11-17T09:43:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+49,Katie,Ziemann,katie.ziemann@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,verified_exists,alt3.gmail-smtp-in.l.google.com|pv=verified_exists:password_step_visible,"Katie, open to connecting this week?","Hi Katie,
+I’m reaching out to see if you’d be interested in a quick conversation. I’d like to hear what you’re focused on lately and explore whether there’s a way to connect.
+If that works for you, please reply with a time that fits your schedule.
+Best,",,enriched,,2026-11-17,4:44:40 AM,2026-11-17T09:44:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+50,Bad,MX,mx.bad@invalid-domain-xyz.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,invalid_domain,error,Quick question—are you open to connecting?,"Hi there,
+I’m reaching out to see if you’d be open to a brief conversation. I’d appreciate the chance to learn what you’re currently working on and share a few ideas.
+If you’re interested, could you reply with a convenient time for a short chat?
+Best regards,",,enriched,,2026-11-17,4:45:40 AM,2026-11-17T09:45:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+51,Missing,GmailOne,no.such.user.839201@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,not_exists,alt3.gmail-smtp-in.l.google.com|pv=not_exists:platform_error:Couldn't find this account.,Would you be open to a brief introduction?,"Hello,
+I wanted to introduce myself and see if you might be open to connecting. I’m always glad to learn about what others are focused on and explore potential ways to help.
+If that sounds good, please reply with a time that works for you.
+Kind regards,",,enriched,,2026-11-17,4:46:40 AM,2026-11-17T09:46:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+52,Missing,GmailTwo,definitely.missing.472019@gmail.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,not_exists,alt3.gmail-smtp-in.l.google.com|pv=not_exists:platform_error:Couldn't find this account.,Checking in to see if a quick chat makes sense,"Hello,
+I’m reaching out to see whether a short conversation might be worthwhile. I’d enjoy hearing about your current priorities and exchanging a few thoughts.
+Would you be open to a brief chat this week? Let me know what time is convenient for you.
+Best,",,enriched,,2026-11-17,4:47:40 AM,2026-11-17T09:47:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+53,Missing,OutlookOne,not.real.person.571920@outlook.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,not_exists,"outlook-com.olc.protection.outlook.com|pv=not_exists:platform_error:We couldn't find an account with that username. Try another, or get a new Microsoft account.",Open to a short conversation?,"Hi there,
+I wanted to connect and see if you’d be interested in a quick exchange. I’d like to learn more about what you’re working on and see if there’s any way I can be useful.
+If you’re open to it, reply with a time that works for a brief conversation.
+Warm regards,",,enriched,,2026-11-17,4:48:40 AM,2026-11-17T09:48:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,
+54,Missing,OutlookTwo,absent.account.648213@outlook.com,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,not_exists,"outlook-com.olc.protection.outlook.com|pv=not_exists:platform_error:We couldn't find an account with that username. Try another, or get a new Microsoft account.",A brief note to see if we should connect,"Hello,
+I’m reaching out to explore the possibility of a short conversation. I’d appreciate hearing what you’re focused on right now and whether it might be helpful to connect.
+If you’re interested, please reply with your availability and I’ll keep it brief.
+Sincerely,",,enriched,,2026-11-17,4:49:40 AM,2026-11-17T09:49:40.226Z,,,,,,,,,,,,,,personalized,,,5R1234899,,,,,,,,,

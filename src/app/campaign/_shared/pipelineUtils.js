@@ -293,6 +293,9 @@ export async function clearStageError(campaignId) {
     if (!fresh) return;
     const settings = { ...(fresh.settings || {}) };
     delete settings.lastError;
+    // A prior GAS relay/routing failure is stale once a stage actually runs in
+    // this (live local) engine — clear it so it can't keep the campaign paused.
+    delete settings.lastEngineError;
     settings.retryAttempts = 0;
     await updateCampaignSettings(campaignId, settings);
   } catch (e) {

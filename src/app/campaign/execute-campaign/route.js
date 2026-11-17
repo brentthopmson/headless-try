@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { CANONICAL_CSV_COLUMNS } from "../_shared/campaignCsvSchema.js";
 import { DEFAULT_SOCIAL_STRATEGY_PROMPT } from "../_shared/campaignDefaults.js";
+import { formatCampaignDate, formatCampaignTime, applyRowStatuses } from "../_shared/campaignFields.js";
 import { downloadCsvText, uploadCsvText, updateSheetRowApi, getSheetDataApi } from "../../api/googlesheets.js";
 import logger from "../../../utils/logger.js";
 import { detectProvider } from "../../emails/_shared/wireSender.js";
@@ -724,9 +725,9 @@ export async function POST(request) {
           throw new Error("EMAIL column not found in 88-column schema");
         }
 
-        // Schedule waterfall: stamp a due date/time on every row at launch so
-        // the CSV always states when each recipient is due to be sent. Existing
-        // values are preserved so a resume does not rewrite history.
+        // Schedule waterfall: stamp a DUE date/time on every row at launch.
+        // Only sendDate/sendTime hold "due" values here — sendStamp is reserved
+        // for a verified actual send (never stamped for unsent rows).
         if (sendDateIdx !== -1 && sendTimeIdx !== -1) {
           try {
             const tz = String(settings.timezone || "UTC");
@@ -734,22 +735,16 @@ export async function POST(request) {
               ? new Date(settings.scheduleStartTime).getTime()
               : Date.now();
             const spacingMin = Math.max(1, Number(settings.sendIntervalMinutes || settings.sendInterval || 1));
-            const dateFmt = new Intl.DateTimeFormat("en-CA", {
-              timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
-            });
-            const timeFmt = new Intl.DateTimeFormat("en-US", {
-              timeZone: tz, hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true,
-            });
             let stamped = 0;
             dataRows.forEach((r, idx) => {
               if (String(r[sendDateIdx] || "").trim() && String(r[sendTimeIdx] || "").trim()) return;
               const due = new Date(baseMs + idx * spacingMin * 60000);
-              r[sendDateIdx] = dateFmt.format(due);
-              r[sendTimeIdx] = timeFmt.format(due);
-              if (sendStampIdx !== -1 && !String(r[sendStampIdx] || "").trim()) r[sendStampIdx] = due.toISOString();
+              r[sendDateIdx] = formatCampaignDate(due, tz);
+              r[sendTimeIdx] = formatCampaignTime(due, tz);
               stamped++;
             });
             if (stamped > 0) {
+              applyRowStatuses(normalizedRows);
               await uploadCsvText(fileId, stringifyCSV(normalizedRows));
               log.info(`[execute] schedule waterfall stamped ${stamped} row(s) in ${tz}`);
             }
@@ -1214,15 +1209,16 @@ if (!String(settings.helperKeyword || "").trim()) {
             }
             log.info(`[Row ${isSchedule ? "schedule" : "send"}] ${email}: ${isSchedule ? "scheduled" : "sent"} via ${senderHost} (${sentCount}/${maxToProcess})`);
 
+            const sendTz = String(settings.timezone || "UTC");
             if (isSchedule) {
-              // For schedule mode, write the scheduled time back to CSV
-              const sched = settings.scheduleStartTime || new Date().toISOString();
-              if (sendDateIdx !== -1) row[sendDateIdx] = new Date(sched).toLocaleDateString();
-              if (sendTimeIdx !== -1) row[sendTimeIdx] = new Date(sched).toLocaleTimeString();
-              if (sendStampIdx !== -1) row[sendStampIdx] = new Date(sched).toISOString();
+              // Schedule mode records the DUE time only — never a sent stamp.
+              const sched = settings.scheduleStartTime || now.toISOString();
+              if (sendDateIdx !== -1) row[sendDateIdx] = formatCampaignDate(sched, sendTz);
+              if (sendTimeIdx !== -1) row[sendTimeIdx] = formatCampaignTime(sched, sendTz);
             } else {
-              if (sendDateIdx !== -1) row[sendDateIdx] = now.toLocaleDateString();
-              if (sendTimeIdx !== -1) row[sendTimeIdx] = now.toLocaleTimeString();
+              // Real send: sendStamp is the actual delivery timestamp (ISO).
+              if (sendDateIdx !== -1) row[sendDateIdx] = formatCampaignDate(now, sendTz);
+              if (sendTimeIdx !== -1) row[sendTimeIdx] = formatCampaignTime(now, sendTz);
               if (sendStampIdx !== -1) row[sendStampIdx] = now.toISOString();
             }
             if (executionStatusIdx !== -1) row[executionStatusIdx] = isSchedule ? "scheduled" : "sent";
@@ -1265,6 +1261,7 @@ if (!String(settings.helperKeyword || "").trim()) {
           sentSinceFlush++;
           if (sentSinceFlush >= SHOOTING_BATCH_SIZE) {
             log.info(`[Row ${i + 1}] batch flush after ${sentSinceFlush} sends (limit=${SHOOTING_BATCH_SIZE})`);
+            applyRowStatuses(normalizedRows);
             try {
               await uploadCsvText(fileId, stringifyCSV(normalizedRows));
               sentSinceFlush = 0;
@@ -1295,11 +1292,13 @@ if (!String(settings.helperKeyword || "").trim()) {
               settings.lastProcessedRow = deduplicatedRows.length;
               await writeFullCampaignSettings(campaignId, { lastProcessedRow: deduplicatedRows.length });
             } catch (cpErr) { log.warn(` Final checkpoint save failed: ${cpErr.message}`); }
+            applyRowStatuses(normalizedRows);
             try { await uploadCsvText(fileId, stringifyCSV(normalizedRows)); } catch (flushErr) { log.warn(` Final CSV flush failed: ${flushErr.message}`); }
           }
         }
         // Step 3d: Single-flush Drive save Ã¢â‚¬â€ rebuild CSV and overwrite file
         log.info(` Flushing updated CSV back to Drive: ${fileId}`);
+        applyRowStatuses(normalizedRows);
         const updatedCSVContent = stringifyCSV(normalizedRows);
         try {
           await uploadCsvText(fileId, updatedCSVContent);
@@ -1666,15 +1665,22 @@ if (!String(settings.helperKeyword || "").trim()) {
         };
 
         // Build SOCIALUSERNAME Ã¢â€ â€™ enhancedSocialMessage lookup for per-row DM personalization
+        // Build SOCIALUSERNAME -> message lookup for per-row DM personalization.
+        // AI-generated enhancedSocialMessage is top priority; the plain
+        // socialMessage column (written by mail-merge) is the fallback.
         const socialMessageMap = {};
         if (socialCsvRows) {
           const h = socialCsvRows[0];
-          const uidIdx = h.indexOf("SOCIALUSERNAME");
-          const msgIdx = h.indexOf("enhancedSocialMessage");
-          if (uidIdx !== -1 && msgIdx !== -1) {
+          const findIdx = (name) => h.findIndex(x => String(x || '').toLowerCase().replace(/[^a-z0-9]/g, '') === name.toLowerCase().replace(/[^a-z0-9]/g, ''));
+          const uidIdx = findIdx("SOCIALUSERNAME");
+          const msgIdx = findIdx("enhancedSocialMessage");
+          const fallbackMsgIdx = findIdx("socialMessage");
+          if (uidIdx !== -1 && (msgIdx !== -1 || fallbackMsgIdx !== -1)) {
             for (let r = 1; r < socialCsvRows.length; r++) {
               const uid = String(socialCsvRows[r][uidIdx] || "").trim();
-              const msg = String(socialCsvRows[r][msgIdx] || "").trim();
+              const aiMsg = msgIdx !== -1 ? String(socialCsvRows[r][msgIdx] || "").trim() : "";
+              const fallbackMsg = fallbackMsgIdx !== -1 ? String(socialCsvRows[r][fallbackMsgIdx] || "").trim() : "";
+              const msg = aiMsg || fallbackMsg;
               if (uid && msg) socialMessageMap[uid] = msg;
             }
           }

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import { identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { extractFileId, parseCSV, stringifyCSV, getCampaignSettings, mergeTemplate, buildPersonalizedLink, ensureLinkColumn } from "../_shared/pipelineUtils.js";
+import { applyRowStatuses } from "../_shared/campaignFields.js";
 import { downloadCsvText, uploadCsvText } from "../../api/googlesheets.js";
 
 export const maxDuration = 60;
@@ -71,11 +72,31 @@ export async function POST(request) {
     const enhancedBodyIdx = headers.findIndex(h => h.toLowerCase().trim() === "enhancedbody");
     const enhancedSocialMsgIdx = headers.findIndex(h => h.toLowerCase().trim() === "enhancedsocialmessage");
 
+    const normKey = (h) => String(h || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    // Append-only ensure: never inserts in the middle (would shift indices).
+    const ensure = (name) => {
+      const key = normKey(name);
+      let i = headers.findIndex((h) => normKey(h) === key);
+      if (i === -1) {
+        headers.push(name);
+        i = headers.length - 1;
+        for (let r = 1; r < rows.length; r++) rows[r][i] = '';
+      }
+      return i;
+    };
+
+    // Every standard field is populated here — before any AI stage runs — so
+    // the sheet always carries a usable fallback if AI cannot produce output.
+    const plainSubjectIdx = channel === 'email' ? ensure('emailSubject') : -1;
+    const plainBodyIdx = channel === 'email' ? ensure('emailBody') : -1;
+    const plainSocialIdx = channel === 'social' ? ensure('socialMessage') : -1;
+
     // Personalized link: write a per-recipient `link` column BEFORE merging so
     // {{link}}/{{url}} in the body template resolves to that recipient's
     // unique targetLink?param=value URL (deterministic, never AI-written).
+    // Written whenever a targetLink exists — not gated on personalizeLink.
     let linkIdx = -1;
-    if (settings.personalizeLink && settings.targetLink) {
+    if (settings.targetLink) {
       linkIdx = ensureLinkColumn(rows);
     }
 
@@ -108,6 +129,17 @@ export async function POST(request) {
         row[helperIdx] = campaignHelperKeyword;
       }
 
+      // Plain (fallback) content — always written at mail-merge time.
+      if (plainSubjectIdx !== -1 && subjectTemplate) {
+        row[plainSubjectIdx] = mergeTemplate(subjectTemplate, row, headers);
+      }
+      if (plainBodyIdx !== -1 && bodyTemplate) {
+        row[plainBodyIdx] = mergeTemplate(bodyTemplate, row, headers);
+      }
+      if (plainSocialIdx !== -1 && socialTemplate) {
+        row[plainSocialIdx] = mergeTemplate(socialTemplate, row, headers);
+      }
+
       if (writeTemplateEnhancedEmail) {
         if (enhancedSubjectIdx !== -1 && subjectTemplate) {
           row[enhancedSubjectIdx] = mergeTemplate(subjectTemplate, row, headers);
@@ -126,6 +158,9 @@ export async function POST(request) {
 
       processed++;
     }
+
+    // Centralized per-row status: derive the initial state from pre-AI columns.
+    applyRowStatuses(rows);
 
     mlog.info(`Columns after merge-prep: [${rows[0].join(', ')}]`);
     mlog.info(`link column: ${linkIdx === -1 ? 'not requested' : 'computed per row'}; helper column: ${helperIdx === -1 ? 'not requested' : 'stamped per row'}; templateEnhancedEmail=${writeTemplateEnhancedEmail} (aiPersonalizationStaged=${aiPersonalizationStaged})`);

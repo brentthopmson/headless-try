@@ -5,6 +5,7 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, getPerformancePresets } from "../_shared/pipelineUtils.js";
+import { applyRowStatuses } from "../_shared/campaignFields.js";
 import { getSelfUrl, getSelfUrlWithFallback, getInternalSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
 
@@ -251,6 +252,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log) {
       log.info(`[Row monitor] ${email}: monitoring`);
     }
 
+    applyRowStatuses(rows);
     try {
       await uploadCsvText(fileId, stringifyCSV(rows));
     } catch (flushErr) {

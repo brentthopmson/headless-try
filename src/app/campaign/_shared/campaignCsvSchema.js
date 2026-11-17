@@ -37,6 +37,9 @@ export const DELIVERY_COLUMNS = [
   'LINK', 'HELPERKEYWORD',
   'retryCount', 'lastSendMethod', 'lastSendStatus', 'lastSendError', 'lastAttemptAt',
   'sentStatus', 'sendResult', 'sendError', 'deliveryStatus',
+  // Single per-row status summarizing overall row state (derived from the
+  // stage columns). Appended last so existing files upgrade without shifting.
+  'STATUS',
 ];
 
 export const CANONICAL_CSV_COLUMNS = [...SOURCE_CSV_COLUMNS, ...DELIVERY_COLUMNS];

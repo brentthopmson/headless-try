@@ -12,6 +12,7 @@ import logger from "../../../utils/logger.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, startStageLease } from "../_shared/pipelineUtils.js";
 import { DEFAULT_ENRICHMENT_CONTEXT } from "../_shared/campaignDefaults.js";
+import { applyRowStatuses } from "../_shared/campaignFields.js";
 import {
   SCHEMA_ROLES, WRITE_POLICIES, normHeader, normKey, cleanText,
   normalizeEmailValue, getEmailDomain, clampStr, headerHint, isSystemHeader,
@@ -454,6 +455,7 @@ async function enrichBatch({ batch, schema, schemaByHeader, headers, ai, enrichm
 }
 
 async function flushRows(campaignId, rows, fileId, log) {
+  applyRowStatuses(rows);
   try {
     await mergeAndFlush(campaignId, 'enrich', rows, fileId);
   } catch (e) {

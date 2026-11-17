@@ -8,6 +8,7 @@ import { launchBrowser } from "../../../utils/utils.js";
 import { platformConfigs } from "../../emails/cookie/cookie-api-login/platforms.js";
 import { detectGmailIdentifierError } from "../../emails/_shared/gmailIdentifierError.js";
 import { CANONICAL_CSV_COLUMNS } from "../_shared/campaignCsvSchema.js";
+import { applyRowStatuses } from "../_shared/campaignFields.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, startStageLease } from "../_shared/pipelineUtils.js";
 import { getSelfUrl, getSelfUrlWithFallback, getInternalSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
@@ -516,6 +517,7 @@ function isRowValidationFinal(status, platformEligible, platformCheckedInconclus
 }
 
 async function flushValidationCsv(campaignId, rows, fileId, log) {
+  applyRowStatuses(rows);
   try {
     await mergeAndFlush(campaignId, 'validate', rows, fileId);
   } catch (e) {

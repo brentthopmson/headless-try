@@ -385,6 +385,15 @@ export async function POST(request) {
     const NON_INTERRUPTIBLE = new Set(['validate', 'enrich', 'personalize']);
     const earlyResolution = resolveCurrentStage(settings);
     const earlyStage = earlyResolution?.stage || null;
+    // Local-first: this orchestrator only runs inside a live engine. If a stage
+    // is ready to run/retry here, any GAS relay error from an earlier dispatch
+    // attempt is stale and must be cleared so it cannot keep the row paused.
+    if (earlyResolution && (earlyResolution.action === 'run' || earlyResolution.action === 'retry')) {
+      if (settings.lastEngineError) {
+        try { await updateCampaignSettings(campaignId, { lastEngineError: null }); } catch {}
+        settings.lastEngineError = null;
+      }
+    }
     const earlyMustRun = earlyResolution && (earlyResolution.action === 'run' || earlyResolution.action === 'retry' || earlyResolution.action === 'wait') && NON_INTERRUPTIBLE.has(earlyStage);
     if (!earlyMustRun && await isCampaignPaused(campaignId)) {
       log.info(`Campaign is paused, skipping`);

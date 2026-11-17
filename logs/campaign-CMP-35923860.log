@@ -224,3 +224,373 @@
 [INFO] 2026-11-17T06:21:31.935Z - [execute]  Flushing updated CSV back to Drive: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
 [INFO] 2026-11-17T06:21:37.693Z - [execute] [execute-email] Run summary: sent=5 delivered=5 failedAttempts=0 terminalFailed=0 retryPending=0 sentOrScheduled=5 skippedAlreadySent=0 limitReached=true paused=false
 [INFO] 2026-11-17T06:21:41.863Z - [execute] Email campaign execution completed (background)
+[INFO] 2026-11-17T08:30:52.816Z - [mail-merge] Mail-merge start (channel=email, subject=yes, body=yes, personalizeLink=false, helperKeyword=yes)
+[INFO] 2026-11-17T08:30:56.773Z - [mail-merge] Columns after merge-prep: [SN, FIRSTNAME, LASTNAME, EMAIL, ADDRESS, CITY, STATE, COUNTRY, ZIPCODE, PHONE, SEX, BUSINESSNAME, BUSINESSADDRESS, BUSINESSCITY, BUSINESSSTATE, BUSINESSCOUNTRY, BUSINESSZIPCODE, BUSINESSPHONE, BUSINESSEMAIL, SOCIALPLATFORM, SOCIALUSERNAME, SOCIALPHONE, CONTEXT, URL, , , , , , campaignType, engine, provider, shooterFirstName, shooterLastName, shooterEmail, shooterAddress, shooterCity, shooterState, shooterCountry, shooterZipCode, shooterPhone, shooterSex, smtp, port, username, password, appPassword, backupCode, oAuth2ClientId, oAuth2ClientSecret, oAuth2RefreshToken, , shouldValidate, shouldEnhance, shouldSearchInteract, shouldPageInteract, shouldInboxInteract, shouldActivitiesInteract, shouldSendMessage, , , emailSubject, emailBody, socialMessage, replyTo, , , , validation, providerMXResult, enhancedSubject, enhancedBody, enhancedSocialMessage, enrichmentStatus, , sendDate, sendTime, sendStamp, , , , searchKeys, searchCount, searchStatus, searchStamp, , profileToInteract, interactCount, interactStatus, interactStamp, , personalizationStatus, executionStatus, LINK, HELPERKEYWORD, retryCount, lastSendMethod, lastSendStatus, lastSendError, lastAttemptAt, sentStatus, sendResult, sendError, deliveryStatus]
+[INFO] 2026-11-17T08:30:56.782Z - [mail-merge] link column: not requested; helper column: stamped per row; templateEnhancedEmail=false (aiPersonalizationStaged=true)
+[INFO] 2026-11-17T08:31:02.853Z - [orchestrator] Mail merge result: {"success":true,"message":"Mail merge completed for 54 rows","processed":54,"channel":"email"}
+[INFO] 2026-11-17T08:31:13.534Z - [orchestrator] Triggering Validation
+[INFO] 2026-11-17T08:31:20.962Z - [validate] Received validation request
+[INFO] 2026-11-17T08:31:25.290Z - [validate]  Downloading CSV file: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T08:31:35.799Z - [validate]  MX concurrency=20, platform workers=5, platform verification=true
+[INFO] 2026-11-17T08:31:35.806Z - [validate]  Processing 54 rows (single-server, full dataset)
+[INFO] 2026-11-17T08:31:42.616Z - [validate] [Row MX] cfshelton99@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:42.622Z - [validate] [Row MX] gouravsingh@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:42.627Z - [validate] [Row MX] alper.ceyhan@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:42.649Z - [validate] [Row MX] evaniperen@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:42.637Z - [validate] [Row MX] lspardun@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:42.659Z - [validate] [Row MX] sharmahemant68@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:42.676Z - [validate] [Row MX] mayurtotla@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:42.686Z - [validate] [Row MX] sajidanaseem@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:42.696Z - [validate] [Row MX] jjmcgonnell@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:42.719Z - [validate] [Row MX] anantsuryavanshi91@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:42.730Z - [validate] [Row MX] shawn.mekkes@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:42.737Z - [validate] [Row MX] corinne.rochet@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:42.742Z - [validate] [Row MX] mingggchen@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:42.744Z - [validate] [Row MX] ccyr15@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:42.746Z - [validate] [Row MX] hunterpsherman@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:42.751Z - [validate] [Row MX] umesh.nikam@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:42.753Z - [validate] [Row MX] anadeosma@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:42.756Z - [validate] [Row MX] valecha.deepti@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:42.758Z - [validate] [Row MX] murphy.richardm@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:42.760Z - [validate] [Row MX] omarbenrouba@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:52.766Z - [validate] [Row MX] salvadorelias67@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:52.782Z - [validate] [Row MX] bahatd7@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:52.799Z - [validate] [Row MX] brunobaco@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:52.818Z - [validate] [Row MX] sarahmounea@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:52.833Z - [validate] [Row MX] themerritt@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:52.855Z - [validate] [Row MX] malinda.shaver@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:52.884Z - [validate] [Row MX] sheymouse@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:52.889Z - [validate] [Row MX] rawfashion@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:52.899Z - [validate] [Row MX] thind.sandy9@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:52.901Z - [validate] [Row MX] dineshdhungana@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:52.904Z - [validate] [Row MX] azdude68@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:52.911Z - [validate] [Row MX] fatema.maliha@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:52.914Z - [validate] [Row MX] denissejcruz@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:52.916Z - [validate] [Row MX] esther.bares@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:52.918Z - [validate] [Row MX] vinayextc@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:52.920Z - [validate] [Row MX] kagwiriairene@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:52.925Z - [validate] [Row MX] andreagangale@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:52.928Z - [validate] [Row MX] vrai.cse@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:52.930Z - [validate] [Row MX] edjohnwain@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:31:52.931Z - [validate] [Row MX] pscary1@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:32:01.180Z - [validate] [Row MX] bhenke16@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:32:01.188Z - [validate] [Row MX] poupon.flo@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:32:01.196Z - [validate] [Row MX] kevin.schnitzler@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:32:01.216Z - [validate] [Row MX] yair.tamir@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:32:01.228Z - [validate] [Row MX] vivekmgr2k4@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:32:01.247Z - [validate] [Row MX] sblack09@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:32:01.271Z - [validate] [Row MX] garyvelvet@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:32:01.292Z - [validate] [Row MX] ruchibhavsar123@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:32:01.297Z - [validate] [Row MX] katie.ziemann@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:32:01.306Z - [validate] [Row MX] mx.bad@invalid-domain-xyz.com: invalid_domain (queryMx ENOTFOUND invalid-domain-xyz.com)
+[INFO] 2026-11-17T08:32:01.308Z - [validate] [Row MX] no.such.user.839201@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:32:01.311Z - [validate] [Row MX] definitely.missing.472019@gmail.com: valid_mx (alt3.gmail-smtp-in.l.google.com)
+[INFO] 2026-11-17T08:32:01.313Z - [validate] [Row MX] not.real.person.571920@outlook.com: valid_mx (outlook-com.olc.protection.outlook.com)
+[INFO] 2026-11-17T08:32:01.316Z - [validate] [Row MX] absent.account.648213@outlook.com: valid_mx (outlook-com.olc.protection.outlook.com)
+[INFO] 2026-11-17T08:32:13.799Z - [validate]  Platform verification: 53 eligible row(s) across 2 platform(s), workers=2 (batch=5)
+[INFO] 2026-11-17T08:32:18.294Z - [validate] [Platform worker 2] gmail: 51 email(s) on reused tab
+[INFO] 2026-11-17T08:32:18.548Z - [validate] [Platform worker 1] outlook: 2 email(s) on reused tab
+[INFO] 2026-11-17T08:32:42.012Z - [validate] [Row verify] not.real.person.571920@outlook.com @outlook: attempt 1 => not_exists (platform_error:We couldn't find an account with that username. Try another, or get a new Microsoft account.)
+[INFO] 2026-11-17T08:32:43.837Z - [validate] [Row verify] cfshelton99@gmail.com @gmail: attempt 1 => verified_exists (challenge_visible)
+[INFO] 2026-11-17T08:32:56.695Z - [validate] [Row verify] absent.account.648213@outlook.com @outlook: attempt 1 => not_exists (platform_error:We couldn't find an account with that username. Try another, or get a new Microsoft account.)
+[INFO] 2026-11-17T08:32:57.681Z - [validate] [Row verify] gouravsingh@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:33:09.036Z - [validate] [Row verify] alper.ceyhan@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:33:18.547Z - [validate] [Row verify] lspardun@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:33:33.293Z - [validate] [Row verify] evaniperen@gmail.com @gmail: attempt 1 => verified_exists (identifier_step_transitioned)
+[INFO] 2026-11-17T08:33:48.406Z - [validate] [Row verify] sharmahemant68@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:34:01.350Z - [validate] [Row verify] mayurtotla@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:34:11.568Z - [validate] [Row verify] sajidanaseem@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:34:22.076Z - [validate] [Row verify] jjmcgonnell@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:34:32.532Z - [validate] [Row verify] anantsuryavanshi91@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:34:48.360Z - [validate] [Row verify] shawn.mekkes@gmail.com @gmail: attempt 1 => verified_exists (challenge_visible)
+[INFO] 2026-11-17T08:34:58.946Z - [validate] [Row verify] corinne.rochet@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:35:11.486Z - [validate] [Row verify] mingggchen@gmail.com @gmail: attempt 1 => verified_exists (challenge_visible)
+[INFO] 2026-11-17T08:35:20.682Z - [validate] [Row verify] ccyr15@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:35:31.054Z - [validate] [Row verify] hunterpsherman@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:35:47.073Z - [validate] [Row verify] umesh.nikam@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:35:56.870Z - [validate] [Row verify] anadeosma@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:36:06.962Z - [validate] [Row verify] valecha.deepti@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:36:19.880Z - [validate] [Row verify] murphy.richardm@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[WARN] 2026-11-17T08:36:22.109Z - [orchestrator] Validation fetch error: fetch failed (disconnect=true)
+[INFO] 2026-11-17T08:36:30.327Z - [validate] [Row verify] omarbenrouba@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:36:45.459Z - [validate] [Row verify] salvadorelias67@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:36:54.339Z - [validate] [Row verify] bahatd7@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:37:03.694Z - [validate] [Row verify] brunobaco@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:37:13.086Z - [validate] [Row verify] sarahmounea@gmail.com @gmail: attempt 1 => not_exists (platform_error:Account deleted)
+[INFO] 2026-11-17T08:37:26.060Z - [validate] [Row verify] themerritt@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:37:40.774Z - [validate] [Row verify] malinda.shaver@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:37:55.554Z - [validate] [Row verify] sheymouse@gmail.com @gmail: attempt 1 => verified_exists (identifier_step_transitioned)
+[INFO] 2026-11-17T08:38:06.208Z - [validate] [Row verify] rawfashion@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:38:18.543Z - [validate] [Row verify] thind.sandy9@gmail.com @gmail: attempt 1 => verified_exists (identifier_step_transitioned)
+[INFO] 2026-11-17T08:38:32.034Z - [validate] [Row verify] dineshdhungana@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:38:46.830Z - [validate] [Row verify] azdude68@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:38:57.194Z - [validate] [Row verify] fatema.maliha@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:39:06.927Z - [validate] [Row verify] denissejcruz@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:39:16.768Z - [validate] [Row verify] esther.bares@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:39:26.509Z - [validate] [Row verify] vinayextc@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:39:46.686Z - [validate] [Row verify] kagwiriairene@gmail.com @gmail: attempt 1 => verified_exists (challenge_visible)
+[INFO] 2026-11-17T08:39:56.294Z - [validate] [Row verify] andreagangale@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:40:05.267Z - [validate] [Row verify] vrai.cse@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:40:15.731Z - [validate] [Row verify] edjohnwain@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:40:25.751Z - [validate] [Row verify] pscary1@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:40:45.601Z - [validate] [Row verify] bhenke16@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:40:55.893Z - [validate] [Row verify] poupon.flo@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:41:06.351Z - [validate] [Row verify] kevin.schnitzler@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:41:16.167Z - [validate] [Row verify] yair.tamir@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:41:25.596Z - [validate] [Row verify] vivekmgr2k4@gmail.com @gmail: attempt 1 => verified_exists (challenge_visible)
+[INFO] 2026-11-17T08:41:40.075Z - [validate] [Row verify] sblack09@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:41:53.409Z - [validate] [Row verify] garyvelvet@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:42:02.634Z - [validate] [Row verify] ruchibhavsar123@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:42:15.099Z - [validate] [Row verify] katie.ziemann@gmail.com @gmail: attempt 1 => verified_exists (password_step_visible)
+[INFO] 2026-11-17T08:42:26.099Z - [validate] [Row verify] no.such.user.839201@gmail.com @gmail: attempt 1 => not_exists (platform_error:Couldn't find this account.)
+[INFO] 2026-11-17T08:42:39.978Z - [validate] [Row verify] definitely.missing.472019@gmail.com @gmail: attempt 1 => not_exists (platform_error:Couldn't find this account.)
+[INFO] 2026-11-17T08:43:09.791Z - [validate]  Validation stats: {"total":54,"duplicates":0,"empty":0,"invalidFormat":0,"validMx":0,"invalidMx":1,"verifiedExists":48,"notExists":5,"unverifiable":0,"socialValid":0,"pending":0} complete=true rows=54
+[INFO] 2026-11-17T08:43:26.453Z - [mail-merge] Mail-merge start (channel=email, subject=yes, body=yes, personalizeLink=false, helperKeyword=yes)
+[INFO] 2026-11-17T08:43:30.747Z - [mail-merge] Columns after merge-prep: [SN, FIRSTNAME, LASTNAME, EMAIL, ADDRESS, CITY, STATE, COUNTRY, ZIPCODE, PHONE, SEX, BUSINESSNAME, BUSINESSADDRESS, BUSINESSCITY, BUSINESSSTATE, BUSINESSCOUNTRY, BUSINESSZIPCODE, BUSINESSPHONE, BUSINESSEMAIL, SOCIALPLATFORM, SOCIALUSERNAME, SOCIALPHONE, CONTEXT, URL, , , , , , campaignType, engine, provider, shooterFirstName, shooterLastName, shooterEmail, shooterAddress, shooterCity, shooterState, shooterCountry, shooterZipCode, shooterPhone, shooterSex, smtp, port, username, password, appPassword, backupCode, oAuth2ClientId, oAuth2ClientSecret, oAuth2RefreshToken, , shouldValidate, shouldEnhance, shouldSearchInteract, shouldPageInteract, shouldInboxInteract, shouldActivitiesInteract, shouldSendMessage, , , emailSubject, emailBody, socialMessage, replyTo, , , , validation, providerMXResult, enhancedSubject, enhancedBody, enhancedSocialMessage, enrichmentStatus, , sendDate, sendTime, sendStamp, , , , searchKeys, searchCount, searchStatus, searchStamp, , profileToInteract, interactCount, interactStatus, interactStamp, , personalizationStatus, executionStatus, LINK, HELPERKEYWORD, retryCount, lastSendMethod, lastSendStatus, lastSendError, lastAttemptAt, sentStatus, sendResult, sendError, deliveryStatus]
+[INFO] 2026-11-17T08:43:30.752Z - [mail-merge] link column: not requested; helper column: stamped per row; templateEnhancedEmail=false (aiPersonalizationStaged=true)
+[INFO] 2026-11-17T08:43:34.759Z - [orchestrator] Mail merge result: {"success":true,"message":"Mail merge completed for 54 rows","processed":54,"channel":"email"}
+[INFO] 2026-11-17T08:43:49.129Z - [orchestrator] Triggering Enrichment
+[INFO] 2026-11-17T08:44:01.028Z - [enrich] Received enrichment request
+[INFO] 2026-11-17T08:44:07.597Z - [enrich]  Downloading CSV file: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T08:44:11.655Z - [enrich] [enrich] Running schema comprehension (AI Pass A) on 104 columns, 54 rows
+[INFO] 2026-11-17T08:47:06.794Z - [enrich] [enrich] Schema mapped: 39 writable columns
+[WARN] 2026-11-17T08:49:00.788Z - [orchestrator] Enrichment fetch error: This operation was aborted (disconnect=true)
+[INFO] 2026-11-17T08:51:45.851Z - [enrich] [Row 0] enrichment enriched
+[INFO] 2026-11-17T08:51:45.861Z - [enrich] [Row 1] enrichment enriched
+[INFO] 2026-11-17T08:51:45.876Z - [enrich] [Row 2] enrichment enriched
+[INFO] 2026-11-17T08:51:45.880Z - [enrich] [Row 3] enrichment enriched
+[INFO] 2026-11-17T08:51:45.884Z - [enrich] [Row 4] enrichment enriched
+[INFO] 2026-11-17T08:51:45.892Z - [enrich] [Row 5] enrichment enriched
+[INFO] 2026-11-17T08:51:45.895Z - [enrich] [Row 6] enrichment enriched
+[INFO] 2026-11-17T08:51:45.903Z - [enrich] [Row 7] enrichment enriched
+[INFO] 2026-11-17T08:51:45.906Z - [enrich] [Row 8] enrichment enriched
+[INFO] 2026-11-17T08:51:45.910Z - [enrich] [Row 9] enrichment enriched
+[INFO] 2026-11-17T08:51:45.913Z - [enrich] [Row 10] enrichment enriched
+[INFO] 2026-11-17T08:51:45.915Z - [enrich] [Row 11] enrichment enriched
+[INFO] 2026-11-17T08:51:45.917Z - [enrich] [Row 12] enrichment enriched
+[INFO] 2026-11-17T08:51:45.919Z - [enrich] [Row 13] enrichment enriched
+[INFO] 2026-11-17T08:51:45.922Z - [enrich] [Row 14] enrichment enriched
+[INFO] 2026-11-17T08:51:45.924Z - [enrich] [Row 15] enrichment enriched
+[INFO] 2026-11-17T08:51:45.925Z - [enrich] [Row 16] enrichment enriched
+[INFO] 2026-11-17T08:51:45.927Z - [enrich] [Row 17] enrichment enriched
+[INFO] 2026-11-17T08:51:45.929Z - [enrich] [Row 18] enrichment enriched
+[INFO] 2026-11-17T08:51:45.932Z - [enrich] [Row 19] enrichment enriched
+[INFO] 2026-11-17T08:51:45.934Z - [enrich] [Row 20] enrichment enriched
+[INFO] 2026-11-17T08:51:45.936Z - [enrich] [Row 21] enrichment enriched
+[INFO] 2026-11-17T08:51:45.940Z - [enrich] [Row 23] enrichment enriched
+[INFO] 2026-11-17T08:51:45.942Z - [enrich] [Row 24] enrichment enriched
+[INFO] 2026-11-17T08:51:45.944Z - [enrich] [Row 25] enrichment enriched
+[INFO] 2026-11-17T08:51:45.938Z - [enrich] [Row 22] enrichment enriched
+[INFO] 2026-11-17T08:51:45.946Z - [enrich] [Row 26] enrichment enriched
+[INFO] 2026-11-17T08:51:45.950Z - [enrich] [Row 27] enrichment enriched
+[INFO] 2026-11-17T08:51:45.952Z - [enrich] [Row 28] enrichment enriched
+[INFO] 2026-11-17T08:51:45.954Z - [enrich] [Row 29] enrichment enriched
+[INFO] 2026-11-17T08:51:45.956Z - [enrich] [Row 30] enrichment enriched
+[INFO] 2026-11-17T08:51:45.958Z - [enrich] [Row 31] enrichment enriched
+[INFO] 2026-11-17T08:51:45.961Z - [enrich] [Row 32] enrichment enriched
+[INFO] 2026-11-17T08:51:45.963Z - [enrich] [Row 33] enrichment enriched
+[INFO] 2026-11-17T08:51:45.966Z - [enrich] [Row 34] enrichment enriched
+[INFO] 2026-11-17T08:51:45.968Z - [enrich] [Row 35] enrichment enriched
+[INFO] 2026-11-17T08:51:45.971Z - [enrich] [Row 36] enrichment enriched
+[INFO] 2026-11-17T08:51:45.973Z - [enrich] [Row 37] enrichment enriched
+[INFO] 2026-11-17T08:51:45.975Z - [enrich] [Row 38] enrichment enriched
+[INFO] 2026-11-17T08:51:45.976Z - [enrich] [Row 39] enrichment enriched
+[INFO] 2026-11-17T08:51:45.978Z - [enrich] [Row 40] enrichment enriched
+[INFO] 2026-11-17T08:51:45.980Z - [enrich] [Row 41] enrichment enriched
+[INFO] 2026-11-17T08:51:45.982Z - [enrich] [Row 42] enrichment enriched
+[INFO] 2026-11-17T08:51:45.984Z - [enrich] [Row 43] enrichment enriched
+[INFO] 2026-11-17T08:51:45.986Z - [enrich] [Row 44] enrichment enriched
+[INFO] 2026-11-17T08:51:45.990Z - [enrich] [Row 45] enrichment enriched
+[INFO] 2026-11-17T08:51:45.993Z - [enrich] [Row 46] enrichment enriched
+[INFO] 2026-11-17T08:51:45.994Z - [enrich] [Row 47] enrichment enriched
+[INFO] 2026-11-17T08:51:45.996Z - [enrich] [Row 48] enrichment enriched
+[INFO] 2026-11-17T08:51:45.998Z - [enrich] [Row 49] enrichment enriched
+[INFO] 2026-11-17T08:51:46.002Z - [enrich] [Row 50] enrichment enriched
+[INFO] 2026-11-17T08:51:46.004Z - [enrich] [Row 51] enrichment enriched
+[INFO] 2026-11-17T08:51:46.007Z - [enrich] [Row 52] enrichment enriched
+[INFO] 2026-11-17T08:51:46.009Z - [enrich] [Row 53] enrichment enriched
+[INFO] 2026-11-17T08:52:21.735Z - [orchestrator] Mail merge already done, skipping
+[INFO] 2026-11-17T08:52:29.365Z - [orchestrator] Triggering AI Personalization
+[INFO] 2026-11-17T08:52:34.986Z - [personalize] Received personalization request
+[INFO] 2026-11-17T08:52:38.201Z - [personalize]  Downloading CSV file: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T08:55:31.662Z - [personalize]  Personalization wave 1/1 complete (flushed)
+[INFO] 2026-11-17T08:55:46.537Z - [orchestrator] AI Personalization response: {"success":true,"completed":true,"message":"Campaign personalization completed successfully","total":54,"personalized":54}
+[INFO] 2026-11-17T08:56:00.560Z - [orchestrator] Mail merge already done, skipping
+[INFO] 2026-11-17T08:56:00.567Z - [orchestrator] Cannot acquire lock: already_locked_by_self
+[INFO] 2026-11-17T08:56:04.586Z - [orchestrator] Auto-advancing to Execute
+[INFO] 2026-11-17T08:56:04.589Z - [orchestrator] Triggering Execute
+[INFO] 2026-11-17T08:56:07.927Z - [execute] Received execution trigger
+[INFO] 2026-11-17T08:56:25.085Z - [execute]  shooting=20, checkpoint=5, delay=500ms, multiServer=false, level=balanced
+[INFO] 2026-11-17T08:56:28.634Z - [orchestrator] Execute response: {"success":true,"accepted":true,"processing":true,"campaignId":"CMP-35923860","channel":"email"}
+[INFO] 2026-11-17T08:56:35.922Z - [execute]  Downloading CSV file for campaign sending: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T08:56:45.053Z - [execute] [execute] schedule waterfall stamped 54 row(s) in America/New_York
+[INFO] 2026-11-17T08:56:48.212Z - [execute]  Firestick warm-up enabled: 71 firestick emails loaded (concurrency=20, no total cap)
+[INFO] 2026-11-17T08:56:48.218Z - [execute]  Sending emails: limit=20, batch=20 contacts (after dedup: 54/54)
+[INFO] 2026-11-17T08:58:15.186Z - [execute] [replyFilter][outlook] rule for '5R1234899' already exists
+[INFO] 2026-11-17T08:58:15.190Z - [execute]  Reply filter: exists Ã¢â€ â€™ '5R1234899' (identifier=5R1234899)
+[INFO] 2026-11-17T08:58:23.165Z - [execute]  Execution mode: sequential (one-by-one), firestick=on, delivery=mixed, flushEvery=20
+[WARN] 2026-11-17T09:00:48.332Z - [execute]  Firestick warm-up failed: Send unverified (compose still open/ambiguous) for gov.fintechusv@gmail.com via outlook, continuing with lead send
+[INFO] 2026-11-17T09:00:48.337Z - [execute] [Row wire] cfshelton99@gmail.com: sending via session browser-1794011658491-lh5a0cnqsh (outlook)
+[INFO] 2026-11-17T09:02:43.107Z - [execute] [Row send] cfshelton99@gmail.com: sent via WIRE(outlook) (1/20)
+[INFO] 2026-11-17T09:03:45.700Z - [execute]  Firestick warm-up sent to gov.fintechassistancepay@gmail.com via smtp
+[INFO] 2026-11-17T09:03:54.966Z - [execute] [Row send] gouravsingh@gmail.com: sent via smtp.gmail.com (2/20)
+[WARN] 2026-11-17T09:06:23.670Z - [execute]  Firestick warm-up failed: Send unverified (compose still open/ambiguous) for gov.fintechassitancepay@gmail.com via outlook, continuing with lead send
+[INFO] 2026-11-17T09:06:23.673Z - [execute] [Row wire] alper.ceyhan@gmail.com: sending via session browser-1794011658491-lh5a0cnqsh (outlook)
+[INFO] 2026-11-17T09:08:29.243Z - [execute] [Row send] alper.ceyhan@gmail.com: sent via WIRE(outlook) (3/20)
+[INFO] 2026-11-17T09:09:27.941Z - [execute]  Firestick warm-up sent to gov.communitydc@gmail.com via smtp
+[INFO] 2026-11-17T09:09:39.224Z - [execute] [Row send] lspardun@gmail.com: sent via smtp.gmail.com (4/20)
+[INFO] 2026-11-17T09:12:33.582Z - [execute]  Firestick warm-up sent to gov.helpingcommunities@gmail.com via wire
+[INFO] 2026-11-17T09:12:34.097Z - [execute] [Row wire] evaniperen@gmail.com: sending via session browser-1794011658491-lh5a0cnqsh (outlook)
+[ERROR] 2026-11-17T09:14:24.178Z - [execute]  Failed to send to evaniperen@gmail.com via WIRE (attempt 1/3): Send unverified (compose still open/ambiguous) for evaniperen@gmail.com via outlook undefined
+[INFO] 2026-11-17T09:14:24.694Z - [execute]  Checkpoint at row 5/54
+[INFO] 2026-11-17T09:15:35.218Z - [execute]  Firestick warm-up sent to gov.fintechgrantprogram@gmail.com via smtp
+[WARN] 2026-11-17T09:15:35.730Z - [execute] [execute] rate limit hit on sharmahemant68@gmail.com; resting campaign, remaining rows left unattempted: Rate limited: hourly_limit: 5/5
+[INFO] 2026-11-17T09:15:35.734Z - [execute]  Flushing updated CSV back to Drive: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T09:15:45.039Z - [execute] [execute-email] Run summary: sent=4 delivered=4 failedAttempts=1 terminalFailed=0 retryPending=1 sentOrScheduled=4 skippedAlreadySent=0 limitReached=true paused=false
+[INFO] 2026-11-17T09:15:54.531Z - [execute] Email campaign execution completed (background)
+[INFO] 2026-11-17T09:34:35.102Z - [orchestrator] Mail merge already done, skipping
+[INFO] 2026-11-17T09:34:35.107Z - [orchestrator] Triggering Execute
+[INFO] 2026-11-17T09:34:35.147Z - [execute] Received execution trigger
+[INFO] 2026-11-17T09:34:41.848Z - [execute]  Scoped run (serverScope=fallback): 1/1 accounts on this instance
+[INFO] 2026-11-17T09:34:55.128Z - [execute]  shooting=20, checkpoint=5, delay=500ms, multiServer=false, level=balanced
+[INFO] 2026-11-17T09:34:58.758Z - [orchestrator] Execute response: {"success":true,"accepted":true,"processing":true,"campaignId":"CMP-35923860","channel":"email"}
+[INFO] 2026-11-17T09:34:58.764Z - [orchestrator] Triggered interact stage in parallel with execute
+[INFO] 2026-11-17T09:34:58.795Z - [interact] Received interaction request
+[INFO] 2026-11-17T09:35:05.901Z - [interact]  Channel: email, Selected interaction accounts: 1
+[INFO] 2026-11-17T09:35:05.905Z - [interact]  Downloading CSV file: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T09:35:06.377Z - [execute]  Downloading CSV file for campaign sending: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T09:35:10.491Z - [interact]  Found 0 sent rows to monitor for replies
+[INFO] 2026-11-17T09:35:13.201Z - [execute]  Firestick warm-up enabled: 71 firestick emails loaded (concurrency=20, no total cap)
+[INFO] 2026-11-17T09:35:13.205Z - [execute]  Sending emails: limit=20, batch=20 contacts (after dedup: 54/54)
+[INFO] 2026-11-17T09:36:41.176Z - [execute] [replyFilter][outlook] rule for '5R1234899' already exists
+[INFO] 2026-11-17T09:36:41.182Z - [execute]  Reply filter: exists Ã¢â€ â€™ '5R1234899' (identifier=5R1234899)
+[INFO] 2026-11-17T09:36:47.841Z - [execute]  Execution mode: sequential (one-by-one), firestick=on, delivery=mixed, flushEvery=20
+[INFO] 2026-11-17T09:37:46.082Z - [execute] [Row skip] evaniperen@gmail.com: retry backoff active (attempt 2/3, lastAttempt=2026-11-17T09:14:24.179Z, backoff=1h)
+[WARN] 2026-11-17T09:38:22.413Z - [execute]  Firestick warm-up failed: Rate limited: hourly_limit: 5/5, continuing with lead send
+[WARN] 2026-11-17T09:38:22.425Z - [execute] [execute] rate limit hit on sharmahemant68@gmail.com; resting campaign, remaining rows left unattempted: Rate limited: hourly_limit: 5/5
+[INFO] 2026-11-17T09:38:22.428Z - [execute]  Flushing updated CSV back to Drive: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T09:38:27.485Z - [execute] [execute-email] Run summary: sent=0 delivered=0 failedAttempts=0 terminalFailed=0 retryPending=1 sentOrScheduled=4 skippedAlreadySent=4 limitReached=true paused=false
+[INFO] 2026-11-17T09:38:57.678Z - [execute] Email campaign execution completed (background)
+[INFO] 2026-11-17T10:40:08.758Z - [orchestrator] Mail merge already done, skipping
+[INFO] 2026-11-17T10:40:08.763Z - [orchestrator] Triggering Execute
+[INFO] 2026-11-17T10:40:08.800Z - [execute] Received execution trigger
+[INFO] 2026-11-17T10:40:15.835Z - [execute]  Scoped run (serverScope=fallback): 1/1 accounts on this instance
+[INFO] 2026-11-17T10:40:28.328Z - [execute]  shooting=20, checkpoint=5, delay=500ms, multiServer=false, level=balanced
+[INFO] 2026-11-17T10:40:32.254Z - [orchestrator] Execute response: {"success":true,"accepted":true,"processing":true,"campaignId":"CMP-35923860","channel":"email"}
+[INFO] 2026-11-17T10:40:32.267Z - [orchestrator] Triggered interact stage in parallel with execute
+[INFO] 2026-11-17T10:40:32.308Z - [interact] Received interaction request
+[INFO] 2026-11-17T10:40:39.651Z - [execute]  Downloading CSV file for campaign sending: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T10:40:40.847Z - [interact]  Channel: email, Selected interaction accounts: 1
+[INFO] 2026-11-17T10:40:40.850Z - [interact]  Downloading CSV file: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T10:40:44.392Z - [interact]  Found 0 sent rows to monitor for replies
+[INFO] 2026-11-17T10:40:47.200Z - [execute]  Firestick warm-up enabled: 71 firestick emails loaded (concurrency=20, no total cap)
+[INFO] 2026-11-17T10:40:47.204Z - [execute]  Sending emails: limit=20, batch=20 contacts (after dedup: 54/54)
+[INFO] 2026-11-17T10:42:18.737Z - [execute] [replyFilter][outlook] rule for '5R1234899' already exists
+[INFO] 2026-11-17T10:42:18.741Z - [execute]  Reply filter: exists Ã¢â€ â€™ '5R1234899' (identifier=5R1234899)
+[INFO] 2026-11-17T10:42:26.288Z - [execute]  Execution mode: sequential (one-by-one), firestick=on, delivery=mixed, flushEvery=20
+[INFO] 2026-11-17T10:43:39.293Z - [execute]  Firestick warm-up sent to gov.fintechusv@gmail.com via smtp
+[INFO] 2026-11-17T10:43:39.809Z - [execute] [Row retry] evaniperen@gmail.com: mixed retry 1, last=wire -> chosen=smtp
+[INFO] 2026-11-17T10:43:49.717Z - [execute] [Row send] evaniperen@gmail.com: sent via smtp.gmail.com (1/20)
+[INFO] 2026-11-17T10:43:50.228Z - [execute]  Checkpoint at row 5/54
+[INFO] 2026-11-17T10:44:50.589Z - [execute]  Firestick warm-up sent to gov.fintechassistancepay@gmail.com via smtp
+[INFO] 2026-11-17T10:45:02.313Z - [execute] [Row send] sharmahemant68@gmail.com: sent via smtp.gmail.com (2/20)
+[WARN] 2026-11-17T10:47:40.866Z - [execute]  Firestick warm-up failed: Send unverified (compose still open/ambiguous) for gov.fintechassitancepay@gmail.com via outlook, continuing with lead send
+[INFO] 2026-11-17T10:47:40.868Z - [execute] [Row wire] mayurtotla@gmail.com: sending via session browser-1794011658491-lh5a0cnqsh (outlook)
+[ERROR] 2026-11-17T10:49:24.897Z - [execute]  Failed to send to mayurtotla@gmail.com via WIRE (attempt 1/3): Send unverified (compose still open/ambiguous) for mayurtotla@gmail.com via outlook undefined
+[INFO] 2026-11-17T10:51:48.125Z - [execute]  Firestick warm-up sent to gov.communitydc@gmail.com via smtp
+[WARN] 2026-11-17T10:51:48.639Z - [execute] [execute] rate limit hit on sajidanaseem@gmail.com; resting campaign, remaining rows left unattempted: Rate limited: hourly_limit: 5/5
+[INFO] 2026-11-17T10:51:48.644Z - [execute]  Flushing updated CSV back to Drive: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T10:51:53.819Z - [execute] [execute-email] Run summary: sent=2 delivered=2 failedAttempts=1 terminalFailed=0 retryPending=1 sentOrScheduled=6 skippedAlreadySent=4 limitReached=true paused=false
+[INFO] 2026-11-17T10:52:23.059Z - [execute] Email campaign execution completed (background)
+[INFO] 2026-11-17T11:54:11.284Z - [orchestrator] Mail merge already done, skipping
+[INFO] 2026-11-17T11:54:11.288Z - [orchestrator] Triggering Execute
+[INFO] 2026-11-17T11:54:11.321Z - [execute] Received execution trigger
+[INFO] 2026-11-17T11:54:16.971Z - [execute]  Scoped run (serverScope=fallback): 1/1 accounts on this instance
+[INFO] 2026-11-17T11:54:30.488Z - [execute]  shooting=20, checkpoint=5, delay=500ms, multiServer=false, level=balanced
+[INFO] 2026-11-17T11:54:33.695Z - [orchestrator] Execute response: {"success":true,"accepted":true,"processing":true,"campaignId":"CMP-35923860","channel":"email"}
+[INFO] 2026-11-17T11:54:33.704Z - [orchestrator] Triggered interact stage in parallel with execute
+[INFO] 2026-11-17T11:54:33.741Z - [interact] Received interaction request
+[INFO] 2026-11-17T11:54:41.679Z - [interact]  Channel: email, Selected interaction accounts: 1
+[INFO] 2026-11-17T11:54:41.683Z - [interact]  Downloading CSV file: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T11:54:42.626Z - [execute]  Downloading CSV file for campaign sending: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T11:54:46.195Z - [interact]  Found 0 sent rows to monitor for replies
+[INFO] 2026-11-17T11:54:49.932Z - [execute]  Firestick warm-up enabled: 71 firestick emails loaded (concurrency=20, no total cap)
+[INFO] 2026-11-17T11:54:49.936Z - [execute]  Sending emails: limit=20, batch=20 contacts (after dedup: 54/54)
+[INFO] 2026-11-17T11:56:12.840Z - [execute] [replyFilter][outlook] rule for '5R1234899' already exists
+[INFO] 2026-11-17T11:56:12.842Z - [execute]  Reply filter: exists Ã¢â€ â€™ '5R1234899' (identifier=5R1234899)
+[INFO] 2026-11-17T11:56:25.119Z - [execute]  Execution mode: sequential (one-by-one), firestick=on, delivery=mixed, flushEvery=20
+[INFO] 2026-11-17T11:58:03.847Z - [execute]  Firestick warm-up sent to gov.fintechusv@gmail.com via smtp
+[INFO] 2026-11-17T11:58:04.363Z - [execute] [Row retry] mayurtotla@gmail.com: mixed retry 1, last=wire -> chosen=smtp
+[INFO] 2026-11-17T11:58:13.064Z - [execute] [Row send] mayurtotla@gmail.com: sent via smtp.gmail.com (1/20)
+[INFO] 2026-11-17T11:59:06.164Z - [execute]  Firestick warm-up sent to gov.fintechassistancepay@gmail.com via smtp
+[INFO] 2026-11-17T11:59:14.246Z - [execute] [Row send] sajidanaseem@gmail.com: sent via smtp.gmail.com (2/20)
+[INFO] 2026-11-17T12:03:55.519Z - [execute]  Firestick warm-up sent to gov.fintechassitancepay@gmail.com via wire
+[INFO] 2026-11-17T12:03:56.023Z - [execute] [Row wire] jjmcgonnell@gmail.com: sending via session browser-1794011658491-lh5a0cnqsh (outlook)
+[ERROR] 2026-11-17T12:05:41.778Z - [execute]  Failed to send to jjmcgonnell@gmail.com via WIRE (attempt 1/3): Send unverified (compose still open/ambiguous) for jjmcgonnell@gmail.com via outlook undefined
+[INFO] 2026-11-17T12:06:26.272Z - [execute]  Firestick warm-up sent to gov.communitydc@gmail.com via smtp
+[WARN] 2026-11-17T12:06:26.788Z - [execute] [execute] rate limit hit on anantsuryavanshi91@gmail.com; resting campaign, remaining rows left unattempted: Rate limited: hourly_limit: 5/5
+[INFO] 2026-11-17T12:06:26.791Z - [execute]  Flushing updated CSV back to Drive: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T12:06:34.721Z - [execute] [execute-email] Run summary: sent=2 delivered=2 failedAttempts=1 terminalFailed=0 retryPending=1 sentOrScheduled=8 skippedAlreadySent=6 limitReached=true paused=false
+[INFO] 2026-11-17T12:07:05.749Z - [execute] Email campaign execution completed (background)
+[INFO] 2026-11-17T13:09:19.989Z - [orchestrator] Mail merge already done, skipping
+[INFO] 2026-11-17T13:09:20.008Z - [orchestrator] Triggering Execute
+[INFO] 2026-11-17T13:09:20.044Z - [execute] Received execution trigger
+[INFO] 2026-11-17T13:09:27.872Z - [execute]  Scoped run (serverScope=fallback): 1/1 accounts on this instance
+[INFO] 2026-11-17T13:09:41.771Z - [execute]  shooting=20, checkpoint=5, delay=500ms, multiServer=false, level=balanced
+[INFO] 2026-11-17T13:09:44.330Z - [orchestrator] Execute response: {"success":true,"accepted":true,"processing":true,"campaignId":"CMP-35923860","channel":"email"}
+[INFO] 2026-11-17T13:09:44.338Z - [orchestrator] Triggered interact stage in parallel with execute
+[INFO] 2026-11-17T13:09:44.374Z - [interact] Received interaction request
+[INFO] 2026-11-17T13:09:50.461Z - [interact]  Channel: email, Selected interaction accounts: 1
+[INFO] 2026-11-17T13:09:50.464Z - [interact]  Downloading CSV file: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T13:09:59.415Z - [execute]  Downloading CSV file for campaign sending: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T13:09:59.909Z - [interact]  Found 0 sent rows to monitor for replies
+[INFO] 2026-11-17T13:10:06.835Z - [execute]  Firestick warm-up enabled: 71 firestick emails loaded (concurrency=20, no total cap)
+[INFO] 2026-11-17T13:10:06.839Z - [execute]  Sending emails: limit=20, batch=20 contacts (after dedup: 54/54)
+[INFO] 2026-11-17T13:12:02.537Z - [execute] [replyFilter][outlook] rule for '5R1234899' already exists
+[INFO] 2026-11-17T13:12:02.541Z - [execute]  Reply filter: exists Ã¢â€ â€™ '5R1234899' (identifier=5R1234899)
+[INFO] 2026-11-17T13:12:11.974Z - [execute]  Execution mode: sequential (one-by-one), firestick=on, delivery=mixed, flushEvery=20
+[INFO] 2026-11-17T13:14:21.997Z - [execute]  Firestick warm-up sent to gov.fintechusv@gmail.com via smtp
+[INFO] 2026-11-17T13:14:22.512Z - [execute] [Row retry] jjmcgonnell@gmail.com: mixed retry 1, last=wire -> chosen=smtp
+[INFO] 2026-11-17T13:14:30.513Z - [execute] [Row send] jjmcgonnell@gmail.com: sent via smtp.gmail.com (1/20)
+[INFO] 2026-11-17T13:15:26.407Z - [execute]  Firestick warm-up sent to gov.fintechassistancepay@gmail.com via smtp
+[INFO] 2026-11-17T13:15:33.923Z - [execute] [Row send] anantsuryavanshi91@gmail.com: sent via smtp.gmail.com (2/20)
+[INFO] 2026-11-17T13:15:34.431Z - [execute]  Checkpoint at row 10/54
+[WARN] 2026-11-17T13:18:11.940Z - [execute]  Firestick warm-up failed: Send unverified (compose still open/ambiguous) for gov.fintechassitancepay@gmail.com via outlook, continuing with lead send
+[INFO] 2026-11-17T13:18:11.942Z - [execute] [Row wire] shawn.mekkes@gmail.com: sending via session browser-1794011658491-lh5a0cnqsh (outlook)
+[ERROR] 2026-11-17T13:19:57.596Z - [execute]  Failed to send to shawn.mekkes@gmail.com via WIRE (attempt 1/3): Send unverified (compose still open/ambiguous) for shawn.mekkes@gmail.com via outlook undefined
+[WARN] 2026-11-17T13:20:14.564Z - [execute]  Final CSV flush failed: Request failed with status code 500
+[INFO] 2026-11-17T13:20:52.866Z - [execute]  Firestick warm-up sent to gov.communitydc@gmail.com via smtp
+[WARN] 2026-11-17T13:20:53.386Z - [execute] [execute] rate limit hit on corinne.rochet@gmail.com; resting campaign, remaining rows left unattempted: Rate limited: hourly_limit: 5/5
+[INFO] 2026-11-17T13:20:53.393Z - [execute]  Flushing updated CSV back to Drive: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T13:20:57.975Z - [execute] [execute-email] Run summary: sent=2 delivered=2 failedAttempts=1 terminalFailed=0 retryPending=1 sentOrScheduled=10 skippedAlreadySent=8 limitReached=true paused=false
+[INFO] 2026-11-17T13:21:28.589Z - [execute] Email campaign execution completed (background)
+[INFO] 2026-11-17T14:24:07.495Z - [orchestrator] Mail merge already done, skipping
+[INFO] 2026-11-17T14:24:07.501Z - [orchestrator] Triggering Execute
+[INFO] 2026-11-17T14:24:07.542Z - [execute] Received execution trigger
+[INFO] 2026-11-17T14:24:14.116Z - [execute]  Scoped run (serverScope=fallback): 1/1 accounts on this instance
+[INFO] 2026-11-17T14:24:27.953Z - [execute]  shooting=20, checkpoint=5, delay=500ms, multiServer=false, level=balanced
+[INFO] 2026-11-17T14:24:31.540Z - [orchestrator] Execute response: {"success":true,"accepted":true,"processing":true,"campaignId":"CMP-35923860","channel":"email"}
+[INFO] 2026-11-17T14:24:31.544Z - [orchestrator] Triggered interact stage in parallel with execute
+[INFO] 2026-11-17T14:24:31.556Z - [interact] Received interaction request
+[INFO] 2026-11-17T14:24:39.584Z - [interact]  Channel: email, Selected interaction accounts: 1
+[INFO] 2026-11-17T14:24:39.588Z - [interact]  Downloading CSV file: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T14:24:40.019Z - [execute]  Downloading CSV file for campaign sending: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T14:24:43.020Z - [interact]  Found 0 sent rows to monitor for replies
+[INFO] 2026-11-17T14:24:46.595Z - [execute]  Firestick warm-up enabled: 71 firestick emails loaded (concurrency=20, no total cap)
+[INFO] 2026-11-17T14:24:46.598Z - [execute]  Sending emails: limit=20, batch=20 contacts (after dedup: 54/54)
+[INFO] 2026-11-17T14:26:26.264Z - [execute] [replyFilter][outlook] rule for '5R1234899' already exists
+[INFO] 2026-11-17T14:26:26.267Z - [execute]  Reply filter: exists Ã¢â€ â€™ '5R1234899' (identifier=5R1234899)
+[INFO] 2026-11-17T14:26:34.808Z - [execute]  Execution mode: sequential (one-by-one), firestick=on, delivery=mixed, flushEvery=20
+[INFO] 2026-11-17T14:29:02.565Z - [execute]  Firestick warm-up sent to gov.fintechusv@gmail.com via smtp
+[INFO] 2026-11-17T14:29:03.073Z - [execute] [Row retry] shawn.mekkes@gmail.com: mixed retry 1, last=wire -> chosen=smtp
+[INFO] 2026-11-17T14:29:10.872Z - [execute] [Row send] shawn.mekkes@gmail.com: sent via smtp.gmail.com (1/20)
+[INFO] 2026-11-17T14:30:09.113Z - [execute]  Firestick warm-up sent to gov.fintechassistancepay@gmail.com via smtp
+[INFO] 2026-11-17T14:30:17.718Z - [execute] [Row send] corinne.rochet@gmail.com: sent via smtp.gmail.com (2/20)
+[INFO] 2026-11-17T14:33:22.124Z - [execute]  Firestick warm-up sent to gov.fintechassitancepay@gmail.com via wire
+[INFO] 2026-11-17T14:33:22.633Z - [execute] [Row wire] mingggchen@gmail.com: sending via session browser-1794011658491-lh5a0cnqsh (outlook)
+[ERROR] 2026-11-17T14:35:11.995Z - [execute]  Failed to send to mingggchen@gmail.com via WIRE (attempt 1/3): Send unverified (compose still open/ambiguous) for mingggchen@gmail.com via outlook undefined
+[INFO] 2026-11-17T14:36:10.439Z - [execute]  Firestick warm-up sent to gov.communitydc@gmail.com via smtp
+[WARN] 2026-11-17T14:36:10.953Z - [execute] [execute] rate limit hit on ccyr15@gmail.com; resting campaign, remaining rows left unattempted: Rate limited: hourly_limit: 5/5
+[INFO] 2026-11-17T14:36:10.956Z - [execute]  Flushing updated CSV back to Drive: 1SytDn9kigdPCJhD2zLj0HdXp0FPGsRqs
+[INFO] 2026-11-17T14:36:15.908Z - [execute] [execute-email] Run summary: sent=2 delivered=2 failedAttempts=1 terminalFailed=0 retryPending=1 sentOrScheduled=12 skippedAlreadySent=10 limitReached=true paused=false
+[INFO] 2026-11-17T14:36:46.315Z - [execute] Email campaign execution completed (background)

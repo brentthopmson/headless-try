@@ -6,6 +6,7 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, buildPersonalizedLink, ensureLinkColumn, startStageLease } from "../_shared/pipelineUtils.js";
 import { DEFAULT_PERSONALIZATION_PROMPT } from "../_shared/campaignDefaults.js";
+import { applyRowStatuses } from "../_shared/campaignFields.js";
 import { getSelfUrl, getSelfUrlWithFallback, getInternalSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
 import { updateUserUsage } from "../../socials/_shared/hubUpdater.js";
@@ -300,6 +301,7 @@ async function processPersonalizationBatches({ rows, headers, dataRows, scopeSta
       else log.warn(` Personalization chunk failed: ${r.reason?.message || r.reason}`);
     }
     // Incremental per-batch commit: persist completed batch rows/status before next batch
+    applyRowStatuses(rows);
     try {
       await mergeAndFlush(campaignId, 'personalize', rows, fileId);
     } catch (flushErr) {
@@ -380,6 +382,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
     return NextResponse.json({ success: true, paused: true, completed: false, message: "Personalization paused at checkpoint", total: scopeEnd, personalized: personalizedCount });
   }
 
+  applyRowStatuses(rows);
   try { await uploadCsvText(fileId, stringifyCSV(rows)); } catch {}
 
   if (!allDone) {
