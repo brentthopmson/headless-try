@@ -6,6 +6,7 @@ import { getCampaignLimits, checkActionAllowed, checkUserQuota } from "../../soc
 import { resolveAccountGate } from "../../socials/_shared/accountGate.js";
 import { getAccountUsage, updateAccountUsage, updateUserUsage, setActiveCampaignForAccount, clearActiveCampaignForAccount, seedCampaignAccountsInStats } from "../../socials/_shared/hubUpdater.js";
 import { isCampaignPaused, updateCampaignSettings, getCampaignSettings, buildQueryUrl } from "../../campaign/_shared/pipelineUtils.js";
+import { DEFAULT_EMAIL_STRATEGY_PROMPT } from "../../campaign/_shared/campaignDefaults.js";
 import { updateSheetRowApi } from "../../api/googlesheets.js";
 import { INBOX_CONFIGS, detectInboxProvider } from "./platform.js";
 import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
@@ -87,7 +88,7 @@ function buildRelevancePrompt(itemList, settings, knownContacts = [], helperKeyw
   if (settings.helperKeyword) keywordSet.add(String(settings.helperKeyword).trim());
   for (const k of helperKeywords) if (k) keywordSet.add(k);
   const keywords = [...keywordSet].join(", ");
-  const strategy = settings.emailStrategyPrompt || "";
+  const strategy = settings.emailStrategyPrompt || DEFAULT_EMAIL_STRATEGY_PROMPT;
   const targetLink = settings.interactionTargetLink || settings.targetLink || "";
   const listing = itemList.map((it, i) =>
     `[${i}] From: ${it.sender || "unknown"} | Subject: ${it.subject || "no subject"} | Snippet: ${(it.snippet || it.text).slice(0, 200)}`
@@ -110,7 +111,7 @@ Return {"relevant": []} if none match.`;
 }
 
 function buildReplyPrompt(item, settings, threadTurn = 0) {
-  const strategy = settings.emailStrategyPrompt || "";
+  const strategy = settings.emailStrategyPrompt || DEFAULT_EMAIL_STRATEGY_PROMPT;
   const keywords = (settings.emailKeywords || []).join(", ");
   const linkAfterTurns = Math.max(0, parseInt(settings.linkAfterTurns, 10) || 0);
   const personalLink = buildPersonalInteractionLink(item, settings);
@@ -316,7 +317,7 @@ export async function processInboxInteract(body) {
     if (interactionAccountIds.length === 0) {
       return NextResponse.json({ success: false, error: "No interaction accounts selected for interactions-only campaign" }, { status: 400 });
     }
-    if (emailKeywords.length === 0 && !settings.helperKeyword && !settings.emailStrategyPrompt) {
+    if (emailKeywords.length === 0 && !settings.helperKeyword && !settings.emailStrategyPrompt && !DEFAULT_EMAIL_STRATEGY_PROMPT) {
       return NextResponse.json({ success: false, error: "Interactions-only campaigns require at least one keyword, a helper keyword, or a strategy prompt" }, { status: 400 });
     }
 

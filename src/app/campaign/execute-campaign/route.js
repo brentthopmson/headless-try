@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { CANONICAL_CSV_COLUMNS } from "../_shared/campaignCsvSchema.js";
+import { DEFAULT_SOCIAL_STRATEGY_PROMPT } from "../_shared/campaignDefaults.js";
 import { downloadCsvText, uploadCsvText, updateSheetRowApi, getSheetDataApi } from "../../api/googlesheets.js";
 import logger from "../../../utils/logger.js";
 import { detectProvider } from "../../emails/_shared/wireSender.js";
@@ -710,6 +711,8 @@ export async function POST(request) {
         const enhancedBodyIdx = nHeaders.indexOf("enhancedBody");
         const emailSubjectIdx = nHeaders.indexOf("emailSubject");
         const emailBodyIdx = nHeaders.indexOf("emailBody");
+        const replyToIdx = nHeaders.findIndex(h => String(h || '').toLowerCase().trim() === "replyto");
+        const campaignReplyTo = String(settings.replyTo || '').trim();
         const executionStatusIdx = nHeaders.findIndex(h => h.toLowerCase().trim() === "executionstatus");
         const retryCountIdx = nHeaders.findIndex(h => h.toLowerCase().trim() === "retrycount");
         const lastSendMethodIdx = nHeaders.findIndex(h => h.toLowerCase().trim() === "lastsendmethod");
@@ -1190,6 +1193,7 @@ if (!String(settings.helperKeyword || "").trim()) {
               retryCount: isRetryAttempt ? rowRetryCount : 0,
               lastSendMethod: priorMethod,
               campaignKeyword: keyword,
+              replyTo: (replyToIdx !== -1 ? String(row[replyToIdx] || '').trim() : '') || campaignReplyTo,
               preferredMethod: (deliveryMethod === "mixed" && isRetryAttempt && (priorMethod === "smtp" || priorMethod === "wire")) ? (priorMethod === "smtp" ? "wire" : "smtp") : "",
             });
             senderHost = sendResult.senderHost;
@@ -1498,7 +1502,7 @@ if (!String(settings.helperKeyword || "").trim()) {
             profileId,
             // AI context: strategy + target link so messages are crafted with the destination in mind
             targetLink: settings.targetLink || "",
-            socialStrategyPrompt: settings.socialStrategyPrompt || "",
+            socialStrategyPrompt: settings.socialStrategyPrompt || DEFAULT_SOCIAL_STRATEGY_PROMPT,
             campaignMode: settings.campaignMode || "",
             // Campaign direct-execute tasks have no row in the social-tasks
             // sheet Ã¢â‚¬â€ the route skips updateTaskRow for these (avoids
@@ -1787,7 +1791,7 @@ if (!String(settings.helperKeyword || "").trim()) {
             const taskPayload = {
               ...task,
               targetProfileId: task.searchQuery || null,
-              socialStrategyPrompt: settings.socialStrategyPrompt || null,
+              socialStrategyPrompt: settings.socialStrategyPrompt || DEFAULT_SOCIAL_STRATEGY_PROMPT,
               projectId: settings.projectId || null,
               messageText: resolveSocialMessage(perRowMessage, settings),
             };
@@ -1895,7 +1899,7 @@ if (!String(settings.helperKeyword || "").trim()) {
                 driveUrl: pData.driveUrl || "",
                 profileId: pid,
                 targetLink: settings.targetLink || "",
-                socialStrategyPrompt: settings.socialStrategyPrompt || "",
+                socialStrategyPrompt: settings.socialStrategyPrompt || DEFAULT_SOCIAL_STRATEGY_PROMPT,
                 campaignMode: settings.campaignMode || "",
                 directExecute: true,
                 status: "PENDING",

@@ -5,6 +5,7 @@ import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, buildPersonalizedLink, ensureLinkColumn, startStageLease } from "../_shared/pipelineUtils.js";
+import { DEFAULT_PERSONALIZATION_PROMPT } from "../_shared/campaignDefaults.js";
 import { getSelfUrl, getSelfUrlWithFallback, getInternalSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
 import { updateUserUsage } from "../../socials/_shared/hubUpdater.js";
@@ -336,7 +337,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   if (rows.length === 0) throw new Error("CSV file is empty");
   const headers = rows[0];
 
-  let personalizationPrompt = "Write a short, professional cold outreach email. Address by first name, reference company. Keep it engaging, under 150 words. Vary subject lines.";
+  let personalizationPrompt = DEFAULT_PERSONALIZATION_PROMPT;
   let channel = "email";
   let campaignSettings = {};
   try {
@@ -414,7 +415,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
   const headers = rows[0];
   const dataRows = rows.slice(1);
 
-  let personalizationPrompt = "Write a short, professional cold outreach email. Address by first name, reference company. Keep it engaging, under 150 words. Vary subject lines.";
+  let personalizationPrompt = DEFAULT_PERSONALIZATION_PROMPT;
   let channel = "email";
   let campaignSettings = {};
   try {

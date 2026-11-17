@@ -42,15 +42,18 @@ export async function sendViaSMTP(recipient, subject, body, smtpConfig) {
   }
 
   const transporter = createTransporter(smtpConfig);
-  const fromName = smtpConfig.senderName || "Outreach Manager";
-  const fromEmail = smtpConfig.user || smtpConfig.username;
+  const fromEmail = smtpConfig.from_email || smtpConfig.user || smtpConfig.username;
+  const localPart = String(fromEmail || '').split('@')[0];
+  const fromName = smtpConfig.senderName || localPart || "Outreach Manager";
+  const replyTo = smtpConfig.replyTo || smtpConfig.reply_to || undefined;
 
-  logger.info(`[smtpSender] Attempting send to ${recipient} via ${smtpConfig.host}:${smtpConfig.port} as ${fromEmail} (subject ${String(subject || '').length} chars, body ${String(body || '').length} chars)`);
+  logger.info(`[smtpSender] Attempting send to ${recipient} via ${smtpConfig.host}:${smtpConfig.port} as "${fromName}" <${fromEmail}>${replyTo ? ` replyTo=${replyTo}` : ''} (subject ${String(subject || '').length} chars, body ${String(body || '').length} chars)`);
   let info;
   try {
     info = await transporter.sendMail({
       from: `"${fromName}" <${fromEmail}>`,
       to: recipient,
+      ...(replyTo ? { replyTo } : {}),
       subject,
       text: body,
       html: body.replace(/\n/g, "<br>"),

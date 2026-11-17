@@ -49,6 +49,14 @@ export function validateSmtpConfigs(smtpSettings) {
     if (isNaN(port) || port <= 0 || port > 65535) errors.push('valid port (1-65535) is required');
     if (!cfg.username || typeof cfg.username !== 'string' || !cfg.username.trim()) errors.push('username is required');
     if (!cfg.from_email || typeof cfg.from_email !== 'string' || !cfg.from_email.trim()) errors.push('from_email is required');
+    // Optional display name / reply-to. When present they must be usable values.
+    if (cfg.senderName != null && String(cfg.senderName).trim() && String(cfg.senderName).length > 120) {
+      errors.push('senderName must be 120 characters or fewer');
+    }
+    const replyTo = cfg.replyTo || cfg.reply_to;
+    if (replyTo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(replyTo).trim())) {
+      errors.push('replyTo must be a valid email address');
+    }
     const hasAuth = (cfg.password && String(cfg.password).trim()) || (cfg.appPassword && String(cfg.appPassword).trim()) || (cfg.oAuth2RefreshToken && String(cfg.oAuth2RefreshToken).trim());
     if (!hasAuth) errors.push('password, appPassword, or oAuth2RefreshToken is required');
     // Per-server send limits are MANDATORY (no fallbacks to provider/platform defaults).
@@ -137,10 +145,15 @@ export async function sendCampaignEmail({
   retryCount = 0,
   lastSendMethod = "",
   campaignKeyword = "",
+  replyTo = "",
 }) {
   let senderHost = "WIRE";
   let delivered = 0;
   let actualMethod = "wire";
+  // Reply-To fallback: per-SMTP value wins; otherwise use the campaign/CSV value.
+  const smtpForSend = (smtp && !(smtp.replyTo || smtp.reply_to) && replyTo)
+    ? { ...smtp, replyTo }
+    : smtp;
 
   if (isSchedule) {
     const wireCookies = profileData?.cookies;
@@ -203,7 +216,7 @@ export async function sendCampaignEmail({
         throw new Error("No SMTP account available for this row");
       }
     } else {
-      await sendViaSMTP(email, subject, message, smtp);
+      await sendViaSMTP(email, subject, message, smtpForSend);
       noteSmtp(smtp);
       senderHost = smtp?.host || "SMTP";
       delivered++;
@@ -233,7 +246,7 @@ export async function sendCampaignEmail({
         if (!smtp) {
           throw new Error(`No browser session and no SMTP account available for profile ${profileId || "unknown"}`);
         }
-        await sendViaSMTP(email, subject, message, smtp);
+        await sendViaSMTP(email, subject, message, smtpForSend);
         noteSmtp(smtp);
         senderHost = smtp?.host || "SMTP_FALLBACK";
         actualMethod = "smtp";

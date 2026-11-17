@@ -11,6 +11,7 @@ const execFileAsync = promisify(execFile);
 import logger from "../../../utils/logger.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, startStageLease } from "../_shared/pipelineUtils.js";
+import { DEFAULT_ENRICHMENT_CONTEXT } from "../_shared/campaignDefaults.js";
 import {
   SCHEMA_ROLES, WRITE_POLICIES, normHeader, normKey, cleanText,
   normalizeEmailValue, getEmailDomain, clampStr, headerHint, isSystemHeader,
@@ -552,7 +553,7 @@ async function runEnrichmentRange({ rows, headers, start, end, campaignId, enric
 
 async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
   let enrichmentContext = "";
-  try { const cs = await getCampaignSettings(campaignId); enrichmentContext = cs?.settings?.enrichmentContext || cs?.enrichmentContext || ""; } catch {}
+  try { const cs = await getCampaignSettings(campaignId); enrichmentContext = cs?.settings?.enrichmentContext || cs?.enrichmentContext || DEFAULT_ENRICHMENT_CONTEXT; } catch {}
 
   const fileId = extractFileId(fileUrl);
   if (!fileId) return NextResponse.json({ success: false, error: "Invalid fileUrl or Drive file ID" }, { status: 400 });
@@ -620,7 +621,7 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
 
 async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
   let enrichmentContext = "";
-  try { const cs = await getCampaignSettings(campaignId); enrichmentContext = cs?.settings?.enrichmentContext || cs?.enrichmentContext || ""; } catch {}
+  try { const cs = await getCampaignSettings(campaignId); enrichmentContext = cs?.settings?.enrichmentContext || cs?.enrichmentContext || DEFAULT_ENRICHMENT_CONTEXT; } catch {}
 
   const myAssignment = await findMyAssignment(campaignId, 'enrich');
   if (!myAssignment) return NextResponse.json({ success: false, error: "No assignment found for this server" }, { status: 400 });
