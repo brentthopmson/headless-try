@@ -100,6 +100,11 @@ export function stringifyCSV(rows) {
   ).join('\n');
 }
 
+// A single transient 'paused' write (duplicate dispatch revert, stale cache)
+// must not abort a long browser stage. A pause is only honored after two reads
+// at least 10 seconds apart both see the row as paused.
+const _pauseConfirmations = new Map();
+
 /**
  * Re-reads the campaign row and returns true if its status is currently paused.
  * Used mid-batch so an in-flight run can abort at a safe checkpoint when the user pauses.
@@ -120,7 +125,20 @@ export async function isCampaignPaused(campaignId, stage = null) {
     if (idIdx === -1 || statusIdx === -1) return false;
     const row = campaignsResult.data.find(r => String(r[idIdx]).trim() === String(campaignId).trim());
     if (!row) return false;
-    return String(row[statusIdx] || "").trim().toLowerCase() === "paused";
+    const isPaused = String(row[statusIdx] || "").trim().toLowerCase() === "paused";
+    const key = `${campaignId}::${stage || "any"}`;
+    if (!isPaused) { _pauseConfirmations.delete(key); return false; }
+    const now = Date.now();
+    const firstSeen = _pauseConfirmations.get(key);
+    if (firstSeen && now - firstSeen >= 10000) {
+      _pauseConfirmations.delete(key);
+      return true;
+    }
+    if (!firstSeen) {
+      _pauseConfirmations.set(key, now);
+      logger.info(`[Pipeline] pause observed for ${campaignId}/${stage || 'any'} - awaiting confirmation`);
+    }
+    return false;
   } catch (err) {
     logger.warn(`[Pipeline] Pause check failed for ${campaignId}: ${err.message}`);
     return false;

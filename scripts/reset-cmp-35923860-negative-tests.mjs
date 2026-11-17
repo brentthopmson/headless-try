@@ -108,9 +108,15 @@ async function main() {
   settings.lastProcessedRow = 0;
   settings.retryAttempts = 0;
   settings.serverAssignments = {};
-  // `settings.status` is an engine shadow copy of the row status, not a user
-  // setting - remove it so the reset restores the original 60-key snapshot.
-  for (const k of ['lastError', 'lastEngineError', 'runLease', 'restUntil', 'restReason', 'restSetAt', 'pauseReason', 'status']) {
+  // Runtime-only keys. `settings.status` is an engine shadow copy of the row
+  // status; the rest are per-run artifacts/counters. None are campaign settings,
+  // prompts, accounts, SMTP, keywords or schedule data.
+  for (const k of [
+    'lastError', 'lastEngineError', 'runLease', 'restUntil', 'restReason', 'restSetAt', 'pauseReason',
+    'status', 'statusAudit', 'analytics', '_scopedCompleted', '_fullAccounts',
+    'tagStatus', 'postStatus', 'firstStartedAt', 'startedAt', 'finishedAt',
+    'completedAt', 'pausedAt', 'runCount', 'lastStage', 'currentStage', 'lastProcessedAt',
+  ]) {
     delete settings[k];
   }
   settings._settingsVersion = (Number(settings._settingsVersion) || 0) + 1;

@@ -375,7 +375,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
     fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ campaignId })
+      body: JSON.stringify({ campaignId, fromStage: true })
     }).catch(() => {});
   } catch {}
   return NextResponse.json({ success: true, completed: true, message: "Campaign personalization completed successfully", total: scopeEnd, personalized: personalizedCount });
@@ -441,7 +441,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
       const wholeDone = dataRows.every(r => isRowPersonalized(r, channel, enhancedSubjectIdx, enhancedBodyIdx, enhancedSocialMsgIdx, personalizationStatusIdx));
       if (wholeDone) {
         await updateCampaignSettings(campaignId, { personalizationStatus: "completed" });
-        try { const selfUrl = getInternalSelfUrl(); fetch(`${selfUrl}/campaign/pipeline-orchestrator`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaignId }) }).catch(()=>{}); } catch {}
+        try { const selfUrl = getInternalSelfUrl(); fetch(`${selfUrl}/campaign/pipeline-orchestrator`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaignId, fromStage: true }) }).catch(()=>{}); } catch {}
       } else {
         await updateCampaignSettings(campaignId, { personalizationStatus: "processing" });
       }

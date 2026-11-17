@@ -399,7 +399,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
       fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ campaignId })
+        body: JSON.stringify({ campaignId, fromStage: true })
       }).catch(err => log.warn(` Worker auto-advance failed: ${err.message}`));
     } catch {}
   }

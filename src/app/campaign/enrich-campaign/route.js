@@ -613,7 +613,7 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
   }
   try {
     const selfUrl = getInternalSelfUrl();
-    fetch(`${selfUrl}/campaign/pipeline-orchestrator`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaignId }) }).catch(() => {});
+    fetch(`${selfUrl}/campaign/pipeline-orchestrator`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaignId, fromStage: true }) }).catch(() => {});
   } catch {}
   return NextResponse.json({ success: true, completed: true, message: "Campaign enrichment completed", total: totalRows, stats });
 }
@@ -669,7 +669,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
         const wholeComplete = isRangeFullyEnriched(rows, headers, 0, rows.length - 1);
         if (wholeComplete) {
           await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
-          try { const selfUrl = getInternalSelfUrl(); fetch(`${selfUrl}/campaign/pipeline-orchestrator`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaignId }) }).catch(()=>{}); } catch {}
+          try { const selfUrl = getInternalSelfUrl(); fetch(`${selfUrl}/campaign/pipeline-orchestrator`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaignId, fromStage: true }) }).catch(()=>{}); } catch {}
         } else {
           await updateCampaignSettings(campaignId, { enrichmentStatus: "processing" });
         }

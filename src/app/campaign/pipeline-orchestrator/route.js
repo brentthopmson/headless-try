@@ -4,7 +4,7 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import { getSelfUrl, getSelfUrlWithFallback, getSelfId, getInternalSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignSettings, updateCampaignSettings, isCampaignPaused, classifyStageFailure, recordStageError, clearStageError, getRetryBudget } from "../_shared/pipelineUtils.js";
 import { acquireCampaignLock, releaseCampaignLock } from "../../../utils/campaignLock.js";
-import { checkUserConcurrentCampaigns, registerActiveCampaignRun, unregisterActiveCampaignRun } from "../../../utils/campaignConcurrency.js";
+import { checkUserConcurrentCampaigns, registerActiveCampaignRun, unregisterActiveCampaignRun, getActiveCampaignIdsInProcess } from "../../../utils/campaignConcurrency.js";
 import { getSheetDataApi, updateSheetRowApi } from "../../api/googlesheets.js";
 import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
 
@@ -287,6 +287,17 @@ export async function POST(request) {
     }
 
     log = logger.child({ campaignId, stage: 'orchestrator' });
+
+    // Idempotency: a second run request (double click, stale frontend poll,
+    // GAS re-dispatch) must never restart a campaign that already has a live
+    // orchestrator/stage lease. Stage-completion self-triggers are explicitly
+    // marked `fromStage` and are allowed through so auto-advance still works.
+    const alreadyActive = getActiveCampaignIdsInProcess().includes(String(campaignId).trim());
+    if (alreadyActive && !body.fromStage && !body.force) {
+      log.info(`[orchestrator] duplicate start ignored - campaign already active`);
+      return NextResponse.json({ success: true, message: "Campaign already active", locked: true, lockReason: "active_run" });
+    }
+
     registerActiveCampaignRun(campaignId, 'orchestrator');
     let campaignData = await getCampaignSettings(campaignId);
     if (!campaignData) {

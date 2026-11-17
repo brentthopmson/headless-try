@@ -6,6 +6,7 @@ import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { launchBrowser } from "../../../utils/utils.js";
 import { platformConfigs } from "../../emails/cookie/cookie-api-login/platforms.js";
+import { detectGmailIdentifierError } from "../../emails/_shared/gmailIdentifierError.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, startStageLease } from "../_shared/pipelineUtils.js";
 import { getSelfUrl, getSelfUrlWithFallback, getInternalSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
@@ -206,11 +207,13 @@ async function findVisibleErrorMessage(page, xpath) {
 // sign-in page itself (never fabricated row data); they complement the per-platform
 // selectors in platformConfigs and cover localized/redesigned Google/Microsoft pages.
 const PLATFORM_ERROR_PATTERNS = [
-  /couldn'?t find (?:this|your|the) (?:google )?account/i,
-  /that (?:microsoft|msn|outlook|hotmail) account doesn'?t exist/i,
+  // Google may render U+2019 (curly apostrophe) instead of a straight one.
+  /couldn['’]?t find (?:this|your|the) (?:google )?account/i,
+  /could not find (?:this|your|the) (?:google )?account/i,
+  /that (?:microsoft|msn|outlook|hotmail) account doesn['’]?t exist/i,
   /(?:account|email|user) does not exist/i,
   /no (?:account|user) (?:exists|found)/i,
-  /we couldn'?t find an account/i,
+  /we couldn['’]?t find an account/i,
   /enter a valid email/i,
   /enter an email address/i,
   /invalid email address/i,
@@ -243,58 +246,16 @@ async function detectGenericPlatformError(page) {
 }
 
 // Google renders identifier errors inside a CLOSED shadow DOM (jsshadow), so
-// document.querySelectorAll / XPath cannot see them. This is the same 3-layer
-// strategy used by the proven cookie-login flow's detectGmailEmailError():
-// accessibility tree -> TreeWalker -> behavioral URL fallback.
-async function detectGmailIdentifierError(page) {
-  const url = page.url();
-  if (!url.includes('/signin/identifier') && !url.includes('/AccountChooser')) return { found: false, text: '' };
-
-  try {
-    const snapshot = await page.accessibility?.snapshot?.().catch(() => null);
-    if (snapshot) {
-      const json = JSON.stringify(snapshot);
-      if (/couldn'?t find|could not find|no se pudo encontrar|impossible de trouver|konto nicht gefunden/i.test(json)) {
-        return { found: true, text: "Couldn't find this account." };
-      }
-    }
-  } catch {}
-
-  try {
-    const pageText = await page.evaluate(() => {
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-      let text = '';
-      while (walker.nextNode()) text += walker.currentNode.textContent + ' ';
-      return text;
-    });
-    if (/couldn'?t find|could not find|no se pudo encontrar/i.test(pageText)) {
-      return { found: true, text: "Couldn't find this account." };
-    }
-  } catch {}
-
-  try {
-    const hasCaptcha = !!(await page.$('#captchaimg').catch(() => null))
-      || !!(await page.$('iframe[title*="reCAPTCHA"], [data-sitekey]').catch(() => null));
-    const hasPassword = !!(await page.$('input[type="password"], #password, input[name="Passwd"]').catch(() => null));
-    if (!hasCaptcha && !hasPassword) {
-      await sleep(1500);
-      const urlNow = page.url();
-      const stillPassword = !!(await page.$('input[type="password"], #password, input[name="Passwd"]').catch(() => null));
-      if (urlNow.includes('/signin/identifier') && !stillPassword) {
-        return { found: true, text: "Couldn't find this account (behavioral)." };
-      }
-    }
-  } catch {}
-
-  return { found: false, text: '' };
-}
+// DOM-only/XPath checks miss them. Detection is delegated to the shared helper.
+// Gmail identifier errors use the SAME shared detector as the cookie-login flow
+// (emails/_shared/gmailIdentifierError.js) - no duplicated heuristics here.
 
 async function detectPlatformNotFoundError(page, config) {
   const isGoogle = !!(config?.mxKeywords || []).some(k => /google|gmail/i.test(k))
     || /accounts\.google\.com/i.test(String(config?.url || ''));
   if (isGoogle) {
-    const gmailErr = await detectGmailIdentifierError(page);
-    if (gmailErr.found) return gmailErr;
+    const gmailErr = await detectGmailIdentifierError(page, 'validate', false, logger);
+    if (gmailErr.found) return { found: true, text: gmailErr.text };
   }
   const selectors = normalizeSelectorList(config?.selectors?.errorMessage || config?.selectors?.incorrectEmailMessage);
   for (const sel of selectors) {
@@ -433,34 +394,69 @@ async function verifySingleEmailOnPlatform(browser, email, platformName, config,
       try { await page.keyboard.press('Enter'); clicked = true; } catch {}
     }
 
-    // Wait for an OBSERVABLE result. Errors are checked first on every poll;
-    // "exists" requires a real post-submit transition (see classifyPostSubmitState).
-    const MIN_SETTLE_MS = 1500;
-    const RESULT_TIMEOUT_MS = 25000;
-    const deadline = Date.now() + RESULT_TIMEOUT_MS;
+    // Mirror the proven cookie-login sequence instead of a long generic poll:
+    // readyState (2s) -> 300ms -> transition selector (2s) -> 300ms ->
+    // error detector (shared with cookie-login) -> observable transition ->
+    // short bounded settle for slow redirects. No 25s loop / 2x retries.
+    const isGoogle = /accounts\.google\.com/i.test(String(config?.url || ''))
+      || (config?.mxKeywords || []).some(k => /google|gmail/i.test(k));
+    const transitionSelectors = [
+      "[data-testid='title']", "input[name='passwd']", "input[type='password']",
+      '#proof-confirmation-email-input', 'h1',
+    ];
     let lastDetail = 'waiting_for_result';
     let transitionVotes = 0;
-    await sleep(MIN_SETTLE_MS);
-    while (Date.now() < deadline) {
-      const err = await detectPlatformNotFoundError(page, config);
-      if (err.found) return { status: 'not_exists', detail: `platform_error:${err.text}` };
 
-      const state = await readPostSubmitState(page, config, inputSelectors);
-      const accepted = classifyPostSubmitState(state, initialUrl, transitionVotes);
-      if (accepted) return accepted;
+    try {
+      await Promise.race([
+        page.waitForFunction(() => document.readyState === 'complete').catch(() => null),
+        new Promise(res => setTimeout(res, 2000)),
+      ]);
+    } catch {}
+    await sleep(300);
 
-      const urlChanged = !!(state.url && initialUrl && state.url !== initialUrl);
-      transitionVotes = (!state.inputVisible && urlChanged) ? transitionVotes + 1 : 0;
-      lastDetail = `url_changed=${urlChanged},input_visible=${state.inputVisible}`;
-      await sleep(700);
+    try {
+      await page.waitForSelector(transitionSelectors.join(', '), {
+        visible: true,
+        timeout: isGoogle ? 2000 : 4000,
+      });
+    } catch {}
+    await sleep(300);
+
+    // Error first. For Gmail this calls the shared detector (accessibility tree
+    // -> TreeWalker -> behavioral fallback), including U+2019 apostrophes.
+    const err = await detectPlatformNotFoundError(page, config);
+    if (err.found) return { status: 'not_exists', detail: `platform_error:${err.text}` };
+
+    const state = await readPostSubmitState(page, config, inputSelectors);
+    const accepted = classifyPostSubmitState(state, initialUrl, 2);
+    if (accepted) return accepted;
+
+    const settleDeadline = Date.now() + (isGoogle ? 2500 : 10000);
+    while (Date.now() < settleDeadline) {
+      const st = await readPostSubmitState(page, config, inputSelectors);
+      const acc = classifyPostSubmitState(st, initialUrl, transitionVotes);
+      if (acc) return acc;
+      const urlChanged = !!(st.url && initialUrl && st.url !== initialUrl);
+      transitionVotes = (!st.inputVisible && urlChanged) ? transitionVotes + 1 : 0;
+      lastDetail = `url_changed=${urlChanged},input_visible=${st.inputVisible}`;
+      await sleep(400);
     }
 
-    // Final checks (no "absence of error => exists" fallback).
+    // Final error check (the detector's behavioral pass adds its own 1.5s confirm).
     const errFinal = await detectPlatformNotFoundError(page, config);
     if (errFinal.found) return { status: 'not_exists', detail: `platform_error:${errFinal.text}` };
     const stateFinal = await readPostSubmitState(page, config, inputSelectors);
     const acceptedFinal = classifyPostSubmitState(stateFinal, initialUrl, Math.max(transitionVotes, 2));
     if (acceptedFinal) return acceptedFinal;
+
+    // Diagnostic payload for any future miss.
+    let visibleText = '';
+    try {
+      visibleText = await page.evaluate(() =>
+        (document.body?.innerText || '').replace(/\s+/g, ' ').slice(0, 300));
+    } catch {}
+    log.warn(`[Row verify] ${email} @${platformName}: inconclusive detail=${lastDetail} url=${String(page.url()).slice(0, 140)} text=${visibleText}`);
 
     return { status: 'inconclusive', detail: `no_confirmation:${lastDetail}` };
   } catch (err) {
@@ -1073,7 +1069,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
     fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ campaignId })
+      body: JSON.stringify({ campaignId, fromStage: true })
     }).catch(() => {});
   } catch {}
 
@@ -1175,7 +1171,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
           fetch(`${selfUrl}/campaign/pipeline-orchestrator`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ campaignId })
+            body: JSON.stringify({ campaignId, fromStage: true })
           }).catch(err => log.warn(` Worker auto-advance failed: ${err.message}`));
         } catch {}
       } else {
