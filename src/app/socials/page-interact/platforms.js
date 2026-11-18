@@ -468,6 +468,7 @@ export const platformConfigs = {
         homeUrl: "https://www.youtube.com",
         profileUrl: "https://www.youtube.com",
         searchUrl: "https://www.youtube.com/results",
+        searchQueryParam: "search_query",
 
         selectors: {
             searchBox: "input#search, input[name='search_query']",

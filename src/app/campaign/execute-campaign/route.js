@@ -12,6 +12,7 @@ import { processSearchInteractTask } from "../../socials/search-interact/route.j
 import { processPageInteractTask } from "../../socials/page-interact/route.js";
 import { processInboxInteractTask } from "../../socials/inbox-interact/route.js";
 import { processActivitiesInteractTask } from "../../socials/activities-interact/route.js";
+import { processSocialChainTask } from "../../socials/social-chain/route.js";
 import { processSendMessages } from "../../shooting/social/dm.js";
 import { platformConfigs as sendPlatformConfigs } from "../../shooting/social/platforms.js";
 import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
@@ -1520,7 +1521,7 @@ if (!String(settings.helperKeyword || "").trim()) {
         log.info(` Queueing social tasks for ${activeProfiles.length} profiles (interactionLimit=${interactionLimit})...`);
 
         // Step 4c: Accumulate all tasks in-memory with priority ordering
-        const PRIORITY_MAP = { "inbox-interact": 0, "page-interact": 1, "search-interact": 2, "activities-interact": 3 };
+        const PRIORITY_MAP = { "inbox-interact": 0, "social-chain": 1, "page-interact": 2, "search-interact": 3, "activities-interact": 4 };
         const pendingSocialTasks = [];
         const profilePlatforms = {};
         // Batch engagement settings from campaign settings JSON (safe defaults).
@@ -1641,58 +1642,105 @@ if (!String(settings.helperKeyword || "").trim()) {
             return { handles, tags };
           };
 
-          let queuedForProfile = 0;
+          // Build this account's hook list in the canonical hierarchy order:
+          // search (top priority) -> profile-interact (People Search when no
+          // CSV) -> activities (normal feed/notifications final sweep).
+          const HOOK_ORDER = { "search-interact": 0, "page-interact": 1, "activities-interact": 2 };
+          const profileOps = [];
           for (const op of interactionTypes) {
-            if (pendingSocialTasks.length >= interactionLimit) break;
             if (op === "inbox") continue; // queued once per profile above
-
             const operation = op === "search" ? "search-interact"
               : op === "activities" ? "activities-interact"
               : "page-interact";
-            // Page-interact: handles â†’ targets[], tags â†’ discoveryTags[].
-            // A no-CSV profile task is valid â€” tags drive People Search, and
-            // the route falls back to activities when discovery is empty.
-            let opExtra = {};
-            let opQueries = profileKeywords;
-            if (operation === "page-interact") {
-              const { handles, tags } = splitPageKeywords(profileKeywords);
-              opQueries = handles;
-              opExtra = { targets: handles, tags: tags.length ? tags : undefined, discoveryTags: tags.length ? tags : undefined, discoveryMode: tags.length > 0 };
-            }
-            // Tag resume: skip tags already marked done for this account (set
-            // after an hourly-limit stop) so a resumed run only processes the
-            // still-pending tags.
-            if (operation === "search-interact") {
+            if (!profileOps.includes(operation)) profileOps.push(operation);
+          }
+          profileOps.sort((a, b) => HOOK_ORDER[a] - HOOK_ORDER[b]);
+
+          let queuedForProfile = 0;
+
+          if (profileOps.length > 1 && pendingSocialTasks.length < interactionLimit) {
+            // MULTI-HOOK: one composite task -> ONE browser/tab for the whole chain.
+            let chainQueries = profileKeywords.slice();
+
+            // Tag resume — same semantics as the single-hook search path.
+            if (profileOps.includes("search-interact")) {
               const doneTags = getAccountTagStatuses(settings, profileId);
               const accountPosts = (settings.postStatus && settings.postStatus[String(profileId)]) || {};
               const totalEngagedPosts = Object.keys(accountPosts).length;
 
-              // Stale doneTags recovery: If an account has doneTags recorded, but 0 posts
-              // were ever engaged for this account, those tags were marked done by the prior
-              // failed navigation bug. Clear them so the newly fixed navigation can run them!
               if (totalEngagedPosts === 0 && Object.keys(doneTags).length > 0) {
-                log.info(` [tag-resume] profile ${profileId}: 0 posts ever engaged for this profile Ã¢â‚¬â€ clearing stale done tags to allow clean run.`);
-                opQueries = profileKeywords;
+                log.info(` [tag-resume] profile ${profileId}: 0 posts ever engaged for this profile — clearing stale done tags to allow clean run.`);
               } else {
-                opQueries = opQueries.filter(k => doneTags[String(k).trim()] !== "done");
+                chainQueries = chainQueries.filter(k => doneTags[String(k).trim()] !== "done");
               }
-
-              if (opQueries.length === 0) {
-                log.info(` [tag-resume] profile ${profileId}: all search tags already done Ã¢â‚¬â€ queueing activities-interact fallback`);
-                queueSocialTask("activities-interact", [""], platform, profileData, profileId);
-                queuedForProfile++;
-                continue;
+              if (chainQueries.length === 0) {
+                // Nothing left to search — drop only the search stage; profile +
+                // activities still run in the same tab.
+                profileOps.splice(profileOps.indexOf("search-interact"), 1);
+                chainQueries = profileKeywords.slice();
               }
             }
-            if (opQueries.length === 0 && !opExtra.discoveryTags?.length) continue;
-            queueSocialTask(operation, opQueries, platform, profileData, profileId, opExtra);
+
+            const { handles, tags } = splitPageKeywords(profileKeywords);
+            const operations = profileOps.slice();
+            if (!operations.includes("activities-interact")) operations.push("activities-interact");
+            const effectiveQueries = chainQueries.length ? chainQueries : profileKeywords;
+
+            queueSocialTask("social-chain", effectiveQueries, platform, profileData, profileId, {
+              operations,
+              targets: handles,
+              discoveryTags: tags.length ? tags : profileKeywords,
+              discoveryMode: true,
+              includesActivities: operations.includes("activities-interact"),
+              interactionStopAfterHours: settings.interactionStopAfterHours || 0,
+            });
             queuedForProfile++;
+            log.info(` [social-chain] profile ${profileId}: queued ONE sequential task ${operations.join(" -> ")} (${effectiveQueries.length} keyword(s), ${handles.length} handle(s), ${tags.length} tag(s))`);
+          } else {
+            // SINGLE-HOOK: keep the established per-operation behaviour.
+            for (const op of interactionTypes) {
+              if (pendingSocialTasks.length >= interactionLimit) break;
+              if (op === "inbox") continue; // queued once per profile above
+
+              const operation = op === "search" ? "search-interact"
+                : op === "activities" ? "activities-interact"
+                : "page-interact";
+              let opExtra = {};
+              let opQueries = profileKeywords;
+              if (operation === "page-interact") {
+                const { handles, tags } = splitPageKeywords(profileKeywords);
+                opQueries = handles;
+                opExtra = { targets: handles, tags: tags.length ? tags : undefined, discoveryTags: tags.length ? tags : undefined, discoveryMode: tags.length > 0 };
+              }
+              if (operation === "search-interact") {
+                const doneTags = getAccountTagStatuses(settings, profileId);
+                const accountPosts = (settings.postStatus && settings.postStatus[String(profileId)]) || {};
+                const totalEngagedPosts = Object.keys(accountPosts).length;
+
+                if (totalEngagedPosts === 0 && Object.keys(doneTags).length > 0) {
+                  log.info(` [tag-resume] profile ${profileId}: 0 posts ever engaged for this profile — clearing stale done tags to allow clean run.`);
+                  opQueries = profileKeywords;
+                } else {
+                  opQueries = opQueries.filter(k => doneTags[String(k).trim()] !== "done");
+                }
+
+                if (opQueries.length === 0) {
+                  log.info(` [tag-resume] profile ${profileId}: all search tags already done — queueing activities-interact fallback`);
+                  queueSocialTask("activities-interact", [""], platform, profileData, profileId);
+                  queuedForProfile++;
+                  continue;
+                }
+              }
+              if (opQueries.length === 0 && !opExtra.discoveryTags?.length) continue;
+              queueSocialTask(operation, opQueries, platform, profileData, profileId, opExtra);
+              queuedForProfile++;
+            }
           }
 
           // Automatic fallback: if no tasks were queued for this active profile (e.g. all search tags completed),
           // trigger activities-interact so the profile continues engaging (notifications, follower interactions, FYP)
           if (queuedForProfile === 0 && pendingSocialTasks.length < interactionLimit) {
-            log.info(` [activities-fallback] profile ${profileId}: no pending tag tasks Ã¢â‚¬â€ queueing activities-interact`);
+            log.info(` [activities-fallback] profile ${profileId}: no pending tag tasks — queueing activities-interact`);
             queueSocialTask("activities-interact", [""], platform, profileData, profileId);
           }
           if (pendingSocialTasks.length >= interactionLimit) break;
@@ -1710,6 +1758,7 @@ if (!String(settings.helperKeyword || "").trim()) {
         let failedCount = 0;
 
         const ROUTE_MAP = {
+          "social-chain": processSocialChainTask,
           "search-interact": processSearchInteractTask,
           "page-interact": processPageInteractTask,
           "inbox-interact": processInboxInteractTask,
@@ -1926,12 +1975,18 @@ if (!String(settings.helperKeyword || "").trim()) {
               const st = String(sub.status || '').toLowerCase();
               return st === 'network_error' || st === 'nav_failed' || st === 'page_unsettled' || (Array.isArray(sub.unresolvedKeywords) && sub.unresolvedKeywords.length > 0) || (st === 'failed' && /open-failed/i.test(String(sub.reason || sub.error || '')));
             });
-            const searched = tasksToExecute.find(t => t.taskId === r.taskId && ['search-interact', 'page-interact', 'inbox-interact'].includes(t.operation));
+            const searched = tasksToExecute.find(t => t.taskId === r.taskId && ['social-chain', 'search-interact', 'page-interact', 'inbox-interact'].includes(t.operation));
             fbDebug.push(`${r.taskId}:${r.status}:subs=${subs.length}:unresolved=${hadUnresolved}:taskFound=${!!searched}`);
             if (hadUnresolved && searched) unresolvedProfileIds.add(searched.profileId);
           }
           log.info(` [activities-fallback] check: ${fbDebug.join(' | ')}`);
-          const alreadyRanActivities = new Set(tasksToExecute.filter(t => t.operation === 'activities-interact').map(t => t.profileId));
+          // A composite social-chain task already ran activities in the same tab —
+          // don't launch a second activities session for that account.
+          const alreadyRanActivities = new Set(
+            tasksToExecute
+              .filter(t => t.operation === 'activities-interact' || (t.operation === 'social-chain' && t.operations && t.operations.includes('activities-interact')))
+              .map(t => t.profileId)
+          );
           const fallbackIds = [...unresolvedProfileIds].filter(pid => !alreadyRanActivities.has(pid) && !isDurationElapsed() && !pausedByAdmin && !quotaStopped);
           log.info(` [activities-fallback] unresolvedProfiles=${[...unresolvedProfileIds].join(',') || 'none'} fallbackIds=${fallbackIds.join(',') || 'none'} (expired=${isDurationElapsed()} paused=${pausedByAdmin} quotaStopped=${quotaStopped} limit=${pendingSocialTasks.length}/${interactionLimit})`);
           if (fallbackIds.length > 0 && pendingSocialTasks.length < interactionLimit) {

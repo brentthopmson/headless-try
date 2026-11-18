@@ -30,6 +30,33 @@ const {
 
 const FAILED_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
+// ============================================================
+// LAST-WORKING-MODEL MEMORY (process-local)
+// The SETTINGS row's aiModel column is the durable source of truth and is
+// overwritten with the model that actually answered. This map is the fast
+// in-process mirror so the very next call skips the 8-model waterfall. Keyed
+// by SERVERLESS_ID so multiple engines never contend.
+// ============================================================
+if (!globalThis.__opencodeWorkingModels) globalThis.__opencodeWorkingModels = new Map();
+if (!globalThis.__aiStatusWriteChain) globalThis.__aiStatusWriteChain = Promise.resolve();
+const _workingModels = globalThis.__opencodeWorkingModels;
+
+function rememberWorkingModel(model) {
+    const id = String(getServerlessId() || '').trim() || '_default';
+    const m = String(model || '').trim();
+    if (!m) return;
+    const prev = _workingModels.get(id);
+    if (prev && prev.model === m) return;
+    _workingModels.set(id, { model: m, at: Date.now() });
+    logger.info(`[MultiProviderAI] Remembered working opencode model ${m} (server=${id})`);
+}
+
+function recallWorkingModel() {
+    const id = String(getServerlessId() || '').trim() || '_default';
+    const hit = _workingModels.get(id);
+    return hit ? hit.model : null;
+}
+
 // Approximate tokens per character (English text averages ~4 chars per token)
 const CHARS_PER_TOKEN = 4;
 
@@ -322,34 +349,52 @@ class MultiProviderAI {
         }
     }
 
-    async _persistStatus(provider, status, label) {
+    async _persistStatus(provider, status, label, workingModel = null) {
         const ts = new Date().toISOString();
         const sn = String(provider.sn);
         const values = { aiLastRun: ts, aiStatus: status };
-        logger.info(`[MultiProviderAI] Recording ${label} sn:${sn} ${provider.provider}/${provider.model}`);
+        // Persist the model that ACTUALLY answered into the SAME write, so the
+        // next call reads it from the sheet and goes straight to that model.
+        if (status === 'ACTIVE' && workingModel) values.aiModel = String(workingModel).trim();
+        logger.info(`[MultiProviderAI] Recording ${label} sn:${sn} ${provider.provider}/${values.aiModel || provider.model}`);
 
-        let result;
-        try {
-            result = await updateSheetRowApi('SETTINGS', 'aiSn', sn, values);
-        } catch (e) {
-            result = { success: false, error: e.message };
-        }
-
-        if (!result.success) {
-            logger.warn(`[MultiProviderAI] ${label} via Sheets API failed (${result.error}) — trying App Script fallback`);
-            const fallback = await this._appScriptWriteSettings(sn, values);
-            if (!fallback.success) {
-                logger.error(`[MultiProviderAI] ${label} FAILED for sn:${sn} via both methods: ${fallback.error}`);
-                return false;
+        // Serialize status writes so concurrent successes don't stampede Sheets.
+        const run = async () => {
+            let result;
+            try {
+                result = await updateSheetRowApi('SETTINGS', 'aiSn', sn, values);
+            } catch (e) {
+                result = { success: false, error: e.message };
             }
-        }
 
-        invalidateSettings();
-        return true;
+            if (!result.success) {
+                logger.warn(`[MultiProviderAI] ${label} via Sheets API failed (${result.error}) — trying App Script fallback`);
+                const fallback = await this._appScriptWriteSettings(sn, values);
+                if (!fallback.success) {
+                    logger.error(`[MultiProviderAI] ${label} FAILED for sn:${sn} via both methods: ${fallback.error}`);
+                    return false;
+                }
+            }
+
+            if (values.aiModel) {
+                rememberWorkingModel(values.aiModel);
+                // Reflect the winner in our in-memory provider snapshot too, so
+                // calls already holding this snapshot don't keep using a stale model.
+                const cached = Array.isArray(this.settingsCache) ? this.settingsCache : [];
+                const row = cached.find(x => String(x.sn) === sn);
+                if (row) row.model = values.aiModel;
+            }
+            invalidateSettings();
+            return true;
+        };
+        const queued = globalThis.__aiStatusWriteChain.catch(() => {}).then(run);
+        globalThis.__aiStatusWriteChain = queued.catch(() => {});
+        return await queued;
     }
 
-    recordSuccess(provider) {
-        this._persistStatus(provider, 'ACTIVE', 'SUCCESS').catch(err => {
+    recordSuccess(provider, workingModel = null) {
+        if (workingModel) rememberWorkingModel(workingModel);
+        this._persistStatus(provider, 'ACTIVE', 'SUCCESS', workingModel).catch(err => {
             logger.error(`[MultiProviderAI] SUCCESS record ERROR sn:${provider.sn}: ${err.message}`);
         });
     }
@@ -463,6 +508,9 @@ class MultiProviderAI {
         if (providers.length === 0) {
             throw new Error('No AI providers available in SETTINGS sheet');
         }
+        // Per-call metadata: the opencode runner records the model that actually
+        // answered here. Per-call (not on `this`) so concurrent tasks never race.
+        const callCtx = { workingModel: null };
 
         // Build messages array
         let messages = [];
@@ -574,11 +622,12 @@ class MultiProviderAI {
             if (match) {
                 try {
                     logger.info(`[MultiProviderAI] Attempting preferred provider: ${preferProvider}/${match.model}`);
-                    const raw = await this._callProvider(match, messages, temperature, maxTokens, effTimeoutMs, mediaList);
+                    const raw = await this._callProvider(match, messages, temperature, maxTokens, effTimeoutMs, mediaList, callCtx);
                     const result = sanitizeAiResponse(raw, { jsonMode: !!jsonMode });
                     if (!result) { const _e = new Error('opencode_empty_response'); _e.status = 502; _e.retryableModel = true; throw _e; }
                     this.lastProvider = match;
-                    this.recordSuccess(match);
+                    if (callCtx.workingModel) rememberWorkingModel(callCtx.workingModel);
+                    this.recordSuccess(match, callCtx.workingModel);
                     return result;
                 } catch (err) {
                     logger.warn(`[MultiProviderAI] Preferred ${preferProvider}/${match.model} failed: ${err.message}`);
@@ -595,7 +644,10 @@ class MultiProviderAI {
             tried.add(key);
 
             const isLocal = ['ollama', 'local', 'lmstudio', 'llamacpp', 'vllm'].includes(provider.provider);
-            const maxAtt = isLocal ? 1 : effAttempts;
+            // opencode already runs an internal 8-model waterfall; the outer
+            // 3x transient retry made a bad run cost ~6 minutes. One outer
+            // attempt is enough — and the last working model is tried first.
+            const maxAtt = isLocal ? 1 : (provider.provider === 'opencode' ? 1 : effAttempts);
 
             // 3 tries: 503 "high demand" spikes from Gemini regularly outlast a
             // single 2s retry, so back off 2s then 4s before giving up on the row.
@@ -606,12 +658,13 @@ class MultiProviderAI {
                         await new Promise(r => setTimeout(r, transientBackoffMs(attempt)));
                     }
                     logger.info(`[MultiProviderAI] Trying ${key} (sn:${provider.sn})...`);
-                    const raw = await this._callProvider(provider, messages, temperature, maxTokens, effTimeoutMs, mediaList);
+                    const raw = await this._callProvider(provider, messages, temperature, maxTokens, effTimeoutMs, mediaList, callCtx);
                     const result = sanitizeAiResponse(raw, { jsonMode: !!jsonMode });
                     if (!result) { const _e = new Error('opencode_empty_response'); _e.status = 502; _e.retryableModel = true; throw _e; }
                     this.lastProvider = provider;
-                    this.recordSuccess(provider);
-                    logger.info(`[MultiProviderAI] Success with ${key}`);
+                    if (callCtx.workingModel) rememberWorkingModel(callCtx.workingModel);
+                    this.recordSuccess(provider, callCtx.workingModel);
+                    logger.info(`[MultiProviderAI] Success with ${key}${callCtx.workingModel ? ` (model ${callCtx.workingModel})` : ''}`);
                     return result;
                 } catch (err) {
                     const transient = this.isTransientError(err) && !this.isRateLimitError(err);
@@ -628,7 +681,7 @@ class MultiProviderAI {
 
     // ==================== PROVIDER DISPATCH ====================
 
-    async _callProvider(provider, messages, temperature, maxTokens, timeoutMs = null, mediaList = null) {
+    async _callProvider(provider, messages, temperature, maxTokens, timeoutMs = null, mediaList = null, ctx = null) {
         const isLocal = ['ollama', 'local', 'lmstudio', 'llamacpp', 'vllm'].includes(provider.provider);
         if (isLocal) {
             let localMaxTokens = maxTokens;
@@ -643,7 +696,7 @@ class MultiProviderAI {
             return callOllama(provider, messages, temperature, localMaxTokens, timeoutMs || provider.timeoutMs, { jsonMode: this._lastOptionsJsonMode });
         }
         switch (provider.provider) {
-            case 'opencode': return this._callOpenCode(provider, messages, temperature, maxTokens, timeoutMs, mediaList);
+            case 'opencode': return this._callOpenCode(provider, messages, temperature, maxTokens, timeoutMs, mediaList, ctx);
             case 'gemini': return this._callGemini(provider, messages, temperature, maxTokens, timeoutMs);
             case 'groq': return this._callGroq(provider, messages, temperature, maxTokens, timeoutMs);
             case 'cerebras': return this._callCerebras(provider, messages, temperature, maxTokens, timeoutMs);
@@ -979,11 +1032,19 @@ class MultiProviderAI {
         return models;
     }
 
-    _buildOpencodeCandidates(configuredModel, discovered) {
+    _buildOpencodeCandidates(configuredModel, discovered, rememberedModel = null) {
         const out = [];
         const seen = new Set();
         const push = (id) => { const v = String(id || '').trim(); if (!v || seen.has(v)) return; seen.add(v); out.push(v); };
         const isFree = (id) => String(id || '').toLowerCase().endsWith('-free') || String(id || '').toLowerCase().includes('free');
+
+        // LAST WORKING MODEL / SHEET MODEL FIRST. The sheet's aiModel is written
+        // back with the model that actually answered, so this is the durable
+        // winner. Try it before the hard-coded hints — a healthy call is then a
+        // single request instead of an 8-model timeout sweep.
+        const primary = String(rememberedModel || configuredModel || '').trim();
+        if (primary) push(primary);
+        if (configuredModel && String(configuredModel).trim() !== primary) push(String(configuredModel).trim());
         // FREE-FIRST POLICY: prioritize any model whose id ends with -free (or contains free),
         // especially the user's selected Go free trio crouton-alpha-free, iceman-contributor-free,
         // beam-free, before any paid models so quota is not spent first.
@@ -1351,7 +1412,7 @@ class MultiProviderAI {
         throw this._opencodeErr('opencode_empty_response', 502, { retryableModel: true, phase: 'message' });
     }
 
-    async _callOpenCode(provider, messages, temperature, maxTokens, timeoutMs = null, mediaList = null) {
+    async _callOpenCode(provider, messages, temperature, maxTokens, timeoutMs = null, mediaList = null, ctx = null) {
         const { model, key, baseUrl } = provider;
         const prompt = this._flattenMessagesToPrompt(messages);
         const pwd = String(key || '').trim();
@@ -1402,7 +1463,9 @@ class MultiProviderAI {
                 return this._callOpenCodeServe(base, pwd, cm, useParts, perModelTimeoutMs, maxTokens, { hasMedia: !!(useMedia && hasMedia), textPrompt: prompt });
             };
 
-            const candidates = this._buildOpencodeCandidates(model, typeof _discovered !== 'undefined' ? _discovered : []);
+            const remembered = recallWorkingModel();
+            if (remembered) logger.info(`[MultiProviderAI] opencode using remembered working model ${remembered} (sheet model: ${model || 'none'})`);
+            const candidates = this._buildOpencodeCandidates(model, typeof _discovered !== 'undefined' ? _discovered : [], remembered);
             const limitedCandidates = candidates.slice(0, 8);
             let lastErr = null;
             let sawAuthErr = null;
@@ -1410,13 +1473,15 @@ class MultiProviderAI {
                 // refresh discovery per base if not already
                 let discovered = (base === activeBase && typeof _discovered !== 'undefined') ? _discovered : null;
                 if (!discovered) { try { discovered = await this._discoverOpencodeModels(base, pwd, 10000); } catch {} }
-                const cands = base === activeBase ? limitedCandidates : this._buildOpencodeCandidates(model, discovered).slice(0, 8);
+                const cands = base === activeBase ? limitedCandidates : this._buildOpencodeCandidates(model, discovered, remembered).slice(0, 8);
                 for (let i = 0; i < cands.length; i++) {
                     const cm = cands[i];
                     try {
                         logger.info(`[MultiProviderAI] opencode serve trying model ${cm} (${i + 1}/${cands.length}) via ${base}${hasMedia ? ' +media' : ''}`);
                         const text = await _serveCall(base, cm, true);
                         logger.info(`[MultiProviderAI] opencode serve success with model ${cm} via ${base}`);
+                        if (ctx) ctx.workingModel = cm;
+                        rememberWorkingModel(cm);
                         return text;
                     } catch (e) {
                         lastErr = e;
@@ -1436,6 +1501,8 @@ class MultiProviderAI {
                             try {
                                 const t2 = await _serveCall(base, cm, false);
                                 logger.info(`[MultiProviderAI] opencode serve success (text-only fallback) with model ${cm} via ${base}`);
+                                if (ctx) ctx.workingModel = cm;
+                                rememberWorkingModel(cm);
                                 return t2;
                             } catch (e2) {
                                 lastErr = e2;

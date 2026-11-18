@@ -44,15 +44,23 @@ logger.info(`[Page Interact] Concurrency limit: ${MAX_CONCURRENT_TASKS} (setting
 // search, type the tag, then collect profile handles via the platform
 // `people` extractor (falls back to generic link scan when the platform has
 // no extractor yet — e.g. FB/IG/Quora/YT/Reddit/Threads page configs).
-async function discoverPeopleHandles(page, platformConfig, tags, maxPerTag = 5) {
+export async function discoverPeopleHandles(page, platformConfig, tags, maxPerTag = 5) {
     const s = platformConfig.selectors || {};
     const found = new Map();
     const failedTags = [];
     for (const tag of tags) {
-        const url = platformConfig.searchUrl || platformConfig.profileUrl;
-        if (!url) continue;
+        const baseUrl = platformConfig.searchUrl || platformConfig.profileUrl;
+        if (!baseUrl) continue;
         const q = String(tag || '').trim().replace(/^#/, '');
         if (!q) continue;
+        // Navigate straight to the query URL. The old hard-coded base searchUrl
+        // (e.g. tiktok.com/search) had no query, and a searchBox selector miss
+        // left it on "No results found for ''" — a blank tab that did nothing.
+        // The search-box typing below stays as a secondary fallback.
+        const qParam = platformConfig.searchQueryParam || 'q';
+        const url = baseUrl.includes('?')
+            ? `${baseUrl}&${qParam}=${encodeURIComponent(q)}`
+            : `${baseUrl}?${qParam}=${encodeURIComponent(q)}`;
         const navErr = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch((e) => e);
         if (navErr && navErr instanceof Error) {
             // Navigation/load failure: tag stays pending, never "done".
