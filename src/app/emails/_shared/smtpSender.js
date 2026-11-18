@@ -43,8 +43,9 @@ export async function sendViaSMTP(recipient, subject, body, smtpConfig) {
 
   const transporter = createTransporter(smtpConfig);
   const fromEmail = smtpConfig.from_email || smtpConfig.user || smtpConfig.username;
-  const localPart = String(fromEmail || '').split('@')[0];
-  const fromName = smtpConfig.senderName || localPart || "Outreach Manager";
+  // Configured sender name wins; otherwise the real default "Outreach Manager".
+  // Never fall back to the SMTP username local-part (that leaks the account ID).
+  const fromName = smtpConfig.senderName || "Outreach Manager";
   const replyTo = smtpConfig.replyTo || smtpConfig.reply_to || undefined;
 
   logger.info(`[smtpSender] Attempting send to ${recipient} via ${smtpConfig.host}:${smtpConfig.port} as "${fromName}" <${fromEmail}>${replyTo ? ` replyTo=${replyTo}` : ''} (subject ${String(subject || '').length} chars, body ${String(body || '').length} chars)`);

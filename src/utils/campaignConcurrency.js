@@ -1,6 +1,6 @@
 import logger from './logger.js';
 import { getSetting } from './settingsCache.js';
-import { getCampaignLimits } from '../app/socials/_shared/limits.js';
+import { getUserConcurrentCampaignLimit } from '../app/socials/_shared/limits.js';
 import { getSheetDataApi } from '../app/api/googlesheets.js';
 
 // ==================== Global campaign concurrency cap ====================
@@ -90,10 +90,10 @@ export function invalidateCampaignConcurrency() {
 }
 
 // ==================== Per-user concurrent campaign cap ====================
-// SETTINGS key campaignConcurrentLimit (read via getCampaignLimits, fallback
-// 1 — safety valve). Counts this user's campaigns-sheet rows in an active
-// status; 'resting' counts too because a cooldown campaign wakes up
-// automatically via TRIGGERS and therefore still holds its slot.
+// Sourced from the USER'S PLAN (getUserConcurrentCampaignLimit, fallback 1 —
+// safety valve), never the SETTINGS sheet. Counts this user's campaigns-sheet
+// rows in an active status; 'resting' counts too because a cooldown campaign
+// wakes up automatically via TRIGGERS and therefore still holds its slot.
 const ACTIVE_CAMPAIGN_STATUSES = ['running', 'processing', 'staged', 'resting'];
 
 /**
@@ -109,10 +109,10 @@ const ACTIVE_CAMPAIGN_STATUSES = ['running', 'processing', 'staged', 'resting'];
 export async function checkUserConcurrentCampaigns(userId, excludeCampaignId) {
   if (!userId) return { allowed: true, current: 0, limit: 3 };
 
-  let resolvedLimit = 3; // best-known until SETTINGS resolves (fail-open payload)
+  let resolvedLimit = 3; // best-known until the user's plan resolves (fail-open payload)
   try {
-    const limits = await getCampaignLimits();
-    const concurrentLimit = limits.campaignConcurrentLimit || 1;
+    // Per-user concurrent cap comes from the USER'S PLAN, never SETTINGS.
+    const concurrentLimit = await getUserConcurrentCampaignLimit(userId);
     resolvedLimit = concurrentLimit;
 
     const campaignsResult = await getSheetDataApi('campaigns');

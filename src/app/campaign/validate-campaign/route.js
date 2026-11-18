@@ -489,6 +489,20 @@ function markPlatformInconclusive(row, providerMXIdx, platformName) {
   row[providerMXIdx] = `${base}${PLATFORM_CHECKED_INCONCLUSIVE}`;
 }
 
+// Inconclusive platform verification is retryable up to this many times before
+// the row is finalized as terminal valid_mx (mirrors execution's retryCount).
+const VALIDATION_RETRY_LIMIT = 2;
+function getValidationRetryCount(row, validationRetryIdx) {
+  const n = validationRetryIdx !== -1 ? parseInt(row[validationRetryIdx], 10) : 0;
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+function bumpValidationRetryCount(row, validationRetryIdx) {
+  if (validationRetryIdx === -1) return 0;
+  const next = getValidationRetryCount(row, validationRetryIdx) + 1;
+  row[validationRetryIdx] = String(next);
+  return next;
+}
+
 // Persist a short, auditable reason next to the MX result so the CSV itself shows
 // WHY a row was accepted/rejected by platform verification (e.g. password step,
 // provider error text). Identifiers are never rewritten by this marker.
@@ -658,7 +672,7 @@ async function runMxValidation({ rows, rowStart, rowEnd, emailColIdx, validation
   return { paused, processedUpTo: paused ? -1 : rowEnd, validCount, invalidCount, mxCache };
 }
 
-async function runPlatformVerification({ rows, rowStart, rowEnd, emailColIdx, validationIdx, providerMXIdx, campaignId, log, fileId, platformBatchSize, onCheckpoint }) {
+async function runPlatformVerification({ rows, rowStart, rowEnd, emailColIdx, validationIdx, providerMXIdx, validationRetryIdx, campaignId, log, fileId, platformBatchSize, onCheckpoint }) {
   let paused = false;
   const maxWorkers = Math.max(1, parseInt(platformBatchSize, 10) || 1);
 
@@ -754,12 +768,25 @@ async function runPlatformVerification({ rows, rowStart, rowEnd, emailColIdx, va
             attachPlatformEvidence(item.row, providerMXIdx, result);
             verified++;
           } else {
-            // Inconclusive after retries: finalize as terminal valid_mx (MX-valid, resolved, send-eligible)
-            item.row[validationIdx] = 'valid_mx';
-            attachPlatformEvidence(item.row, providerMXIdx, result);
-            markPlatformInconclusive(item.row, providerMXIdx, item.platformName);
+            // Inconclusive: retry up to the limit before finalizing as terminal.
+            // Keep validation='valid_mx' but with NO inconclusive marker while
+            // retries remain, so the next run re-verifies this row.
+            const rc = bumpValidationRetryCount(item.row, validationRetryIdx);
+            if (rc >= VALIDATION_RETRY_LIMIT) {
+              attachPlatformEvidence(item.row, providerMXIdx, result);
+              markPlatformInconclusive(item.row, providerMXIdx, item.platformName);
+              log.warn(`[Row verify] ${item.email} @${item.platformName}: inconclusive after ${rc} retries (${result.detail || 'unknown'}) - finalizing as valid_mx (terminal)`);
+            } else {
+              // Do NOT write a |pv=inconclusive marker here — that would make the
+              // row terminal and block the retry. Use a retry_pending marker.
+              const base = String(item.row[providerMXIdx] || item.platformName || 'mx')
+                .replace(PLATFORM_CHECKED_INCONCLUSIVE, '')
+                .replace(/\s*\|pv=[^|]*$/g, '')
+                .trim();
+              item.row[providerMXIdx] = `${base}|pv=retry_pending:${rc}`;
+              log.warn(`[Row verify] ${item.email} @${item.platformName}: inconclusive (${result.detail || 'unknown'}) - retry ${rc}/${VALIDATION_RETRY_LIMIT}, leaving pending`);
+            }
             inconclusive++;
-            log.warn(`[Row verify] ${item.email} @${item.platformName}: inconclusive after retries (${result.detail || 'unknown'}) - finalizing as valid_mx (terminal)`);
           }
 
           // periodic flush/checkpoint per item (keeps progress safe/resumable)
@@ -905,6 +932,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   const emailColIdx = headers.indexOf("EMAIL");
   const validationIdx = headers.indexOf("validation");
   const providerMXIdx = headers.indexOf("providerMXResult");
+  const validationRetryIdx = headers.indexOf("validationRetryCount");
   if (emailColIdx === -1) throw new Error("EMAIL column not found in 88-column schema");
 
   // IMPORTANT: batch limits are concurrency/parallelism over the FULL dataset (never truncation/total caps).
@@ -1006,7 +1034,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
       rows: normalizedRows,
       rowStart: 0,
       rowEnd: dataRows.length,
-      emailColIdx, validationIdx, providerMXIdx,
+      emailColIdx, validationIdx, providerMXIdx, validationRetryIdx,
       campaignId, log, fileId,
       platformBatchSize,
     });
@@ -1032,13 +1060,14 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   log.info(` Validation stats: ${JSON.stringify(stats)} complete=${complete} rows=${dataRows.length}`);
 
   if (!complete) {
-    // Do NOT mark completed or advance; leave for retry/resume
-    await updateCampaignSettings(campaignId, { validationStatus: "processing" });
+    // Mark 'retry' (not 'processing') so the orchestrator re-runs validation on
+    // resume and inconclusive rows get their next attempt.
+    await updateCampaignSettings(campaignId, { validationStatus: "retry" });
     return NextResponse.json({
       success: true,
-      processing: true,
+      retry: true,
       completed: false,
-      message: "Validation incomplete - remaining rows pending/resumable",
+      message: "Validation incomplete - retryable rows pending",
       stats,
     });
   }
@@ -1087,6 +1116,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
   const emailColIdx = headers.indexOf("EMAIL");
   const validationIdx = headers.indexOf("validation");
   const providerMXIdx = headers.indexOf("providerMXResult");
+  const validationRetryIdx = headers.indexOf("validationRetryCount");
   if (emailColIdx === -1) throw new Error("EMAIL column not found");
 
   const { rowStart, rowEnd } = serverBatch;
@@ -1118,7 +1148,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
       platformResult = await runPlatformVerification({
         rows: normalizedRows,
         rowStart, rowEnd,
-        emailColIdx, validationIdx, providerMXIdx,
+        emailColIdx, validationIdx, providerMXIdx, validationRetryIdx,
         campaignId, log, fileId,
         platformBatchSize,
         onCheckpoint: async (processedUpTo) => {
@@ -1163,8 +1193,8 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
           }).catch(err => log.warn(` Worker auto-advance failed: ${err.message}`));
         } catch {}
       } else {
-        await updateCampaignSettings(campaignId, { validationStatus: "processing" });
-        log.warn(` All worker assignments done but validation rows still incomplete; leaving in processing`);
+        await updateCampaignSettings(campaignId, { validationStatus: "retry" });
+        log.warn(` All worker assignments done but validation rows still incomplete; leaving for retry`);
       }
     }
   }

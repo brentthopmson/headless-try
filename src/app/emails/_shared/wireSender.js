@@ -203,7 +203,10 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
   const platform = detectEmailProvider(providerName);
   const accountId = options.profileId || options.browserId || recipient || "unknown";
 
-  const rateCheck = await checkSendAllowed(platform, accountId);
+  // Use campaign-declared limits when supplied (MANDATORY, no fallback) so the
+  // wire sender honours the same per-account cap as SMTP. Without this it falls
+  // back to the Limits-sheet platform value (e.g. 20/hr) and ignores the cap.
+  const rateCheck = await checkSendAllowed(platform, accountId, options.configLimits || undefined);
   if (!rateCheck.allowed) {
     logger.warn(`[wireSender] Rate limited for ${accountId} (${platform}): ${rateCheck.reason}`);
     throw new Error(`Rate limited: ${rateCheck.reason}`);
@@ -546,7 +549,7 @@ export async function scheduleViaBrowser(recipient, subject, body, cookieJSON, p
   const platform = detectEmailProvider(providerName);
   const accountId = options.profileId || options.browserId || recipient || "unknown";
 
-  const rateCheck = await checkSendAllowed(platform, accountId);
+  const rateCheck = await checkSendAllowed(platform, accountId, options.configLimits || undefined);
   if (!rateCheck.allowed) {
     logger.warn(`[wireSender] Rate limited for ${accountId} (${platform}): ${rateCheck.reason}`);
     throw new Error(`Rate limited: ${rateCheck.reason}`);

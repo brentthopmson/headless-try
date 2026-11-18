@@ -98,7 +98,7 @@ export function createSmtpSendCap({ smtpSettings, accountSendPerRunLimit }) {
   return { accountSendCounts, pick, note };
 }
 
-export async function sendWarmupEmail({ email, subject, message, seed, pickSmtp, noteSmtp, method = "smtp", smtpAccount = null, profileId = null, profileData = null }) {
+export async function sendWarmupEmail({ email, subject, message, seed, pickSmtp, noteSmtp, method = "smtp", smtpAccount = null, profileId = null, profileData = null, configLimits = null }) {
   if (method === "wire" && profileData?.cookies) {
     const provider = resolveWireProvider(profileData, profileId);
     if (!provider) {
@@ -108,6 +108,7 @@ export async function sendWarmupEmail({ email, subject, message, seed, pickSmtp,
       browserIdentity: profileData?.browserIdentity || null,
       driveUrl: profileData?.driveUrl || "",
       profileId,
+      configLimits,
     });
     return { method: "wire", provider };
   }
@@ -146,6 +147,7 @@ export async function sendCampaignEmail({
   lastSendMethod = "",
   campaignKeyword = "",
   replyTo = "",
+  configLimits = null,
 }) {
   let senderHost = "WIRE";
   let delivered = 0;
@@ -169,6 +171,7 @@ export async function sendCampaignEmail({
       browserIdentity: profileData?.browserIdentity || null,
       driveUrl: profileData?.driveUrl || "",
       profileId,
+      configLimits,
     });
     senderHost = `SCHEDULE(${provider})`;
     delivered++;
@@ -237,6 +240,7 @@ export async function sendCampaignEmail({
         driveUrl: profileData?.driveUrl || "",
         profileId,
         campaignKeyword,
+        configLimits,
       });
       senderHost = `WIRE(${provider})`;
       actualMethod = "wire";

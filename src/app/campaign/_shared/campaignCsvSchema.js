@@ -40,6 +40,9 @@ export const DELIVERY_COLUMNS = [
   // Single per-row status summarizing overall row state (derived from the
   // stage columns). Appended last so existing files upgrade without shifting.
   'STATUS',
+  // Per-row retry counters for the prep stages (max 2 retries each). Appended
+  // at the end so existing files upgrade without shifting columns.
+  'validationRetryCount', 'enrichmentRetryCount', 'personalizationRetryCount',
 ];
 
 export const CANONICAL_CSV_COLUMNS = [...SOURCE_CSV_COLUMNS, ...DELIVERY_COLUMNS];

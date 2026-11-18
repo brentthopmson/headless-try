@@ -126,19 +126,17 @@ export async function isCampaignPaused(campaignId, stage = null) {
     const row = campaignsResult.data.find(r => String(r[idIdx]).trim() === String(campaignId).trim());
     if (!row) return false;
     const isPaused = String(row[statusIdx] || "").trim().toLowerCase() === "paused";
+    // Honor pause immediately. Stage loops call this only at safe checkpoints
+    // (after a batch/wave is persisted), so stopping right away means "stop at
+    // the last completed action" — never mid-send. The old 10s confirmation
+    // delay left the campaign running long after the user clicked pause.
     const key = `${campaignId}::${stage || "any"}`;
     if (!isPaused) { _pauseConfirmations.delete(key); return false; }
-    const now = Date.now();
-    const firstSeen = _pauseConfirmations.get(key);
-    if (firstSeen && now - firstSeen >= 10000) {
-      _pauseConfirmations.delete(key);
-      return true;
+    if (!_pauseConfirmations.has(key)) {
+      _pauseConfirmations.set(key, Date.now());
+      logger.info(`[Pipeline] pause honored for ${campaignId}/${stage || 'any'}`);
     }
-    if (!firstSeen) {
-      _pauseConfirmations.set(key, now);
-      logger.info(`[Pipeline] pause observed for ${campaignId}/${stage || 'any'} - awaiting confirmation`);
-    }
-    return false;
+    return true;
   } catch (err) {
     logger.warn(`[Pipeline] Pause check failed for ${campaignId}: ${err.message}`);
     return false;
@@ -226,6 +224,17 @@ export async function getCampaignSettings(campaignId) {
       if (typeof settingsStr === "string") settings = JSON.parse(settingsStr);
       else if (settingsStr && typeof settingsStr === 'object') settings = settingsStr;
     } catch {}
+
+    // The campaign owner lives in the row's `userId` column. Older campaigns
+    // (and rows edited outside the UI) may not have it inside the settings JSON.
+    // Merge it in so EVERY stage (interact/inbox-interact, orchestrator
+    // concurrent check, execute) sees a consistent owner for quota checks and
+    // usage accounting. Row value wins only when settings has none.
+    const userIdIdx = headers.indexOf("userId");
+    if (userIdIdx !== -1) {
+      const rowUserId = String(campaignRow[userIdIdx] || "").trim();
+      if (rowUserId && !settings.userId) settings.userId = rowUserId;
+    }
 
     return {
       settings,

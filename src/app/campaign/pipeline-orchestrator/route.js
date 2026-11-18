@@ -95,6 +95,23 @@ function resolveCurrentStage(settings) {
 }
 
 /**
+ * Single source of truth for the email interaction route, used by both the
+ * normal stage trigger and the parallel (fires-with-execute) trigger.
+ *
+ * Email interaction has ONE reply engine: the AI inbox watcher. It handles
+ * BOTH file campaigns (CSV emails are a relevance signal) and interactions-only
+ * campaigns (no file). The old CSV-only monitor never replied to anyone.
+ * Returns { route, isInbox } or null when there is no valid path.
+ */
+function resolveEmailInteractRoute(settings) {
+  if ((settings.channel || "email") !== "email") return null;
+  const hasAccounts = !!(settings.interactionAccounts && settings.interactionAccounts.length);
+  const hasSignal = !!(settings.emailKeywords && settings.emailKeywords.length) || !!settings.emailStrategyPrompt;
+  if (!hasAccounts || !hasSignal) return null;
+  return { route: "/campaign/interact-inbox", isInbox: true };
+}
+
+/**
  * Concurrent campaign limit — shared implementation lives in
  * utils/campaignConcurrency.js (checkUserConcurrentCampaigns) so GAS
  * pre-checks, execute-campaign and this orchestrator all count the same
@@ -120,18 +137,9 @@ async function triggerStage(campaignId, stage, settings, scope) {
 
   if (stage !== "execute") {
     const fileUrl = settings.fileUrl;
-    // Email interaction has ONE reply engine: the AI inbox watcher. It runs
-    // for interactions-only campaigns (no CSV) AND for CSV campaigns with
-    // interaction accounts + keywords/strategy (CSV emails become a
-    // relevance signal inside the watcher; the old CSV-only monitor never
-    // replied to anyone).
-    const emailInteractReplies = stage === "interact"
-      && (settings.channel || "email") === "email"
-      && settings.interactionAccounts?.length
-      && (settings.emailKeywords?.length || settings.emailStrategyPrompt);
-
-    if (emailInteractReplies) {
-      route = "/campaign/interact-inbox";
+    const emailInteract = stage === "interact" ? resolveEmailInteractRoute(settings) : null;
+    if (emailInteract) {
+      route = emailInteract.route;
       log.info(` Email interact — routing interact stage to AI inbox watcher (${fileUrl ? 'with CSV relevance signal' : 'interactions-only'})`);
       if (fileUrl) body.fileUrl = fileUrl;
     } else if (!fileUrl) {
@@ -663,15 +671,23 @@ export async function POST(request) {
           const interactConfig = STAGE_CONFIG.interact;
           const interactStatus = settings[interactConfig.statusField];
           if (!interactStatus || interactStatus === "idle") {
-            // Fire-and-forget: trigger interact in background
+            // Fire-and-forget: trigger interact in background. Use the SAME
+            // routing as triggerStage so email watchers go to the AI inbox
+            // watcher instead of the legacy CSV monitor (which finds 0 rows
+            // when it starts alongside execute). Non-file campaigns never
+            // reach here (no execute stage) — their interact runs normally.
             const selfUrl = getInternalSelfUrl();
-            const interactUrl = `${selfUrl}${interactConfig.route}`;
+            const emailInteract = resolveEmailInteractRoute(settings);
+            const interactRoute = emailInteract ? emailInteract.route : interactConfig.route;
+            const interactUrl = `${selfUrl}${interactRoute}`;
+            const interactBody = { campaignId };
+            if (settings.fileUrl) interactBody.fileUrl = settings.fileUrl;
             fetch(interactUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ campaignId, fileUrl: settings.fileUrl }),
+              body: JSON.stringify(interactBody),
             }).catch(err => log.warn(`Parallel interact trigger failed (non-fatal): ${err.message}`));
-            log.info(`Triggered interact stage in parallel with execute`);
+            log.info(`Triggered interact stage in parallel with execute (route=${interactRoute})`);
           }
         }
         return NextResponse.json({

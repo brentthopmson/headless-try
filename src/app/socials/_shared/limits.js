@@ -174,6 +174,51 @@ export async function getPlanLimits(plan) {
     return parsePlanRow(sheet.headers, planRow) || {};
 }
 
+// Read a RAW column value from a specific plan row in the Limits sheet.
+// Unlike getPlanLimits (which maps "*Limit" columns to "*Usage" quota keys),
+// this returns the literal cell — used for non-quota policy values such as
+// campaignConcurrentLimit, which is the user's PLAN capability, not a spend cap.
+export async function getPlanColumnValue(plan, column) {
+    try {
+        const sheet = await getLimitsSheet();
+        if (!sheet) return null;
+        const planIdx = sheet.headers.indexOf("plan");
+        const colIdx = sheet.headers.indexOf(column);
+        if (planIdx === -1 || colIdx === -1) return null;
+        const wanted = String(plan || "").trim().toUpperCase();
+        if (!wanted) return null;
+        const planRow = sheet.data.find(r => String(r[planIdx] || "").trim().toUpperCase() === wanted);
+        if (!planRow) return null;
+        const n = pickLimitNumber(planRow[colIdx]);
+        return n > 0 ? n : null;
+    } catch (e) {
+        logger.warn(`[limits] getPlanColumnValue(${column}) failed: ${e.message}`);
+        return null;
+    }
+}
+
+// Per-user concurrent campaign cap sourced from the USER'S PLAN, never the
+// SETTINGS sheet. Resolve the user's plan from the user sheet, then read the
+// Limits sheet plan row's campaignConcurrentLimit column. Fail-open to 1.
+export async function getUserConcurrentCampaignLimit(userId) {
+    const fallback = 1;
+    try {
+        const uid = String(userId || "").trim();
+        if (!uid) return fallback;
+        const record = await getUserRecord(uid);
+        const plan = record && record.plan;
+        if (!plan) {
+            logger.warn(`[limits] No plan for user ${uid} — concurrent limit ${fallback}`);
+            return fallback;
+        }
+        const value = await getPlanColumnValue(plan, "campaignConcurrentLimit");
+        return value && value > 0 ? value : fallback;
+    } catch (e) {
+        logger.warn(`[limits] getUserConcurrentCampaignLimit failed: ${e.message}`);
+        return fallback;
+    }
+}
+
 // Per-run caps live in the SETTINGS sheet (operational batch keys), NOT the
 // Limits sheet — the Limits sheet only carries monthly plan quotas and
 // platform action policies. Strict: a missing/unparseable key yields 0 and the
@@ -188,7 +233,8 @@ const CAMPAIGN_CAP_SETTINGS_KEYS = {
     personalizeLimit: "personalizeBatchLimit",
     shootCampaignLimit: "shootingBatchLimit",
     interactionLimit: "interactionBatchLimit",
-    campaignConcurrentLimit: "campaignConcurrentLimit",
+    // NOTE: campaignConcurrentLimit is intentionally NOT here. It comes from
+    // the user's PLAN (getUserConcurrentCampaignLimit), not the SETTINGS sheet.
 };
 
 export async function getCampaignLimits() {
@@ -208,11 +254,7 @@ export async function getCampaignLimits() {
         } catch (e) {
             logger.warn(`[limits] Failed to read setting "${key}" — treating as 0 (block): ${e.message}`);
         }
-        if (cap === "campaignConcurrentLimit") {
-            out[cap] = value > 0 ? value : 1;
-        } else {
-            out[cap] = value;
-        }
+        out[cap] = value;
     }
 
     return out;

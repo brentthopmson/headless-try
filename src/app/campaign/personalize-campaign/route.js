@@ -129,20 +129,57 @@ Rules:
   return batch.map(() => null);
 }
 
-const PERSONALIZATION_TERMINAL_DONE = new Set(['personalized', 'completed', 'fallback', 'ai_fallback', 'template_fallback', 'failed_fallback', 'skipped']);
+// Statuses that are unconditionally final (AI succeeded or admin set them).
+const PERSONALIZATION_TERMINAL_DONE = new Set(['personalized', 'completed', 'ai_fallback', 'template_fallback', 'skipped']);
+// Statuses that mean AI failed and a fallback was used — retryable up to the limit.
+const PERSONALIZATION_RETRYABLE = new Set(['fallback', 'failed_fallback']);
+const PERSONALIZATION_RETRY_LIMIT = 2;
 
-function isRowPersonalized(row, channel, enhancedSubjectIdx, enhancedBodyIdx, enhancedSocialMsgIdx, personalizationStatusIdx) {
+// Ensure the personalization retry column exists (append-only).
+function ensurePersonalizationRetryColumn(rows) {
+  const headers = rows[0];
+  let i = headers.findIndex(h => String(h).toLowerCase().trim() === "personalizationretrycount");
+  if (i === -1) {
+    headers.push("personalizationRetryCount");
+    i = headers.length - 1;
+    for (let r = 1; r < rows.length; r++) rows[r][i] = "";
+  }
+  return i;
+}
+
+function getPersonalizationRetryCount(row, retryIdx) {
+  const n = retryIdx !== -1 ? parseInt(row[retryIdx], 10) : 0;
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function bumpPersonalizationRetryCount(row, retryIdx) {
+  if (retryIdx === -1) return 0;
+  const next = getPersonalizationRetryCount(row, retryIdx) + 1;
+  row[retryIdx] = String(next);
+  return next;
+}
+
+function isRowPersonalized(row, channel, enhancedSubjectIdx, enhancedBodyIdx, enhancedSocialMsgIdx, personalizationStatusIdx, personalizationRetryIdx) {
   if (personalizationStatusIdx !== -1) {
     const st = String(row[personalizationStatusIdx] || '').toLowerCase().trim();
     if (PERSONALIZATION_TERMINAL_DONE.has(st)) return true;
+    if (PERSONALIZATION_RETRYABLE.has(st)) {
+      // Only final once the row has used up its retries.
+      return getPersonalizationRetryCount(row, personalizationRetryIdx) >= PERSONALIZATION_RETRY_LIMIT;
+    }
   }
   // Content alone (e.g. template mail-merge) is not sufficient: the personalize stage must run and set status.
   // For legacy rows that already carry AI-personalized content but lack a status, treat as done once status is stamped.
   return false;
 }
 
-function markRowPersonalized(row, personalizationStatusIdx, status = 'personalized') {
+function markRowPersonalized(row, personalizationStatusIdx, status = 'personalized', personalizationRetryIdx = -1) {
   if (personalizationStatusIdx !== -1) row[personalizationStatusIdx] = status;
+  // A fallback means AI failed — count a retry so it is retried on the next run
+  // and finalized as fallback only after the limit is reached.
+  if (PERSONALIZATION_RETRYABLE.has(String(status).toLowerCase().trim()) && personalizationRetryIdx !== -1) {
+    bumpPersonalizationRetryCount(row, personalizationRetryIdx);
+  }
 }
 
 function fallbackEmail(firstName, company) {
@@ -155,7 +192,7 @@ function fallbackSocial(firstName, platform) {
   return { message: `Hi ${firstName}, came across your ${platform || 'social'} profile and wanted to connect!` };
 }
 
-async function personalizeEmailRows(batch, contacts, personalizationPrompt, enhancedSubjectIdx, enhancedBodyIdx, personalizationStatusIdx, log) {
+async function personalizeEmailRows(batch, contacts, personalizationPrompt, enhancedSubjectIdx, enhancedBodyIdx, personalizationStatusIdx, log, personalizationRetryIdx = -1) {
   let count = 0;
   let aiResults = await personalizeBatch(contacts, personalizationPrompt);
   if (!aiResults || aiResults.every(r => !r || (!r.subject && !r.body))) {
@@ -179,13 +216,13 @@ async function personalizeEmailRows(batch, contacts, personalizationPrompt, enha
       batch[i][enhancedBodyIdx] = body;
     }
     // AI-generated content when available; explicit fallback only when AI unavailable/fails.
-    markRowPersonalized(batch[i], personalizationStatusIdx, aiOk ? 'personalized' : 'fallback');
+    markRowPersonalized(batch[i], personalizationStatusIdx, aiOk ? 'personalized' : 'fallback', personalizationRetryIdx);
     count++;
   }
   return count;
 }
 
-async function personalizeSocialRows(batch, contacts, personalizationPrompt, enhancedSocialMsgIdx, personalizationStatusIdx) {
+async function personalizeSocialRows(batch, contacts, personalizationPrompt, enhancedSocialMsgIdx, personalizationStatusIdx, personalizationRetryIdx = -1) {
   let count = 0;
   let aiResults = await personalizeSocialBatch(contacts, personalizationPrompt);
   if (!aiResults || aiResults.every(r => !r || !r.message)) {
@@ -203,7 +240,7 @@ async function personalizeSocialRows(batch, contacts, personalizationPrompt, enh
     const aiOk = !!(result && result.message);
     const finalRes = aiOk ? result : fallbackSocial(c.firstName, c.platform);
     if (enhancedSocialMsgIdx !== -1) batch[i][enhancedSocialMsgIdx] = finalRes.message || '';
-    markRowPersonalized(batch[i], personalizationStatusIdx, aiOk ? 'personalized' : 'fallback');
+    markRowPersonalized(batch[i], personalizationStatusIdx, aiOk ? 'personalized' : 'fallback', personalizationRetryIdx);
     count++;
   }
   return count;
@@ -220,6 +257,7 @@ async function processPersonalizationBatches({ rows, headers, dataRows, scopeSta
   const socialPlatformIdx = headers.findIndex(h => h.toUpperCase() === "SOCIALPLATFORM");
   const socialUsernameIdx = headers.findIndex(h => h.toUpperCase() === "SOCIALUSERNAME");
   const personalizationStatusIdx = headers.findIndex(h => h.toLowerCase().trim() === "personalizationstatus");
+  const personalizationRetryIdx = headers.findIndex(h => h.toLowerCase().trim() === "personalizationretrycount");
 
   const wantsLink = !!(campaignSettings.personalizeLink && campaignSettings.targetLink);
   const linkIdx = wantsLink ? ensureLinkColumn(rows) : -1;
@@ -259,8 +297,7 @@ async function processPersonalizationBatches({ rows, headers, dataRows, scopeSta
     const pendingRows = [];
     for (let i = 0; i < batch.length; i++) {
       const row = batch[i];
-      if (isRowPersonalized(row, channel, enhancedSubjectIdx, enhancedBodyIdx, enhancedSocialMsgIdx, personalizationStatusIdx)) {
-        markRowPersonalized(row, personalizationStatusIdx);
+      if (isRowPersonalized(row, channel, enhancedSubjectIdx, enhancedBodyIdx, enhancedSocialMsgIdx, personalizationStatusIdx, personalizationRetryIdx)) {
         continue;
       }
       pendingRows.push(row);
@@ -274,7 +311,7 @@ async function processPersonalizationBatches({ rows, headers, dataRows, scopeSta
         context: contextIdx !== -1 ? String(row[contextIdx] || '').trim() : '',
         rowData: buildRowData(row),
       }));
-      return await personalizeSocialRows(pendingRows, contacts, personalizationPrompt, enhancedSocialMsgIdx, personalizationStatusIdx);
+      return await personalizeSocialRows(pendingRows, contacts, personalizationPrompt, enhancedSocialMsgIdx, personalizationStatusIdx, personalizationRetryIdx);
     } else {
       const contacts = pendingRows.map(row => {
         const link = linkIdx !== -1 ? buildPersonalizedLink(campaignSettings, row, headers) : '';
@@ -288,7 +325,7 @@ async function processPersonalizationBatches({ rows, headers, dataRows, scopeSta
           rowData: buildRowData(row),
         };
       });
-      return await personalizeEmailRows(pendingRows, contacts, personalizationPrompt, enhancedSubjectIdx, enhancedBodyIdx, personalizationStatusIdx, log);
+      return await personalizeEmailRows(pendingRows, contacts, personalizationPrompt, enhancedSubjectIdx, enhancedBodyIdx, personalizationStatusIdx, log, personalizationRetryIdx);
     }
   };
 
@@ -316,7 +353,7 @@ async function processPersonalizationBatches({ rows, headers, dataRows, scopeSta
   }
 
   // Verify full scope completion
-  const allDone = !paused && scoped.every(row => isRowPersonalized(row, channel, enhancedSubjectIdx, enhancedBodyIdx, enhancedSocialMsgIdx, personalizationStatusIdx));
+  const allDone = !paused && scoped.every(row => isRowPersonalized(row, channel, enhancedSubjectIdx, enhancedBodyIdx, enhancedSocialMsgIdx, personalizationStatusIdx, personalizationRetryIdx));
   // ensure status marked for any legacy rows that already have personalized content but no terminal status
   if (personalizationStatusIdx !== -1) {
     for (const row of scoped) {
@@ -338,6 +375,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   const rows = parseCSV(dl.content);
   if (rows.length === 0) throw new Error("CSV file is empty");
   const headers = rows[0];
+  ensurePersonalizationRetryColumn(rows);
 
   let personalizationPrompt = DEFAULT_PERSONALIZATION_PROMPT;
   let channel = "email";
@@ -386,8 +424,8 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
   try { await uploadCsvText(fileId, stringifyCSV(rows)); } catch {}
 
   if (!allDone) {
-    await updateCampaignSettings(campaignId, { personalizationStatus: "processing" });
-    return NextResponse.json({ success: true, processing: true, completed: false, message: "Personalization incomplete - remaining rows pending", total: scopeEnd, personalized: personalizedCount });
+    await updateCampaignSettings(campaignId, { personalizationStatus: "retry" });
+    return NextResponse.json({ success: true, retry: true, completed: false, message: "Personalization incomplete - retryable rows pending", total: scopeEnd, personalized: personalizedCount });
   }
 
   await updateCampaignSettings(campaignId, { personalizationStatus: "completed" });
@@ -416,6 +454,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
   const rows = parseCSV(dl.content);
   if (rows.length === 0) throw new Error("CSV file is empty");
   const headers = rows[0];
+  ensurePersonalizationRetryColumn(rows);
   const dataRows = rows.slice(1);
 
   let personalizationPrompt = DEFAULT_PERSONALIZATION_PROMPT;
@@ -463,12 +502,13 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
       const enhancedBodyIdx = headers.findIndex(h => h.toLowerCase().trim() === "enhancedbody");
       const enhancedSocialMsgIdx = headers.findIndex(h => h.toLowerCase().trim() === "enhancedsocialmessage");
       const personalizationStatusIdx = headers.findIndex(h => h.toLowerCase().trim() === "personalizationstatus");
-      const wholeDone = dataRows.every(r => isRowPersonalized(r, channel, enhancedSubjectIdx, enhancedBodyIdx, enhancedSocialMsgIdx, personalizationStatusIdx));
+      const personalizationRetryIdx = headers.findIndex(h => h.toLowerCase().trim() === "personalizationretrycount");
+      const wholeDone = dataRows.every(r => isRowPersonalized(r, channel, enhancedSubjectIdx, enhancedBodyIdx, enhancedSocialMsgIdx, personalizationStatusIdx, personalizationRetryIdx));
       if (wholeDone) {
         await updateCampaignSettings(campaignId, { personalizationStatus: "completed" });
         try { const selfUrl = getInternalSelfUrl(); fetch(`${selfUrl}/campaign/pipeline-orchestrator`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaignId, fromStage: true }) }).catch(()=>{}); } catch {}
       } else {
-        await updateCampaignSettings(campaignId, { personalizationStatus: "processing" });
+        await updateCampaignSettings(campaignId, { personalizationStatus: "retry" });
       }
     }
   }

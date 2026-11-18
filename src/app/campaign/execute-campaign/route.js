@@ -755,6 +755,15 @@ export async function POST(request) {
 
         const deliveryMethod = settings.deliveryMethod || "smtp";
         const smtpSettings = settings.smtpSettings || [];
+        // Campaign-declared per-account send limits. The SMTP path already passes
+        // these into checkSendAllowed; the wire/browser path must too, otherwise
+        // it silently falls back to the Limits-sheet coldMessage platform value
+        // (e.g. 20/hr) and ignores the operator's configured cap (e.g. 5/hr).
+        const configuredSendLimits = smtpSettings.length ? {
+          hourly: smtpSettings[0].hourlyLimit,
+          daily: smtpSettings[0].dailyLimit,
+          monthly: smtpSettings[0].monthlyLimit,
+        } : null;
 
         if (deliveryMethod === "smtp" || deliveryMethod === "mixed") {
           validateSmtpConfigs(smtpSettings);
@@ -1161,6 +1170,7 @@ if (!String(settings.helperKeyword || "").trim()) {
                 smtpAccount: smtp,
                 profileId: profileId,
                 profileData: profileData,
+                configLimits: configuredSendLimits,
               });
               log.info(` Firestick warm-up sent to ${firestick.email} via ${attemptedMethod}`);
               // Small delay between firestick and lead send
@@ -1204,6 +1214,7 @@ if (!String(settings.helperKeyword || "").trim()) {
               retryCount: isRetryAttempt ? rowRetryCount : 0,
               lastSendMethod: priorMethod,
               campaignKeyword: keyword,
+              configLimits: configuredSendLimits,
               replyTo: (replyToIdx !== -1 ? String(row[replyToIdx] || '').trim() : '') || campaignReplyTo,
               preferredMethod: (deliveryMethod === "mixed" && isRetryAttempt && (priorMethod === "smtp" || priorMethod === "wire")) ? (priorMethod === "smtp" ? "wire" : "smtp") : "",
             });
@@ -1705,7 +1716,6 @@ if (!String(settings.helperKeyword || "").trim()) {
           "activities-interact": processActivitiesInteractTask,
         };
 
-        // Build SOCIALUSERNAME Ã¢â€ â€™ enhancedSocialMessage lookup for per-row DM personalization
         // Build SOCIALUSERNAME -> message lookup for per-row DM personalization.
         // AI-generated enhancedSocialMessage is top priority; the plain
         // socialMessage column (written by mail-merge) is the fallback.

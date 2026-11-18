@@ -86,8 +86,8 @@ async function loadCampaignConcurrency({ campaignLimits = {}, sheet = null, shee
     this.setExport('getSetting', async () => null);
   }, { context });
 
-  const limitsMod = new vm.SyntheticModule(['getCampaignLimits'], function () {
-    this.setExport('getCampaignLimits', async () => ({ ...campaignLimits }));
+  const limitsMod = new vm.SyntheticModule(['getUserConcurrentCampaignLimit'], function () {
+    this.setExport('getUserConcurrentCampaignLimit', async () => (campaignLimits.campaignConcurrentLimit || 1));
   }, { context });
 
   const sheetsMod = new vm.SyntheticModule(['getSheetDataApi'], function () {
@@ -317,7 +317,7 @@ const modalSrc = readIfPresent(MODAL_SRC);
 
 await testOptional('featureFlags mirrors the 4 statuses + limit fallback 1', !!flagsSrc, () => {
   assert.ok(flagsSrc.includes("const ACTIVE_CAMPAIGN_STATUSES = ['running', 'processing', 'staged', 'resting'];"));
-  assert.ok(flagsSrc.includes("getSettingValueFromAppData(appData, 'campaignConcurrentLimit', '1')"));
+  assert.ok(flagsSrc.includes("getUserLimits(appData)?.campaignConcurrentLimit"), 'concurrency limit must come from the user plan');
 });
 
 await testOptional('list page hides Execute + Resume at limit (≥2 gates) + shows notice', !!listSrc, () => {

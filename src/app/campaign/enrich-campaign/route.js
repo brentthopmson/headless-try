@@ -54,9 +54,31 @@ function hasSearchableData(row, headers, schema) {
   return false;
 }
 
+// A row is "final" only when it needs no further work. `no_data` (and a failed
+// AI/verifier attempt, which leaves the status empty) are retryable up to
+// STAGE_RETRY_LIMIT times before being accepted as final — mirroring execution's
+// retryCount behaviour for the prep stages.
+const STAGE_RETRY_LIMIT = 2;
+
+function getStageRetryCount(row, headers, name) {
+  const n = parseInt(getCell(row, headers, name), 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function bumpStageRetryCount(row, headers, name) {
+  const next = getStageRetryCount(row, headers, name) + 1;
+  setCell(row, headers, name, String(next));
+  return next;
+}
+
 function isRowEnrichedFinal(row, headers) {
   const s = String(getCell(row, headers, "enrichmentStatus") || "").toLowerCase().trim();
-  return s === "enriched" || s === "no_data" || s === "skipped";
+  if (s === "enriched" || s === "skipped") return true;
+  if (s === "no_data") {
+    // Retry no_data rows up to the limit before accepting them as final.
+    return getStageRetryCount(row, headers, "enrichmentRetryCount") >= STAGE_RETRY_LIMIT;
+  }
+  return false; // empty / failed / unknown -> still pending (retryable)
 }
 
 function parseJsonLoose(ai, text) {
@@ -476,6 +498,7 @@ function isRangeFullyEnriched(rows, headers, start, end) {
 
 async function runEnrichmentRange({ rows, headers, start, end, campaignId, enrichmentContext, log, fileId, onCheckpoint, concurrency = 1, schema }) {
   ensureColumn(headers, rows, "enrichmentStatus");
+  ensureColumn(headers, rows, "enrichmentRetryCount");
   const N = Math.max(1, parseInt(concurrency, 10) || 1);
   const schemaByHeader = new Map(schema.map(c => [c.header, c]));
   let processed = 0, enriched = 0, noData = 0, skipped = 0;
@@ -517,17 +540,27 @@ async function runEnrichmentRange({ rows, headers, start, end, campaignId, enric
         continue;
       }
       for (const r of (s.value || [])) {
-        if (r.failed) {
-          log.warn(`[Row ${r.i}] enrichment deferred (AI/verifier unavailable) - row left unresolved`);
-          continue;
-        }
         const idx = r.i + 1; if (idx >= rows.length) continue;
         const row = rows[idx];
+        if (r.failed) {
+          // AI/verifier unavailable — count a retry so a persistently failing
+          // row is finalized as no_data after the limit instead of looping.
+          const rc = bumpStageRetryCount(row, headers, "enrichmentRetryCount");
+          if (rc >= STAGE_RETRY_LIMIT) setCell(row, headers, "enrichmentStatus", "no_data");
+          log.warn(`[Row ${r.i}] enrichment deferred (AI/verifier unavailable) - retry ${rc}/${STAGE_RETRY_LIMIT}`);
+          continue;
+        }
         if (isRowEnrichedFinal(row, headers)) { skipped++; continue; }
-        setCell(row, headers, "enrichmentStatus", r.status === "enriched" ? "enriched" : "no_data");
-        if (r.status === "enriched") enriched++; else noData++;
-        processed++;
-        log.info(`[Row ${r.i}] enrichment ${r.status}${r.changed ? "" : " (no-change)"}`);
+        if (r.status === "enriched") {
+          setCell(row, headers, "enrichmentStatus", "enriched");
+          enriched++; processed++;
+          log.info(`[Row ${r.i}] enrichment enriched${r.changed ? "" : " (no-change)"}`);
+        } else {
+          const rc = bumpStageRetryCount(row, headers, "enrichmentRetryCount");
+          setCell(row, headers, "enrichmentStatus", "no_data");
+          noData++; processed++;
+          log.info(`[Row ${r.i}] enrichment no_data (retry ${rc}/${STAGE_RETRY_LIMIT})`);
+        }
       }
     }
 
@@ -570,6 +603,7 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
   const headers = rows[0].map(normHeader);
   rows[0] = headers;
   ensureColumn(headers, rows, "enrichmentStatus");
+  ensureColumn(headers, rows, "enrichmentRetryCount");
   const dataRows = rows.slice(1);
 
   const campaignLimits = await getCampaignLimits();
@@ -606,8 +640,10 @@ async function handleCoordinatorMode(campaignId, fileUrl, log, stageUserId) {
 
   const complete = isRangeFullyEnriched(rows, headers, 0, totalRows);
   if (!complete) {
-    await updateCampaignSettings(campaignId, { enrichmentStatus: "processing" });
-    return NextResponse.json({ success: true, processing: true, completed: false, message: "Enrichment incomplete - remaining rows pending", stats });
+    // Mark 'retry' (not 'processing') so the orchestrator re-runs this stage on
+    // resume and the pending no_data/failed rows get their next retry attempt.
+    await updateCampaignSettings(campaignId, { enrichmentStatus: "retry" });
+    return NextResponse.json({ success: true, retry: true, completed: false, message: "Enrichment incomplete - retryable rows pending", stats });
   }
 
   await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
@@ -636,7 +672,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
   let csvContent = dl.content; if (csvContent.charCodeAt(0) === 0xFEFF) csvContent = csvContent.slice(1);
   const rows = parseCSV(csvContent);
   if (rows.length <= 1) throw new Error("CSV empty or no data rows");
-  const headers = rows[0].map(normHeader); rows[0] = headers; ensureColumn(headers, rows, "enrichmentStatus");
+  const headers = rows[0].map(normHeader); rows[0] = headers; ensureColumn(headers, rows, "enrichmentStatus"); ensureColumn(headers, rows, "enrichmentRetryCount");
 
   const rowStart = Math.max(0, parseInt(serverBatch?.rowStart || 0));
   const rowEnd = Math.min(rows.length - 1, parseInt(serverBatch?.rowEnd || (rows.length - 1)));
@@ -674,7 +710,7 @@ async function handleWorkerMode(campaignId, fileUrl, serverBatch, log) {
           await updateCampaignSettings(campaignId, { enrichmentStatus: "completed" });
           try { const selfUrl = getInternalSelfUrl(); fetch(`${selfUrl}/campaign/pipeline-orchestrator`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ campaignId, fromStage: true }) }).catch(()=>{}); } catch {}
         } else {
-          await updateCampaignSettings(campaignId, { enrichmentStatus: "processing" });
+          await updateCampaignSettings(campaignId, { enrichmentStatus: "retry" });
         }
       }
     }
