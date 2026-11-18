@@ -10,16 +10,11 @@ export async function GET(request) {
     const campaignId = url.searchParams.get('campaignId');
 
     try {
-        let targetFile;
-        let source;
-
-        if (campaignId) {
-            targetFile = path.join(LOGS_DIR, `campaign-${campaignId}.log`);
-            source = 'campaign';
-        } else {
-            targetFile = ENGINE_LOG;
-            source = 'engine';
-        }
+        // Single source of truth: engine.log. Per-campaign files are no longer
+        // written — when a campaignId is supplied we read engine.log and filter
+        // lines mentioning it (best-effort) rather than a separate file.
+        const targetFile = ENGINE_LOG;
+        const source = campaignId ? 'engine-filtered' : 'engine';
 
         if (!fs.existsSync(targetFile)) {
             return new Response(JSON.stringify({
@@ -35,7 +30,10 @@ export async function GET(request) {
         }
 
         const content = fs.readFileSync(targetFile, 'utf-8');
-        const allLines = content.split('\n').filter(l => l.trim());
+        let allLines = content.split('\n').filter(l => l.trim());
+        if (campaignId) {
+            allLines = allLines.filter(l => l.includes(String(campaignId)));
+        }
         const lastLines = allLines.slice(-lines);
 
         return new Response(JSON.stringify({ logs: lastLines, total: allLines.length, source }), {

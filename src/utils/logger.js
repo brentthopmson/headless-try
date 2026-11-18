@@ -79,13 +79,6 @@ function logToEngine(level, message, args) {
     appendToFile(LOG_FILE, line);
 }
 
-function logToCampaign(campaignId, level, message, args) {
-    if (!campaignId) return;
-    const line = formatLine(level, message, args);
-    const campaignFile = path.join(LOG_DIR, `campaign-${campaignId}.log`);
-    appendToFile(campaignFile, line);
-}
-
 // --- Core logger ---
 const logger = {
     infoEnabled: () => shouldLog('info'),
@@ -114,7 +107,10 @@ const logger = {
         logToEngine('DEBUG', message, args);
     },
 
-    // --- Scoped logger: writes to engine.log + logs/campaign-{id}.log ---
+    // --- Scoped logger: everything goes to the single central engine.log ---
+    // Campaign-scoped logs are NOT written to separate files. The stage tag
+    // ([validate], [execute], ...) keeps per-campaign lines distinguishable in
+    // engine.log, which is the one authoritative log for all campaigns.
     child({ campaignId, stage }) {
         const tag = stage ? `[${stage}]` : '';
         const log = (level, message, args) => {
@@ -125,10 +121,8 @@ const logger = {
             if (consoleFn) {
                 consoleFn(`[${level}] ${new Date().toISOString()} - ${tagged}`, ...args);
             }
-            // Engine log
+            // Central engine log (single source of truth)
             logToEngine(level, tagged, args);
-            // Campaign-specific log
-            logToCampaign(campaignId, level, tagged, args);
         };
 
         return {
