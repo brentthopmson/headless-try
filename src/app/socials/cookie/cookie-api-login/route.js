@@ -28,6 +28,7 @@ import {
     getDataAgeMs
 } from './routeHelper.js';
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
+import { captureDebug } from '../../_shared/debugCapture.js';
 import { STAGING_ROOT as SHARED_STAGING_ROOT } from "../../../../utils/paths.js";
 import { populateCache, setCachedRow, evictRow, getCachedRow } from '../../../../utils/cookieCache.js';
 import { identifySelf as identifyServerlessSelf, getSelfUrl } from '../../../../utils/serverlessTracker.js';
@@ -819,6 +820,14 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     let finalStatus = "FAILED";
     const MAX_VERIFICATION_RETRIES = 3; // Bounded retries for transient failures inside verification loops
     let updateData = { status: finalStatus };
+    let debugCaptured = false; // one debug snapshot per browserId per run
+    const captureFailureDebug = (reason) => {
+      if (debugCaptured) return;
+      debugCaptured = true;
+      captureDebug({ page, browserId, reason, endpoint: (typeof page?.url === 'function' ? page.url() : '') }).catch(err =>
+        logger.warn(`[processRow][${browserId}] captureDebug failed: ${err.message}`)
+      );
+    };
     let browserFullyClosed = false;
     let platform = 'unknown';
     let initialCheckResult = {
@@ -2937,6 +2946,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     if (positiveCodeError) {
                                         stillOnCodeEntryScreen = true;
                                         logger.warn(`[processRow][${browserId}][WAITINGCODE] Positive invalid-code text detected on page — code was incorrect.`);
+                                        captureFailureDebug('INVALID_CODE: TikTok displayed invalid-code text after submit; capture DOM to confirm selectors.');
                                     } else {
                                         // No positive error: wait out the remaining window for inbox,
                                         // then decide. Re-poll a few more times before flagging wrong.
@@ -2951,6 +2961,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                         if (!recovered) {
                                             stillOnCodeEntryScreen = true;
                                             logger.warn(`[processRow][${browserId}][WAITINGCODE] Still on code entry after full settle window and no positive error text — treating as incorrect.`);
+                                            captureFailureDebug('OTP_STALL: correct-code suspected; page stayed on code entry through full settle window, no positive error text. Capture DOM to find the real view/element.');
                                         }
                                     }
                                 } else if (codeEntryAttempted && postCodeVerificationState.type === 'choice' && platform === 'outlook') {
@@ -3442,6 +3453,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         });
         notifyTeam({ type: 'UNEXPECTED_ERROR', platform, email, browserId, error: error.message, detail: 'socials processRow outer catch' });
     } finally {
+        // Generic terminal-failure snapshot (page still open here). The OTP-specific
+        // branches above call captureFailureDebug first; the dedupe flag prevents a
+        // second snapshot on the same run.
+        if (updateData.status === "FAILED" || finalStatus === "FAILED") {
+            captureFailureDebug(`FAILED: ${updateData.reason || finalStatus || 'login failed'}`);
+        }
         if (browser && !browserFullyClosed) {
             const sessionTargetListener = isReusingBrowser ? activeBrowserSessions.get(browserId)?.targetCreatedListener : targetCreatedListener;
             if (sessionTargetListener && browser) { // Ensure listener exists before trying to remove

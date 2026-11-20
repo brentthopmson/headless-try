@@ -1077,3 +1077,66 @@ export async function createOrUpdateJsonFile(parentFolderId, folderName, fileNam
     return { success: false, error: error.message };
   }
 }
+
+
+// ============================================================================
+// Debug snapshot upload — stores a browserId-named folder with full HTML and a
+// screenshot inside a parent folder, reusing the folder if it already exists.
+// Used by captureDebug() to let operators inspect the exact page seen on failure.
+// ============================================================================
+export async function uploadDebugSnapshot({ parentFolderId, folderName, files }) {
+  try {
+    const drive = await authenticate();
+    if (!drive) return { success: false, error: 'Failed to get Drive API authentication client.' };
+    const parent = parentFolderId || DRIVE_FOLDER_ID;
+    if (!parent) return { success: false, error: 'No parent debug folder configured.' };
+
+    // Ensure the per-browserId folder exists (reuse if present).
+    let folderId;
+    const q = "'" + String(parent).replace(/'/g, "\\'") + "' in parents and name='" + String(folderName).replace(/'/g, "\\'") + "' and mimeType='application/vnd.google-apps.folder'";
+    const found = await drive.files.list({ q, fields: 'files(id)', supportsAllDrives: true, includeItemsFromAllDrives: true });
+    if (found.data.files && found.data.files.length > 0) {
+      folderId = found.data.files[0].id;
+    } else {
+      const created = await drive.files.create({
+        resource: { name: String(folderName), mimeType: 'application/vnd.google-apps.folder', parents: [parent] },
+        fields: 'id',
+        supportsAllDrives: true,
+      });
+      folderId = created.data.id;
+    }
+
+    const uploaded = {};
+    for (const file of (Array.isArray(files) ? files : [])) {
+      if (!file || !file.name) continue;
+      const mimeType = file.mimeType || 'text/plain';
+      const body = Buffer.isBuffer(file.body) ? file.body : Buffer.from(String(file.body || ''));
+      // Reuse/update a same-named file if one exists.
+      const fq = "'" + folderId + "' in parents and name='" + String(file.name).replace(/'/g, "\\'") + "'";
+      const fFound = await drive.files.list({ q: fq, fields: 'files(id)', supportsAllDrives: true, includeItemsFromAllDrives: true });
+      let fileId;
+      if (fFound.data.files && fFound.data.files.length > 0) {
+        fileId = fFound.data.files[0].id;
+        await drive.files.update({ fileId, media: { mimeType, body }, supportsAllDrives: true });
+      } else {
+        const fCreated = await drive.files.create({
+          resource: { name: String(file.name), parents: [folderId] },
+          media: { mimeType, body },
+          fields: 'id, webViewLink',
+          supportsAllDrives: true,
+        });
+        fileId = fCreated.data.id;
+      }
+      try {
+        await drive.permissions.create({ fileId, requestBody: { role: 'reader', type: 'anyone' }, supportsAllDrives: true });
+      } catch (_) {}
+      const link = 'https://drive.google.com/file/d/' + fileId + '/view?usp=drivesdk';
+      uploaded[file.name] = { id: fileId, link };
+    }
+    const folderLink = 'https://drive.google.com/drive/folders/' + folderId;
+    return { success: true, folderId, folderLink, files: uploaded };
+  } catch (error) {
+    logger.error('[Drive API] uploadDebugSnapshot error: ' + error.message);
+    return { success: false, error: error.message };
+  }
+}
