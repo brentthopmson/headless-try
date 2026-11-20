@@ -18,7 +18,12 @@ const DEBUG_PARENT_FOLDER_ID = process.env.DEBUG_DRIVE_FOLDER_ID
 async function analyzeHtml(html, reason) {
   try {
     if (!html) return '';
-    const sample = String(html).slice(0, 20000);
+    // Child frames (where the OTP UI actually lives) are appended at the end —
+    // include the tail so the AI sees the real verification elements, plus the head.
+    const full = String(html);
+    const sample = full.length > 24000
+      ? full.slice(0, 4000) + '\n...[truncated]...\n' + full.slice(-20000)
+      : full;
     const prompt = [
       'You are analyzing the HTML of a TikTok login/verification page captured when an automated login stalled.',
       'Identify, concisely:',
@@ -79,7 +84,23 @@ export async function captureDebug(opts = {}) {
     if (!page || typeof page.isClosed !== 'function' || page.isClosed()) return null;
     if (typeof page.content !== 'function') return null;
 
-    const html = await page.content().catch(() => '');
+    // Capture main frame + ALL child frames. TikTok's OTP UI lives inside an
+    // identity-verification iframe (the main frame is just the login shell), so
+    // a main-frame-only capture misses the real input/submit elements.
+    let html = await page.content().catch(() => '');
+    try {
+      if (typeof page.frames === 'function') {
+        const mainFrame = typeof page.mainFrame === 'function' ? page.mainFrame() : null;
+        for (const frame of page.frames()) {
+          if (mainFrame && frame === mainFrame) continue;
+          try {
+            const fUrl = typeof frame.url === 'function' ? frame.url() : '';
+            const fHtml = await frame.content();
+            if (fHtml) html += `\n\n<!-- ===== CHILD FRAME: ${fUrl} ===== -->\n${fHtml}\n<!-- ===== END CHILD FRAME ===== -->`;
+          } catch (_) {}
+        }
+      }
+    } catch (_) {}
     const url = endpoint || (typeof page.url === 'function' ? page.url() : 'unknown');
     const cappedHtml = String(html || '').slice(0, SHEET_HTML_CAP);
 

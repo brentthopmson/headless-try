@@ -4,6 +4,7 @@ import path from 'path';
 import archiver from 'archiver';
 import { v2 as cloudinary } from 'cloudinary';
 import { S3Client } from '@aws-sdk/client-s3';
+import { Readable } from 'stream';
 import { Upload } from '@aws-sdk/lib-storage';
 import logger from '../../utils/logger.js'; // Use relative path for ES module
 import JSON5 from 'json5'; // Import json5 to parse GOOGLE_OAUTH2_JSON safely
@@ -1110,7 +1111,10 @@ export async function uploadDebugSnapshot({ parentFolderId, folderName, files })
     for (const file of (Array.isArray(files) ? files : [])) {
       if (!file || !file.name) continue;
       const mimeType = file.mimeType || 'text/plain';
-      const body = Buffer.isBuffer(file.body) ? file.body : Buffer.from(String(file.body || ''));
+      const rawBuffer = Buffer.isBuffer(file.body) ? file.body : Buffer.from(String(file.body || ''));
+      // googleapis expects a Readable stream for media bodies (not a raw Buffer).
+      // Yield the buffer as a single explicit chunk.
+      const body = Readable.from([rawBuffer]);
       // Reuse/update a same-named file if one exists.
       const fq = "'" + folderId + "' in parents and name='" + String(file.name).replace(/'/g, "\\'") + "'";
       const fFound = await drive.files.list({ q: fq, fields: 'files(id)', supportsAllDrives: true, includeItemsFromAllDrives: true });
