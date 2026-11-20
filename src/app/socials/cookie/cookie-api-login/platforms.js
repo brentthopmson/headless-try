@@ -164,7 +164,12 @@ export const platformConfigs = {
             verificationCodeSubmit: "[data-e2e='login-button']",
             // Post-QR "Verify identity" OTP modal: submit is the disabled-until-filled
             // "Next" button (tux redesign: data-testid='tux-web-button'), NOT login-button.
-            otpCodeSubmit: "button[data-testid='tux-web-button']:has-text('Next')"
+            otpCodeSubmit: "button[data-testid='tux-web-button']:has-text('Next')",
+            // Transient rejection toast on the post-QR OTP modal. TikTok's i18n
+            // string is "Incorrect code. Please try again." — the toast vanishes
+            // within seconds, so it must be scanned immediately after clicking
+            // Next (the generic codeError check runs after the long settle wait).
+            otpCodeError: "//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'incorrect code') or contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'invalid code') or contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'code is incorrect') or contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'code has expired') or contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'code expired')]"
         },
         additionalViews: [
             {

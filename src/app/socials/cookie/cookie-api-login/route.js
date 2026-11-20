@@ -2680,12 +2680,57 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         }
 
                         let codeEntryAttempted = false;
+                        // Immediate post-submit signals, captured before the long settle window.
+                        // TikTok's OTP rejection toast disappears in seconds, so polling for it
+                        // after `await navigationPromise` (15s) always misses it.
+                        let otpImmediateError = null;
+                        let otpInputClearedAfterClick = false;
                         if (codeInputSelector) {
                             try {
                                 await page.waitForSelector(toPuppeteerSelector(codeInputSelector), { visible: true, timeout: 10000 });
                                 await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.value = ''; }, codeInputSelector);
                                 await page.type(toPuppeteerSelector(codeInputSelector), String(verificationCode), { delay: 50 });
                                 logger.info(`[processRow][${browserId}][WAITINGCODE] Typed code into ${codeInputSelector}`);
+
+                                // Definitive proof of entry: read the live input value back so a
+                                // "the field was never detected / code never typed" report can be
+                                // confirmed or refuted from the engine log alone.
+                                let typedValueReadback = null;
+                                try {
+                                    typedValueReadback = await page.evaluate((sel) => {
+                                        const el = document.querySelector(sel);
+                                        return el ? el.value : null;
+                                    }, codeInputSelector);
+                                } catch (readbackErr) {
+                                    typedValueReadback = `<readback failed: ${readbackErr.message}>`;
+                                }
+                                logger.info(`[processRow][${browserId}][WAITINGCODE] Post-type input readback = '${typedValueReadback}' (expected '${verificationCode}').`);
+
+                                // React-controlled inputs (TikTok's tux-web-input) can silently
+                                // ignore page.type in some headless builds. If the readback does not
+                                // match, retry through the native value setter + input/change events,
+                                // which is how React's onChange tracker is updated reliably.
+                                if (String(typedValueReadback) !== String(verificationCode)) {
+                                    logger.warn(`[processRow][${browserId}][WAITINGCODE] Code did not stick after page.type — retrying via native setter + input event.`);
+                                    try {
+                                        await page.evaluate((sel, code) => {
+                                            const el = document.querySelector(sel);
+                                            if (!el) return;
+                                            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                                            setter.call(el, code);
+                                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                                        }, codeInputSelector, String(verificationCode));
+                                        await new Promise(r => setTimeout(r, 200));
+                                        typedValueReadback = await page.evaluate((sel) => {
+                                            const el = document.querySelector(sel);
+                                            return el ? el.value : null;
+                                        }, codeInputSelector);
+                                        logger.info(`[processRow][${browserId}][WAITINGCODE] Post-retry input readback = '${typedValueReadback}'.`);
+                                    } catch (retryErr) {
+                                        logger.warn(`[processRow][${browserId}][WAITINGCODE] Native-setter retry failed: ${retryErr.message}`);
+                                    }
+                                }
 
                                 const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 15000 })
                                     .catch(e => logger.warn(`[processRow][${browserId}][WAITINGCODE] Navigation after code submit/Enter did not complete as expected or timed out: ${e.message}`));
@@ -2713,6 +2758,33 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     }
                                     await page.click(toPuppeteerSelector(codeSubmitSelector));
                                     logger.info(`[processRow][${browserId}][WAITINGCODE] Clicked code submit button: ${codeSubmitSelector}`);
+
+                                    // Poll ALL frames for the rejection toast right after the click.
+                                    // The debug capture previously ran ~100s later and saw an empty
+                                    // input + disabled Next with no error text because the toast had
+                                    // already vanished; here we catch it while it is still rendered.
+                                    const otpErrorSelectors = platformConfig.selectors?.otpCodeError;
+                                    const errorXpaths = otpErrorSelectors
+                                        ? (Array.isArray(otpErrorSelectors) ? otpErrorSelectors : [otpErrorSelectors])
+                                        : [];
+                                    if (errorXpaths.length) {
+                                        for (let errTick = 0; errTick < 10 && !otpImmediateError; errTick++) {
+                                            try {
+                                                otpImmediateError = await findVisibleLoginFailureText(page, errorXpaths);
+                                            } catch (_) {}
+                                            if (!otpImmediateError) await new Promise(r => setTimeout(r, 500));
+                                        }
+                                    }
+                                    // A cleared input after submit is TikTok's silent rejection
+                                    // signature; on success the SPA navigates away to the inbox.
+                                    try {
+                                        const valueAfterClick = await page.evaluate((sel) => {
+                                            const el = document.querySelector(sel);
+                                            return el ? el.value : null;
+                                        }, codeInputSelector);
+                                        otpInputClearedAfterClick = (valueAfterClick === '' || valueAfterClick === null);
+                                        logger.info(`[processRow][${browserId}][WAITINGCODE] Post-click input value = '${valueAfterClick}', immediate error text = '${otpImmediateError || ''}'.`);
+                                    } catch (_) {}
                                 } else {
                                     logger.warn(`[processRow][${browserId}][WAITINGCODE] No submit selector and not flagged to use Enter. Code typed, hoping for auto-submit.`);
                                 }
@@ -2739,8 +2811,12 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     }
                                 }
 
+                                if (!codeErrorDetected && otpImmediateError) {
+                                    codeErrorDetected = true;
+                                    logger.warn(`[processRow][${browserId}][WAITINGCODE] OTP rejection toast caught immediately after submit: '${otpImmediateError}'.`);
+                                }
                                 if (codeErrorDetected) {
-                                    logger.warn(`[processRow][${browserId}][WAITINGCODE] Incorrect code. Remaining on code entry screen.`);
+                                    logger.warn(`[processRow][${browserId}][WAITINGCODE] Incorrect code. Remaining on code entry screen. Input cleared after click: ${otpInputClearedAfterClick}.`);
                                     const ljp = JSON.parse(updateData.lastJsonResponse || '{}');
                                     if (platform === 'gmail' && ljp.viewName === 'sh Gmail 2-Step Verification') {
                                         ljp.gmail = { step: "waiting_app_notification", canResend: true, canChangeMethod: true, instructions: "Tap 'Yes' on the notification in your Gmail app on your phone to allow sign-in." };
@@ -2748,7 +2824,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     ljp.status = "WAITING_CODE";
                                     ljp.verified = true;
                                     ljp.fullAccess = false;
-                                    ljp.message = "Incorrect verification code entered. Please try again.";
+                                    ljp.message = otpImmediateError
+                                        ? `Incorrect verification code: ${otpImmediateError}`
+                                        : "Incorrect verification code entered. Please try again.";
                                     await updateBrowserRowData(browserId, {
                                         status: "WAITINGCODE",
                                         verified: true,
