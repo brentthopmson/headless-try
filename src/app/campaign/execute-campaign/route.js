@@ -40,7 +40,7 @@ async function writeFullCampaignSettings(campaignId, patch = {}, status = null, 
 
 import { requireFeature } from "../../../utils/featureGate.js";
 import { getSetting } from "../../../utils/settingsCache.js";
-import { getMaxConcurrentTasks, checkUserConcurrentCampaigns, registerActiveCampaignRun, unregisterActiveCampaignRun } from "../../../utils/campaignConcurrency.js";
+import { getMaxConcurrentTasks, getMaxRepliesPerPost, checkUserConcurrentCampaigns, registerActiveCampaignRun, unregisterActiveCampaignRun } from "../../../utils/campaignConcurrency.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { dispatchToServers } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getFirestickEmails, getPerformancePresets, updateCampaignSettings, getCampaignSettings, getAccountTagStatuses, buildPersonalizedLink } from "../_shared/pipelineUtils.js";
@@ -1526,6 +1526,8 @@ if (!String(settings.helperKeyword || "").trim()) {
         const profilePlatforms = {};
         // Batch engagement settings from campaign settings JSON (safe defaults).
         const maxResultsPerKeyword = Math.max(1, parseInt(settings.maxResultsPerKeyword, 10) || 5);
+        // Per-post reply cap from SETTINGS.interactionMaxRepliesPerPost (default 30).
+        const maxRepliesPerPost = await getMaxRepliesPerPost();
 
         // One batch task per profile per operation, carrying ALL target
         // keywords/queries in searchQueries[]. `extra` carries discovery info for
@@ -1545,6 +1547,7 @@ if (!String(settings.helperKeyword || "").trim()) {
             searchQuery: queryList[0] || "",
             searchQueries: queryList,
             maxResultsPerKeyword,
+            maxRepliesPerPost,
             requireAiForComments: !!settings.requireAiForComments,
             fallbackToActivities: true,
             fallbackToDiscovery: true,

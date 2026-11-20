@@ -49,6 +49,7 @@ async function processTask(taskPayload) {
     let runnerAccounted = false;
     const taskId = taskPayload.taskId || ("act-" + Math.random().toString(36).substring(2, 11));
     const requireAiForComments = taskPayload.requireAiForComments === true || String(taskPayload.requireAiForComments || '').toLowerCase() === 'true';
+    const maxRepliesPerPost = Math.max(1, parseInt(taskPayload.maxRepliesPerPost, 10) || 30);
 
     try {
         const platform = (taskPayload.platform || "").toLowerCase();
@@ -129,6 +130,7 @@ async function processTask(taskPayload) {
                 messageText: taskPayload.messageText || taskPayload.commentText || "",
                 stopAfterHours: Number(taskPayload.stopAfterHours) || 0,
                 maxEngagements: Number(taskPayload.maxEngagements) || 20,
+                maxRepliesPerPost,
                 requireAiForComments,
             });
             for (const [k, v] of Object.entries(run.quota || {})) {

@@ -89,6 +89,47 @@ export function invalidateCampaignConcurrency() {
   logger.debug('[campaignConcurrency] Cache invalidated.');
 }
 
+// ==================== Per-post reply cap (social interactions) ====================
+// Caps how many comment-on-comment replies a single post may receive in one
+// run, so the platform hourly quota spreads across posts instead of being
+// drained by one viral post. Sourced from SETTINGS.interactionMaxRepliesPerPost.
+const REPLY_CAP_KEY = 'interactionMaxRepliesPerPost';
+const REPLY_CAP_DEFAULT = 30;
+const REPLY_CAP_TTL_MS = 60 * 1000;
+
+if (!globalThis.__replyCapState) {
+  globalThis.__replyCapState = { value: null, fetchedAt: 0, inFlight: null };
+}
+const replyState = globalThis.__replyCapState;
+
+/** Effective max replies to other people's comments on ONE post (default 30). */
+export async function getMaxRepliesPerPost() {
+  const now = Date.now();
+  if (replyState.value !== null && now - replyState.fetchedAt < REPLY_CAP_TTL_MS) {
+    return replyState.value;
+  }
+  if (replyState.inFlight) return await replyState.inFlight;
+  replyState.inFlight = (async () => {
+    let resolved = REPLY_CAP_DEFAULT;
+    try {
+      const setting = await getSetting(REPLY_CAP_KEY);
+      const raw = setting ? setting.value1 : null;
+      if (raw !== null && raw !== undefined && String(raw).trim() !== '') {
+        const n = parseInt(String(raw).trim(), 10);
+        if (Number.isFinite(n) && n > 0) resolved = n;
+      }
+    } catch (e) {
+      logger.warn(`[campaignConcurrency] Failed to read "${REPLY_CAP_KEY}": ${e.message}`);
+    } finally {
+      replyState.inFlight = null;
+    }
+    replyState.value = resolved;
+    replyState.fetchedAt = now;
+    return resolved;
+  })();
+  return await replyState.inFlight;
+}
+
 // ==================== Per-user concurrent campaign cap ====================
 // Sourced from the USER'S PLAN (getUserConcurrentCampaignLimit, fallback 1 —
 // safety valve), never the SETTINGS sheet. Counts this user's campaigns-sheet

@@ -3,6 +3,8 @@ import { createRunContext } from "../_shared/engagementRunner.js";
 import { getPlatformHelper } from "./platformHelper/index.js";
 import { enforceSingleTab, attachSingleTabGuard, handleTikTokGuards } from "../_shared/tiktokEngagement.js";
 import { getAccountPostStatuses, markPostEngaged, getCampaignSettings, isPostInteracted, getStablePostId } from '../../campaign/_shared/pipelineUtils.js';
+import { runCommentWaves } from '../_shared/commentWaveEngine.js';
+import { getPlatformConfig as getSearchPlatformConfig, MultiProviderAI } from '../search-interact/platforms.js';
 
 export function activitiesActionForOperation(operationRaw, engagementMode = false) {
     const op = String(operationRaw || "").split(",")[0].trim().toLowerCase();
@@ -27,6 +29,7 @@ export async function runActivitiesInteract(options = {}) {
         messageText = "",
         stopAfterHours = 0,
         maxEngagements = 20,
+        maxRepliesPerPost = 30,
         requireAiForComments = false,
         log = logger,
     } = options;
@@ -58,6 +61,21 @@ export async function runActivitiesInteract(options = {}) {
     const ctx = createRunContext({ platform, profileId, taskId, stopAfterHours, log });
     const results = [];
     let detach = () => {};
+
+    // Reply waves on the currently-open post (TikTok-solid, all platforms, capped).
+    const replyOnOpenPost = async () => {
+        try {
+            const scfg = getSearchPlatformConfig(String(platform).toLowerCase());
+            if (!scfg?.selectors?.commentItem || !scfg?.selectors?.commentReplyButton) return;
+            const wave = await runCommentWaves(page, {
+                platform, platformConfig: scfg, profileId, taskId,
+                maxRepliesPerPost, requireAiForComments,
+                author: '', socialStrategyPrompt: '', analysisText: '',
+                aiOverride: MultiProviderAI, log,
+            });
+            for (const [k, n] of Object.entries(wave.quota || {})) await ctx.record(k, n);
+        } catch (e) { log.warn(`[${taskId}] reply waves failed: ${e.message}`); }
+    };
 
     try {
         detach = attachSingleTabGuard(page, `[${taskId}]`);
@@ -134,6 +152,7 @@ export async function runActivitiesInteract(options = {}) {
                 else if (ok) { await markInteracted(postId, 'engaged'); await ctx.record(action, 1); ctx.engaged += 1; }
                 else ctx.failed += 1;
                 results.push({ type: item.type, status: (outcome && outcome.already) ? "ALREADY_INTERACTED" : (ok ? "DONE" : "FAILED"), reason: outcome?.reason || (outcome?.already ? 'main_post_already_liked' : undefined) });
+                if (ok) await replyOnOpenPost();
                 await helper.openNotifications(page);
                 await enforceSingleTab(page, `[${taskId}]`);
             }
@@ -179,6 +198,7 @@ export async function runActivitiesInteract(options = {}) {
                         const cOk = !!(cOutcome && (cOutcome.verified || cOutcome.unverified));
                         if (cOk) { await ctx.record("comment", 1); ctx.engaged += 1; results.push({ type: "fyp_comment", status: "DONE", step: feedSteps }); }
                     }
+                    await replyOnOpenPost();
                     await new Promise(r => setTimeout(r, 1200));
                     // Advance feed: TikTok swipe-down; others scroll.
                     if (String(platform).toLowerCase() === 'tiktok') { await page.keyboard.press('ArrowDown').catch(() => {}); await page.evaluate(() => window.scrollBy(0, 900)).catch(() => {}); }

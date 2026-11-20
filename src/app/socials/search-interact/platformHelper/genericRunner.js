@@ -14,6 +14,7 @@ import { getPlatformLimits } from '../../_shared/limits.js';
 import { capturePostFrame } from '../../_shared/routeHelper.js';
 import limitsCore from '../../_shared/limitsCore.js';
 import { navigateAndWaitGeneric, isPostLikedGeneric, isConfidentlyUnlikedGeneric, genericLike, ensureCommentsVisibleGeneric, extractCommentsGeneric, postCommentGeneric } from './GenericHelpers.js';
+import { runCommentWaves } from '../../_shared/commentWaveEngine.js';
 
 function stripMentions(text) {
     return String(text || '').replace(/@[A-Za-z0-9._-]+/g, ' ').replace(/@+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -54,7 +55,7 @@ function voiceReply(commenter, author) {
 }
 
 export async function runGenericEngagement(page, opts) {
-    const { platform, platformConfig, ai, profileId, campaignId, keywords, maxResultsPerKeyword = 5, stopAfterHours = 0, socialStrategyPrompt, taskId = 'session' } = opts;
+    const { platform, platformConfig, ai, profileId, campaignId, keywords, maxResultsPerKeyword = 5, maxRepliesPerPost = 30, stopAfterHours = 0, socialStrategyPrompt, requireAiForComments = false, taskId = 'session' } = opts;
     const { canonicalAction } = limitsCore;
     const s = platformConfig.selectors || {};
     const likeSel = s.likeButton || s.upvoteButton || "button[aria-label*='Like']";
@@ -225,66 +226,17 @@ export async function runGenericEngagement(page, opts) {
             if (posted) await countAction('comment'); else logger.warn(`${label} comment NOT posted (${res.reason})`);
             await pause(800, 1500);
         }
-        // --- per-comment waves (TikTok parity, best-effort) ---
-        // Like + peer reply to existing comments where DOM targets exist.
-        // Skips silently when selectors are absent (user refines live).
+        // --- per-comment waves via shared engine (TikTok-solid, all platforms) ---
         let wavesDone = 0;
-        const itemSel = s.commentItem;
-        const likeBtnSel = s.commentLikeButton;
-        const replyBtnSel = s.commentReplyButton;
-        if (itemSel && comments.length) {
-            const maxWaves = Math.min(comments.length, 5);
-            for (let w = 0; w < maxWaves; w++) {
-                if (stopAfterHours > 0 && (Date.now() - startedAt) / 3600000 >= stopAfterHours) { stopType = 'time'; break; }
-                const c = comments[w];
-                // like the comment (quota-gated; respects per-run hourly cap)
-                if (actionExhausted.likeComment) { logger.info(`${label} likeComment per-run cap hit — skipping comment likes`); }
-                else {
-                const likeCGate = await checkGate(platform, profileId, 'likeComment');
-                if (!likeCGate.allowed) { markExhausted('likeComment', likeCGate.reason || 'quota'); }
-                else if (likeBtnSel) {
-                    await page.evaluate((args) => {
-                        const items = document.querySelectorAll(args.item);
-                        const el = items[args.idx] || items[0];
-                        if (!el) return;
-                        const btn = el.querySelector(args.like);
-                        if (btn) btn.click();
-                    }, { item: itemSel, idx: w, like: likeBtnSel }).catch(() => {});
-                    await countAction('likeComment');
-                    await pause(500, 900);
-                }
-                }
-                // reply (quota-gated; respects per-run hourly cap)
-                if (actionExhausted.commentComment) { break; }
-                const replyGate = await checkGate(platform, profileId, 'commentComment');
-                if (!replyGate.allowed) { markExhausted('commentComment', replyGate.reason || 'quota'); break; }
-                // Open reply composer inside that comment.
-                const opened = await page.evaluate((args) => {
-                    const items = document.querySelectorAll(args.item);
-                    const el = items[args.idx] || items[0];
-                    if (!el) return false;
-                    const btn = el.querySelector(args.reply);
-                    if (!btn) return false;
-                    btn.click();
-                    return true;
-                }, { item: itemSel, idx: w, reply: replyBtnSel }).catch(() => false);
-                await pause(800, 1400);
-                // Inline reply box often reuses the main composer selectors.
-                const boxSel = s.commentReplyBox || s.commentBox || s.replyTextBox || "div[contenteditable='true']";
-                const submitSel = s.commentReplySubmit || s.commentSubmit || s.replySubmit || "button:has-text('Post')";
-                try {
-                    const commenter = String(c.username || '').replace(/^@+/, '').slice(0, 40);
-                    const replyPrompt = `${voiceReply(commenter, v.author || 'author')}\n\nPost analysis: ${analyzed.slice(0, 800)}\nYour main comment: ${commentText}\nTheir comment (posted to the author's post, not to you): "${String(c.text).slice(0, 300)}"\n\nReply peer-to-peer to @${commenter || 'them'} about their comment + the post. One sentence, no follow-pact.`;
-                    const rawReply = ai ? await ai.generate(replyPrompt, { maxTokens: 80, timeoutMs: 25000 }) : '';
-                    const replyText = sanitizeTypedText(rawReply, 120);
-                    if (replyText && opened) {
-                        const rr = await postCommentGeneric(page, { commentBox: boxSel, commentSubmit: submitSel, text: replyText });
-                        if (rr.posted) { await countAction('commentComment'); wavesDone++; }
-                        else logger.warn(`${label} reply w${w + 1} not posted (${rr.reason})`);
-                        await pause(800, 1500);
-                    }
-                } catch (e) { logger.warn(`${label} reply w${w + 1} failed (${e.message})`); }
-            }
+        if (s.commentItem && s.commentReplyButton) {
+            const wave = await runCommentWaves(page, {
+                platform, platformConfig, profileId, taskId,
+                maxRepliesPerPost, requireAiForComments,
+                author: v.author || 'author', socialStrategyPrompt,
+                analysisText: analyzed, aiOverride: ai, log: logger,
+            });
+            wavesDone = wave.replies || 0;
+            for (const [k, n] of Object.entries(wave.quota || {})) quotaTally[k] = (quotaTally[k] || 0) + n;
         }
         results.push({ keyword: kw, url: v.url, author: v.author, caption: String(v.caption || v.title || '').slice(0, 120), comment: commentText, status: posted ? 'commented' : (likeDone ? 'liked_only' : 'skipped'), commentsInContext: comments.length, commentReplies: wavesDone });
         return (likeDone || posted) ? 'ok' : 'fail';

@@ -234,6 +234,7 @@ export async function runSearchInteractEngagement(page, opts) {
         profileId,
         keywords,
         maxResultsPerKeyword = 5,
+        maxRepliesPerPost = 30, // cap comment-on-comment replies per post (SETTINGS.interactionMaxRepliesPerPost)
         stopAfterHours = 0,
         socialStrategyPrompt,
         campaignId,
@@ -922,9 +923,18 @@ export async function runSearchInteractEngagement(page, opts) {
                     // Quality gate: Pass 1 must return a usable description. Weak
                     // or failed text → single vision fallback (frame + caption).
                     const textResult = String(analyzedVideo || '').trim();
-                    const weakResult = (v) => v.length < 40
-                        || /^(could not analyze|ai not available|no ai providers)/i.test(v)
-                        || /can'?t view|can'?t see|cannot (view|see)|don'?t support image|no image input|image input (isn'?t|is not|not) supported/i.test(v);
+                    const weakResult = (v) => {
+                        const text = String(v || '').trim();
+                        if (text.length < 40) return true;
+                        // A long answer that merely contains an honest "I can't
+                        // view the video" disclaimer is STILL a valid caption/
+                        // comment-based analysis — treat it as good text so we
+                        // don't trigger a needless vision fallback. Only short,
+                        // refusal-only answers count as weak.
+                        if (text.length >= 150) return false;
+                        return /^(could not analyze|ai not available|no ai providers)/i.test(text)
+                            || /can'?t view|can'?t see|cannot (view|see)|don'?t support image|no image input|image input (isn'?t|is not|not) supported/i.test(text);
+                    };
                     const textGood = analysisMode !== 'text_failed' && !weakResult(textResult);
                     if (!textGood && ai) {
                         logger.info(`[engage:${taskId}] Text analysis weak (${textResult.length} chars, ${analysisMode}) — trying vision fallback (video frames + caption).`);
@@ -1090,6 +1100,7 @@ export async function runSearchInteractEngagement(page, opts) {
                     // container by TEXT match — indices go stale the moment a
                     // reply is inserted into the DOM (observed double-🙌).
                     let processedCount = 0;
+                    let commentCapLoggedForPost = false; // one cap log per post
                     const repliedKeys = new Set();      // keys we successfully replied to
                     const commentsByKey = new Map();    // UNION of every extraction (id-first)
                     const attemptsByKey = new Map();    // locate/reply failures per key
@@ -1456,7 +1467,16 @@ export async function runSearchInteractEngagement(page, opts) {
                         }
 
                         // ---- 2. REPLY to the comment ----
+                        // Per-post cap: stop replying once this post has received
+                        // maxRepliesPerPost replies, but KEEP liking comments.
                         let skipReplyComment = !!actionExhausted.commentComment;
+                        if (!skipReplyComment && processedCount >= maxRepliesPerPost) {
+                            skipReplyComment = true;
+                            if (!commentCapLoggedForPost) {
+                                commentCapLoggedForPost = true;
+                                logger.info(`[engage:${taskId}] Reply cap reached (${maxRepliesPerPost}) on this post — continuing comment-likes only, will reply on next post.`);
+                            }
+                        }
                         if (!skipReplyComment) {
                             const replyGate = await checkGate(platform, profileId, 'commentComment');
                             if (!replyGate.allowed) {

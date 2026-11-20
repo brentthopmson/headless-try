@@ -107,6 +107,7 @@ async function processTask(taskRow, columnIndexes) {
         const cookieJSON = get('cookieJSON');
         const profileId = get('profileId') || get('accountId') || null;
         const socialStrategyPrompt = get('socialStrategyPrompt') || null;
+        const maxRepliesPerPost = Math.max(1, parseInt(get('maxRepliesPerPost'), 10) || 30);
 
         // Batch mode: searchQueries array carries ALL keywords for this profile.
         // Falls back to the legacy single searchQuery.
@@ -200,6 +201,7 @@ async function processTask(taskRow, columnIndexes) {
                 campaignId,
                 keywords: searchQueries,
                 maxResultsPerKeyword,
+                maxRepliesPerPost,
                 stopAfterHours: interactionStopAfterHours,
                 socialStrategyPrompt,
                 requireAiForComments: get('requireAiForComments') === true || String(get('requireAiForComments') || '').toLowerCase() === 'true',
@@ -254,8 +256,9 @@ async function processTask(taskRow, columnIndexes) {
             logger.info(`[processTask] ${taskId}: generic engagement batch (${platform}) — ${searchQueries.length} keyword(s), cap=${maxResultsPerKeyword}/kw`);
             engagementSummary = await runGenericEngagement(page, {
                 platform, platformConfig, ai: MultiProviderAI, profileId, campaignId,
-                keywords: searchQueries, maxResultsPerKeyword,
+                keywords: searchQueries, maxResultsPerKeyword, maxRepliesPerPost,
                 stopAfterHours: interactionStopAfterHours, socialStrategyPrompt, taskId,
+                requireAiForComments: get('requireAiForComments') === true || String(get('requireAiForComments') || '').toLowerCase() === 'true',
             });
             results = engagementSummary.results || [];
             quotaSummary = engagementSummary.quota || {};

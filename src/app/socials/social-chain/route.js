@@ -107,6 +107,7 @@ async function processTask(task) {
     const discoveryTags = (Array.isArray(task.discoveryTags) ? task.discoveryTags : [])
       .map(t => String(t || "").trim()).filter(Boolean);
     const maxResultsPerKeyword = Math.max(1, parseInt(task.maxResultsPerKeyword, 10) || 5);
+    const maxRepliesPerPost = Math.max(1, parseInt(task.maxRepliesPerPost, 10) || 30);
     const stopAfterHours = Math.max(0, parseFloat(task.interactionStopAfterHours ?? task.stopAfterHours) || 0);
     const engagementMode = task.engagementMode === true || String(task.engagementMode || "").toLowerCase() === "true";
     const requireAiForComments = task.requireAiForComments === true || String(task.requireAiForComments || "").toLowerCase() === "true";
@@ -156,6 +157,7 @@ async function processTask(task) {
           campaignId,
           keywords,
           maxResultsPerKeyword,
+          maxRepliesPerPost,
           stopAfterHours,
           socialStrategyPrompt,
           requireAiForComments,
@@ -225,6 +227,7 @@ async function processTask(task) {
             engagementMode,
             messageText,
             stopAfterHours,
+            maxRepliesPerPost,
             requireAiForComments,
           });
           addQuota(quota, run.quota);
@@ -255,6 +258,7 @@ async function processTask(task) {
         messageText,
         stopAfterHours,
         maxEngagements: 20,
+        maxRepliesPerPost,
         requireAiForComments,
       });
       addQuota(quota, actRun.quota);

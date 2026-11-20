@@ -3,6 +3,8 @@ import { createRunContext } from "../_shared/engagementRunner.js";
 import { getPlatformHelper } from "./platformHelper/index.js";
 import { enforceSingleTab, attachSingleTabGuard, handleTikTokGuards } from "../_shared/tiktokEngagement.js";
 import { getAccountPostStatuses, markPostEngaged, getCampaignSettings, isPostInteracted, getStablePostId } from '../../campaign/_shared/pipelineUtils.js';
+import { runCommentWaves } from '../_shared/commentWaveEngine.js';
+import { getPlatformConfig as getSearchPlatformConfig, MultiProviderAI } from '../search-interact/platforms.js';
 
 const FOLLOW_OPS = new Set(["followuser", "follow", "followfromsuggested", "followfromfollowers"]);
 const UNFOLLOW_OPS = new Set(["unfollowuser", "unfollow"]);
@@ -33,6 +35,8 @@ export async function runPageInteract(options = {}) {
         engagementMode = false,
         messageText = "",
         stopAfterHours = 0,
+        maxRepliesPerPost = 30,
+        maxResultsPerKeyword = 5,
         requireAiForComments = false,
         log = logger,
     } = options;
@@ -86,42 +90,71 @@ export async function runPageInteract(options = {}) {
             } else if (baseAction === "unfollow") {
                 outcome = await helper.unfollow(page);
             } else if (baseAction === "like" || baseAction === "comment") {
-                const links = await helper.listPostLinks(page, 1);
-                const target = links[0] || page.url();
-                const postId = getStablePostId(platform, target);
-                if (postId && isPostInteracted(accountPostStatuses, postId)) {
-                    log.info(`[${taskId}] Post already interacted (${postId}) — skipping ${baseAction} for ${handle}`);
-                    results.push({ handle, status: "ALREADY_INTERACTED", reason: "already_interacted", postId, target });
-                    continue;
-                }
-                if (target !== page.url()) await helper.openPost(page, target);
-                const livePostId = postId || getStablePostId(platform, page.url());
-                const likedNow = typeof helper.isPostLiked === 'function' ? await helper.isPostLiked(page).catch(() => false) : false;
-                if (likedNow) {
-                    await markInteracted(livePostId, 'already_liked');
-                    log.info(`[${taskId}] Main post already liked — skipping ${baseAction} as already interacted (${livePostId || target})`);
-                    results.push({ handle, status: "ALREADY_INTERACTED", reason: "main_post_already_liked", postId: livePostId, target: page.url() });
-                    continue;
-                }
-                if (baseAction !== 'like' && requireAiForComments && !messageText) {
-                    log.info(`[${taskId}] Comment skipped: AI required but no message available (handle=${handle}).`);
-                    results.push({ handle, status: "COMMENT_SKIPPED_AI_REQUIRED", reason: "no_ai_message" });
-                    continue;
-                }
-                outcome = baseAction === 'like' ? await helper.like(page) : await helper.comment(page, messageText);
-                if (outcome && outcome.already) {
-                    await markInteracted(livePostId, 'already_liked');
-                    log.info(`[${taskId}] ${baseAction} detected already liked — skipping as already interacted (${livePostId || target})`);
-                    results.push({ handle, status: "ALREADY_INTERACTED", reason: "main_post_already_liked", postId: livePostId, target: page.url() });
-                    continue;
-                } else if (outcome && (outcome.verified || outcome.unverified)) {
-                    await markInteracted(livePostId, 'engaged');
-                }
+                // Interact with MULTIPLE posts per profile (TikTok parity), not just one.
+                const links = await helper.listPostLinks(page, Math.max(1, Number(maxResultsPerKeyword) || 5));
+                const targets = links.length ? links : [page.url()];
+                for (let pIdx = 0; pIdx < targets.length; pIdx++) {
+                    if (!ctx.shouldContinue()) break;
+                    const target = targets[pIdx];
+                    const postId = getStablePostId(platform, target);
+                    if (postId && isPostInteracted(accountPostStatuses, postId)) {
+                        log.info(`[${taskId}] Post already interacted (${postId}) — skipping for ${handle}`);
+                        results.push({ handle, status: "ALREADY_INTERACTED", reason: "already_interacted", postId, target });
+                        continue;
+                    }
+                    if (target !== page.url()) await helper.openPost(page, target);
+                    const livePostId = postId || getStablePostId(platform, page.url());
+                    const likedNow = typeof helper.isPostLiked === 'function' ? await helper.isPostLiked(page).catch(() => false) : false;
+                    if (likedNow) {
+                        await markInteracted(livePostId, 'already_liked');
+                        log.info(`[${taskId}] Main post already liked — skipping as already interacted (${livePostId || target})`);
+                        results.push({ handle, status: "ALREADY_INTERACTED", reason: "main_post_already_liked", postId: livePostId, target: page.url() });
+                        continue;
+                    }
+                    if (baseAction !== 'like' && requireAiForComments && !messageText) {
+                        log.info(`[${taskId}] Comment skipped: AI required but no message available (handle=${handle}).`);
+                        results.push({ handle, status: "COMMENT_SKIPPED_AI_REQUIRED", reason: "no_ai_message" });
+                        continue;
+                    }
+                    outcome = baseAction === 'like' ? await helper.like(page) : await helper.comment(page, messageText);
+                    if (outcome && outcome.already) {
+                        await markInteracted(livePostId, 'already_liked');
+                        log.info(`[${taskId}] ${baseAction} detected already liked — skipping as already interacted (${livePostId || target})`);
+                        results.push({ handle, status: "ALREADY_INTERACTED", reason: "main_post_already_liked", postId: livePostId, target: page.url() });
+                        continue;
+                    } else if (outcome && (outcome.verified || outcome.unverified)) {
+                        await markInteracted(livePostId, 'engaged');
+                    }
+
+                    // Reply waves on this post (TikTok-solid, all platforms, capped).
+                    try {
+                        const scfg = getSearchPlatformConfig(String(platform).toLowerCase());
+                        if (scfg?.selectors?.commentItem && scfg?.selectors?.commentReplyButton) {
+                            const wave = await runCommentWaves(page, {
+                                platform, platformConfig: scfg, profileId, taskId,
+                                maxRepliesPerPost, requireAiForComments,
+                                author: String(handle || '').replace(/^@+/, ''),
+                                socialStrategyPrompt: '', analysisText: '',
+                                aiOverride: MultiProviderAI, log,
+                            });
+                            for (const [k, n] of Object.entries(wave.quota || {})) await ctx.record(k, n);
+                        }
+                    } catch (e) { log.warn(`[${taskId}] reply waves failed for ${handle}: ${e.message}`); }
+
+                    // Account this post's main action.
+                    const counted = !!(outcome && (outcome.verified || outcome.unverified));
+                    if (counted) {
+                        await ctx.record(baseAction, 1);
+                        ctx.engaged += 1;
+                        results.push({ handle, status: outcome.already ? "ALREADY" : "DONE", postId: livePostId, verified: !!outcome.verified, unverified: !!outcome.unverified });
+                    } else {
+                        ctx.failed += 1;
+                        results.push({ handle, status: "FAILED", reason: outcome?.reason || "not-confirmed" });
+                    }
+                } // end posts loop
             }
 
-            if (outcome == null && (baseAction === 'like' || baseAction === 'comment')) {
-                // skipped via continue above
-            } else {
+            if (baseAction !== 'like' && baseAction !== 'comment' && outcome != null) {
                 const counted = !!(outcome && (outcome.verified || outcome.unverified));
                 if (counted) {
                     await ctx.record(baseAction, 1);
