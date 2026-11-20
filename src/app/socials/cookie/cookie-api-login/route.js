@@ -905,9 +905,18 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             for (let i = 0; i < maxLaunchRetries; i++) {
                 try {
                     logger.info(`[processRow][${browserId}] Attempt ${i + 1}/${maxLaunchRetries} to launch browser.`);
+                    // Honor the visibility env vars so a visible launcher can actually
+                    // show the login browser for debugging (previously production always
+                    // forced headless here, so the window never appeared even with
+                    // SHOW_BROWSER=true).
+                    const forceVisible = process.env.SHOW_BROWSER === 'true'
+                        || process.env.BROWSER_VISIBLE === 'true'
+                        || process.env.VISUAL === 'true';
+                    const effectiveHeadless = forceVisible ? false : (isDev ? false : "new");
+                    logger.info(`[processRow][${browserId}] launchBrowser headless=${String(effectiveHeadless)} (forceVisible=${forceVisible}, isDev=${isDev}).`);
                     browser = await launchBrowser({
                         userDataDir,
-                        headless: isDev ? false : "new"
+                        headless: effectiveHeadless
                     });
                     logger.info(`[processRow][${browserId}] Browser launched successfully on attempt ${i + 1}. PID: ${browser.process()?.pid}`);
                     break; // Break out of retry loop on success
@@ -2907,8 +2916,43 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                             const postCodeVerificationState = await checkVerification(page, platformConfig);
                             if (postCodeVerificationState.required) {
                                 if (codeEntryAttempted && postCodeVerificationState.type === 'code') {
-                                    stillOnCodeEntryScreen = true;
-                                    logger.warn(`[processRow][${browserId}][WAITINGCODE] Still on a code entry screen after submission attempt. Assuming code was incorrect.`);
+                                    // A lingering code-entry view is NOT proof the code was wrong —
+                                    // on headless Linux the SPA can stay on the OTP screen after a
+                                    // CORRECT code while it settles. Look for a POSITIVE error
+                                    // signal (real platform text) across every frame; only then
+                                    // declare the code incorrect. Otherwise keep waiting.
+                                    let positiveCodeError = false;
+                                    try {
+                                        for (const frame of page.frames()) {
+                                            try {
+                                                const txt = await frame.evaluate(() => (document.body?.innerText || '').slice(0, 4000));
+                                                if (/incorrect (verification )?code|invalid (verification )?code|code (is )?(incorrect|invalid|not valid|wrong)|wrong (verification )?code|that code (is )?(wrong|incorrect|invalid)|verification code (is )?(wrong|incorrect|invalid)/i.test(txt)) {
+                                                    positiveCodeError = true;
+                                                    break;
+                                                }
+                                            } catch (_) {}
+                                        }
+                                    } catch (_) {}
+
+                                    if (positiveCodeError) {
+                                        stillOnCodeEntryScreen = true;
+                                        logger.warn(`[processRow][${browserId}][WAITINGCODE] Positive invalid-code text detected on page — code was incorrect.`);
+                                    } else {
+                                        // No positive error: wait out the remaining window for inbox,
+                                        // then decide. Re-poll a few more times before flagging wrong.
+                                        let recovered = false;
+                                        for (let extraTick = 0; extraTick < 6; extraTick++) {
+                                            await new Promise(res => setTimeout(res, 5000));
+                                            try { await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification'); } catch (_) {}
+                                            let inb = false;
+                                            try { inb = await isInbox(page, platformConfig); } catch (_) {}
+                                            if (inb) { recovered = true; logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached on extended settle (tick ${extraTick + 1}).`); break; }
+                                        }
+                                        if (!recovered) {
+                                            stillOnCodeEntryScreen = true;
+                                            logger.warn(`[processRow][${browserId}][WAITINGCODE] Still on code entry after full settle window and no positive error text — treating as incorrect.`);
+                                        }
+                                    }
                                 } else if (codeEntryAttempted && postCodeVerificationState.type === 'choice' && platform === 'outlook') {
                                     returnedToChoiceScreen = true;
                                     logger.warn(`[processRow][${browserId}][WAITINGCODE] Returned to choice screen after code submission attempt for Outlook.`);
