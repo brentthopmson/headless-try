@@ -2740,9 +2740,22 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                     continue; // Continue the WAITING_CODE polling loop
                                 }
 
-                                // If no code error, then wait 10 seconds and proceed with existing checks
-                                await new Promise(res => setTimeout(res, 10000)); // Increased wait to 10 seconds as requested
-                                await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification');
+                                // If no code error, poll for inbox settlement before deciding the
+                                // code was wrong. On headless Linux the OTP modal is an SPA that can
+                                // take longer to transition than visible Chrome; a single fixed 10s
+                                // snapshot falsely flagged correct codes as "incorrect" there.
+                                for (let settleTick = 0; settleTick < 6; settleTick++) {
+                                    await new Promise(res => setTimeout(res, 5000));
+                                    try { await handleAdditionalViews(page, platformConfig, instanceId, 'post_verification'); } catch (_) {}
+                                    let settledInbox = false;
+                                    try { settledInbox = await isInbox(page, platformConfig); } catch (_) {}
+                                    if (settledInbox) {
+                                        logger.info(`[processRow][${browserId}][WAITINGCODE] Inbox reached during post-code settle poll (tick ${settleTick + 1}).`);
+                                        break;
+                                    }
+                                    // Stop early only if a NEW verification view appeared (real challenge),
+                                    // not the same code-entry screen we are waiting to leave.
+                                }
                             } else {
                                 // No code entered, handle Gmail app approval or other passive verifications
                                 logger.info(`[processRow][${browserId}][WAITINGCODE] No code entry attempted. Waiting for passive verification completion. Checking inbox every 5 seconds.`);
