@@ -348,3 +348,7 @@
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] 2026-11-20T08:22:12.345Z --- Health check cycle end ---
+[tunnel-healer] 2026-11-20T08:23:36.411Z --- Health check cycle start (serverless=serverless4) ---
+[tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
+[tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
+[tunnel-healer] 2026-11-20T08:24:00.900Z --- Health check cycle end ---
