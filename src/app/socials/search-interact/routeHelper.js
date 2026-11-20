@@ -238,7 +238,11 @@ export async function runSearchInteractEngagement(page, opts) {
         socialStrategyPrompt,
         campaignId,
         taskId = 'session',
+        requireAiForComments = false, // when true, skip all comments/replies if AI is unavailable
     } = opts;
+    if (requireAiForComments) {
+        logger.info(`[engage:${taskId}] requireAiForComments=ON — comments/replies skipped when AI is unavailable (likes/follows still run).`);
+    }
 
     // Per-account post deduplication: avoid re-engaging already completed posts
     let accountPostStatuses = {};
@@ -995,11 +999,16 @@ export async function runSearchInteractEngagement(page, opts) {
                         logger.warn(`[engage:${taskId}] AI comment generation failed: ${e.message}`);
                         generatedComment = '';
                     }
+                    // requireAiForComments guard: never post a non-AI comment.
+                    if (!skipMainCommentAction && !generatedComment && requireAiForComments) {
+                        logger.info(`[engage:${taskId}] Main comment skipped: AI required but unavailable.`);
+                        results.push({ keyword, url: video.url, author: video.author, comment: '', status: 'comment_skipped_ai_required' });
+                    }
                     // AI-off fallback (user directive): copy an existing comment
                     // verbatim instead of a generic "Nice share!". Pick the longest
                     // substantive comment already on the post. Strip @mentions —
                     // typing them opens the mention popup and hijacks input.
-                    if (!skipMainCommentAction && !generatedComment) {
+                    if (!skipMainCommentAction && !generatedComment && !requireAiForComments) {
                         const seed = aiComments
                             .filter(c => c.text && c.text.length >= 8 && c.text.length <= 150)
                             .map(c => stripMentions(String(c.text).trim()).slice(0, 150))
@@ -1563,13 +1572,18 @@ export async function runSearchInteractEngagement(page, opts) {
                                     logger.warn(`[engage:${taskId}] Reply AI failed (${e.message}) — emoji fallback for ~20s.`);
                                 }
                             }
+                            // requireAiForComments guard: never post a non-AI reply.
+                            if (!replyText && requireAiForComments) {
+                                logger.info(`[engage:${taskId}] Reply skipped: AI required but unavailable.`);
+                                results.push({ keyword, status: 'reply_skipped_ai_required', commenter: String(comment.username || '').slice(0, 40) });
+                            }
                             // AI-off fallback (user directive): reply is a SINGLE
                             // random emoji. Nothing else — no seeded text, no
                             // templates. The previous seed-based fallback duplicated
                             // the main comment into the reply box (exclusion of
                             // generatedComment failed because it had an emoji
                             // appended). One emoji is guaranteed unique-safe.
-                            if (!replyText) {
+                            if (!replyText && !requireAiForComments) {
                                 const EMOJIS = ['🔥', '💯', '🙌', '😂', '👏', '😊', '😍', '🤯'];
                                 replyText = EMOJIS[Math.floor(Math.random() * EMOJIS.length)];
                                 logger.info(`[engage:${taskId}] Reply${ai ? (aiCoolingDown ? ' (AI cooldown)' : '') : ' AI-off'}: reply = single emoji "${replyText}"`);

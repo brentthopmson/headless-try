@@ -27,6 +27,7 @@ export async function runActivitiesInteract(options = {}) {
         messageText = "",
         stopAfterHours = 0,
         maxEngagements = 20,
+        requireAiForComments = false,
         log = logger,
     } = options;
 
@@ -112,6 +113,13 @@ export async function runActivitiesInteract(options = {}) {
                 if (gate.skip) {
                     log.info(`[${taskId}] ${action} skipped (already interacted): ${gate.reason} ${gate.postId || page.url()}`);
                     results.push({ type: item.type, status: "ALREADY_INTERACTED", reason: gate.reason, postId: gate.postId });
+                    await helper.openNotifications(page);
+                    await enforceSingleTab(page, `[${taskId}]`);
+                    index += 1;
+                    continue;
+                }
+                if (action === "comment" && requireAiForComments && !messageText) {
+                    results.push({ type: item.type, status: "COMMENT_SKIPPED_AI_REQUIRED", reason: "no_ai_message", postId: gate.postId });
                     await helper.openNotifications(page);
                     await enforceSingleTab(page, `[${taskId}]`);
                     index += 1;

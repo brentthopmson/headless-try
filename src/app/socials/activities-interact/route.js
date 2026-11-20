@@ -48,6 +48,7 @@ async function processTask(taskPayload) {
     let profileDir = null;
     let runnerAccounted = false;
     const taskId = taskPayload.taskId || ("act-" + Math.random().toString(36).substring(2, 11));
+    const requireAiForComments = taskPayload.requireAiForComments === true || String(taskPayload.requireAiForComments || '').toLowerCase() === 'true';
 
     try {
         const platform = (taskPayload.platform || "").toLowerCase();
@@ -128,6 +129,7 @@ async function processTask(taskPayload) {
                 messageText: taskPayload.messageText || taskPayload.commentText || "",
                 stopAfterHours: Number(taskPayload.stopAfterHours) || 0,
                 maxEngagements: Number(taskPayload.maxEngagements) || 20,
+                requireAiForComments,
             });
             for (const [k, v] of Object.entries(run.quota || {})) {
                 if (k === "total") continue;
@@ -170,7 +172,7 @@ async function processTask(taskPayload) {
 
                 let workflowResults = {};
                 for (const workflow of workflows) {
-                    const wfResult = await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI);
+                    const wfResult = await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI, requireAiForComments === true || String(requireAiForComments || '').toLowerCase() === 'true');
                     for (const [k, v] of Object.entries(wfResult.__quota || {})) {
                         quota[k] = (quota[k] || 0) + (Number(v) || 0);
                     }

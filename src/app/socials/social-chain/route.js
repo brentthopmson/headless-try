@@ -6,6 +6,7 @@ import {
   setCorsHeaders,
 } from "../_shared/routeHelper.js";
 import { runSearchInteractEngagement } from "../search-interact/routeHelper.js";
+import { runGenericEngagement } from "../search-interact/platformHelper/genericRunner.js";
 import {
   getPlatformConfig as getSearchPlatformConfig,
   MultiProviderAI,
@@ -31,6 +32,9 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const activeTasks = new Map();
+// Non-TikTok platforms use the config-driven generic runner; TikTok keeps its
+// dedicated runner. The chain itself is platform-agnostic.
+const GENERIC_SEARCH_PLATFORMS = ['youtube', 'twitter', 'facebook', 'instagram', 'quora', 'reddit', 'threads'];
 
 function addQuota(target, source) {
   if (!source || typeof source !== "object") return;
@@ -105,6 +109,7 @@ async function processTask(task) {
     const maxResultsPerKeyword = Math.max(1, parseInt(task.maxResultsPerKeyword, 10) || 5);
     const stopAfterHours = Math.max(0, parseFloat(task.interactionStopAfterHours ?? task.stopAfterHours) || 0);
     const engagementMode = task.engagementMode === true || String(task.engagementMode || "").toLowerCase() === "true";
+    const requireAiForComments = task.requireAiForComments === true || String(task.requireAiForComments || "").toLowerCase() === "true";
     const messageText = task.messageText || task.commentText || task.comment || "";
     const socialStrategyPrompt = task.socialStrategyPrompt || null;
 
@@ -143,7 +148,7 @@ async function processTask(task) {
         logger.warn(`[social-chain] ${taskId}: search stage skipped — no keywords`);
       } else {
         const cfg = getSearchPlatformConfig(platform);
-        const summary = await runSearchInteractEngagement(page, {
+        const searchOpts = {
           platform,
           platformConfig: cfg,
           ai: MultiProviderAI,
@@ -153,8 +158,13 @@ async function processTask(task) {
           maxResultsPerKeyword,
           stopAfterHours,
           socialStrategyPrompt,
+          requireAiForComments,
           taskId: `${taskId}-search`,
-        });
+        };
+        // Same single-tab sequential flow for every platform, not just TikTok.
+        const summary = GENERIC_SEARCH_PLATFORMS.includes(platform)
+          ? await runGenericEngagement(page, searchOpts)
+          : await runSearchInteractEngagement(page, searchOpts);
         addQuota(quota, summary.quota);
         results.push(...(summary.results || []).map(r => ({ ...r, stage: "search" })));
         try {
@@ -215,6 +225,7 @@ async function processTask(task) {
             engagementMode,
             messageText,
             stopAfterHours,
+            requireAiForComments,
           });
           addQuota(quota, run.quota);
           results.push(...(run.results || []).map(r => ({
@@ -244,6 +255,7 @@ async function processTask(task) {
         messageText,
         stopAfterHours,
         maxEngagements: 20,
+        requireAiForComments,
       });
       addQuota(quota, actRun.quota);
       results.push(...(actRun.results || []).map(r => ({ ...r, stage: "activities" })));

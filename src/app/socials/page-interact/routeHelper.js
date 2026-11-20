@@ -33,6 +33,7 @@ export async function runPageInteract(options = {}) {
         engagementMode = false,
         messageText = "",
         stopAfterHours = 0,
+        requireAiForComments = false,
         log = logger,
     } = options;
 
@@ -100,6 +101,11 @@ export async function runPageInteract(options = {}) {
                     await markInteracted(livePostId, 'already_liked');
                     log.info(`[${taskId}] Main post already liked — skipping ${baseAction} as already interacted (${livePostId || target})`);
                     results.push({ handle, status: "ALREADY_INTERACTED", reason: "main_post_already_liked", postId: livePostId, target: page.url() });
+                    continue;
+                }
+                if (baseAction !== 'like' && requireAiForComments && !messageText) {
+                    log.info(`[${taskId}] Comment skipped: AI required but no message available (handle=${handle}).`);
+                    results.push({ handle, status: "COMMENT_SKIPPED_AI_REQUIRED", reason: "no_ai_message" });
                     continue;
                 }
                 outcome = baseAction === 'like' ? await helper.like(page) : await helper.comment(page, messageText);

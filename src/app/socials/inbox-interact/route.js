@@ -112,8 +112,13 @@ async function processTask(taskPayload) {
                 logger.info(`[processTask] AI generated message for ${taskId}`);
             } catch (e) {
                 logger.warn(`[processTask] AI message generation failed: ${e.message}`);
-                finalMessageText = "Hi! Great to connect with you here.";
+                finalMessageText = ''; // DMs are compulsory-AI: no generic fallback
             }
+        }
+        // DMs are compulsory: if AI produced no text (and none was supplied by
+        // the campaign), do not send anything at all.
+        if (sendsMessage && !finalMessageText) {
+            throw new Error('AI required for DM — no message available; skipping send (fallbacks disabled).');
         }
 
         // Hybrid session: use Drive profile + identity if available
@@ -260,7 +265,8 @@ async function processTask(taskPayload) {
 
             let workflowResults = {};
             for (const workflow of workflows) {
-                const wfResult = await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI);
+                // DM path is compulsory-AI regardless of the comment toggle.
+                const wfResult = await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI, true);
                 for (const [k, v] of Object.entries(wfResult.__quota || {})) {
                     const key = k === "coldMessage" ? "inboxReply" : k;
                     quota[key] = (quota[key] || 0) + (Number(v) || 0);

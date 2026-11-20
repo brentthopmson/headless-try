@@ -1545,6 +1545,7 @@ if (!String(settings.helperKeyword || "").trim()) {
             searchQuery: queryList[0] || "",
             searchQueries: queryList,
             maxResultsPerKeyword,
+            requireAiForComments: !!settings.requireAiForComments,
             fallbackToActivities: true,
             fallbackToDiscovery: true,
             ...extra,

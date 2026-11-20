@@ -990,8 +990,11 @@ export function interpolate(value, context) {
 
 // ==================== Generic Workflow Executor ====================
 
-export async function executeWorkflow(page, workflow, context, platformConfig, aiProvider) {
+export async function executeWorkflow(page, workflow, context, platformConfig, aiProvider, requireAiForComments = false) {
     const results = {};
+    // Set when the guard blocked an AI-generated comment/reply — the following
+    // fillText/submit steps are skipped so no fallback text can ever be posted.
+    let commentGenerationBlocked = false;
     // Success-only quota tally for this workflow ({ canonicalKey: count }).
     const quota = createTally();
     const selectors = platformConfig.selectors || {};
@@ -1009,6 +1012,18 @@ export async function executeWorkflow(page, workflow, context, platformConfig, a
             const stepContext = { ...context, ...results, platformConfig, selectors: platformConfig.selectors, ...platformConfig };
 
             logger.debug(`[executeWorkflow] Step ${stepNum}/${workflow.steps.length}: ${action}`);
+
+            // Guard: if AI was required but unavailable, never type or submit a
+            // comment/reply (covers every platform's workflow-based endpoints).
+            if (requireAiForComments && commentGenerationBlocked) {
+                const rawSel = String(step.selector || '');
+                const isCommentFill = action === 'fillText' && /commentBox|replyTextBox|comment/i.test(rawSel);
+                const isCommentSubmit = action === 'click' && /commentSubmit|replySubmit|commentPost/i.test(rawSel);
+                if (isCommentFill || isCommentSubmit) {
+                    logger.info(`[executeWorkflow] Step ${stepNum} skipped (${action}) — comment requires AI but none available.`);
+                    continue;
+                }
+            }
 
             try {
                 switch (action) {
@@ -1118,16 +1133,29 @@ export async function executeWorkflow(page, workflow, context, platformConfig, a
                             : 'VOICE (workflow comment): you are an outsider viewer commenting on someone else\'s post. "You" = the post author; the post was not made for you and you are not the author.';
                         const fullPrompt = `${voiceFrame}\n\n${rawFull}`;
                         try {
-                            const rawGen = aiProvider ? await aiProvider.generate(fullPrompt) : "Great content!";
+                            const rawGen = aiProvider ? await aiProvider.generate(fullPrompt) : '';
                             // Workflow comment/reply text is typed downstream —
                             // apply the same typed gate as the TikTok flow.
                             const gated = aiProvider?.sanitizeAiPlainText
                                 ? aiProvider.sanitizeAiPlainText(String(rawGen || ''), 500)
                                 : String(rawGen || '').replace(/<\/?\s*[A-Za-z][^>]*?>/g, ' ').replace(/[\x00-\x1F\x7F]/g, ' ').trim().slice(0, 500);
-                            results[step.resultKey || 'generated'] = gated || "Great content!";
+                            if (requireAiForComments && !gated) {
+                                results[step.resultKey || 'generated'] = '';
+                                commentGenerationBlocked = true;
+                                logger.info('[executeWorkflow] AI generation unavailable — comment/reply will be skipped (no fallback text).');
+                            } else {
+                                results[step.resultKey || 'generated'] = gated || 'Great content!';
+                                commentGenerationBlocked = false;
+                            }
                         } catch (e) {
                             logger.error(`[executeWorkflow] AI generation failed: ${e.message}`);
-                            results[step.resultKey || 'generated'] = "Great content!";
+                            if (requireAiForComments) {
+                                results[step.resultKey || 'generated'] = '';
+                                commentGenerationBlocked = true;
+                                logger.info('[executeWorkflow] AI generation failed — comment/reply will be skipped (no fallback text).');
+                            } else {
+                                results[step.resultKey || 'generated'] = 'Great content!';
+                            }
                         }
                         break;
                     }

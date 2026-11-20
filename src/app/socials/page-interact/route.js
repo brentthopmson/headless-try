@@ -131,6 +131,7 @@ async function processTask(taskPayload) {
     let profileDir = null;
     let runnerAccounted = false;
     const taskId = taskPayload.taskId || ("page-" + Math.random().toString(36).substring(2, 11));
+    const requireAiForComments = taskPayload.requireAiForComments === true || String(taskPayload.requireAiForComments || '').toLowerCase() === 'true';
 
     try {
         const platform = (taskPayload.platform || "").toLowerCase();
@@ -261,6 +262,7 @@ async function processTask(taskPayload) {
                     engagementMode,
                     messageText,
                     stopAfterHours: Number(taskPayload.stopAfterHours) || 0,
+                    requireAiForComments,
                 });
                 for (const [k, v] of Object.entries(run.quota || {})) {
                     if (k === "total") continue;
@@ -288,6 +290,7 @@ async function processTask(taskPayload) {
                             engagementMode,
                             messageText,
                             stopAfterHours: Number(taskPayload.stopAfterHours) || 0,
+                            requireAiForComments,
                         });
                         for (const [k, v] of Object.entries(run.quota || {})) { if (k === "total") continue; quota[k] = (quota[k] || 0) + (Number(v) || 0); }
                         results.push(...(run.results || []).map(r => ({ ...r, keyword: d.username, discovered: true })));
@@ -367,7 +370,7 @@ async function processTask(taskPayload) {
 
                 let workflowResults = {};
                 for (const workflow of workflows) {
-                    const wfResult = await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI);
+                    const wfResult = await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI, requireAiForComments === true || String(requireAiForComments || '').toLowerCase() === 'true');
                     for (const [k, v] of Object.entries(wfResult.__quota || {})) {
                         quota[k] = (quota[k] || 0) + (Number(v) || 0);
                     }

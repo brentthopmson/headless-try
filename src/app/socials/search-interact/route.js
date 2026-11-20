@@ -83,6 +83,7 @@ async function processTask(taskRow, columnIndexes) {
         ? (key => taskRow[columnIndexes[key]])
         : (key => (taskRow ? taskRow[key] : undefined));
         const taskId = get('taskId');
+        const requireAiForComments = get('requireAiForComments') === true || String(get('requireAiForComments') || '').toLowerCase() === 'true';
         const campaignId = get('campaignId') || null;
         let browser = null;
     let page = null;
@@ -201,6 +202,7 @@ async function processTask(taskRow, columnIndexes) {
                 maxResultsPerKeyword,
                 stopAfterHours: interactionStopAfterHours,
                 socialStrategyPrompt,
+                requireAiForComments: get('requireAiForComments') === true || String(get('requireAiForComments') || '').toLowerCase() === 'true',
                 taskId,
             });
             results = engagementSummary.results || [];
@@ -291,7 +293,7 @@ async function processTask(taskRow, columnIndexes) {
 
                 let workflowResults = {};
                 for (const workflow of workflows) {
-                    const wfResult = await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI);
+                    const wfResult = await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI, requireAiForComments === true || String(requireAiForComments || '').toLowerCase() === 'true');
                     for (const [k, v] of Object.entries(wfResult.__quota || {})) {
                         quotaSummary[k] = (quotaSummary[k] || 0) + (Number(v) || 0);
                     }
