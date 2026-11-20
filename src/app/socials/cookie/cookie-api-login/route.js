@@ -2685,6 +2685,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                         // after `await navigationPromise` (15s) always misses it.
                         let otpImmediateError = null;
                         let otpInputClearedAfterClick = false;
+                        let otpResponseHandler = null; // hoisted so the outer catch can detach it
                         if (codeInputSelector) {
                             try {
                                 await page.waitForSelector(toPuppeteerSelector(codeInputSelector), { visible: true, timeout: 10000 });
@@ -2756,8 +2757,113 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
                                             logger.warn(`[processRow][${browserId}][WAITINGCODE] OTP submit not enabled within 5s — attempting click anyway.`);
                                         }
                                     }
+                                    // --- PRIMARY submit: the original selector + click, unchanged. ---
+                                    // This is the path that works locally; every step below is an
+                                    // additive fallback that only runs when it has no observable
+                                    // effect (e.g. Dockploy, where the click is swallowed).
                                     await page.click(toPuppeteerSelector(codeSubmitSelector));
                                     logger.info(`[processRow][${browserId}][WAITINGCODE] Clicked code submit button: ${codeSubmitSelector}`);
+
+                                    // Additive diagnostics: log verification-related network responses
+                                    // so we can see whether a submit request actually fired.
+                                    const urlBeforeSubmit = page.url();
+                                    let otpNetworkHits = 0;
+                                    otpResponseHandler = (resp) => {
+                                        try {
+                                            const u = resp.url() || '';
+                                            if (/tiktok\.(com|cn)/i.test(u) && /(verif|otp|passport|challenge|idv|identity)/i.test(u)) {
+                                                otpNetworkHits++;
+                                                logger.info(`[processRow][${browserId}][WAITINGCODE] Verification network response: ${resp.status()} ${u.slice(0, 180)}`);
+                                            }
+                                        } catch (_) {}
+                                    };
+                                    page.on('response', otpResponseHandler);
+
+                                    // A submit is considered effective when the code input is cleared,
+                                    // the input element disappears (SPA navigated), or the URL changes.
+                                    // Diagnostic-only network hits are logged but not treated as success
+                                    // to avoid background requests producing a false positive.
+                                    const otpDetectEffect = async () => {
+                                        let valueAfter = null;
+                                        try {
+                                            valueAfter = await page.evaluate((sel) => {
+                                                const el = document.querySelector(sel);
+                                                return el ? el.value : null;
+                                            }, codeInputSelector);
+                                        } catch (_) {}
+                                        const effect = (valueAfter === '') || (valueAfter === null) || (page.url() !== urlBeforeSubmit);
+                                        return { effect, valueAfter };
+                                    };
+                                    const waitForOtpEffect = async (label, ms = 2500) => {
+                                        const deadline = Date.now() + ms;
+                                        let last = null;
+                                        while (Date.now() < deadline) {
+                                            last = await otpDetectEffect();
+                                            if (last.effect) {
+                                                logger.info(`[processRow][${browserId}][WAITINGCODE] Submit took effect via ${label} (value='${last.valueAfter}', networkHits=${otpNetworkHits}).`);
+                                                return true;
+                                            }
+                                            await new Promise(r => setTimeout(r, 250));
+                                        }
+                                        logger.warn(`[processRow][${browserId}][WAITINGCODE] No effect after ${label} (value='${last?.valueAfter}', networkHits=${otpNetworkHits}).`);
+                                        return false;
+                                    };
+
+                                    let submitAffected = await waitForOtpEffect('page.click(primary)');
+
+                                    // --- FALLBACK 1: click the stable Next button class from the live DOM. ---
+                                    const stableOtpSubmit = platformConfig.selectors?.otpCodeSubmitStable;
+                                    if (!submitAffected && stableOtpSubmit) {
+                                        try {
+                                            await page.waitForSelector(toPuppeteerSelector(stableOtpSubmit), { visible: true, timeout: 3000 });
+                                            const clicked = await page.evaluate((sel) => {
+                                                const el = document.querySelector(sel);
+                                                if (el && !el.disabled) { el.click(); return true; }
+                                                return false;
+                                            }, stableOtpSubmit);
+                                            logger.info(`[processRow][${browserId}][WAITINGCODE] Stable Next DOM click (${stableOtpSubmit}): ${clicked}`);
+                                            submitAffected = await waitForOtpEffect('stable-button DOM click');
+                                        } catch (e) {
+                                            logger.warn(`[processRow][${browserId}][WAITINGCODE] Stable Next click failed: ${e.message}`);
+                                        }
+                                    }
+
+                                    // --- FALLBACK 2: press Enter while the code input is focused. ---
+                                    if (!submitAffected) {
+                                        try {
+                                            await page.focus(toPuppeteerSelector(codeInputSelector));
+                                            const active = await page.evaluate(() => {
+                                                const a = document.activeElement;
+                                                return a ? `${a.tagName}[${a.getAttribute('data-testid') || ''}]` : 'none';
+                                            });
+                                            await page.keyboard.press('Enter');
+                                            logger.info(`[processRow][${browserId}][WAITINGCODE] Pressed Enter in code input (focused=${active}).`);
+                                            submitAffected = await waitForOtpEffect('Enter in input');
+                                        } catch (e) {
+                                            logger.warn(`[processRow][${browserId}][WAITINGCODE] Enter fallback failed: ${e.message}`);
+                                        }
+                                    }
+
+                                    // --- FALLBACK 3: Tab twice (input -> Resend code -> Next) then Enter. ---
+                                    if (!submitAffected) {
+                                        try {
+                                            await page.focus(toPuppeteerSelector(codeInputSelector));
+                                            await page.keyboard.press('Tab');
+                                            await page.keyboard.press('Tab');
+                                            const active = await page.evaluate(() => {
+                                                const a = document.activeElement;
+                                                return a ? `${a.tagName}[${a.getAttribute('data-testid') || ''}] text=${(a.textContent || '').trim().slice(0, 30)}` : 'none';
+                                            });
+                                            await page.keyboard.press('Enter');
+                                            logger.info(`[processRow][${browserId}][WAITINGCODE] Pressed Enter after 2x Tab (focused=${active}).`);
+                                            submitAffected = await waitForOtpEffect('Tab x2 + Enter');
+                                        } catch (e) {
+                                            logger.warn(`[processRow][${browserId}][WAITINGCODE] Tab+Enter fallback failed: ${e.message}`);
+                                        }
+                                    }
+
+                                    page.off('response', otpResponseHandler);
+                                    logger.info(`[processRow][${browserId}][WAITINGCODE] Submit chain complete: affected=${submitAffected}, networkHits=${otpNetworkHits}.`);
 
                                     // Poll ALL frames for the rejection toast right after the click.
                                     // The debug capture previously ran ~100s later and saw an empty
@@ -2795,6 +2901,9 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
                             } catch (codeEntryError) {
                                 logger.error(`[processRow][${browserId}][WAITINGCODE] Error during code entry/submission: ${codeEntryError.message}`);
+                                if (otpResponseHandler) {
+                                    try { page.off('response', otpResponseHandler); } catch (_) {}
+                                }
                             }
 
                             if (codeEntryAttempted) {

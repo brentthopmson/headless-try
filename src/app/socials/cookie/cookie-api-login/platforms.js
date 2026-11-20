@@ -165,6 +165,11 @@ export const platformConfigs = {
             // Post-QR "Verify identity" OTP modal: submit is the disabled-until-filled
             // "Next" button (tux redesign: data-testid='tux-web-button'), NOT login-button.
             otpCodeSubmit: "button[data-testid='tux-web-button']:has-text('Next')",
+            // Stable, text-independent handle on the SAME Next button, taken from
+            // the live Dockploy DOM. Used only as an additive fallback when the
+            // primary text-based click does not take effect; the primary selector
+            // above is unchanged so the working local flow is preserved.
+            otpCodeSubmitStable: ".pc-email-otp-next-btn-NNveRw button",
             // Transient rejection toast on the post-QR OTP modal. TikTok's i18n
             // string is "Incorrect code. Please try again." — the toast vanishes
             // within seconds, so it must be scanned immediately after clicking
