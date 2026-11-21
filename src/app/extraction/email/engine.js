@@ -6,6 +6,7 @@ import { getUserSearchParams, inferPlatformFromCookies } from '../shared/session
 import { updateExtractStatus } from '../shared/persistence.js';
 import { aiService } from '../shared/ai.js';
 import { getEmailExtractionHelper } from './platformHelper/index.js';
+import { captureFailureDebug } from '../../socials/_shared/debugCapture.js';
 
 async function extractPersonalInfo(helper, page, email = '') {
     const collected = await helper.collectPersonalInfo(page, email);
@@ -399,6 +400,14 @@ async function extractWire(session, browserId) {
             },
         };
     } finally {
+        if (!extractionSucceeded && page && !page.isClosed()) {
+            await captureFailureDebug({
+                page, platform: platform || 'email', stage: 'email-extraction-engine',
+                identifier: `extract-email-${browserId || 'account'}`,
+                reason: 'Email extraction did not complete — navigation/selector stall or page crash.',
+                details: { browserId, domain: session.domain || '' }, aiTimeoutMs: 12000,
+            }).catch(dbgErr => logger.warn(`[smartExtract] debug capture failed: ${dbgErr.message}`));
+        }
         // --- Post-extraction refresh: DISABLED (NO-TAMPER 2026-10-13) ---
         // A/B-proven session killer: the refresh overwrote cookieJSON/driveUrl/
         // browserIdentity with a capture that killed Gmail sessions (hxbefx0am2w

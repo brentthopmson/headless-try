@@ -4,6 +4,7 @@ import { launchBrowserWithSession, DOMHelpers, setCorsHeaders } from '../../soci
 import { getPlatformConfig, getExtractor } from './platforms.js';
 import { runSmartExtract } from '../engine.js';
 import { updateSheetRowApi } from '../../api/googlesheets.js';
+import { captureFailureDebug } from '../../socials/_shared/debugCapture.js';
 
 async function extractProfile(platform, cookies, username) {
   const platformKey = platform.toLowerCase();
@@ -11,6 +12,7 @@ async function extractProfile(platform, cookies, username) {
 
   const cookieJSON = typeof cookies === "string" ? cookies : JSON.stringify(cookies);
   const { browser, page } = await launchBrowserWithSession(cookieJSON);
+  let captureError = null;
 
   try {
     const profileUrl = config.profileUrl.replace("{username}", username.replace("@", ""));
@@ -25,7 +27,18 @@ async function extractProfile(platform, cookies, username) {
     }
 
     return await page.evaluate(() => document.body.textContent?.trim().slice(0, 1000) || "");
+  } catch (err) {
+    captureError = err;
+    throw err;
   } finally {
+    if (captureError && page) {
+      await captureFailureDebug({
+        page, platform: platformKey, stage: 'social-extraction',
+        identifier: `extract-${platformKey}-${username || 'profile'}`,
+        reason: captureError.message, error: captureError.message,
+        details: { username }, aiTimeoutMs: 12000,
+      }).catch(dbgErr => logger.warn(`[extract] debug capture failed: ${dbgErr.message}`));
+    }
     await page.close();
     await browser.close();
   }
@@ -41,6 +54,7 @@ async function extractFollowers(platform, cookies, username, limit = 50) {
 
   const cookieJSON = typeof cookies === "string" ? cookies : JSON.stringify(cookies);
   const { browser, page } = await launchBrowserWithSession(cookieJSON);
+  let captureError = null;
 
   try {
     const followersUrl = config.followersUrl.replace("{username}", username.replace("@", ""));
@@ -74,7 +88,18 @@ async function extractFollowers(platform, cookies, username, limit = 50) {
     }
 
     return followers.slice(0, limit);
+  } catch (err) {
+    captureError = err;
+    throw err;
   } finally {
+    if (captureError && page) {
+      await captureFailureDebug({
+        page, platform: platformKey, stage: 'social-extraction',
+        identifier: `extract-${platformKey}-${username || 'followers'}`,
+        reason: captureError.message, error: captureError.message,
+        details: { username }, aiTimeoutMs: 12000,
+      }).catch(dbgErr => logger.warn(`[extract] debug capture failed: ${dbgErr.message}`));
+    }
     await page.close();
     await browser.close();
   }

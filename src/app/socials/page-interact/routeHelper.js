@@ -38,6 +38,7 @@ export async function runPageInteract(options = {}) {
         maxRepliesPerPost = 30,
         maxResultsPerKeyword = 5,
         requireAiForComments = false,
+        socialStrategyPrompt = '',
         log = logger,
     } = options;
 
@@ -134,7 +135,7 @@ export async function runPageInteract(options = {}) {
                                 platform, platformConfig: scfg, profileId, taskId,
                                 maxRepliesPerPost, requireAiForComments,
                                 author: String(handle || '').replace(/^@+/, ''),
-                                socialStrategyPrompt: '', analysisText: '',
+                                socialStrategyPrompt, analysisText: '',
                                 aiOverride: MultiProviderAI, log,
                             });
                             for (const [k, n] of Object.entries(wave.quota || {})) await ctx.record(k, n);

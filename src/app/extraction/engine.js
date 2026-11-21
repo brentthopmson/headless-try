@@ -1,6 +1,7 @@
 import logger from '../../utils/logger.js';
 import { updateSheetRowApi, ensureSheetColumns } from '../api/googlesheets.js';
 import { createOrUpdateJsonFile } from '../api/googledrive.mjs';
+import { notifyCampaignFailure } from '../../utils/notifyCampaignFailure.js';
 import { checkActionAllowed, checkUserQuota } from '../socials/_shared/limits.js';
 import { resolveAccountGate, accountGateError } from '../socials/_shared/accountGate.js';
 import { getAccountUsage, updateAccountUsage, updateUserUsage } from '../socials/_shared/hubUpdater.js';
@@ -166,6 +167,15 @@ export async function runSmartExtract(browserId, category, username, platform) {
     } catch (e) {
         await updateExtractStatus(browserId, 'failed').catch(() => {});
         logger.error(`[smartExtract] EXTRACT FAILED browserId=${browserId} category=${cat}: ${e.message}`);
+        // No browser handle at this level — normal structured DEBUG row only.
+        await notifyCampaignFailure({
+            campaignId: browserId || 'extraction',
+            stage: 'extract',
+            channelType: cat === 'SOCIAL' ? 'social' : (cat === 'BANK' ? 'bank' : 'email'),
+            failedCount: 1,
+            error: e.message,
+            details: { browserId, category: cat, route: 'extraction/engine' },
+        }).catch(() => {});
         throw e;
     } finally {
         inFlight.delete(browserId);

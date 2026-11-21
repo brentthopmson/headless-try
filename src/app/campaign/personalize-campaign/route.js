@@ -389,9 +389,9 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log, stageUser
     }
   } catch {}
 
-  const promptMaxCharsSetting = await getSetting('personalizationPromptMaxChars');
-  const PROMPT_MAX_CHARS = parseInt(promptMaxCharsSetting?.value1) || 500;
-  if (personalizationPrompt.length > PROMPT_MAX_CHARS) personalizationPrompt = personalizationPrompt.slice(0, PROMPT_MAX_CHARS);
+  // Never truncate the campaign's personalization prompt: the configured AI
+  // providers handle long prompts, and silently cutting instructions changes
+  // the campaign's intended behaviour. Keep the full text.
 
   const dataRows = rows.slice(1);
   // batch limits = concurrency over FULL dataset (never total scope/truncation)
@@ -468,9 +468,9 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
       channel = campaignData.settings.channel || "email";
     }
   } catch {}
-  const promptMaxCharsSetting = await getSetting('personalizationPromptMaxChars');
-  const PROMPT_MAX_CHARS = parseInt(promptMaxCharsSetting?.value1) || 500;
-  if (personalizationPrompt.length > PROMPT_MAX_CHARS) personalizationPrompt = personalizationPrompt.slice(0, PROMPT_MAX_CHARS);
+  // Never truncate the campaign's personalization prompt: the configured AI
+  // providers handle long prompts, and silently cutting instructions changes
+  // the campaign's intended behaviour. Keep the full text.
 
   const rowStart = serverBatch.rowStart || 0;
   const rowEnd = Math.min(serverBatch.rowEnd || dataRows.length, dataRows.length);

@@ -31,6 +31,7 @@ export async function runActivitiesInteract(options = {}) {
         maxEngagements = 20,
         maxRepliesPerPost = 30,
         requireAiForComments = false,
+        socialStrategyPrompt = '',
         log = logger,
     } = options;
 
@@ -70,7 +71,7 @@ export async function runActivitiesInteract(options = {}) {
             const wave = await runCommentWaves(page, {
                 platform, platformConfig: scfg, profileId, taskId,
                 maxRepliesPerPost, requireAiForComments,
-                author: '', socialStrategyPrompt: '', analysisText: '',
+                author: '', socialStrategyPrompt, analysisText: '',
                 aiOverride: MultiProviderAI, log,
             });
             for (const [k, n] of Object.entries(wave.quota || {})) await ctx.record(k, n);

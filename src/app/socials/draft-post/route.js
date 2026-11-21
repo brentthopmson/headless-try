@@ -1,5 +1,6 @@
 import chromium from "@sparticuz/chromium-min";
 import readlineSync from 'readline-sync';
+import { captureBrowserDebug } from '../_shared/debugCapture.js';
 import axios from 'axios';
 import {
   localExecutablePath,
@@ -592,6 +593,9 @@ async function runAutomation(platformsToRun, postContent) {
     }
   } catch (error) {
     logger.error("Error running automation:", error);
+    await captureBrowserDebug(browser, {
+      stage: 'legacy-draft-post', reason: error.message, error: error.message, aiTimeoutMs: 12000,
+    });
   } finally {
     isRunning = false; // Reset the flag after the process is complete
   }

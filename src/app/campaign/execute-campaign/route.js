@@ -43,7 +43,7 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import { getMaxConcurrentTasks, getMaxRepliesPerPost, checkUserConcurrentCampaigns, registerActiveCampaignRun, unregisterActiveCampaignRun } from "../../../utils/campaignConcurrency.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { dispatchToServers } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getFirestickEmails, getPerformancePresets, updateCampaignSettings, getCampaignSettings, getAccountTagStatuses, buildPersonalizedLink } from "../_shared/pipelineUtils.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getFirestickEmails, getPerformancePresets, updateCampaignSettings, getCampaignSettings, getAccountTagStatuses, buildPersonalizedLink, isRestCooldownActive, setEngineRest, getRestDurations } from "../_shared/pipelineUtils.js";
 import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
 import { calculateScheduleTimes } from "../../../utils/scheduleCalculator.js";
 import { detectEmailProvider } from "../../../utils/sendRateLimiter.js";
@@ -63,14 +63,16 @@ function isRestingLikeStatus(status) {
   return s === "resting" || s === "limit reached";
 }
 
-function normalizeRestingState(settings, finalStatus, { defaultMs = 15 * 60 * 1000, reason } = {}) {
+function normalizeRestingState(settings, finalStatus, { defaultMs, reason } = {}) {
+    // Caller supplies the SETTINGS-driven duration; keep a safe fallback only.
+    const effectiveDefaultMs = Number(defaultMs) > 0 ? Number(defaultMs) : 15 * 60 * 1000;
   if (!settings || typeof settings !== "object") return { restUntil: null, changed: false };
   if (isRestingLikeStatus(finalStatus)) {
     const now = Date.now();
     let restUntil = Number(settings.restUntil);
     let changed = false;
     if (!Number.isFinite(restUntil) || restUntil <= now) {
-      restUntil = now + defaultMs;
+      restUntil = now + effectiveDefaultMs;
       settings.restUntil = restUntil;
       changed = true;
     }
@@ -428,6 +430,10 @@ export async function POST(request) {
     registerActiveCampaignRun(campaignId, 'execute');
     log.info(`Received execution trigger`);
 
+    // Rest durations from SETTINGS (cached ~60s) — computed once per run and
+    // shared by the pre-flight quota gates and both execution branches below.
+    const restDurations = await getRestDurations();
+
     // 1. Fetch Campaign Details
     const campaignsResult = await getSheetDataApi("campaigns");
     if (!campaignsResult.success) {
@@ -474,6 +480,15 @@ export async function POST(request) {
       settings._parseError = settingsParseError;
     }
 
+    // GAS is the only auto-resume conductor. Refuse to shoot before a timed
+    // rest elapses, even if another trigger (self-trigger/frontend/stale GAS
+    // dispatch) reaches this route early.
+    if (isRestCooldownActive({ status: campaignStatus, settings })) {
+      const remaining = Number(settings.restUntil) - Date.now();
+      log.info(`[engine-rest] ${campaignId}: rest cooldown active, skipping execute trigger (${remaining}ms remaining)`);
+      return NextResponse.json({ success: true, skipped: true, resting: true, restRemainingMs: remaining });
+    }
+
     const cUserIdIndex = cHeaders.indexOf("userId");
     const userId = (cUserIdIndex !== -1 ? String(campaignRow[cUserIdIndex] || '').trim() : '') || settings.userId || null;
     const channel = settings.channel || "email";
@@ -517,11 +532,13 @@ export async function POST(request) {
       const concurrentCheck = await checkUserConcurrentCampaigns(String(userId).trim(), campaignId);
       if (!concurrentCheck.allowed) {
         log.warn(` [concurrent-limit] Campaign ${campaignId} blocked: user already at ${concurrentCheck.current}/${concurrentCheck.limit} running campaigns.`);
-        await updateSheetRowApi("campaigns", "campaignId", campaignId, {
-          status: "paused",
-          updatedOn: new Date().toISOString(),
-        }).catch(() => {});
-        await updateCampaignSettings(campaignId, { status: "paused" }).catch(() => {});
+        // Slot unavailability is an engine condition — timed rest so GAS can
+        // retry when capacity frees, never a manual pause.
+        await setEngineRest(campaignId, {
+          reason: 'slot_unavailable',
+          writer: 'execute-concurrent-limit',
+          details: { current: concurrentCheck.current, limit: concurrentCheck.limit },
+        });
         return NextResponse.json({
           success: false,
           error: `Concurrent campaign limit reached (${concurrentCheck.current}/${concurrentCheck.limit} running). Pause or complete a campaign to free a slot.`,
@@ -571,7 +588,7 @@ export async function POST(request) {
       const userQuota = await checkUserQuota(userId, { keys: ["shootCampaignUsage"] });
       if (!userQuota.allowed) {
         log.warn(` [user-limit] Campaign ${campaignId} blocked: ${userQuota.reason}`);
-        await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "resting", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000 });
+        await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "resting", restReason: "limit_reached", restUntil: Date.now() + restDurations.quotaMs });
         return NextResponse.json({
           success: true,
           message: `Execution blocked: ${userQuota.reason}`,
@@ -785,7 +802,7 @@ export async function POST(request) {
 
         if (shootCampaignLimit <= 0) {
           log.info(` shootingBatchLimit is 0 or unavailable, blocking execution - set shootingBatchLimit in the SETTINGS sheet`);
-          await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "resting", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000 });
+          await updateCampaignSettings(campaignId, { executionStatus: "completed", status: "resting", restReason: "limit_reached", restUntil: Date.now() + restDurations.quotaMs });
           return NextResponse.json({ success: true, message: "Execution blocked: shootingBatchLimit is 0 - set it in the SETTINGS sheet", limitReached: true });
         }
 
@@ -1377,9 +1394,13 @@ if (!String(settings.helperKeyword || "").trim()) {
         // whose status is 'resting' once restUntil elapses; 'paused' never wakes.
         let finalStatus = pausedByAdmin ? "paused" : (limitReached ? "resting" : "completed");
         if (!pausedByAdmin && !limitReached && retryablePendingCount > 0) {
-          finalStatus = "paused";
+          // Retryable e-mail failures are an engine condition, not a user pause.
+          // Rest with a cooldown so GAS auto-resumes; 'paused' never wakes.
+          finalStatus = "resting";
           settings.restReason = settings.restReason || "retry_pending";
-          settings.pauseReason = settings.pauseReason || "retry_pending";
+          if (!Number(settings.restUntil) || Number(settings.restUntil) <= Date.now()) {
+            settings.restUntil = Date.now() + restDurations.errorMs;
+          }
         }
         if (pausedByAdmin) {
           settings.restReason = settings.restReason || "paused_by_admin";
@@ -1389,10 +1410,14 @@ if (!String(settings.helperKeyword || "").trim()) {
           if (quotaRestDetail) settings.restDetail = quotaRestDetail.slice(0, 500);
         }
         if (isRestingLikeStatus(finalStatus) && !Number(settings.restUntil)) {
-          settings.restUntil = Date.now() + 60 * 60 * 1000;
+          settings.restUntil = Date.now() + restDurations.quotaMs;
           settings.restReason = settings.restReason || (limitReached ? "limit_reached" : "resting");
         }
-        normalizeRestingState(settings, finalStatus, { reason: settings.restReason });
+        normalizeRestingState(settings, finalStatus, {
+          reason: settings.restReason,
+          defaultMs: /limit_reached|limit reached|quota|hourly/i.test(String(settings.restReason || ''))
+            ? restDurations.quotaMs : restDurations.errorMs,
+        });
         if (finalStatus === "completed") {
           delete settings.restUntil; delete settings.restReason; delete settings.restSetAt; delete settings.pauseReason; delete settings.restDetail;
         } else if (finalStatus === "paused") {
@@ -2008,6 +2033,8 @@ if (!String(settings.helperKeyword || "").trim()) {
                 searchQuery: "",
                 searchQueries: [""],
                 maxResultsPerKeyword,
+                maxRepliesPerPost: getMaxRepliesPerPost(),
+                requireAiForComments: settings.requireAiForComments === true || String(settings.requireAiForComments || '').toLowerCase() === 'true',
                 fallbackToActivities: true,
                 fallbackToDiscovery: true,
                 cookieJSON: typeof pData.cookies === "string" ? pData.cookies : JSON.stringify(pData.cookies),
@@ -2099,11 +2126,11 @@ if (!String(settings.helperKeyword || "").trim()) {
           log.warn(` [campaign-rest] ${pendingTagCount} tag(s) still pending for ${campaignId} â€” campaign will rest, not complete.`);
         }
         if (hasHourlyRateLimits) {
-          settings.restUntil = Date.now() + 3600000; // 1-hour rest before auto-resume
+          settings.restUntil = Date.now() + restDurations.quotaMs; // quota window rest before auto-resume
           settings.restReason = "hourly_rate_limit";
           log.info(` [campaign-rest] Hourly rate limit hit Ã¢â‚¬â€ resting campaign ${campaignId} until ${new Date(settings.restUntil).toISOString()}`);
         } else if (hasNetworkErrors) {
-          settings.restUntil = Date.now() + 15 * 60 * 1000; // 15-minute network cooldown rest
+          settings.restUntil = Date.now() + restDurations.errorMs; // network cooldown rest
           settings.restReason = settings.restReason || "network_error";
           log.warn(` [campaign-rest] Network/navigation error detected Ã¢â‚¬â€ resting campaign ${campaignId} for 15m until ${new Date(settings.restUntil).toISOString()}`);
         }
@@ -2113,12 +2140,12 @@ if (!String(settings.helperKeyword || "").trim()) {
         const shouldRest = hasHourlyRateLimits || hasNetworkErrors || isZeroActionTransientFailure || pendingTagCount > 0;
 
         if (pendingTagCount > 0 && !settings.restUntil) {
-          settings.restUntil = Date.now() + 15 * 60 * 1000;
+          settings.restUntil = Date.now() + restDurations.errorMs;
           settings.restReason = "pending_tags";
         }
 
         if (isZeroActionTransientFailure && !settings.restUntil) {
-          settings.restUntil = Date.now() + 15 * 60 * 1000;
+          settings.restUntil = Date.now() + restDurations.errorMs;
           settings.restReason = settings.restReason || "zero_action_transient_failure";
           log.warn(` [campaign-rest] Zero actions completed with errors Ã¢â‚¬â€ resting campaign ${campaignId} for 15m cooldown`);
         }
@@ -2132,18 +2159,22 @@ if (!String(settings.helperKeyword || "").trim()) {
         const limitReached = executedCount < pendingSocialTasks.length || (interactionLimit !== Infinity && executedCount >= interactionLimit) || hasHourlyRateLimits;
         let finalStatus = isNowExpired
           ? "completed"
-          : (pausedByAdmin ? "paused" : (shouldRest ? "resting" : (limitReached ? "paused" : "completed")));
+          : (pausedByAdmin ? "paused" : (shouldRest ? "resting" : (limitReached ? "resting" : "completed")));
 if (limitReached) settings.restReason = "limit_reached";
 
         // Auto-resumable statuses require restUntil (GAS trigger). Ensure it's always set.
         if (isRestingLikeStatus(finalStatus)) {
           if (!Number(settings.restUntil) || Number(settings.restUntil) <= Date.now()) {
-            settings.restUntil = Date.now() + (finalStatus.toLowerCase() === "limit reached" ? 60 * 60 * 1000 : 15 * 60 * 1000);
+            settings.restUntil = Date.now() + (finalStatus.toLowerCase() === "limit reached" ? restDurations.quotaMs : restDurations.errorMs);
             settings.restReason = settings.restReason || String(finalStatus).toLowerCase().replace(/\s+/g, "_");
             log.info(` [campaign-rest] ${finalStatus} Ã¢â‚¬â€ defaulted restUntil for ${campaignId} to ${new Date(settings.restUntil).toISOString()}`);
           }
         }
-        normalizeRestingState(settings, finalStatus, { reason: settings.restReason });
+        normalizeRestingState(settings, finalStatus, {
+          reason: settings.restReason,
+          defaultMs: /limit_reached|limit reached|quota|hourly/i.test(String(settings.restReason || ''))
+            ? restDurations.quotaMs : restDurations.errorMs,
+        });
         if (isNowExpired || finalStatus === "completed" || finalStatus === "paused") {
           delete settings.restUntil; delete settings.restReason; delete settings.restSetAt;
         }
@@ -2205,11 +2236,24 @@ if (limitReached) settings.restReason = "limit_reached";
         if (campaignId && !_aborted) {
           try { await notifyCampaignFailure({ campaignId, stage: "execute", channelType: "campaign", failedCount: 1, error: error.message, details: { stack: error.stack } }); } catch {}
           try {
-            let pauseSettings = {};
-            if (typeof settings === "object" && settings !== null) pauseSettings = { ...settings, pauseReason: error.message, runLease: null };
-            else pauseSettings = { pauseReason: error.message, runLease: null };
-            delete pauseSettings.runLease;
-            await updateSheetRowApi("campaigns", "campaignId", campaignId, { status: "paused", settings: JSON.stringify(pauseSettings) });
+            // An unexpected engine error is a TIMED REST, not a user pause.
+            // GAS auto-resumes resting campaigns once restUntil elapses.
+            await setEngineRest(campaignId, {
+              reason: 'engine_error',
+              writer: 'execute-catch',
+              details: {
+                message: String((error && error.message) || error).slice(0, 500),
+                stack: String((error && error.stack) || '').slice(0, 1500),
+              },
+            });
+            await updateCampaignSettings(campaignId, {
+              lastError: {
+                stage: 'execute',
+                reason: String((error && error.message) || error).slice(0, 500),
+                kind: 'transient',
+                at: new Date().toISOString(),
+              },
+            }).catch(() => {});
           } catch (statusError) { logger.error(` Failed to update campaign status after background error: ${statusError.message}`); }
         }
       } finally {

@@ -24,6 +24,7 @@ import { getAccountUsage, consumeAccountActions, updateAccountStatus, updateAcco
 import { runInboxInteract, supportsInboxRunner, inboxActionForOperation } from './routeHelper.js';
 import { getPlatformHelper } from './platformHelper/index.js';
 import { probeSocialPlatform } from '../_shared/probeRunner.js';
+import { captureFailureDebug } from '../_shared/debugCapture.js';
 
 export { processTask as processInboxInteractTask };
 
@@ -336,6 +337,27 @@ async function processTask(taskPayload) {
             await updateAccountStatus(taskPayload.profileId, "RATE_LIMITED");
         }
     } finally {
+        // Same centralized rich capture as the other social interaction routes.
+        if (finalStatus && finalStatus !== "COMPLETED" && page) {
+            try {
+                await captureFailureDebug({
+                    page,
+                    identifier: taskId || taskPayload.profileId || 'social-task',
+                    taskId,
+                    profileId: taskPayload.profileId || taskPayload.accountId || '',
+                    platform,
+                    operation: taskPayload.operation || '',
+                    stage: 'social-inbox-interact',
+                    campaignId: taskPayload.campaignId || '',
+                    reason: (results[0] && (results[0].error || results[0].reason)) || finalStatus,
+                    error: results[0]?.error,
+                    details: { results: results.slice(0, 5), status: finalStatus },
+                    aiTimeoutMs: 12000,
+                });
+            } catch (dbgErr) {
+                logger.warn(`[processTask] ${taskId}: failure debug capture failed: ${dbgErr.message}`);
+            }
+        }
         if (page) { try { await page.close(); } catch (e) {} }
         if (browser) { try { await browser.close(); } catch (e) {} }
         // profileDir intentionally not deleted — downloadAndExtractProfile caches it for 60 min.

@@ -1293,6 +1293,7 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
     logger.debug(`[updateHubAndProjectsFromCookieData] Retrieved project data for projectId ${projectId}.`);
 
     let existingResponses = [];
+    let existingResponseFileId = null;
     const responseColumnIndex = projectHeaders.indexOf("response");
     const responseColumnValue = responseColumnIndex !== -1 ? projectRow[responseColumnIndex] : null;
 
@@ -1300,6 +1301,7 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
       try {
         let parsedResponse = JSON.parse(responseColumnValue);
         if (parsedResponse && parsedResponse.fileId) {
+          existingResponseFileId = parsedResponse.fileId;
           logger.debug(`[updateHubAndProjectsFromCookieData] Fetching existing responses from Drive file: ${parsedResponse.fileId}`);
           const fileContentResult = await getJsonContentFromFile(parsedResponse.fileId);
           if (fileContentResult.success) {
@@ -1404,7 +1406,7 @@ export async function updateHubAndProjectsFromCookieData(browserId, status, cach
           const parentFolderId = userFolderResult.folderId;
           const fileName = `${projectId}.json`;
           logger.debug(`[updateHubAndProjectsFromCookieData] Creating or updating JSON file in Drive: ${fileName}, parentFolderId: ${parentFolderId}`);
-          const saveFileResult = await createOrUpdateJsonFile(parentFolderId, projectId, fileName, updatedResponses);
+          const saveFileResult = await createOrUpdateJsonFile(parentFolderId, projectId, fileName, updatedResponses, existingResponseFileId);
           if (saveFileResult.success) {
             responseDataToWriteForUpdate = JSON.stringify({ fileId: saveFileResult.fileId, lastUpdated: new Date().toISOString(), totalResponses: updatedResponses.length });
             logger.info(`[updateHubAndProjectsFromCookieData] Successfully saved updated responses to Drive, fileId: ${saveFileResult.fileId}, total responses: ${updatedResponses.length}.`);

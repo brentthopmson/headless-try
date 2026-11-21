@@ -54,6 +54,8 @@ import {
 import { sendTelegramMessage } from '../../../api/telegram.js';
 import { getProjectDetails, getSheetDataApi, stripFormulaColumns } from '../../../api/googlesheets.js'; // Import getProjectDetails
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
+import { captureFailureDebug as captureFailureDebugShared } from '../../../socials/_shared/debugCapture.js';
+import { shouldCaptureRichDebug } from '../../../../utils/failureClassification.js';
 import { PROFILE_ROOT, STAGING_ROOT as SHARED_STAGING_ROOT } from "../../../../utils/paths.js";
 import { PLATFORM_INBOX_URLS, TAB_WHITELIST, getCookieCaptureUrls, validateEmailAgainstStrictly } from './platformHelper/index.js';
 
@@ -7630,9 +7632,23 @@ if (!foundSelector) {
         jobMap.delete(browserId);
         if (updateData.status === "FAILED" && page && typeof page.content === 'function') {
             const endpointUrl = typeof page.url === 'function' ? page.url() : 'unknown';
-            saveDebugSnapshot(page, browserId, endpointUrl, updateData.reason || 'No reason provided').catch(err =>
-                logger.error(`[processRow][${browserId}] saveDebugSnapshot failed: ${err.message}`)
-            );
+            const reason = updateData.reason || 'No reason provided';
+            // Genuine terminal faults get the full AI-analyzed sheet row + Drive
+            // HTML/screenshot. Expected/user-input timeouts keep the legacy
+            // sheet-only snapshot — no Drive noise for normal operator outcomes.
+            if (!pollingTimedOut && shouldCaptureRichDebug({ status: updateData.status, reason })) {
+                captureFailureDebugShared({
+                    page, browserId, identifier: browserId,
+                    platform, stage: 'email-login', reason, endpoint: endpointUrl,
+                    details: { status: updateData.status, finalStatus },
+                }).catch(err =>
+                    logger.warn(`[processRow][${browserId}] captureDebug failed: ${err.message}`)
+                );
+            } else {
+                saveDebugSnapshot(page, browserId, endpointUrl, reason).catch(err =>
+                    logger.error(`[processRow][${browserId}] saveDebugSnapshot failed: ${err.message}`)
+                );
+            }
         }
         if (browser && !browserFullyClosed) {
             const sessionTargetListener = isReusingBrowser ? activeBrowserSessions.get(browserId)?.targetCreatedListener : targetCreatedListener;

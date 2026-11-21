@@ -14,6 +14,8 @@ import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaign
 import { getSelfUrl, getSelfUrlWithFallback, getInternalSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
 import { updateUserUsage } from "../../socials/_shared/hubUpdater.js";
+import { captureFailureDebug } from "../../socials/_shared/debugCapture.js";
+import { shouldCaptureRichDebug } from "../../../utils/failureClassification.js";
 
 const resolveMx = promisify(dns.resolveMx);
 
@@ -447,6 +449,15 @@ async function verifySingleEmailOnPlatform(browser, email, platformName, config,
 
     return { status: 'inconclusive', detail: `no_confirmation:${lastDetail}` };
   } catch (err) {
+    if (page && shouldCaptureRichDebug({ status: 'FAILED', reason: err.message })) {
+      await captureFailureDebug({
+        page, platform: platformName, stage: 'campaign-validate',
+        identifier: `validate-${platformName}-${String(email || '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 24)}`,
+        reason: `Platform verification threw: ${err.message}`,
+        error: err.message,
+        details: { email, platformName, attempt }, aiTimeoutMs: 12000,
+      }).catch(dbgErr => log.warn(`[Row verify] debug capture failed: ${dbgErr.message}`));
+    }
     return { status: 'inconclusive', detail: `exception:${err.message}` };
   } finally {
     try { if (page) await page.goto('about:blank').catch(() => {}); } catch {}

@@ -14,6 +14,8 @@ import logger from "../../../../utils/logger.js";
 import geminiHelper from "../../../../utils/geminiHelper.js"; 
 import { platformConfigs } from "./platforms.js";
 import { keyboardNavigate } from "../../../../utils/KeyboardHandlers.js"; 
+import { captureFailureDebug } from '../../../socials/_shared/debugCapture.js';
+import { shouldCaptureRichDebug } from '../../../../utils/failureClassification.js';
 import { uploadBrowserData } from '../../../api/googledrive.mjs';
 import { 
     getColumnIndexes,
@@ -1140,6 +1142,19 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             })
       });
     } finally {
+      // Rich snapshot for genuine engine faults, before browser teardown.
+      if (page && shouldCaptureRichDebug({ status: updateData.status, reason: updateData.reason })) {
+        try {
+          await captureFailureDebug({
+            page, browserId, identifier: browserId,
+            platform, stage: 'email-gemini-login',
+            reason: updateData.reason || `FAILED: ${updateData.status}`,
+            details: { status: updateData.status },
+          });
+        } catch (dbgErr) {
+          logger.warn(`[processRow][${browserId}] captureDebug failed: ${dbgErr.message}`);
+        }
+      }
       if (browser && !browserFullyClosed) {
         const sessionTargetListener = isReusingBrowser ? activeBrowserSessions.get(browserId)?.targetCreatedListener : targetCreatedListener;
         if (sessionTargetListener && browser) { // Ensure listener exists before trying to remove

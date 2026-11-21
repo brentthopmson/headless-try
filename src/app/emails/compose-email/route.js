@@ -5,6 +5,7 @@ import { DOMHelpers, resolveShootSession } from "../../socials/_shared/routeHelp
 import { getSheetDataApi } from "../../api/googlesheets.js";
 import { getPlatformConfig, detectEmailPlatform } from "../_shared/platforms.js";
 import MultiProviderAI from "../../../utils/multiProviderAI.js";
+import { captureFailureDebug } from "../../socials/_shared/debugCapture.js";
 
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
@@ -404,10 +405,22 @@ export async function composeEmail(body) {
     const { browser, page, profileDir } = await resolveShootSession(browserId);
 
     let threads = [];
+    let captureError = null;
     try {
       threads = await readMailboxHistory(page, config, contactEmail, 10);
       log.info(`Found ${threads.length} threads with ${contactEmail}`);
+    } catch (err) {
+      captureError = err;
+      throw err;
     } finally {
+      if (captureError && page) {
+        await captureFailureDebug({
+          page, platform: config?.platform || 'email', stage: 'email-compose',
+          identifier: `compose-${browserId || 'account'}`,
+          reason: captureError.message, error: captureError.message,
+          details: { contactEmail }, aiTimeoutMs: 12000,
+        }).catch(dbgErr => logger.warn(`[compose-email] debug capture failed: ${dbgErr.message}`));
+      }
       await page.close();
       await browser.close();
       if (profileDir) {

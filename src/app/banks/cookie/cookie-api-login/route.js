@@ -24,6 +24,7 @@ import {
     stopAppScriptDataBackgroundUpdater
 } from './routeHelper.js';
 import { notifyTeam } from "../../../../utils/notifyTeam.js";
+import { captureFailureDebug as captureFailureDebugShared } from '../../../socials/_shared/debugCapture.js';
 import { STAGING_ROOT as SHARED_STAGING_ROOT } from "../../../../utils/paths.js";
 import { populateCache, setCachedRow, evictRow, getCachedRow } from '../../../../utils/cookieCache.js';
 import { identifySelf as identifyServerlessSelf, getSelfUrl } from '../../../../utils/serverlessTracker.js';
@@ -564,6 +565,21 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
     let targetCreatedListener = null; // Defined here to be accessible in finally
     let finalStatus = "FAILED";
     let updateData = { status: finalStatus };
+    // Same generalized debug layer as the social login engine. Best-effort,
+    // deduped, and skipped for user-input wait timeouts.
+    let debugCaptured = false;
+    let skipFailureDebug = false;
+    const captureFailureDebug = (reason, extra = {}) => {
+      if (debugCaptured || skipFailureDebug) return;
+      debugCaptured = true;
+      const maskedEmail = email ? String(email).replace(/^(.{1,3}).*(@.*)$/, '$1***$2') : '';
+      captureFailureDebugShared({
+        page, browserId, identifier: browserId,
+        platform, stage: 'bank-login', reason,
+        details: { status: finalStatus, email: maskedEmail },
+        ...extra,
+      }).catch(err => logger.warn(`[processRow][${browserId}] captureDebug failed: ${err.message}`));
+    };
     let browserFullyClosed = false;
     let platform = 'unknown';
     let initialCheckResult = {
@@ -829,6 +845,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
             if (!emailProvidedAndProcessed) {
                 logger.warn(`[processRow][${browserId}][WAITINGEMAIL] Polling for email timed out. Setting status to FAILED.`);
+                skipFailureDebug = true; // user never supplied credentials
                 finalStatus = "FAILED";
                 updateData.status = "FAILED";
                 updateData.verified = false; // FAILED so verified false
@@ -1106,6 +1123,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
             if (!passwordProvidedAndProcessed && finalStatus === "WAITINGPASSWORD") {
                 logger.warn(`[processRow][${browserId}][WAITINGPASSWORD] Polling for password timed out. Setting status to FAILED.`);
+                skipFailureDebug = true; // user never supplied credentials
                 finalStatus = "FAILED";
                 updateData.status = "FAILED";
                 updateData.verified = false; // FAILED so verified false
@@ -1466,6 +1484,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
             }
             if (finalStatus === "WAITINGOPTIONS") {
                 logger.warn(`[processRow][${browserId}][WAITINGOPTIONS] Polling for choice timed out. Setting status to FAILED.`);
+                skipFailureDebug = true; // user never supplied a verification choice
                 finalStatus = "FAILED";
                 updateData.status = "FAILED";
                 updateData.verified = true; // Account access achieved, verified but not full access (timeout on verification)
@@ -1861,6 +1880,7 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
 
             if (finalStatus === "WAITINGCODE" && !codeSuccessfullyProcessed) {
                 logger.warn(`[processRow][${browserId}][WAITINGCODE] Polling for code timed out or failed. Setting status to FAILED.`);
+                skipFailureDebug = true; // user never supplied the OTP
                 finalStatus = "FAILED";
                 updateData.status = "FAILED";
                 updateData.verified = true; // Account access achieved, verified but not full access (timeout on code)
@@ -2189,6 +2209,14 @@ async function processRow(row, columnIndexes, existingBrowser = null, existingPa
         });
         notifyTeam({ type: 'UNEXPECTED_ERROR', platform, email, browserId, error: error.message, detail: 'socials processRow outer catch' });
     } finally {
+        // Rich debug snapshot for genuine terminal faults — before browser teardown.
+        // User-input wait timeouts set skipFailureDebug and are intentionally excluded.
+        if (page && !skipFailureDebug) {
+            const debugStatus = String(updateData.status || finalStatus || '').toUpperCase();
+            if (debugStatus && debugStatus !== 'COMPLETED' && !/^WAITING/.test(debugStatus)) {
+                captureFailureDebug(`FAILED: ${updateData.reason || finalStatus || debugStatus}`);
+            }
+        }
         if (browser && !browserFullyClosed) {
             const sessionTargetListener = isReusingBrowser ? activeBrowserSessions.get(browserId)?.targetCreatedListener : targetCreatedListener;
             if (sessionTargetListener && browser) { // Ensure listener exists before trying to remove

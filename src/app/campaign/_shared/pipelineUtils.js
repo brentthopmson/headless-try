@@ -726,3 +726,141 @@ export async function incrementQuotaBudget(campaignId, settings, type) {
   // Don't await - fire and forget to avoid blocking
   updateCampaignSettings(campaignId, { _quotaBudget: budget }).catch(() => {});
 }
+
+// ============================================================
+// Engine rest (timed, auto-resumable) vs user pause
+// ============================================================
+
+const REST_FALLBACK_ERROR_MIN = 15;
+const REST_FALLBACK_QUOTA_MIN = 60;
+const REST_DURATIONS_CACHE_MS = 60 * 1000;
+
+if (!globalThis.__campaignRestDurationsState) {
+  globalThis.__campaignRestDurationsState = { value: null, fetchedAt: 0, inFlight: null };
+}
+const restDurationsState = globalThis.__campaignRestDurationsState;
+
+function parseRestMinutes(value, fallback) {
+  const n = Number(String(value ?? '').trim());
+  return Number.isFinite(n) && n > 0 ? Math.round(n) : fallback;
+}
+
+/**
+ * Effective rest durations, from SETTINGS rows:
+ *   campaignRestErrorMinutes  (default 15) — terminal/error failures
+ *   campaignRestQuotaMinutes  (default 60) — quota/limit exhaustion
+ * Cached ~60s. Missing/invalid rows fall back to the defaults, so campaigns
+ * keep working before an admin adds the keys.
+ */
+export async function getRestDurations(forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && restDurationsState.value && now - restDurationsState.fetchedAt < REST_DURATIONS_CACHE_MS) {
+    return restDurationsState.value;
+  }
+  if (restDurationsState.inFlight) return await restDurationsState.inFlight;
+
+  restDurationsState.inFlight = (async () => {
+    let errorMin = REST_FALLBACK_ERROR_MIN;
+    let quotaMin = REST_FALLBACK_QUOTA_MIN;
+    let source = 'default';
+    try {
+      const [errorSetting, quotaSetting] = await Promise.all([
+        getSetting('campaignRestErrorMinutes'),
+        getSetting('campaignRestQuotaMinutes'),
+      ]);
+      const ev = errorSetting?.value1;
+      const qv = quotaSetting?.value1;
+      if (ev !== null && ev !== undefined && String(ev).trim() !== '') {
+        errorMin = parseRestMinutes(ev, errorMin);
+        source = 'SETTINGS';
+      }
+      if (qv !== null && qv !== undefined && String(qv).trim() !== '') {
+        quotaMin = parseRestMinutes(qv, quotaMin);
+        source = 'SETTINGS';
+      }
+      if (quotaMin < errorMin) {
+        logger.warn(`[engine-rest] campaignRestQuotaMinutes (${quotaMin}) is below campaignRestErrorMinutes (${errorMin}) — quota rests will wake before error rests`);
+      }
+    } catch (e) {
+      logger.warn(`[engine-rest] Could not read rest durations from SETTINGS: ${e.message} — using defaults`);
+    }
+    const value = {
+      errorMs: errorMin * 60 * 1000,
+      quotaMs: quotaMin * 60 * 1000,
+      errorMin,
+      quotaMin,
+      source,
+    };
+    restDurationsState.value = value;
+    restDurationsState.fetchedAt = Date.now();
+    logger.info(`[engine-rest] durations error=${errorMin}m quota=${quotaMin}m source=${source}`);
+    return value;
+  })();
+
+  try { return await restDurationsState.inFlight; }
+  finally { restDurationsState.inFlight = null; }
+}
+
+export function invalidateRestDurations() {
+  restDurationsState.value = null;
+  restDurationsState.fetchedAt = 0;
+}
+
+/**
+ * True when a campaign is in a timed rest whose cooldown has not elapsed.
+ * GAS is the conductor that dispatches a resume; this guard prevents any other
+ * trigger (stage self-trigger, stale dispatch, frontend Start) from bypassing
+ * the cooldown.
+ */
+export function isRestCooldownActive(campaignData, now = Date.now()) {
+  if (!campaignData) return false;
+  const status = String(campaignData.status || '').trim().toLowerCase();
+  const s = campaignData.settings || {};
+  const until = Number(s.restUntil);
+  if (status === 'resting' || status === 'limit reached') {
+    if (!Number.isFinite(until) || until <= now) return false; // cooldown over — GAS may resume
+    return true;
+  }
+  return false; // defensive: stale restUntil without a rest status must not block
+}
+
+/**
+ * Put a campaign into a TIMED REST after an engine-side failure.
+ * User pause is authoritative: if the user paused via GAS, this is a no-op.
+ * Writes status 'resting' + restUntil/restReason to BOTH settings JSON and the
+ * campaigns.status column, preserving checkpoints for the GAS resume.
+ */
+export async function setEngineRest(campaignId, opts = {}) {
+  const reason = String(opts.reason || 'engine_error');
+  const durations = await getRestDurations();
+  const isQuotaRest = /limit|quota|hourly|rate_limit/i.test(reason);
+  const durationMs = Number(opts.durationMs) > 0
+    ? Number(opts.durationMs)
+    : (isQuotaRest ? durations.quotaMs : durations.errorMs);
+  try {
+    if (await isCampaignPaused(campaignId)) {
+      logger.info(`[engine-rest] ${campaignId}: user pause active — leaving status untouched`);
+      return { rested: false, reason: 'user_pause_wins' };
+    }
+
+    const now = Date.now();
+    const restUntil = now + durationMs;
+    await updateCampaignSettings(campaignId, {
+      status: 'resting',
+      restUntil,
+      restReason: reason,
+      restSetAt: new Date(now).toISOString(),
+      pauseReason: null,
+      runLease: null,
+      ...(opts.details && typeof opts.details === 'object' ? { restDetail: opts.details } : {}),
+      writer: String(opts.writer || 'engine'),
+    });
+    logger.warn(`[engine-rest] ${campaignId}: resting until ${new Date(restUntil).toISOString()} (reason=${reason})`);
+    return { rested: true, restUntil, reason };
+  } catch (e) {
+    logger.warn(`[engine-rest] ${campaignId}: failed to set rest state: ${e.message}`);
+    return { rested: false, reason: 'error', error: e.message };
+  }
+}
+
+

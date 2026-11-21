@@ -4,7 +4,7 @@ import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import MultiProviderAI from "../../../utils/multiProviderAI.js";
 import { isMultiServerEnabled, dispatchToServers, findMyAssignment, updateMyAssignment, mergeAndFlush, checkAllComplete } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, getPerformancePresets } from "../_shared/pipelineUtils.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, updateCampaignSettings, getCampaignSettings, getPerformancePresets, getRestDurations } from "../_shared/pipelineUtils.js";
 import { applyRowStatuses } from "../_shared/campaignFields.js";
 import { getSelfUrl, getSelfUrlWithFallback, getInternalSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.js";
@@ -143,6 +143,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log) {
   // Read per-campaign settings for stop guard
   const campaignData = await getCampaignSettings(campaignId);
   const settings = campaignData?.settings || {};
+  const restDurations = await getRestDurations(); // SETTINGS-driven quota rest
 
   // Read selected interaction accounts
   const interactionAccountIds = settings.interactionAccounts || [];
@@ -220,7 +221,7 @@ async function handleCoordinatorMode(campaignId, fileId, fileUrl, log) {
       log.info(` Stop guard: monthly interaction quota exhausted (${coordinatorQuota.reason})`);
       await updateCampaignSettings(campaignId, {
         executionStatus: "completed",
-        status: "paused", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000,
+        status: "resting", restReason: "limit_reached", restUntil: Date.now() + restDurations.quotaMs,
         interactionStatus: "completed",
         interactionStoppedReason: "monthly_interaction_quota"
       });
@@ -291,6 +292,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
   // Read per-campaign settings for stop guard
   const campaignData = await getCampaignSettings(campaignId);
   const settings = campaignData?.settings || {};
+  const restDurations = await getRestDurations(); // SETTINGS-driven quota rest
 
   // Read selected interaction accounts
   const interactionAccountIds = settings.interactionAccounts || [];
@@ -355,7 +357,7 @@ async function handleWorkerMode(campaignId, fileId, serverBatch, log) {
       log.info(`[Worker] Stop guard: monthly interaction quota exhausted (${workerQuota.reason})`);
       await updateCampaignSettings(campaignId, {
         executionStatus: "completed",
-        status: "paused", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000,
+        status: "resting", restReason: "limit_reached", restUntil: Date.now() + restDurations.quotaMs,
         interactionStatus: "completed",
         interactionStoppedReason: "monthly_interaction_quota"
       });

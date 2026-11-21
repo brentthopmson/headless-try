@@ -3,6 +3,7 @@ import logger from "../../../../utils/logger.js";
 import { launchBrowserWithSession, DOMHelpers } from "../../../socials/_shared/routeHelper.js";
 import { getSheetDataApi } from "../../../api/googlesheets.js";
 import { getPlatformConfig, detectEmailPlatform } from "../../_shared/platforms.js";
+import { captureFailureDebug } from "../../../socials/_shared/debugCapture.js";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -52,6 +53,7 @@ export async function POST(request) {
     const config = getPlatformConfig(platform);
 
     const { browser, page } = await launchBrowserWithSession(cookieJSON, false);
+    let captureError = null;
 
     try {
       await page.goto(config.labelsUrl, { waitUntil: "networkidle0", timeout: 30000 });
@@ -81,7 +83,18 @@ export async function POST(request) {
       log.info(`Label created: ${labelName}`);
       return NextResponse.json({ success: true, labelName });
 
+    } catch (err) {
+      captureError = err;
+      throw err;
     } finally {
+      if (captureError && page) {
+        await captureFailureDebug({
+          page, platform, stage: 'email-create-label',
+          identifier: `label-create-${browserId || 'account'}`,
+          reason: captureError.message, error: captureError.message,
+          details: { labelName }, aiTimeoutMs: 12000,
+        }).catch(dbgErr => logger.warn(`[create-label] debug capture failed: ${dbgErr.message}`));
+      }
       await page.close();
       await browser.close();
     }

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { getSelfUrl, getSelfUrlWithFallback, getSelfId, getInternalSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
-import { getCampaignSettings, updateCampaignSettings, isCampaignPaused, classifyStageFailure, recordStageError, clearStageError, getRetryBudget } from "../_shared/pipelineUtils.js";
+import { getCampaignSettings, updateCampaignSettings, isCampaignPaused, classifyStageFailure, recordStageError, clearStageError, getRetryBudget, isRestCooldownActive, setEngineRest, getRestDurations } from "../_shared/pipelineUtils.js";
 import { acquireCampaignLock, releaseCampaignLock } from "../../../utils/campaignLock.js";
 import { checkUserConcurrentCampaigns, registerActiveCampaignRun, unregisterActiveCampaignRun, getActiveCampaignIdsInProcess } from "../../../utils/campaignConcurrency.js";
 import { getSheetDataApi, updateSheetRowApi } from "../../api/googlesheets.js";
@@ -334,6 +334,15 @@ export async function POST(request) {
 
     const { settings } = campaignData;
     settings._campaignStatus = campaignData.status;
+    const restDurations = await getRestDurations(); // SETTINGS-driven, cached
+
+    // GAS is the resume conductor. Never dispatch a stage while a timed rest
+    // is still in effect, regardless of who triggered this invocation.
+    if (isRestCooldownActive(campaignData)) {
+      const remaining = Number(settings.restUntil) - Date.now();
+      log.info(`[engine-rest] ${campaignId}: rest cooldown active, skipping orchestrator (${remaining}ms remaining)`);
+      return NextResponse.json({ success: true, skipped: true, resting: true, restRemainingMs: remaining });
+    }
 
     // Expiry guard — INTERACTIONS ONLY. A campaign with a list (fileUrl)
     // must shoot the list to completion regardless of elapsed days.
@@ -414,14 +423,14 @@ export async function POST(request) {
       const concurrentCheck = await checkUserConcurrentCampaigns(userId, campaignId);
       if (!concurrentCheck.allowed) {
         log.info(`User ${userId} exceeded concurrent limit: ${concurrentCheck.current}/${concurrentCheck.limit}`);
-        // GAS marked this campaign 'running' before dispatching — revert so a
-        // rejected start never sits as a zombie 'running' row with nothing
-        // dispatched. 'paused' keeps it resumable once a slot frees.
-        await updateSheetRowApi("campaigns", "campaignId", campaignId, {
-          status: "paused",
-          updatedOn: new Date().toISOString(),
-        }).catch(() => {});
-        await updateCampaignSettings(campaignId, { status: "paused" }).catch(() => {});
+        // GAS marked this campaign 'running' before dispatching — revert to a
+        // timed rest so it never sits as a zombie 'running' row, and GAS can
+        // retry automatically once a slot frees.
+        await setEngineRest(campaignId, {
+          reason: 'slot_unavailable',
+          writer: 'orchestrator-concurrent-limit',
+          details: { current: concurrentCheck.current, limit: concurrentCheck.limit },
+        });
         return NextResponse.json({
           success: false,
           error: `Concurrent campaign limit reached (${concurrentCheck.current}/${concurrentCheck.limit} running). Pause or complete a campaign to free a slot.`,
@@ -459,14 +468,17 @@ export async function POST(request) {
           } else {
             // Mail merge failed (e.g. Drive CSV flush) — pause, do NOT proceed to later stages.
             await recordStageError(campaignId, { stage: 'mail-merge', reason: mailMergeResult.error || 'mail merge failed', kind: 'permanent' });
-            await updateCampaignSettings(campaignId, { status: "paused", lastError: { stage: 'mail-merge', reason: mailMergeResult.error || 'mail merge failed', kind: 'permanent' } });
+            // Mail-merge failure is an engine fault — timed rest, not user pause.
+            await setEngineRest(campaignId, { reason: 'mail_merge_failed', writer: 'orchestrator-mail-merge' });
+            await updateCampaignSettings(campaignId, { lastError: { stage: 'mail-merge', reason: mailMergeResult.error || 'mail merge failed', kind: 'permanent' } });
             await notifyCampaignFailure({ campaignId, stage: 'mail-merge', channelType: 'campaign', failedCount: 1, reason: mailMergeResult.error || 'mail merge failed' });
             return NextResponse.json({ success: false, message: 'Mail merge failed', failedStage: 'mail-merge', details: mailMergeResult }, { status: 500 });
           }
         } catch (mmErr) {
           log.error(`Mail merge failed: ${mmErr.message}`);
           await recordStageError(campaignId, { stage: 'mail-merge', reason: mmErr.message, kind: 'transient' });
-          await updateCampaignSettings(campaignId, { status: "paused", lastError: { stage: 'mail-merge', reason: mmErr.message, kind: 'transient' } });
+          await setEngineRest(campaignId, { reason: 'mail_merge_failed', writer: 'orchestrator-mail-merge' });
+          await updateCampaignSettings(campaignId, { lastError: { stage: 'mail-merge', reason: mmErr.message, kind: 'transient' } });
           await notifyCampaignFailure({ campaignId, stage: 'mail-merge', channelType: 'campaign', failedCount: 1, reason: mmErr.message });
           return NextResponse.json({ success: false, message: 'Mail merge failed', failedStage: 'mail-merge', error: mmErr.message }, { status: 500 });
         }
@@ -510,10 +522,10 @@ export async function POST(request) {
       } else {
         // Budget exhausted but stage was failed and user is trying to run: pause (resumable) not hard-fail.
         if (wasFailed) {
+          await setEngineRest(campaignId, { reason: 'retry_budget_reached', writer: 'orchestrator-retry' });
           await updateCampaignSettings(campaignId, {
             ...(config.statusField ? { [config.statusField]: "retry" } : {}),
-            status: "paused",
-            lastError: { ...(settings.lastError || {}), reason: `${config.label} needs retry (budget reached). Resume to continue.` },
+            lastError: { ...(settings.lastError || {}), reason: `${config.label} needs retry (budget reached). Auto-resume after cooldown.` },
           });
           return NextResponse.json({
             success: false,
@@ -523,9 +535,9 @@ export async function POST(request) {
           });
         }
         await recordStageError(campaignId, { stage, reason: settings.lastError?.reason || `${config.label} failed`, kind: 'transient' });
+        await setEngineRest(campaignId, { reason: 'retry_budget_exhausted', writer: 'orchestrator-retry' });
         await updateCampaignSettings(campaignId, {
           ...(config.statusField ? { [config.statusField]: "failed" } : {}),
-          status: "paused",
           lastError: { ...(settings.lastError || {}), reason: `retry budget exhausted (${budget}): ${settings.lastError?.reason || ''}` },
         });
         await notifyCampaignFailure({
@@ -560,10 +572,10 @@ export async function POST(request) {
         reason: `${config.label} stage failed`,
         details: { stageStatus: config.statusField ? settings[config.statusField] : null },
       });
-      await updateCampaignSettings(campaignId, { status: "paused" });
+      await setEngineRest(campaignId, { reason: 'stage_failed', writer: 'orchestrator-fail' });
       return NextResponse.json({
         success: false,
-        message: `${config.label} stage failed (paused, resumable)`,
+        message: `${config.label} stage failed (resting, auto-resume after cooldown)`,
         failedStage: stage,
         paused: true,
       });
@@ -703,7 +715,7 @@ export async function POST(request) {
         const kind = classifyStageFailure(result?.error || result?.message || result);
         if (kind === 'limit' || result?.limitReached) {
           await clearStageError(campaignId);
-          await updateCampaignSettings(campaignId, { status: "resting", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000 });
+          await updateCampaignSettings(campaignId, { status: "resting", restReason: "limit_reached", restUntil: Date.now() + restDurations.quotaMs });
           await updateSheetRowApi("campaigns", "campaignId", campaignId, { status: "resting", updatedOn: new Date().toISOString() }).catch(() => {});
           return NextResponse.json({
             success: true,
@@ -746,10 +758,10 @@ export async function POST(request) {
           details: result,
         });
         // Controlling key: flip the campaign row out of 'running' so the
-        // UI shows a truthful state instead of running forever. Use "paused"
-        // (not "failed") so the campaign remains resumable.
+        // UI shows a truthful state instead of running forever. Use a timed
+        // "resting" (not "failed"/"paused") so GAS can auto-resume it.
         if (stage !== "execute" || !result?.limitReached) {
-          await updateCampaignSettings(campaignId, { status: "paused" });
+          await setEngineRest(campaignId, { reason: 'stage_failed', writer: 'orchestrator-stage-failure' });
         }
         return NextResponse.json({
           success: false,
@@ -777,7 +789,7 @@ export async function POST(request) {
       // interact already write the same value themselves.
       if (result.limitReached) {
         await clearStageError(campaignId);
-        await updateCampaignSettings(campaignId, { status: "resting", restReason: "limit_reached", restUntil: Date.now() + 60 * 60 * 1000 });
+        await updateCampaignSettings(campaignId, { status: "resting", restReason: "limit_reached", restUntil: Date.now() + restDurations.quotaMs });
         await updateSheetRowApi("campaigns", "campaignId", campaignId, { status: "resting", updatedOn: new Date().toISOString() }).catch(() => {});
         return NextResponse.json({
           success: true,
@@ -861,7 +873,16 @@ export async function POST(request) {
       details: { stack: error.stack },
     });
     if (campaignId) {
-      try { await updateCampaignSettings(campaignId, { status: "paused" }); } catch { /* best-effort */ }
+      try {
+        await setEngineRest(campaignId, {
+          reason: 'engine_error',
+          writer: 'orchestrator-catch',
+          details: { message: String(error?.message || error).slice(0, 500), stack: String(error?.stack || '').slice(0, 1500) },
+        });
+        await updateCampaignSettings(campaignId, {
+          lastError: { stage: 'orchestrator', reason: String(error?.message || error).slice(0, 500), kind: 'transient', at: new Date().toISOString() },
+        });
+      } catch { /* best-effort */ }
     }
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   } finally {

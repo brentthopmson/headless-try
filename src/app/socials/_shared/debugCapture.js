@@ -1,9 +1,11 @@
-// Smart debug capture for social cookie-login failures.
+// Centralized, failure-agnostic debug capture for all social flows.
 // - Writes a capped HTML snapshot + reason/AI analysis to the GAS `debug` sheet.
-// - Uploads the FULL HTML and a screenshot into a browserId-named folder in Drive.
-// - Uses the working MultiProviderAI to describe the page so an operator (or the
-//   engine on the next iteration) can identify the exact element/view that stalled.
-// Every step is best-effort — debugging must never break the login flow.
+// - Uploads the FULL HTML, a structured context file and a screenshot into a
+//   per-task/browserId folder in Drive.
+// - Uses MultiProviderAI to explain ANY failure page (not one specific error):
+//   what view is shown, what error text exists, the likely cause, the relevant
+//   element(s), and the next recovery action.
+// Every step is best-effort — debugging must never break the caller's flow.
 
 import axios from 'axios';
 import logger from '../../../utils/logger.js';
@@ -14,30 +16,44 @@ const SHEET_HTML_CAP = parseInt(process.env.DEBUG_HTML_SHEET_CAP || '45000', 10)
 const DEBUG_PARENT_FOLDER_ID = process.env.DEBUG_DRIVE_FOLDER_ID
   || process.env.DEBUG_DRIVE_PARENT_FOLDER
   || '1P6SUU07bp3TEYHtnDM3F7nOhXyeQz--7';
+const DEFAULT_AI_TIMEOUT_MS = 45000;
 
-async function analyzeHtml(html, reason) {
+function buildAiPrompt(html, ctx) {
+  // Child frames are appended at the end of the snapshot, so include the tail.
+  const full = String(html || '');
+  const sample = full.length > 24000
+    ? full.slice(0, 4000) + '\n...[truncated]...\n' + full.slice(-20000)
+    : full;
+  return [
+    'You are analyzing the HTML of an automated social-media browser page captured at the moment a task FAILED.',
+    'The snapshot contains the main frame plus any child frames appended at the end.',
+    'Identify concisely:',
+    '1) The exact page/view or heading currently displayed.',
+    '2) Any visible ERROR, warning, challenge, captcha or rate-limit text (quote it).',
+    '3) The most likely root cause of the failure given the context below.',
+    '4) The relevant element(s) and CSS selector(s) involved, if any.',
+    '5) One concrete next action that would let automation recover or continue.',
+    'Context:',
+    `- Platform: ${ctx.platform || 'unknown'}`,
+    `- Operation/Stage: ${ctx.operation || ctx.stage || 'unknown'}`,
+    `- Endpoint: ${ctx.endpoint || 'unknown'}`,
+    `- Failure reason: ${ctx.reason || 'unknown'}`,
+    ctx.error ? `- Error: ${ctx.error}` : '',
+    ctx.details ? `- Details: ${ctx.details}` : '',
+    '',
+    'HTML (truncated):',
+    sample,
+  ].filter(Boolean).join('\n');
+}
+
+async function analyzeHtml(html, ctx = {}) {
   try {
     if (!html) return '';
-    // Child frames (where the OTP UI actually lives) are appended at the end —
-    // include the tail so the AI sees the real verification elements, plus the head.
-    const full = String(html);
-    const sample = full.length > 24000
-      ? full.slice(0, 4000) + '\n...[truncated]...\n' + full.slice(-20000)
-      : full;
-    const prompt = [
-      'You are analyzing the HTML of a TikTok login/verification page captured when an automated login stalled.',
-      'Identify, concisely:',
-      '1) The exact verification view/heading text shown (e.g. OTP entry, security check, choice screen).',
-      '2) The CSS selector for the verification CODE INPUT element.',
-      '3) The CSS selector for the SUBMIT/NEXT button.',
-      '4) Any visible ERROR or CHALLENGE text.',
-      '5) What element or action is needed to complete login.',
-      'Capture reason: ' + String(reason || ''),
-      '',
-      'HTML (truncated):',
-      sample,
-    ].join('\n');
-    const response = await MultiProviderAI.generate(prompt, { maxTokens: 500, timeoutMs: 45000, maxTransientAttempts: 1 });
+    const response = await MultiProviderAI.generate(buildAiPrompt(html, ctx), {
+      maxTokens: 500,
+      timeoutMs: ctx.aiTimeoutMs || DEFAULT_AI_TIMEOUT_MS,
+      maxTransientAttempts: 1,
+    });
     return String(response || '').replace(/\s+/g, ' ').trim().slice(0, 1500);
   } catch (e) {
     logger.warn(`[captureDebug] AI analysis failed: ${e.message}`);
@@ -45,7 +61,7 @@ async function analyzeHtml(html, reason) {
   }
 }
 
-async function writeDebugSheet({ browserId, url, cappedHtml, reason }) {
+async function writeDebugSheet({ identifier, url, cappedHtml, reason, meta = {} }) {
   try {
     const appScriptUrl = process.env.SCRIPT_URL;
     if (!appScriptUrl) return false;
@@ -53,17 +69,25 @@ async function writeDebugSheet({ browserId, url, cappedHtml, reason }) {
     params.append('action', 'saveDebugPage');
     params.append('key', process.env.SCRIPT_KEY || '');
     params.append('timestamp', new Date().toISOString());
-    params.append('browserId', browserId || '');
+    params.append('browserId', identifier || '');
     params.append('endpoint', url || '');
     params.append('status', 'FAILED');
     params.append('htmlContent', cappedHtml || '');
     params.append('reason', reason || '');
+    // Extra sheet columns are additive; the GAS action ignores anything the
+    // sheet does not define. Values are capped so a large details blob cannot
+    // blow up the request.
+    for (const [key, value] of Object.entries(meta || {})) {
+      if (value === undefined || value === null || value === '') continue;
+      const text = typeof value === 'object' ? JSON.stringify(value) : String(value);
+      params.append(key, text.slice(0, 2000));
+    }
     const res = await axios.post(appScriptUrl, params, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       timeout: 30000,
     });
     if (res.data?.success) {
-      logger.info(`[captureDebug] Sheet row saved for ${browserId}`);
+      logger.info(`[captureDebug] Sheet row saved for ${identifier}`);
       return true;
     }
     logger.warn(`[captureDebug] Sheet save error: ${res.data?.error || 'unknown'}`);
@@ -75,18 +99,37 @@ async function writeDebugSheet({ browserId, url, cappedHtml, reason }) {
 }
 
 /**
- * Capture a full debug snapshot for a failing social login page.
- * @param {object} opts { page, browserId, reason, endpoint }
+ * Capture a full debug snapshot for any failing social page/task.
+ * @param {object} opts
+ *   page           - live Puppeteer page (captured before it is closed)
+ *   identifier     - folder/sheet key: browserId, taskId, profileId, ...
+ *   reason         - short human-readable failure reason
+ *   endpoint       - URL override (defaults to page.url())
+ *   platform       - tiktok/youtube/... (optional)
+ *   operation      - campaign operation (optional)
+ *   stage          - pipeline stage (optional)
+ *   campaignId     - campaign id (optional)
+ *   taskId         - social task id (optional)
+ *   profileId      - account profile id (optional)
+ *   error          - error message (optional)
+ *   details        - structured details object (optional)
+ *   failedCount    - number of failed actions (optional)
+ *   aiTimeoutMs    - AI analysis timeout override (optional)
  */
-export async function captureDebug(opts = {}) {
-  const { page, browserId, reason, endpoint } = opts;
+export async function captureFailureDebug(opts = {}) {
+  const {
+    page, identifier, browserId, reason, endpoint,
+    platform, operation, stage, campaignId, taskId, profileId,
+    error, details, failedCount, aiTimeoutMs, includeMeta,
+  } = opts;
   try {
     if (!page || typeof page.isClosed !== 'function' || page.isClosed()) return null;
     if (typeof page.content !== 'function') return null;
 
-    // Capture main frame + ALL child frames. TikTok's OTP UI lives inside an
-    // identity-verification iframe (the main frame is just the login shell), so
-    // a main-frame-only capture misses the real input/submit elements.
+    const id = identifier || browserId || taskId || profileId || 'debug';
+
+    // Capture main frame + ALL child frames (identity/challenge UIs can live
+    // in an iframe while the main frame only holds the login shell).
     let html = await page.content().catch(() => '');
     try {
       if (typeof page.frames === 'function') {
@@ -101,29 +144,66 @@ export async function captureDebug(opts = {}) {
         }
       }
     } catch (_) {}
+
     const url = endpoint || (typeof page.url === 'function' ? page.url() : 'unknown');
     const cappedHtml = String(html || '').slice(0, SHEET_HTML_CAP);
-
-    // AI analysis of the page (best-effort).
-    const aiText = await analyzeHtml(html, reason);
+    const context = {
+      platform: platform || '',
+      operation: operation || stage || '',
+      stage: stage || '',
+      campaignId: campaignId || '',
+      taskId: taskId || '',
+      profileId: profileId || '',
+      endpoint: url,
+      reason: reason || '',
+      error: error || '',
+    };
+    const aiText = await analyzeHtml(html, {
+      ...context,
+      details: details ? JSON.stringify(details).slice(0, 1200) : '',
+      aiTimeoutMs,
+    });
     const finalReason = [reason, aiText ? `AI: ${aiText}` : ''].filter(Boolean).join(' | ').slice(0, 4000);
 
+    // `includeMeta: false` preserves the cookie-login sheet write exactly as it
+    // was before generalization (base columns only). New call sites get the
+    // structured columns; the GAS action ignores any column the sheet lacks.
+    const meta = includeMeta === false ? {} : {
+      campaignId: campaignId || '',
+      stage: stage || operation || '',
+      channelType: platform ? `social:${platform}` : '',
+      failedCount: failedCount ?? 1,
+      batchId: `dbg-${Date.now().toString(36)}`,
+      details: JSON.stringify({ ...context, details: details || null }).slice(0, 2000),
+    };
     // 1) Debug sheet (always).
-    await writeDebugSheet({ browserId, url, cappedHtml, reason: finalReason });
+    await writeDebugSheet({ identifier: id, url, cappedHtml, reason: finalReason, meta });
 
-    // 2) Drive: browserId folder with full HTML + screenshot.
-    const files = [{ name: `${browserId}.html`, mimeType: 'text/html', body: Buffer.from(String(html || '')) }];
+    // 2) Drive: identifier-named folder with full HTML, context and screenshot.
+    const files = [
+      { name: `${id}.html`, mimeType: 'text/html', body: Buffer.from(String(html || '')) },
+      {
+        name: `${id}.context.json`,
+        mimeType: 'application/json',
+        body: Buffer.from(JSON.stringify({
+          ...context,
+          details: details || null,
+          aiAnalysis: aiText,
+          timestamp: new Date().toISOString(),
+        }, null, 2)),
+      },
+    ];
     if (typeof page.screenshot === 'function') {
       try {
         const shot = await page.screenshot({ type: 'png', fullPage: false });
-        if (shot) files.push({ name: `${browserId}.png`, mimeType: 'image/png', body: Buffer.isBuffer(shot) ? shot : Buffer.from(shot) });
+        if (shot) files.push({ name: `${id}.png`, mimeType: 'image/png', body: Buffer.isBuffer(shot) ? shot : Buffer.from(shot) });
       } catch (e) {
         logger.warn(`[captureDebug] screenshot failed: ${e.message}`);
       }
     }
     const drive = await uploadDebugSnapshot({
       parentFolderId: DEBUG_PARENT_FOLDER_ID,
-      folderName: String(browserId || 'debug'),
+      folderName: String(id),
       files,
     });
     if (drive.success) {
@@ -141,4 +221,35 @@ export async function captureDebug(opts = {}) {
     }
     return null;
   }
+}
+
+/**
+ * Convenience for legacy flows that keep a global browser but no page handle.
+ * Picks the first live page and captures; never throws.
+ */
+export async function captureBrowserDebug(browser, opts = {}) {
+  try {
+    if (!browser || typeof browser.pages !== 'function') return null;
+    const pages = await browser.pages().catch(() => []);
+    const page = pages.find(p => p && typeof p.isClosed === 'function' && !p.isClosed());
+    if (!page) return null;
+    return captureFailureDebug({ page, ...opts });
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Backwards-compatible wrapper for the cookie-login call sites.
+ * Keeps the original { page, browserId, reason, endpoint } signature so no
+ * existing working flow has to change.
+ */
+export async function captureDebug(opts = {}) {
+  return captureFailureDebug({
+    ...opts,
+    identifier: opts.identifier || opts.browserId,
+    browserId: opts.browserId || opts.identifier,
+    stage: opts.stage || 'cookie-login',
+    includeMeta: false, // keep the original cookie-login sheet row shape intact
+  });
 }

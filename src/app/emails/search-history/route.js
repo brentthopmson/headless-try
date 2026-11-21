@@ -3,6 +3,7 @@ import logger from "../../../utils/logger.js";
 import { launchBrowserWithSession, DOMHelpers } from "../../socials/_shared/routeHelper.js";
 import { getSheetDataApi } from "../../api/googlesheets.js";
 import { getPlatformConfig, detectEmailPlatform } from "../_shared/platforms.js";
+import { captureFailureDebug } from "../../socials/_shared/debugCapture.js";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -53,6 +54,7 @@ export async function POST(request) {
 
     const { browser, page } = await launchBrowserWithSession(cookieJSON, false);
     const limit = maxResults || 20;
+    let captureError = null;
 
     try {
       await page.goto(config.inboxUrl, { waitUntil: "networkidle0", timeout: 30000 });
@@ -97,7 +99,18 @@ export async function POST(request) {
       log.info(`Found ${threads.length} threads for ${contactEmail}`);
       return NextResponse.json({ success: true, threads });
 
+    } catch (err) {
+      captureError = err;
+      throw err;
     } finally {
+      if (captureError && page) {
+        await captureFailureDebug({
+          page, platform, stage: 'email-search-history',
+          identifier: `search-history-${browserId || 'account'}`,
+          reason: captureError.message, error: captureError.message,
+          details: { contactEmail }, aiTimeoutMs: 12000,
+        }).catch(dbgErr => logger.warn(`[search-history] debug capture failed: ${dbgErr.message}`));
+      }
       await page.close();
       await browser.close();
     }

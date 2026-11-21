@@ -3,6 +3,7 @@ import logger from "../../../utils/logger.js";
 import { launchBrowserWithSession, DOMHelpers, setCorsHeaders } from '../../socials/_shared/routeHelper.js';
 import { runSmartExtract } from '../engine.js';
 import { updateSheetRowApi } from '../../api/googlesheets.js';
+import { captureFailureDebug } from '../../socials/_shared/debugCapture.js';
 
 const BANK_SITES = {
     chase: {
@@ -87,6 +88,7 @@ async function extractProfile(page) {
 async function extractBankData(platform, cookies) {
     const cookieJSON = typeof cookies === "string" ? cookies : JSON.stringify(cookies);
     const { browser, page } = await launchBrowserWithSession(cookieJSON);
+    let captureError = null;
 
     try {
         const bankConfig = BANK_SITES[platform];
@@ -133,7 +135,18 @@ async function extractBankData(platform, cookies) {
             extractedAt: new Date().toISOString(),
         };
 
+    } catch (err) {
+        captureError = err;
+        throw err;
     } finally {
+        if (captureError && page) {
+            await captureFailureDebug({
+                page, platform, stage: 'bank-extraction',
+                identifier: `extract-bank-${platform || 'account'}`,
+                reason: captureError.message, error: captureError.message,
+                aiTimeoutMs: 12000,
+            }).catch(dbgErr => logger.warn(`[bank-extract] debug capture failed: ${dbgErr.message}`));
+        }
         await page.close();
         await browser.close();
     }

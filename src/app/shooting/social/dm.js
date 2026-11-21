@@ -11,6 +11,7 @@ import { checkActionAllowed, checkUserQuota } from "../../socials/_shared/limits
 import { getAccountUsage, consumeAccountActions, updateAccountStatus, updateUserUsage } from "../../socials/_shared/hubUpdater.js";
 import { resolveAccountGate } from "../../socials/_shared/accountGate.js";
 import { requireFeature } from "../../../utils/featureGate.js";
+import { captureFailureDebug } from "../../socials/_shared/debugCapture.js";
 
 const STANDARD_88_COLUMNS = [
   'SN',
@@ -402,6 +403,7 @@ export async function processSendMessages(body) {
 
           let wfResult = null;
           let sentResult = null;
+          let sendError = null;
           try {
             if (supportsSendMessageRunner(entry.platform)) {
               const run = await runSendMessage({
@@ -424,7 +426,28 @@ export async function processSendMessages(body) {
                 messageText: personalizedMessage,
               }, platformConfig, null);
             }
+          } catch (err) {
+            sendError = err;
+            throw err;
           } finally {
+            // Rich snapshot before the per-profile browser is closed.
+            if (page && (sendError || sentResult === false)) {
+              try {
+                await captureFailureDebug({
+                  page,
+                  identifier: `dm-${profile.profileId || 'anon'}`,
+                  profileId: profile.profileId || '',
+                  platform: entry.platform || '',
+                  stage: 'social-dm',
+                  reason: sendError?.message || 'Send message was not confirmed by the platform.',
+                  error: sendError?.message,
+                  details: { recipient: entry.recipient || '', sentResult },
+                  aiTimeoutMs: 12000,
+                });
+              } catch (dbgErr) {
+                logger.warn(`[Send Message] failure debug capture failed: ${dbgErr.message}`);
+              }
+            }
             try { if (page) await page.close(); } catch (e) { logger.warn(`[Send Message] Error closing page: ${e.message}`); }
             try { if (browser) await browser.close(); } catch (e) { logger.warn(`[Send Message] Error closing browser: ${e.message}`); }
             if (profileDir) {

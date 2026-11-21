@@ -2,6 +2,7 @@ import logger from '../../../utils/logger.js';
 import { launchBrowserWithSession, downloadAndExtractProfile } from '../../socials/_shared/routeHelper.js';
 import { getPlatformConfig, getExtractor } from './platforms.js';
 import { createTab, gotoRobust, sleep } from '../shared/browser.js';
+import { captureFailureDebug } from '../../socials/_shared/debugCapture.js';
 
 export async function extractSocial(session, username, explicitPlatform, browserId) {
     const cookieJSON = session.cookieJSON;
@@ -141,6 +142,16 @@ export async function extractSocial(session, username, explicitPlatform, browser
         extractionSucceeded = true;
         return [account];
     } finally {
+        // Incomplete extraction is a genuine engine-level stall/fault — capture
+        // before the page/browser are closed (inner catches swallow the detail).
+        if (!extractionSucceeded && page && !page.isClosed()) {
+            await captureFailureDebug({
+                page, platform: platformKey, stage: 'social-extraction-engine',
+                identifier: `extract-social-${browserId || platformKey}`,
+                reason: 'Social extraction did not complete — navigation/selector stall or page fault.',
+                details: { browserId, platformSource }, aiTimeoutMs: 12000,
+            }).catch(dbgErr => logger.warn(`[smartExtract] debug capture failed: ${dbgErr.message}`));
+        }
         // --- Post-extraction refresh: DISABLED (NO-TAMPER 2026-10-13) ---
         // Never write cookie/browser data back after extraction — use the
         // stored login-time session as-is (launcher principle). See wire

@@ -24,6 +24,7 @@ import {
 } from "../activities-interact/routeHelper.js";
 import { resolveAccountGate, accountGateError } from "../_shared/accountGate.js";
 import { markTagsDone } from "../../campaign/_shared/pipelineUtils.js";
+import { captureFailureDebug } from "../_shared/debugCapture.js";
 
 export { processTask as processSocialChainTask };
 
@@ -229,6 +230,7 @@ async function processTask(task) {
             stopAfterHours,
             maxRepliesPerPost,
             requireAiForComments,
+            socialStrategyPrompt,
           });
           addQuota(quota, run.quota);
           results.push(...(run.results || []).map(r => ({
@@ -260,6 +262,7 @@ async function processTask(task) {
         maxEngagements: 20,
         maxRepliesPerPost,
         requireAiForComments,
+        socialStrategyPrompt,
       });
       addQuota(quota, actRun.quota);
       results.push(...(actRun.results || []).map(r => ({ ...r, stage: "activities" })));
@@ -277,6 +280,26 @@ async function processTask(task) {
     finalStatus = "FAILED";
     results.push({ error: error.message, timestamp: new Date().toISOString() });
   } finally {
+    // One browser serves all stages — snapshot before teardown on any failure.
+    if (finalStatus && finalStatus !== "COMPLETED" && page) {
+      try {
+        await captureFailureDebug({
+          page,
+          identifier: taskId || task.profileId || 'social-chain',
+          taskId,
+          profileId: task.profileId || task.accountId || '',
+          platform: task.platform || '',
+          operation: (Array.isArray(task.operations) ? task.operations.join(' -> ') : ''),
+          stage: 'social-chain',
+          campaignId: task.campaignId || '',
+          reason: (results[results.length - 1] && (results[results.length - 1].error || results[results.length - 1].reason)) || finalStatus,
+          details: { results: results.slice(-5), status: finalStatus },
+          aiTimeoutMs: 12000,
+        });
+      } catch (dbgErr) {
+        logger.warn(`[social-chain] ${taskId}: failure debug capture failed: ${dbgErr.message}`);
+      }
+    }
     if (page) { try { await page.close(); } catch (e) {} }
     if (browser) { try { await browser.close(); } catch (e) {} }
     activeTasks.delete(taskId);

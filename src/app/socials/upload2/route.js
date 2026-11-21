@@ -1,5 +1,6 @@
 import chromium from "@sparticuz/chromium-min";
 import readlineSync from 'readline-sync';
+import { captureBrowserDebug } from '../_shared/debugCapture.js';
 import {
   localExecutablePath,
   isDev,
@@ -103,6 +104,7 @@ async function handlePlatform(browser, platform) {
 // Function to run the whole process
 async function runAutomation(platformsToRun) {
   const browser = await launchLocalBrowser();
+  try {
 
   // URLs and selectors for each platform
   const platforms = [
@@ -175,6 +177,13 @@ async function runAutomation(platformsToRun) {
   }
 
   await browser.close();
+  } catch (error) {
+    await captureBrowserDebug(browser, {
+      stage: 'legacy-upload2', reason: error.message, error: error.message, aiTimeoutMs: 12000,
+    });
+    await browser.close().catch(() => {});
+    throw error;
+  }
 }
 
 // Call runAutomation with specific platforms you want to run, e.g. ["Quora"]

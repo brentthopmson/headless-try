@@ -870,7 +870,7 @@ export async function getJsonContentFromFile(fileId, retries = 3) {
  * @param {Object} jsonData - The JSON data to write.
  * @returns {Object} An object with success status and fileId.
  */
-export async function createOrUpdateJsonFile(parentFolderId, folderName, fileName, jsonData) {
+export async function createOrUpdateJsonFile(parentFolderId, folderName, fileName, jsonData, existingFileId = null) {
   try {
     const drive = await authenticate();
     if (!drive) {
@@ -911,6 +911,24 @@ export async function createOrUpdateJsonFile(parentFolderId, folderName, fileNam
 
     const existingFiles = fileSearchResponse.data.files || [];
     const fileContent = JSON.stringify(jsonData, null, 2);
+
+    // If the sheet already points at a response file, ALWAYS update that exact
+    // file regardless of which folder the tokenless App Script fallback used.
+    // Otherwise OAuth and fallback each maintain their own copy and duplicates
+    // accumulate whenever the refresh token is invalid.
+    if (existingFileId) {
+      try {
+        await drive.files.update({
+          fileId: existingFileId,
+          media: { mimeType: 'text/plain', body: fileContent },
+          supportsAllDrives: true,
+        });
+        logger.info(`[Drive API] createOrUpdateJsonFile: updated canonical file ${existingFileId} for ${fileName}`);
+        return { success: true, fileId: existingFileId };
+      } catch (err) {
+        logger.warn(`[Drive API] createOrUpdateJsonFile: could not update canonical file ${existingFileId}: ${err.message}. Falling back to name-based lookup.`);
+      }
+    }
 
     let fileId;
 

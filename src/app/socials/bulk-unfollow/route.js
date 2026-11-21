@@ -1,5 +1,6 @@
 ﻿import chromium from "@sparticuz/chromium-min";
 import readlineSync from 'readline-sync';
+import { captureBrowserDebug } from '../_shared/debugCapture.js';
 import axios from 'axios';
 import { NextResponse } from "next/server";
 import {
@@ -452,6 +453,9 @@ async function runAutomation(platformsToRun, postContent) {
     return { ok: true, rows: data.length, processed };
   } catch (error) {
     console.error("Error running automation:", error);
+    await captureBrowserDebug(browser, {
+      stage: 'legacy-bulk-unfollow', reason: error.message, error: error.message, aiTimeoutMs: 12000,
+    });
     return { ok: false, error: error.message };
   } finally {
     isRunning = false;

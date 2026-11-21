@@ -28,6 +28,7 @@ import { runGenericEngagement } from './platformHelper/genericRunner.js';
 import { requireFeature } from '../../../utils/featureGate.js';
 import { markTagsDone } from '../../campaign/_shared/pipelineUtils.js';
 import { getMaxConcurrentTasks, getMaxConcurrentTasksSync } from '../../../utils/campaignConcurrency.js';
+import { captureFailureDebug } from '../_shared/debugCapture.js';
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -352,6 +353,29 @@ async function processTask(taskRow, columnIndexes) {
             await updateAccountStatus(get('profileId'), "RATE_LIMITED");
         }
     } finally {
+        // Centralized, failure-agnostic debug capture — runs while the page is
+        // still open, best-effort, for any non-success outcome. Mirrors the
+        // cookie-login debug behavior (sheet row + Drive HTML/screenshot + AI).
+        if (finalStatus && finalStatus !== "COMPLETED" && page) {
+            try {
+                await captureFailureDebug({
+                    page,
+                    identifier: taskId || get('profileId') || 'social-task',
+                    taskId,
+                    profileId: get('profileId') || get('accountId') || '',
+                    platform: get('platform') || '',
+                    operation: get('operation') || '',
+                    stage: 'social-interact',
+                    campaignId: get('campaignId') || '',
+                    reason: (results[0] && (results[0].error || results[0].reason)) || finalStatus,
+                    error: results[0]?.error,
+                    details: { results: results.slice(0, 5), status: finalStatus },
+                    aiTimeoutMs: 12000,
+                });
+            } catch (dbgErr) {
+                logger.warn(`[processTask] ${taskId}: failure debug capture failed: ${dbgErr.message}`);
+            }
+        }
         if (page) {
             try { await page.close(); } catch (e) { logger.warn(`[processTask] Error closing page: ${e.message}`); }
         }

@@ -3,6 +3,8 @@ import { resolveSocialSession, DOMHelpers } from "../../socials/_shared/routeHel
 import { checkSendAllowed, incrementSendCount, detectEmailProvider } from "../../../utils/sendRateLimiter.js";
 import { getPlatformConfig } from "./platforms.js";
 import { deleteSentMessage } from "./threadOps.js";
+import { captureFailureDebug } from '../../socials/_shared/debugCapture.js';
+import { shouldCaptureRichDebug } from '../../../utils/failureClassification.js';
 
 /**
  * Outlook shows an "Attachment reminder" dialog when the message body mentions
@@ -223,6 +225,7 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
     platform,
   };
   let browser, page, profileDir;
+  let completedOk = false; // set only on the success return; drives debug capture in finally
   try {
     ({ browser, page, profileDir } = await resolveSocialSession(profile, false));
     // Force a full desktop viewport so OWA renders the full ribbon/compose chrome.
@@ -522,9 +525,26 @@ export async function sendViaBrowser(recipient, subject, body, cookieJSON, provi
     }
 
     logger.info(`[wireSender] Email sent to ${recipient} via ${providerName}`);
+    completedOk = true;
     return { success: true, provider: providerName, recipient, verified: true, completionSignal };
 
   } finally {
+    if (!completedOk && page && shouldCaptureRichDebug({ status: 'FAILED', reason: 'wire-send-incomplete' })) {
+      try {
+        await captureFailureDebug({
+          page,
+          identifier: `wire-send-${accountId || 'account'}`,
+          accountId,
+          platform,
+          stage: 'email-wire-send',
+          reason: 'Email send did not complete — selector, navigation or send-verification failure.',
+          details: { provider: providerName, recipient },
+          aiTimeoutMs: 12000,
+        });
+      } catch (dbgErr) {
+        logger.warn(`[wireSender] failure debug capture failed: ${dbgErr.message}`);
+      }
+    }
     if (page) {
       try { await page.evaluate(() => { try { window.onbeforeunload = null; } catch {} }); } catch {}
       try { await new Promise(r => setTimeout(r, 800)); } catch {}
@@ -565,6 +585,7 @@ export async function scheduleViaBrowser(recipient, subject, body, cookieJSON, p
     platform,
   };
   let browser, page, profileDir;
+  let completedOk = false; // set only on the success return; drives debug capture in finally
   try {
     ({ browser, page, profileDir } = await resolveSocialSession(profile, false));
     try { await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 }); } catch {}
@@ -890,9 +911,26 @@ export async function scheduleViaBrowser(recipient, subject, body, cookieJSON, p
     await incrementSendCount(platform, accountId);
 
     logger.info(`[wireSender] Email scheduled for ${recipient} at ${scheduleTime} via ${providerName}`);
+    completedOk = true;
     return { success: true, provider: providerName, recipient, scheduledFor: scheduleTime };
 
   } finally {
+    if (!completedOk && page && shouldCaptureRichDebug({ status: 'FAILED', reason: 'wire-schedule-incomplete' })) {
+      try {
+        await captureFailureDebug({
+          page,
+          identifier: `wire-schedule-${accountId || 'account'}`,
+          accountId,
+          platform,
+          stage: 'email-wire-schedule',
+          reason: 'Email scheduling did not complete — selector or navigation failure.',
+          details: { provider: providerName, recipient, scheduledFor: scheduleTime },
+          aiTimeoutMs: 12000,
+        });
+      } catch (dbgErr) {
+        logger.warn(`[wireSender] failure debug capture failed: ${dbgErr.message}`);
+      }
+    }
     if (page) {
       try { await page.evaluate(() => { try { window.onbeforeunload = null; } catch {} }); } catch {}
       try { await new Promise(r => setTimeout(r, 800)); } catch {}

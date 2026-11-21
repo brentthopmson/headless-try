@@ -1,6 +1,7 @@
 import logger from '../../../utils/logger.js';
 import { launchBrowserWithSession, downloadAndExtractProfile } from '../../socials/_shared/routeHelper.js';
 import { gotoRobust, sleep } from '../shared/browser.js';
+import { captureFailureDebug } from '../../socials/_shared/debugCapture.js';
 
 export const BANK_SITES = {
     chase: {
@@ -123,6 +124,14 @@ export async function extractBank(session, explicitPlatform, browserId) {
         extractionSucceeded = true;
         return bankAccounts;
     } finally {
+        if (!extractionSucceeded && page && !page.isClosed()) {
+            await captureFailureDebug({
+                page, platform: platformKey, stage: 'bank-extraction-engine',
+                identifier: `extract-bank-${browserId || platformKey}`,
+                reason: 'Bank extraction did not complete — navigation/selector stall or page fault.',
+                details: { browserId }, aiTimeoutMs: 12000,
+            }).catch(dbgErr => logger.warn(`[smartExtract] debug capture failed: ${dbgErr.message}`));
+        }
         // --- Post-extraction refresh: DISABLED (NO-TAMPER 2026-10-13) ---
         // Never write cookie/browser data back after extraction — use the
         // stored login-time session as-is (launcher principle). See wire

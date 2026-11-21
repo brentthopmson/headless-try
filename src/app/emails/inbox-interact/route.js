@@ -10,6 +10,8 @@ import { DEFAULT_EMAIL_STRATEGY_PROMPT } from "../../campaign/_shared/campaignDe
 import { updateSheetRowApi } from "../../api/googlesheets.js";
 import { INBOX_CONFIGS, detectInboxProvider } from "./platform.js";
 import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
+import { captureFailureDebug } from '../../socials/_shared/debugCapture.js';
+import { shouldCaptureRichDebug } from '../../../utils/failureClassification.js';
 
 export const maxDuration = 120;
 export const dynamic = "force-dynamic";
@@ -620,6 +622,26 @@ export async function processInboxInteract(body) {
         }
       } catch (accErr) {
         log.warn(` [${account.identifier}] inbox pass failed: ${accErr.message}`);
+        // Genuine browser/page faults get a rich snapshot before the per-account
+        // finally closes it. Expected outcomes (limits, config) stay Tier B only.
+        if (page && shouldCaptureRichDebug({ status: 'FAILED', reason: accErr.message })) {
+          try {
+            await captureFailureDebug({
+              page,
+              identifier: `email-inbox-${account.accountId || account.identifier || 'account'}`,
+              accountId: account.accountId || '',
+              platform: account.platform || 'email',
+              stage: 'email-inbox-interact',
+              campaignId: campaignId || '',
+              reason: accErr.message,
+              error: accErr.message,
+              details: { account: account.identifier || '', route: '/campaign/interact-inbox' },
+              aiTimeoutMs: 12000,
+            });
+          } catch (dbgErr) {
+            logger.warn(`[interact-inbox] failure debug capture failed: ${dbgErr.message}`);
+          }
+        }
       } finally {
         clearActiveCampaignForAccount(account.accountId, campaignId);
         try { if (page) await page.close(); } catch { /* noop */ }
