@@ -1120,11 +1120,55 @@ class MultiProviderAI {
     }
 
     _isOpencodeModelRetryable(err, status) {
+        // Account-level quota is shared by all models — never retry the next
+        // opencode model (it would hit the same limit). Fall through to the next
+        // provider in the outer waterfall instead.
+        if (err?.quota) return false;
         if (err?.retryableModel) return true;
         const s = status ?? err?.status;
         if ([404,408,409,425,429,500,502,503,504].includes(Number(s))) return true;
         const m = String(err?.message || '').toLowerCase();
         return /rate.?limit|quota|too many|overload|high demand|unavailable|model.?not.?found|unknown.?model|no such model|not supported|timeout|temporar|try again|capacity|opencode_serve_http_5|opencode_timeout|vision|multimodal|does not support|unsupported.*(image|video|file|media)/.test(m);
+    }
+
+    // v2 one-shot generation: single model call, no session, no agent loop, no
+    // title step. Contract: POST /api/experimental/generate/text
+    // body {prompt, model:{id, providerID}} -> {data:{text}}. A 404 means an old
+    // v1 server without the route; a quota/rate_limit response is account-wide.
+    async _opencodeOneShotText(baseUrl, headers, model, prompt, timeoutMs) {
+        const refs = [];
+        const addRef = (providerID, id) => {
+            if (providerID && id && !refs.some(r => r.providerID === providerID && r.id === id)) {
+                refs.push({ id: String(id), providerID: String(providerID) });
+            }
+        };
+        if (model && typeof model === 'object') {
+            addRef(model.providerID || model.provider || model.providerId, model.modelID || model.modelId || model.id);
+        } else if (model) {
+            const s = String(model);
+            if (s.includes('/')) { const parts = s.split('/'); addRef(parts[0], parts.slice(1).join('/')); }
+            else { addRef('opencode', s); addRef('opencode-go', s); }
+        }
+        if (!refs.length) return null;
+        let last = null;
+        for (const ref of refs) {
+            const r = await this._opencodeFetchJson(baseUrl, '/api/experimental/generate/text', {
+                method: 'POST', headers,
+                body: { prompt, model: ref }, // strict schema: no maxTokens / extra fields
+                timeoutMs: Math.min(Math.max(timeoutMs || 60000, 30000), 120000),
+            });
+            if (r.ok && typeof r.json?.data?.text === 'string') {
+                const t = r.json.data.text.trim();
+                if (t && !/^<(!doctype|html)/i.test(t)) return { ok: true, text: t };
+            }
+            const msg = String(r.json?.message || r.json?._tag || r.json?._text || '');
+            if (r.status === 404) return { notFound: true };
+            if (r.status === 429 || /usage limit|rate.?limit|quota|limit reached|subscribe/i.test(msg)) {
+                return { quota: true, message: msg || 'OpenCode usage limit reached' };
+            }
+            last = { status: r.status, message: msg };
+        }
+        return last ? { failed: true, message: last.message || `opencode_one_shot_http_${last.status}` } : null;
     }
 
     async _callOpenCodeServe(baseUrl, password, model, promptOrParts, timeoutMs, maxTokens = null, opts = null) {
@@ -1141,6 +1185,21 @@ class MultiProviderAI {
             'Content-Type': 'application/json',
             Accept: 'application/json',
         };
+        // v2 PRIMARY: one-shot generation (no session/agent loop/title step).
+        // Media still needs the session path; v1 servers return 404 and fall through.
+        if (!hasMedia) {
+            let one = null;
+            try {
+                one = await this._opencodeOneShotText(baseUrl, headers, model, legacyPrompt, timeoutMs);
+            } catch (e) {
+                if (e?.status === 401 || e?.status === 403) throw e;
+            }
+            if (one?.ok) { logger.info('[MultiProviderAI] opencode v2 one-shot success'); return one.text; }
+            if (one?.quota) {
+                logger.warn(`[MultiProviderAI] opencode one-shot quota: ${one.message} — falling through to next provider`);
+                throw this._opencodeErr(`opencode_quota: ${one.message}`, 429, { retryableModel: false, quota: true });
+            }
+        }
         // 1) create session
         const cs = await this._opencodeFetchJson(baseUrl, '/api/session', { method: 'POST', headers, body: {}, timeoutMs: Math.min(15000, timeoutMs || 15000) });
         if (!cs.ok) throw this._opencodeErr(cs.json?.message || `opencode_serve_http_${cs.status}`, cs.status, { phase: 'session', retryableModel: cs.status >= 500 || cs.status === 429 || cs.status === 408 });
