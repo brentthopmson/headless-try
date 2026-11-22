@@ -50,6 +50,9 @@ function stageStatus(summary) {
   if (!summary) return "none";
   // User pause is authoritative — never classify it as done/completed.
   if (summary.pausedByUser || summary.stopType === "paused") return "paused";
+  // A rest-stopped stage must NOT be "done" — otherwise the chain continues
+  // into page/discover while the campaign is actually resting.
+  if (summary.restDetected || summary.stopType === "resting") return "resting";
   if (summary.stopType === "hourly") return "rate_limited";
   if (["daily", "monthly", "yearly", "cap"].includes(summary.stopType)) return "limit_reached";
   if (summary.captchaFailed) return "captcha_failed";
@@ -92,6 +95,7 @@ async function processTask(task) {
   let browser = null;
   let page = null;
   let finalStatus = "FAILED";
+  let chainStoppedBy = null; // 'paused' | 'resting' — set by any stage; stops later stages
   const results = [];
   const quota = {};
 
@@ -178,9 +182,14 @@ async function processTask(task) {
         } catch (e) {
           logger.warn(`[social-chain] ${taskId}: tag status persist failed: ${e.message}`);
         }
+        const searchStage = stageStatus(summary);
         logger.info(
-          `[social-chain] ${taskId}: search stage done — engaged=${summary.engaged || 0} failed=${summary.failed || 0} stop=${stageStatus(summary)}`
+          `[social-chain] ${taskId}: search stage done — engaged=${summary.engaged || 0} failed=${summary.failed || 0} stop=${searchStage}`
         );
+        if (searchStage === 'paused' || searchStage === 'resting') {
+          chainStoppedBy = searchStage;
+          logger.info(`[social-chain] ${taskId}: search stage ${searchStage} — stopping chain before page/activities stages.`);
+        }
         if ((summary.unresolvedKeywords || []).length) {
           results.push({
             stage: "search",
@@ -194,7 +203,7 @@ async function processTask(task) {
     }
 
     // ---- Stage 2: PROFILE INTERACT (always runs after search in this chain) ----
-    if (operations.includes("page-interact")) {
+    if (!chainStoppedBy && operations.includes("page-interact")) {
       page = await ensureUsablePage(taskId, browser, page);
       const cfg = getPagePlatformConfig(platform);
       const tagsToUse = discoveryTags.length ? discoveryTags : keywords;
@@ -258,7 +267,7 @@ async function processTask(task) {
     }
 
     // ---- Stage 3: ACTIVITIES (normal feed/notifications fallback) ----
-    if (operations.includes("activities-interact") && supportsActivitiesRunner(platform) && !(await isSocialCampaignPaused(campaignId))) {
+    if (!chainStoppedBy && operations.includes("activities-interact") && supportsActivitiesRunner(platform) && !(await isSocialCampaignPaused(campaignId))) {
       page = await ensureUsablePage(taskId, browser, page);
       const actRun = await runActivitiesInteract({
         page,
@@ -282,11 +291,15 @@ async function processTask(task) {
       }
     }
 
-    // A user pause detected in any stage is authoritative — never report the
-    // chain as COMPLETED (that let the orchestrator overwrite sheet status).
-    if (results.some(r => r && String(r.status).toLowerCase() === "paused")) {
+    // A user pause or a rest stop detected in any stage is authoritative —
+    // never report the chain as COMPLETED (that let the orchestrator overwrite
+    // the sheet's paused/resting status).
+    if (chainStoppedBy === 'paused' || results.some(r => r && String(r.status).toLowerCase() === "paused")) {
       finalStatus = "PAUSED";
       logger.info(`[social-chain] ${taskId}: user pause — chain PAUSED (progress saved).`);
+    } else if (chainStoppedBy === 'resting' || results.some(r => r && String(r.status).toLowerCase() === "resting")) {
+      finalStatus = "RESTING";
+      logger.info(`[social-chain] ${taskId}: rest detected — chain RESTING (progress saved, restUntil preserved).`);
     } else {
       finalStatus = "COMPLETED";
       logger.info(
@@ -333,7 +346,8 @@ async function processTask(task) {
     results,
     quota: { ...quota, total },
     pausedByUser: finalStatus === "PAUSED",
-    stopType: finalStatus === "PAUSED" ? 'paused' : null,
+    restDetected: finalStatus === "RESTING",
+    stopType: finalStatus === "PAUSED" ? 'paused' : (finalStatus === "RESTING" ? 'resting' : null),
   };
 }
 

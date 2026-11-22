@@ -7,7 +7,7 @@ import { updateAccountStatus } from '../_shared/hubUpdater.js';
 import limitsCore from '../_shared/limitsCore.js';
 import { isTikTokCaptchaVisible, solveTikTokAudioCaptcha, isTikTokLoggedOut, navigateAndWait, ensureCommentsVisible, isPostLiked, isConfidentlyUnliked, readCommentsPanelCount, dismissCookieBanner } from './platformHelper/TikTokHelpers.js';
 import { getAccountPostStatuses, markPostEngaged, getCampaignSettings, isPostInteracted } from '../../campaign/_shared/pipelineUtils.js';
-import { getSocialStopReason } from '../_shared/pauseCheck.js';
+import { getSocialStopState } from '../_shared/pauseCheck.js';
 
 // Voice frame for search-interact (public-post engagement). The campaign
 // account is an OUTSIDER viewer joining someone else's post — never the post
@@ -240,12 +240,13 @@ export async function runSearchInteractEngagement(page, opts) {
         socialStrategyPrompt,
         campaignId,
         taskId = 'session',
-        requireAiForComments = false, // when true, skip all comments/replies if AI is unavailable
+        requireAiForComments: _requireAiForCommentsRaw = false, // when true, skip all comments/replies if AI is unavailable
     } = opts;
     // Normalize at the boundary: a string "true"/"false" arriving from a task
     // payload must behave exactly like the boolean. Log the EFFECTIVE value so
     // engine.log shows whether fallbacks are permitted for this run.
-    requireAiForComments = requireAiForComments === true || String(requireAiForComments || '').toLowerCase() === 'true';
+    // (Alias the destructured binding — it is a const and cannot be reassigned.)
+    const requireAiForComments = _requireAiForCommentsRaw === true || String(_requireAiForCommentsRaw || '').toLowerCase() === 'true';
     logger.info(`[engage:${taskId}] requireAiForComments=${requireAiForComments ? 'ON' : 'OFF'} — ${requireAiForComments ? 'comments/replies skipped when AI unavailable (likes/follows still run)' : 'emoji fallbacks allowed when AI unavailable'}.`);
 
     // Per-account post deduplication: avoid re-engaging already completed posts
@@ -299,27 +300,37 @@ export async function runSearchInteractEngagement(page, opts) {
     let restDetected = false;
     const startedAt = Date.now();
 
-    // Throttled stop check at safe checkpoints. USER PAUSE stops cleanly (no
-    // further navigation) so its finally closes the browser. A TIMED REST
-    // written mid-run (network blip / orchestrator / GAS) was previously
-    // invisible here — isCampaignPaused only matches 'paused'. Now it stops the
-    // task too, without marking the account WAITING (it resumes after the rest).
+    // Capture the rest marker at task start. A RESTING that was ALREADY in the
+    // sheet when this task began is stale (left by a prior cycle that GAS
+    // resumed) and must NOT kill a fresh run before it engages any posts. Only
+    // a NEW rest — written after we started — is a genuine mid-run stop signal.
+    const startStop = await getSocialStopState(campaignId).catch(() => ({ reason: null, restUntil: null, restSetAt: null }));
+    const startRestMarker = `${startStop?.restUntil || ''}|${startStop?.restSetAt || ''}`;
+
+    // Throttled stop check at safe checkpoints. USER PAUSE always stops cleanly
+    // (no further navigation) so its finally closes the browser. A TIMED REST
+    // stops the task only if it is NEW (marker changed since task start) —
+    // without marking the account WAITING (it resumes after the rest).
     const checkUserPause = async (where) => {
         if (stopType) return true;
-        const reason = await getSocialStopReason(campaignId);
-        if (reason === 'paused') {
+        const st = await getSocialStopState(campaignId);
+        if (st?.reason === 'paused') {
             logger.info(`[engage:${taskId}] PAUSE_DETECTED at ${where} — stopping task cleanly (no further navigation).`);
             stopType = 'paused';
             stopReason = `paused_by_user_at_${where}`;
             pausedByUser = true;
             return true;
         }
-        if (reason === 'resting') {
-            logger.info(`[engage:${taskId}] REST_DETECTED at ${where} — campaign resting; stopping task cleanly (no navigation, account stays ACTIVE for resume).`);
-            stopType = 'resting';
-            stopReason = `engine_rest_detected_at_${where}`;
-            restDetected = true;
-            return true;
+        if (st?.reason === 'resting') {
+            const markerNow = `${st.restUntil || ''}|${st.restSetAt || ''}`;
+            if (markerNow !== startRestMarker) {
+                logger.info(`[engage:${taskId}] REST_DETECTED at ${where} — new rest written mid-run; stopping task cleanly (no navigation, account stays ACTIVE for resume).`);
+                stopType = 'resting';
+                stopReason = `engine_rest_detected_at_${where}`;
+                restDetected = true;
+                return true;
+            }
+            logger.info(`[engage:${taskId}] Stale RESTING at ${where} (present since task start) — ignoring, continuing engagement.`);
         }
         return false;
     };
@@ -720,13 +731,32 @@ export async function runSearchInteractEngagement(page, opts) {
             }
 
             const extractor = platformConfig.extractors?.videos;
-            let scraped = [];
-            if (extractor) {
+            const doExtract = async () => {
+                if (!extractor) return [];
                 try {
                     const parseFunc = new Function('items', 'return (' + extractor.parseFunction + '\n)(items);');
-                    scraped = await page.$$eval(extractor.selector, parseFunc) || [];
+                    return await page.$$eval(extractor.selector, parseFunc) || [];
                 } catch (e) {
                     logger.warn(`[engage:${taskId}] Result extraction failed: ${e.message}`);
+                    return [];
+                }
+            };
+            const urlCount = (arr) => {
+                const s = new Set();
+                (arr || []).forEach(v => { if (v && v.url) s.add(v.url); });
+                return s.size;
+            };
+            let scraped = await doExtract();
+            // Settle can fire on the results SHELL before the grid items hydrate
+            // (observed: "0 scraped" while the page visibly showed 15 posts).
+            // On a settled page with zero URLs, wait briefly and re-extract once
+            // rather than recording a false "genuine empty result".
+            if (urlCount(scraped) === 0 && nav.state && nav.state !== 'unknown') {
+                await new Promise(r => setTimeout(r, 1800));
+                const retry = await doExtract();
+                if (urlCount(retry) > 0) {
+                    scraped = retry;
+                    logger.info(`[engage:${taskId}] Posts hydrated after wait — re-extracted ${urlCount(retry)} result(s).`);
                 }
             }
             // Prefer results with a URL; dedupe by URL so the same post is

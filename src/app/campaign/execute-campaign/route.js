@@ -43,25 +43,49 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import { getMaxConcurrentTasks, getMaxRepliesPerPost, checkUserConcurrentCampaigns, registerActiveCampaignRun, unregisterActiveCampaignRun } from "../../../utils/campaignConcurrency.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { dispatchToServers } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getCampaignStopReason, getFirestickEmails, getPerformancePresets, updateCampaignSettings, getCampaignSettings, getAccountTagStatuses, buildPersonalizedLink, isRestCooldownActive, setEngineRest, getRestDurations } from "../_shared/pipelineUtils.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getCampaignStopState, getFirestickEmails, getPerformancePresets, updateCampaignSettings, getCampaignSettings, getAccountTagStatuses, buildPersonalizedLink, isRestCooldownActive, setEngineRest, getRestDurations } from "../_shared/pipelineUtils.js";
 import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
 
 // Throttled mid-run stop check (1s). A timed REST written while this run is
 // already executing (network blip / orchestrator / GAS) must stop the loops;
 // isCampaignPaused stays pause-only. A transient Sheets failure returns null.
 let _midRunStop = { at: 0, value: null, inFlight: null };
+// Rest marker captured at the first checkpoint of each run. A RESTING whose
+// marker is unchanged is stale (left by a prior cycle GAS resumed) and must
+// not kill a fresh run before it does any work.
+const _runRestMarkers = new Map();
+function resetMidRunStopTracking(campaignId) {
+  if (campaignId) { _runRestMarkers.delete(campaignId); _midRunStop = { at: 0, value: null, inFlight: null }; }
+  else { _runRestMarkers.clear(); _midRunStop = { at: 0, value: null, inFlight: null }; }
+}
 async function midRunStopReason(campaignId) {
   const now = Date.now();
-  if (now - _midRunStop.at < 1000) return _midRunStop.value;
-  if (_midRunStop.inFlight) return await _midRunStop.inFlight;
-  _midRunStop.inFlight = (async () => {
-    try { _midRunStop.value = await getCampaignStopReason(campaignId); }
-    catch (_) { _midRunStop.value = null; }
-    _midRunStop.at = Date.now();
-    return _midRunStop.value;
-  })();
-  try { return await _midRunStop.inFlight; }
-  finally { _midRunStop.inFlight = null; }
+  let st;
+  if (now - _midRunStop.at < 1000 && _midRunStop.state) {
+    st = _midRunStop.state;
+  } else if (_midRunStop.inFlight) {
+    st = await _midRunStop.inFlight;
+  } else {
+    _midRunStop.inFlight = (async () => {
+      try { _midRunStop.state = await getCampaignStopState(campaignId); }
+      catch (_) { _midRunStop.state = { reason: null, restUntil: null, restSetAt: null }; }
+      _midRunStop.at = Date.now();
+      return _midRunStop.state;
+    })();
+    try { st = await _midRunStop.inFlight; }
+    finally { _midRunStop.inFlight = null; }
+  }
+  if (!st) return null;
+  const reason = st.reason || null;
+  if (reason === 'resting') {
+    const marker = `${st.restUntil || ''}|${st.restSetAt || ''}`;
+    if (!_runRestMarkers.has(campaignId)) _runRestMarkers.set(campaignId, marker);
+    if (marker === _runRestMarkers.get(campaignId)) {
+      // Stale rest present since this run began — ignore it.
+      return null;
+    }
+  }
+  return reason;
 }
 
 import { calculateScheduleTimes } from "../../../utils/scheduleCalculator.js";
@@ -2356,6 +2380,7 @@ if (limitReached && !restDetectedMidRun) settings.restReason = "limit_reached";
         try { const { flushAllCampaignStats } = await import("../../socials/_shared/hubUpdater.js"); await flushAllCampaignStats(); } catch (e) {}
         try { if (campaignId) await updateCampaignSettings(campaignId, { runLease: null }); } catch (e) {}
         if (campaignId) {
+          try { resetMidRunStopTracking(campaignId); } catch (e) {}
           _executingCampaigns.delete(campaignId);
           unregisterActiveCampaignRun(campaignId, "execute");
         }

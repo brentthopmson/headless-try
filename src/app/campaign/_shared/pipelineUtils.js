@@ -152,35 +152,47 @@ export async function isCampaignPaused(campaignId, stage = null) {
  * was previously invisible and let the task keep engaging.
  * Returns null on any read failure so a transient Sheets error cannot stop a run.
  */
-export async function getCampaignStopReason(campaignId) {
+export async function getCampaignStopState(campaignId) {
+  const empty = { reason: null, restUntil: null, restSetAt: null, status: null };
   try {
     const campaignsResult = await getSheetDataApi("campaigns");
-    if (!campaignsResult.success) return null;
+    if (!campaignsResult.success) return empty;
     const headers = campaignsResult.headers;
     const idIdx = headers.indexOf("campaignId");
     const statusIdx = headers.indexOf("status");
-    if (idIdx === -1 || statusIdx === -1) return null;
+    if (idIdx === -1 || statusIdx === -1) return empty;
     const row = campaignsResult.data.find(r => String(r[idIdx]).trim() === String(campaignId).trim());
-    if (!row) return null;
+    if (!row) return empty;
     const status = String(row[statusIdx] || '').trim().toLowerCase();
-    if (status === 'paused') return 'paused';
+    let settings = {};
+    const settingsRaw = row[headers.indexOf('settings')];
+    try {
+      settings = typeof settingsRaw === 'string' ? JSON.parse(settingsRaw) : (settingsRaw || {});
+    } catch (_) {}
+    const marker = {
+      reason: null,
+      status,
+      restUntil: settings.restUntil != null ? Number(settings.restUntil) : null,
+      restSetAt: settings.restSetAt || null,
+    };
+    if (status === 'paused') { marker.reason = 'paused'; return marker; }
     if (status === 'resting' || status === 'limit reached') {
       // Only an ACTIVE timed rest. An expired restUntil is not a stop signal.
-      let settings = {};
-      const settingsRaw = row[headers.indexOf('settings')];
-      try {
-        settings = typeof settingsRaw === 'string' ? JSON.parse(settingsRaw) : (settingsRaw || {});
-      } catch (_) {}
-      const until = Number(settings.restUntil);
-      if (Number.isFinite(until) && until > Date.now()) {
-        return 'resting';
+      if (Number.isFinite(marker.restUntil) && marker.restUntil > Date.now()) {
+        marker.reason = 'resting';
       }
     }
-    return null;
+    return marker;
   } catch (err) {
-    logger.warn(`[Pipeline] Stop-reason check failed for ${campaignId}: ${err.message}`);
-    return null;
+    logger.warn(`[Pipeline] Stop-state check failed for ${campaignId}: ${err.message}`);
+    return empty;
   }
+}
+
+/** Back-compat: the reason string only. Prefer getCampaignStopState for new callers. */
+export async function getCampaignStopReason(campaignId) {
+  const s = await getCampaignStopState(campaignId);
+  return s ? s.reason : null;
 }
 
 /**

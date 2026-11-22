@@ -49,6 +49,7 @@ export async function discoverPeopleHandles(page, platformConfig, tags, maxPerTa
     const s = platformConfig.selectors || {};
     const found = new Map();
     const failedTags = [];
+    let searchBoxMissLogged = false; // warn once per discovery run, not per tag
     for (const tag of tags) {
         const baseUrl = platformConfig.searchUrl || platformConfig.profileUrl;
         if (!baseUrl) continue;
@@ -83,8 +84,9 @@ export async function discoverPeopleHandles(page, platformConfig, tags, maxPerTa
                 await page.keyboard.press('a').catch(() => {});
                 await page.keyboard.up(mod).catch(() => {});
                 await page.keyboard.type(q, { delay: 10 }).catch(() => {});
-            } else {
-                logger.warn(`[discover] searchBox not clickable for "${q}" — skipping Ctrl+A/type to avoid selecting the page.`);
+            } else if (!searchBoxMissLogged) {
+                searchBoxMissLogged = true;
+                logger.info(`[discover] searchBox selector not matching live DOM — relying on direct query URL for all tags (no Ctrl+A to avoid selecting the page).`);
             }
         }
         // Belt-and-braces: clear any stray document selection (failed click,

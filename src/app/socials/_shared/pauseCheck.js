@@ -5,7 +5,7 @@
 // posts/actions) without hammering the sheet on every iteration.
 
 import logger from '../../../utils/logger.js';
-import { isCampaignPaused, getCampaignStopReason } from '../../campaign/_shared/pipelineUtils.js';
+import { isCampaignPaused, getCampaignStopState } from '../../campaign/_shared/pipelineUtils.js';
 
 const CHECK_TTL_MS = 4000; // at most one sheet read per 4s PER campaign
 
@@ -60,27 +60,34 @@ function stopEntryFor(campaignId) {
 }
 
 /**
- * Returns 'paused' | 'resting' | null (throttled per campaign). Used by runner
- * checkpoints so a RESTING written mid-run finally stops the task. A read
- * failure returns null — a transient Sheets error must not stop a run.
+ * Full throttled stop state: { reason:'paused'|'resting'|null, status,
+ * restUntil, restSetAt }. The rest marker lets a runner compare against the
+ * state captured at task start so a STALE rest left in the sheet by a prior
+ * cycle cannot kill a fresh run before it engages any posts.
  */
-export async function getSocialStopReason(campaignId) {
-  if (!campaignId) return null;
+export async function getSocialStopState(campaignId) {
+  if (!campaignId) return { reason: null, restUntil: null, restSetAt: null, status: null };
   const e = stopEntryFor(campaignId);
   const now = Date.now();
   if (now - e.at < CHECK_TTL_MS) return e.cached;
   if (e.inFlight) return await e.inFlight;
   e.inFlight = (async () => {
     try {
-      e.cached = await getCampaignStopReason(campaignId);
+      e.cached = await getCampaignStopState(campaignId);
     } catch (_) {
-      e.cached = null;
+      e.cached = { reason: null, restUntil: null, restSetAt: null, status: null };
     }
     e.at = Date.now();
     return e.cached;
   })();
   try { return await e.inFlight; }
   finally { e.inFlight = null; }
+}
+
+/** Reason-only back-compat wrapper. */
+export async function getSocialStopReason(campaignId) {
+  const s = await getSocialStopState(campaignId);
+  return s ? s.reason : null;
 }
 
 /** Reset one campaign's cache (or all when no id given). */

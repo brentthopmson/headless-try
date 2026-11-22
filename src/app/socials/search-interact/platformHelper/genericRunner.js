@@ -15,7 +15,7 @@ import { capturePostFrame } from '../../_shared/routeHelper.js';
 import limitsCore from '../../_shared/limitsCore.js';
 import { navigateAndWaitGeneric, isPostLikedGeneric, isConfidentlyUnlikedGeneric, genericLike, ensureCommentsVisibleGeneric, extractCommentsGeneric, postCommentGeneric } from './GenericHelpers.js';
 import { runCommentWaves } from '../../_shared/commentWaveEngine.js';
-import { isSocialCampaignPaused, getSocialStopReason } from '../../_shared/pauseCheck.js';
+import { isSocialCampaignPaused, getSocialStopState } from '../../_shared/pauseCheck.js';
 
 function stripMentions(text) {
     return String(text || '').replace(/@[A-Za-z0-9._-]+/g, ' ').replace(/@+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -124,18 +124,26 @@ export async function runGenericEngagement(page, opts) {
 
     let pausedByUser = false;
     let restDetected = false;
+    // Ignore a rest that was already in the sheet when this task started.
+    const startStop = await getSocialStopState(campaignId).catch(() => ({ restUntil: null, restSetAt: null }));
+    const startRestMarker = `${startStop?.restUntil || ''}|${startStop?.restSetAt || ''}`;
     for (const kw of keywords) {
         if (stopType) break;
-        const stopReasonNow = await getSocialStopReason(campaignId);
-        if (stopReasonNow === 'paused' || await isSocialCampaignPaused(campaignId)) {
+        const stopStateNow = await getSocialStopState(campaignId);
+        const reasonNow = stopStateNow?.reason || null;
+        if (reasonNow === 'paused' || await isSocialCampaignPaused(campaignId)) {
             stopType = 'paused'; stopReason = `paused_by_user_at_${kw}`; pausedByUser = true;
             logger.info(`[generic:${taskId}] PAUSE_DETECTED at keyword "${kw}" — stopping task cleanly.`);
             break;
         }
-        if (stopReasonNow === 'resting') {
-            stopType = 'resting'; stopReason = `engine_rest_detected_at_${kw}`; restDetected = true;
-            logger.info(`[generic:${taskId}] REST_DETECTED at keyword "${kw}" — stopping cleanly (account stays ACTIVE for resume).`);
-            break;
+        if (reasonNow === 'resting') {
+            const markerNow = `${stopStateNow.restUntil || ''}|${stopStateNow.restSetAt || ''}`;
+            if (markerNow !== startRestMarker) {
+                stopType = 'resting'; stopReason = `engine_rest_detected_at_${kw}`; restDetected = true;
+                logger.info(`[generic:${taskId}] REST_DETECTED at keyword "${kw}" — stopping cleanly (account stays ACTIVE for resume).`);
+                break;
+            }
+            logger.info(`[generic:${taskId}] Stale RESTING at keyword "${kw}" (present since task start) — ignoring, continuing.`);
         }
         if (stopAfterHours > 0 && (Date.now() - startedAt) / 3600000 >= stopAfterHours) { stopType = 'time'; stopReason = 'interaction_stop_after_hours'; break; }
         try {
