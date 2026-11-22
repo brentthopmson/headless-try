@@ -225,7 +225,13 @@ async function processTask(taskRow, columnIndexes) {
             // USER PAUSE wins over every other classification. The runner stops
             // cleanly and sets pausedByUser; reporting COMPLETED here let the
             // orchestrator overwrite the sheet's `paused` status with completed.
-            if (engagementSummary.pausedByUser || engagementSummary.stopType === 'paused') {
+            if (engagementSummary.pauseForAccountIssue || engagementSummary.stopType === 'logged_out') {
+                // Account session is dead — pause the campaign so the user can
+                // replace that account and resume. Never COMPLETED, never rest.
+                finalStatus = "PAUSED";
+                results.push({ status: 'paused', reason: 'account_logged_out', detail: engagementSummary.stopReason || 'logged_out' });
+                logger.info(`[processTask] ${taskId}: ACCOUNT_LOGGED_OUT — campaign PAUSED for account replacement.`);
+            } else if (engagementSummary.pausedByUser || engagementSummary.stopType === 'paused') {
                 finalStatus = "PAUSED";
                 results.push({ status: 'paused', reason: engagementSummary.stopReason || 'paused_by_user' });
                 logger.info(`[processTask] ${taskId}: user pause — task PAUSED (progress saved, resources closed).`);
@@ -278,7 +284,8 @@ async function processTask(taskRow, columnIndexes) {
             results = engagementSummary.results || [];
             quotaSummary = engagementSummary.quota || {};
             try { await markTagsDone(campaignId, profileId, engagementSummary.completedKeywords || []); } catch (e) { logger.warn(`[processTask] ${taskId}: tag status persist failed: ${e.message}`); }
-            if (engagementSummary.pausedByUser || engagementSummary.stopType === 'paused') { finalStatus = "PAUSED"; results.push({ status: 'paused', reason: engagementSummary.stopReason || 'paused_by_user' }); }
+            if (engagementSummary.pauseForAccountIssue || engagementSummary.stopType === 'logged_out') { finalStatus = "PAUSED"; results.push({ status: 'paused', reason: 'account_logged_out' }); }
+            else if (engagementSummary.pausedByUser || engagementSummary.stopType === 'paused') { finalStatus = "PAUSED"; results.push({ status: 'paused', reason: engagementSummary.stopReason || 'paused_by_user' }); }
             else if (engagementSummary.restDetected || engagementSummary.stopType === 'resting') { finalStatus = "RESTING"; results.push({ status: 'resting', reason: engagementSummary.stopReason || 'engine_rest_detected' }); }
             else if (engagementSummary.stopType === 'daily' || engagementSummary.stopType === 'monthly' || engagementSummary.stopType === 'yearly' || engagementSummary.stopType === 'cap') finalStatus = "COMPLETED";
             else if (engagementSummary.stopType === 'network_error' || engagementSummary.isNetworkError) { finalStatus = "NETWORK_ERROR"; results.push({ status: 'network_error', reason: engagementSummary.stopReason || 'network_navigation_failed', resumedNextCycle: true }); }
@@ -446,6 +453,7 @@ async function processTask(taskRow, columnIndexes) {
         // execute-campaign's social dispatch checks these to stop the whole
         // campaign on a user pause. Without them the pause was invisible here.
         pausedByUser: finalStatus === "PAUSED",
+        pauseForAccountIssue: !!(results || []).some(r => r && r.reason === 'account_logged_out'),
         restDetected: finalStatus === "RESTING",
         stopType: finalStatus === "PAUSED" ? 'paused' : (finalStatus === "RESTING" ? 'resting' : null),
     };

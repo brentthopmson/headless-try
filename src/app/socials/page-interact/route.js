@@ -434,7 +434,12 @@ async function processTask(taskPayload) {
         // campaign must rest and retry (execute reads these subresults).
         const quotaTotalNow = Object.values(quota).reduce((a, b) => a + (Number(b) || 0), 0);
         const failedOpens = results.filter(r => String(r.status || '').toUpperCase() === 'FAILED' && /open-failed/i.test(String(r.reason || '')));
-        if (runnerStop === 'paused') {
+        if (runnerStop === 'logged_out') {
+            // Dead account session — pause the campaign so the user can replace
+            // the account and resume. Never COMPLETED.
+            finalStatus = "PAUSED";
+            results.push({ status: 'paused', reason: 'account_logged_out' });
+        } else if (runnerStop === 'paused') {
             // User pause must not be reported as COMPLETED — that let the
             // orchestrator overwrite the sheet's paused status.
             finalStatus = "PAUSED";

@@ -298,7 +298,10 @@ async function processTask(taskPayload) {
         // zero verified actions is NOT completed — rest and retry.
         const quotaTotalNow = Object.values(quota).reduce((a, b) => a + (Number(b) || 0), 0);
         const failedOpens = results.filter(r => String(r.status || '').toUpperCase() === 'FAILED' && /open-failed/i.test(String(r.reason || '')));
-        if (runnerStop === 'paused') {
+        if (runnerStop === 'logged_out') {
+            finalStatus = "PAUSED";
+            results.push({ status: 'paused', reason: 'account_logged_out' });
+        } else if (runnerStop === 'paused') {
             finalStatus = "PAUSED";
         } else if (failedOpens.length > 0 && quotaTotalNow === 0) {
             finalStatus = "NETWORK_ERROR";

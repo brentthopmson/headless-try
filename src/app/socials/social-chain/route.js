@@ -50,6 +50,8 @@ function stageStatus(summary) {
   if (!summary) return "none";
   // User pause is authoritative — never classify it as done/completed.
   if (summary.pausedByUser || summary.stopType === "paused") return "paused";
+  // Dead account session — pause the campaign for account replacement.
+  if (summary.pauseForAccountIssue || summary.stopType === "logged_out") return "account_logged_out";
   // A rest-stopped stage must NOT be "done" — otherwise the chain continues
   // into page/discover while the campaign is actually resting.
   if (summary.restDetected || summary.stopType === "resting") return "resting";
@@ -186,7 +188,7 @@ async function processTask(task) {
         logger.info(
           `[social-chain] ${taskId}: search stage done — engaged=${summary.engaged || 0} failed=${summary.failed || 0} stop=${searchStage}`
         );
-        if (searchStage === 'paused' || searchStage === 'resting') {
+        if (searchStage === 'paused' || searchStage === 'resting' || searchStage === 'account_logged_out') {
           chainStoppedBy = searchStage;
           logger.info(`[social-chain] ${taskId}: search stage ${searchStage} — stopping chain before page/activities stages.`);
         }
@@ -294,7 +296,10 @@ async function processTask(task) {
     // A user pause or a rest stop detected in any stage is authoritative —
     // never report the chain as COMPLETED (that let the orchestrator overwrite
     // the sheet's paused/resting status).
-    if (chainStoppedBy === 'paused' || results.some(r => r && String(r.status).toLowerCase() === "paused")) {
+    if (chainStoppedBy === 'account_logged_out' || results.some(r => r && r.reason === 'account_logged_out')) {
+      finalStatus = "PAUSED";
+      logger.info(`[social-chain] ${taskId}: ACCOUNT_LOGGED_OUT — chain PAUSED for account replacement.`);
+    } else if (chainStoppedBy === 'paused' || results.some(r => r && String(r.status).toLowerCase() === "paused")) {
       finalStatus = "PAUSED";
       logger.info(`[social-chain] ${taskId}: user pause — chain PAUSED (progress saved).`);
     } else if (chainStoppedBy === 'resting' || results.some(r => r && String(r.status).toLowerCase() === "resting")) {
@@ -346,6 +351,7 @@ async function processTask(task) {
     results,
     quota: { ...quota, total },
     pausedByUser: finalStatus === "PAUSED",
+    pauseForAccountIssue: chainStoppedBy === 'account_logged_out' || (results || []).some(r => r && r.reason === 'account_logged_out'),
     restDetected: finalStatus === "RESTING",
     stopType: finalStatus === "PAUSED" ? 'paused' : (finalStatus === "RESTING" ? 'resting' : null),
   };

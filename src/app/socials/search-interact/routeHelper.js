@@ -298,6 +298,7 @@ export async function runSearchInteractEngagement(page, opts) {
     let captchaFailed = false;
     let pausedByUser = false;
     let restDetected = false;
+    let pauseForAccountIssue = false; // logged-out account — pause campaign for replacement
     const startedAt = Date.now();
 
     // Capture the rest marker at task start. A RESTING that was ALREADY in the
@@ -469,14 +470,16 @@ export async function runSearchInteractEngagement(page, opts) {
     };
 
     // Logged-out detection: when the login modal appears the session is dead.
-    // Skip the account immediately (no quota burn, no retries). Surfaced as
-    // stopType='logged_out' so the task result shows LOGGED_OUT, not 0-scraped.
+    // Skip the account immediately (no quota burn, no retries) and PAUSE the
+    // campaign so the user can replace the bad account and resume. The account
+    // is marked WAITING (LOGGED_OUT is not a valid hub status).
     const ensureLoggedIn = async (where) => {
         if (!(await isTikTokLoggedOut(page))) return true;
-        logger.warn(`[engage:${taskId}] ACCOUNT_LOGGED_OUT: ${profileId || 'unknown'} at ${where} (${page.url()}) — skipping account.`);
-        if (profileId) await updateAccountStatus(profileId, 'LOGGED_OUT');
+        logger.warn(`[engage:${taskId}] ACCOUNT_LOGGED_OUT: ${profileId || 'unknown'} at ${where} (${page.url()}) — pausing campaign for account replacement.`);
+        if (profileId) await updateAccountStatus(profileId, 'WAITING');
         stopType = 'logged_out';
         stopReason = `logged_out_at_${where}`;
+        pauseForAccountIssue = true;
         return false;
     };
 
@@ -1948,6 +1951,7 @@ export async function runSearchInteractEngagement(page, opts) {
         captchaFailed,
         pausedByUser,
         restDetected,
+        pauseForAccountIssue,
         isNetworkError,
         engaged: results.filter(r => r.status === 'engaged').length,
         failed: results.filter(r => r.status === 'failed' || r.status === 'nav_failed' || r.status === 'page_unsettled').length,

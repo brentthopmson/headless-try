@@ -1938,6 +1938,7 @@ if (!String(settings.helperKeyword || "").trim()) {
         }
 
         let pausedByAdmin = false;
+        let socialAccountPause = false;
         let restDetectedMidRun = false;
         let durationExpiredMidRun = false;
         let skippedLimitCount = 0;
@@ -2023,9 +2024,11 @@ if (!String(settings.helperKeyword || "").trim()) {
             // If the user paused while this task was running, stop the whole
             // dispatch loop. The task's finally already closed its browser, so
             // resources are released and the campaign stays paused (no rest).
-            if (result.pausedByUser || result.stopType === 'paused') {
+            if (result.pausedByUser || result.pauseForAccountIssue || result.stopType === 'paused') {
                 pausedByAdmin = true;
-                log.info(` [execute] Task ${task.taskId} detected user pause — stopping social dispatch (resources closed by task finally).`);
+                if (result.pauseForAccountIssue) socialAccountPause = true;
+                const why = result.pauseForAccountIssue ? 'account logged out — campaign paused for replacement' : 'user pause';
+                log.info(` [execute] Task ${task.taskId} detected ${why} — stopping social dispatch (resources closed by task finally).`);
             }
             // A task that detected a timed rest mid-run must stop dispatch too.
             // Do NOT mark the account WAITING — it resumes after the rest.
@@ -2265,6 +2268,11 @@ if (!String(settings.helperKeyword || "").trim()) {
           ? "completed"
           : (pausedByAdmin ? "paused" : (restDetectedMidRun ? "resting" : (shouldRest ? "resting" : (limitReached ? "resting" : "completed"))));
 if (limitReached && !restDetectedMidRun) settings.restReason = "limit_reached";
+        // Make the pause self-explanatory in the UI so the user knows to replace
+        // the affected account before resuming.
+        if (pausedByAdmin) {
+            settings.pauseReason = settings.pauseReason || (socialAccountPause ? "account_logged_out" : "paused_by_admin");
+        }
 
         if (restDetectedMidRun) {
           // A timed rest was written by ANOTHER actor while this run was live.

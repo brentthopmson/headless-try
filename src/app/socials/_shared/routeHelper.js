@@ -333,6 +333,23 @@ export function sanitizeGoogleCookiesForHeadless(cookies) {
     });
 }
 
+// Social session probe: a Chrome profile captured on Windows has its cookies
+// encrypted with OS-bound DPAPI keys that Linux Chromium cannot decrypt. After
+// launch we check whether the platform's auth cookies are actually readable;
+// if not, the plaintext cookie JSON is injected via CDP (the same pattern Gmail
+// already uses). Profile remains best-effort for localStorage/sessionStorage.
+const SOCIAL_SESSION_PROBES = {
+    tiktok:    { domains: ['tiktok.com'], auth: ['sessionid', 'sessionid_ss', 'sid_tt', 'sid_guard', 'uid_tt', 'uid_tt_ss'] },
+    facebook:  { domains: ['facebook.com'], auth: ['c_user', 'xs', 'datr'] },
+    instagram: { domains: ['instagram.com'], auth: ['sessionid', 'ds_user_id'] },
+    twitter:   { domains: ['twitter.com', 'x.com'], auth: ['auth_token', 'ct0', 'twid'] },
+    youtube:   { domains: ['youtube.com'], auth: ['SID', 'HSID', 'SAPISID'] },
+    linkedin:  { domains: ['linkedin.com'], auth: ['li_at', 'JSESSIONID'] },
+    reddit:    { domains: ['reddit.com'], auth: ['reddit_session'] },
+    quora:     { domains: ['quora.com'], auth: [] },
+    threads:   { domains: ['threads.net', 'instagram.com'], auth: ['sessionid', 'ds_user_id'] },
+};
+
 /**
  * Launches a browser with session cookies.
  * @param {string} cookieJSON - Cookie JSON string or array
@@ -490,14 +507,35 @@ export async function launchBrowserWithSession(cookieJSON, headless = undefined,
         //   Cross-machine/headless profile DPAPI keys may fail to decrypt sqlite cookies,
         //   so plaintext CDP injection is mandatory for session survival.
         // - Microsoft Auth: ALWAYS inject CDP cookies.
-        // - Socials (TikTok, etc.): If persistent userDataDir exists, SKIP injection
-        //   to prevent clobbering rotated session state.
+        // - Socials (TikTok, etc.): if a persistent profile exists, PROBE whether its
+        //   auth cookies are actually readable. On a different OS (Windows profile on
+        //   Linux) they are encrypted and unreadable — inject the plaintext JSON then.
+        //   If the profile IS readable, skip injection so rotated session state in the
+        //   profile is not clobbered.
         // - Fallback: ALWAYS inject if no userDataDir.
         const platform = (options.platform || '').toLowerCase();
         const MS_AUTH_PLATFORMS = new Set(['microsoft', 'outlook', 'office365', 'hotmail', 'live', 'msn']);
         const isMsAuth = MS_AUTH_PLATFORMS.has(platform);
         const isGoogleAuth = platform === 'gmail' || platform === 'google' || (options.domain || '').includes('gmail') || (options.domain || '').includes('google');
-        const shouldInjectCDPCookies = parsedCandidateCookies.length > 0 && (!options.userDataDir || isMsAuth || isGoogleAuth);
+        const socialProbe = SOCIAL_SESSION_PROBES[platform] || null;
+        const isSocial = !!socialProbe && !isGoogleAuth && !isMsAuth;
+        let socialProfileHasSession = true; // default: trust profile unless probe proves otherwise
+        if (options.userDataDir && isSocial) {
+            try {
+                const allCookies = await page.context().cookies();
+                const matching = allCookies.filter(c => socialProbe.domains.some(d => String(c.domain || '').toLowerCase().includes(d)));
+                const hasAuth = socialProbe.auth.length === 0
+                    ? matching.length > 0
+                    : matching.some(c => socialProbe.auth.includes(c.name));
+                socialProfileHasSession = hasAuth;
+                logger.info(`[launchBrowserWithSession] Social session probe (${platform}): ${matching.length} profile cookie(s), auth=${hasAuth} — ${hasAuth ? 'profile session OK' : 'profile unreadable, will use plaintext JSON'}.`);
+            } catch (probeErr) {
+                socialProfileHasSession = false;
+                logger.warn(`[launchBrowserWithSession] Social session probe failed for ${platform}: ${probeErr.message} — will inject plaintext JSON.`);
+            }
+        }
+        const shouldInjectCDPCookies = parsedCandidateCookies.length > 0
+            && (!options.userDataDir || isMsAuth || isGoogleAuth || (isSocial && !socialProfileHasSession));
 
         if (shouldInjectCDPCookies) {
             let cookiesToInject = parsedCandidateCookies;
@@ -535,7 +573,10 @@ export async function launchBrowserWithSession(cookieJSON, headless = undefined,
                 await new Promise(r => setTimeout(r, 3000));
             }
         } else if (options.userDataDir) {
-            logger.info(`[launchBrowserWithSession] Using persistent userDataDir profile cookies & session storage (skipping CDP cookie injection for platform=${platform})`);
+            const why = isSocial && socialProfileHasSession
+                ? 'profile session readable — preserving rotated state'
+                : 'no plaintext cookies available to inject';
+            logger.info(`[launchBrowserWithSession] Using persistent userDataDir profile cookies & session storage (skipping CDP cookie injection for platform=${platform}: ${why})`);
         }
 
         logger.info(`[launchBrowserWithSession] Browser launched with session`);

@@ -79,7 +79,9 @@ export async function handleTikTokGuards(page, options = {}) {
         }
     }
     if (await isTikTokLoggedOut(page)) {
-        if (profileId) await updateAccountStatus(profileId, "LOGGED_OUT").catch(() => {});
+        // WAITING is the valid hub status; the campaign-level PAUSED decision is
+        // made by the task route so the user can replace the account and resume.
+        if (profileId) await updateAccountStatus(profileId, "WAITING").catch(() => {});
         return { ok: false, stopType: "logged_out", reason: "logged_out" };
     }
     return { ok: true };
