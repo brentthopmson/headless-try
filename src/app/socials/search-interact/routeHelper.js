@@ -7,6 +7,7 @@ import { updateAccountStatus } from '../_shared/hubUpdater.js';
 import limitsCore from '../_shared/limitsCore.js';
 import { isTikTokCaptchaVisible, solveTikTokAudioCaptcha, isTikTokLoggedOut, navigateAndWait, ensureCommentsVisible, isPostLiked, isConfidentlyUnliked, readCommentsPanelCount, dismissCookieBanner } from './platformHelper/TikTokHelpers.js';
 import { getAccountPostStatuses, markPostEngaged, getCampaignSettings, isPostInteracted } from '../../campaign/_shared/pipelineUtils.js';
+import { getSocialStopReason } from '../_shared/pauseCheck.js';
 
 // Voice frame for search-interact (public-post engagement). The campaign
 // account is an OUTSIDER viewer joining someone else's post — never the post
@@ -241,9 +242,11 @@ export async function runSearchInteractEngagement(page, opts) {
         taskId = 'session',
         requireAiForComments = false, // when true, skip all comments/replies if AI is unavailable
     } = opts;
-    if (requireAiForComments) {
-        logger.info(`[engage:${taskId}] requireAiForComments=ON — comments/replies skipped when AI is unavailable (likes/follows still run).`);
-    }
+    // Normalize at the boundary: a string "true"/"false" arriving from a task
+    // payload must behave exactly like the boolean. Log the EFFECTIVE value so
+    // engine.log shows whether fallbacks are permitted for this run.
+    requireAiForComments = requireAiForComments === true || String(requireAiForComments || '').toLowerCase() === 'true';
+    logger.info(`[engage:${taskId}] requireAiForComments=${requireAiForComments ? 'ON' : 'OFF'} — ${requireAiForComments ? 'comments/replies skipped when AI unavailable (likes/follows still run)' : 'emoji fallbacks allowed when AI unavailable'}.`);
 
     // Per-account post deduplication: avoid re-engaging already completed posts
     let accountPostStatuses = {};
@@ -289,10 +292,37 @@ export async function runSearchInteractEngagement(page, opts) {
         }
         return ok;
     };
-    let stopType = null;          // 'hourly' | 'daily' | 'monthly' | 'yearly' | 'cap' | 'time' | 'captcha' | 'logged_out' | 'network_error'
+    let stopType = null;          // 'hourly' | 'daily' | 'monthly' | 'yearly' | 'cap' | 'time' | 'captcha' | 'logged_out' | 'network_error' | 'paused'
     let stopReason = null;
     let captchaFailed = false;
+    let pausedByUser = false;
+    let restDetected = false;
     const startedAt = Date.now();
+
+    // Throttled stop check at safe checkpoints. USER PAUSE stops cleanly (no
+    // further navigation) so its finally closes the browser. A TIMED REST
+    // written mid-run (network blip / orchestrator / GAS) was previously
+    // invisible here — isCampaignPaused only matches 'paused'. Now it stops the
+    // task too, without marking the account WAITING (it resumes after the rest).
+    const checkUserPause = async (where) => {
+        if (stopType) return true;
+        const reason = await getSocialStopReason(campaignId);
+        if (reason === 'paused') {
+            logger.info(`[engage:${taskId}] PAUSE_DETECTED at ${where} — stopping task cleanly (no further navigation).`);
+            stopType = 'paused';
+            stopReason = `paused_by_user_at_${where}`;
+            pausedByUser = true;
+            return true;
+        }
+        if (reason === 'resting') {
+            logger.info(`[engage:${taskId}] REST_DETECTED at ${where} — campaign resting; stopping task cleanly (no navigation, account stays ACTIVE for resume).`);
+            stopType = 'resting';
+            stopReason = `engine_rest_detected_at_${where}`;
+            restDetected = true;
+            return true;
+        }
+        return false;
+    };
 
     // Per-action quota exhaustion (actions are independent; none stop others).
     // Run stops only when no permitted actions remain. Hourly => rest/RATE_LIMITED (if it forces stop); daily/monthly/yearly/cap => terminal for window.
@@ -362,7 +392,8 @@ export async function runSearchInteractEngagement(page, opts) {
     // Detached-frame recovery: a destroyed frame makes every subsequent goto
     // fail with the same detached-frame error. Open a fresh page in the same
     // context and swap it in (all closures in this scope see the new page).
-    let pageSwapped = false;
+    let pageSwapCount = 0;
+    const MAX_PAGE_SWAPS = 3; // bound recovery so a chronically detaching browser stops as network_error
     let browserDead = false;
     const recoverFromDetached = async () => {
         if (browserDead) return false;
@@ -376,15 +407,21 @@ export async function runSearchInteractEngagement(page, opts) {
                 return false;
             }
         } catch (_) {}
-        if (pageSwapped) return false;
+        if (pageSwapCount >= MAX_PAGE_SWAPS) {
+            logger.warn(`[engage:${taskId}] Detached-frame recovery limit reached (${pageSwapCount}/${MAX_PAGE_SWAPS}) — stopping as network_error.`);
+            browserDead = true; // reuse the dead flag to stop the run; cleaner than a new status
+            return false;
+        }
         try {
             const ctx = page.context ? page.context() : null;
             if (!ctx) { logger.warn(`[engage:${taskId}] Detached-frame recovery: no browser context.`); return false; }
+            // Close the dead page first so old tabs don't accumulate and hold locks.
+            try { if (page && !page.isClosed()) await page.close().catch(() => {}); } catch (_) {}
             const fresh = await ctx.newPage().catch((e) => { logger.warn(`[engage:${taskId}] newPage failed: ${e.message}`); return null; });
             if (!fresh) return false;
             page = fresh;
-            pageSwapped = true;
-            logger.info(`[engage:${taskId}] Detached frame recovered with a fresh page.`);
+            pageSwapCount += 1;
+            logger.info(`[engage:${taskId}] Detached frame recovered with a fresh page (${pageSwapCount}/${MAX_PAGE_SWAPS}).`);
             return true;
         } catch (e) {
             logger.warn(`[engage:${taskId}] Detached-frame recovery failed: ${e.message}`);
@@ -430,6 +467,47 @@ export async function runSearchInteractEngagement(page, opts) {
         stopType = 'logged_out';
         stopReason = `logged_out_at_${where}`;
         return false;
+    };
+
+    // MID-INTERACTION CAPTCHA GUARD. A captcha can appear while we are already
+    // on a post (like/comment/reply), with NO navigation — so the post-nav
+    // ensureCaptchaSolved call never fires. This guard BLOCKS the current action
+    // until the captcha is solved (never navigates away with an unsolved
+    // overlay), then returns true so the caller retries the action on this post.
+    const ensureClearToAct = async (where) => {
+        // If a captcha is showing, solve it now and hold here.
+        let solvedAny = false;
+        for (let guard = 0; guard < 3; guard++) {
+            if (!(await isTikTokCaptchaVisible(page))) break;
+            logger.info(`[engage:${taskId}] CAPTCHA_DETECTED mid-interaction at ${where} — solving before continuing (no navigation).`);
+            solvedAny = true;
+            const ok = await solveTikTokAudioCaptcha(page, `[engage:${taskId}]`);
+            if (ok) {
+                logger.info(`[engage:${taskId}] CAPTCHA_SOLVED at ${where} — resuming current action.`);
+                await new Promise(r => setTimeout(r, 800));
+                break;
+            }
+            logger.warn(`[engage:${taskId}] Captcha solve attempt failed at ${where} (guard ${guard + 1}/3).`);
+            await new Promise(r => setTimeout(r, 1500));
+        }
+        if (await isTikTokCaptchaVisible(page)) {
+            // Still stuck — stop this account cleanly; do NOT navigate to next post.
+            logger.warn(`[engage:${taskId}] CAPTCHA_UNSOLVED at ${where} — stopping account (no further navigation).`);
+            captchaFailed = true;
+            if (profileId) await updateAccountStatus(profileId, 'WAITING');
+            stopType = 'captcha';
+            stopReason = 'captcha_failed';
+            return false;
+        }
+        // If the captcha disappeared on its own (e.g. TikTok cleared it) log it.
+        if (solvedAny) {
+            logger.info(`[engage:${taskId}] Captcha no longer visible at ${where} — clear to act.`);
+            // Truthy string: existing `if (!(await ensureClearToAct(...)))` callers
+            // still pass, but reply-loop callers can detect a solve and retry
+            // the current action on the same post.
+            return 'solved';
+        }
+        return true;
     };
 
     // ---- D1: comment-list API observer (diagnostics + scroll signal) ----
@@ -577,6 +655,7 @@ export async function runSearchInteractEngagement(page, opts) {
     for (const keyword of keywords) {
         if (stopType) break;
         if (checkTimeStop()) break;
+        if (await checkUserPause(`keyword "${keyword}"`)) break;
         try {
             // ---- Search ----
             logger.info(`[engage:${taskId}] Searching: "${keyword}"`);
@@ -655,6 +734,13 @@ export async function runSearchInteractEngagement(page, opts) {
             const seenUrls = new Set();
             const resultsWithUrl = scraped.filter(v => v.url && !seenUrls.has(v.url) && seenUrls.add(v.url));
             logger.info(`[engage:${taskId}] Keyword "${keyword}": ${scraped.length} scraped, ${resultsWithUrl.length} unique with URLs. Cap=${maxResultsPerKeyword}`);
+            // A genuinely empty search is one where the page REACHED A SETTLED
+            // state (nav.state is a known, non-unknown state) and returned zero
+            // posts. Track it explicitly so an unsettled/stuck page can never be
+            // mistaken for "done with zero work".
+            const settledEmptySearch = resultsWithUrl.length === 0
+                && !!nav.state && nav.state !== 'unknown'
+                && nav.state !== 'logged_out' && nav.state !== 'captcha';
 
             // Deduplicate against already-engaged posts for this account
             const freshVideos = resultsWithUrl.filter(v => {
@@ -669,10 +755,15 @@ export async function runSearchInteractEngagement(page, opts) {
             const toProcess = freshVideos.slice(0, maxResultsPerKeyword);
             if (toProcess.length === 0 && resultsWithUrl.length > 0) {
                 logger.info(`[engage:${taskId}] All ${resultsWithUrl.length} posts for keyword "${keyword}" already engaged/interacted by account ${profileId} — completing keyword.`);
+                results.push({ keyword, status: 'already_engaged', reason: 'all_posts_already_engaged' });
+            } else if (settledEmptySearch) {
+                logger.info(`[engage:${taskId}] Search for "${keyword}" settled (state=${nav.state}) with zero posts — recording genuine empty result.`);
+                results.push({ keyword, status: 'empty_results', reason: `settled_${nav.state}` });
             }
             for (let rIdx = 0; rIdx < toProcess.length; rIdx++) {
                 if (stopType) break;
                 if (checkTimeStop()) break;
+                if (await checkUserPause(`post ${rIdx + 1}/${toProcess.length}`)) break;
                 const video = toProcess[rIdx];
                 // Aweme id for URL-drift guard: if TikTok SPA-navigates to a
                 // different post mid-processing, skip the comment/loop entirely.
@@ -732,6 +823,10 @@ export async function runSearchInteractEngagement(page, opts) {
                         await pause(1200, 2000);
                         continue;
                     }
+
+                    // BLOCK on any captcha that appeared while the post was loading/
+                    // settling — never proceed to like/comment with an overlay up.
+                    if (!(await ensureClearToAct(`post ${rIdx + 1} before like`))) break;
 
                     // TikTok renders a cookie-consent banner that overlays the
                     // composer and silently swallows replies — dismiss it up front.
@@ -829,7 +924,17 @@ export async function runSearchInteractEngagement(page, opts) {
                     // When count > 0 but the list never renders, the comment
                     // phase is skipped entirely (user decision: no comment
                     // without seeing the thread first).
-                    const ccRes = await ensureCommentsVisible(page, `[engage:${taskId}]`, expectedComments);
+                    // Captcha can pop when the comments panel/tab opens — solve before acting.
+                    if (!(await ensureClearToAct(`post ${rIdx + 1} before comments`))) break;
+                    // USER-OBSERVED: the captcha actually appears ON the Comments-tab
+                    // click. Pass the guard INTO ensureCommentsVisible so it checks
+                    // immediately after each tab click and during the comment poll.
+                    const ccRes = await ensureCommentsVisible(
+                        page,
+                        `[engage:${taskId}]`,
+                        expectedComments,
+                        (where) => ensureClearToAct(`post ${rIdx + 1} ${where}`)
+                    );
                     // Panel header is the reliable count once the tab is active
                     // (action-bar reads 0 on photo posts). Refill for logging/results.
                     if (ccRes.ok && !expectedComments) {
@@ -839,6 +944,13 @@ export async function runSearchInteractEngagement(page, opts) {
                         } catch (e) { /* non-fatal */ }
                     }
                     if (!ccRes.ok) {
+                        if (ccRes.reason === 'captcha_failed') {
+                            // ensureClearToAct already set captchaFailed + WAITING
+                            // + stopType. Do NOT navigate back to search results —
+                            // that was the old bug (engine moved on with captcha up).
+                            logger.warn(`[engage:${taskId}] CAPTCHA_BLOCKED opening comments — stopping account, no navigation.`);
+                            break;
+                        }
                         const skipStatus = ccRes.reason === 'comments_not_loaded' ? 'comments_not_loaded' : 'engaged_no_comments_tab';
                         logger.warn(`[engage:${taskId}] Comments unavailable (${ccRes.reason}) — skipping comment + per-comment phase.`);
                         results.push({
@@ -1055,6 +1167,9 @@ export async function runSearchInteractEngagement(page, opts) {
                             await pause(1200, 2000);
                             continue;
                         }
+                        // Captcha can also fire when the comment composer opens —
+                        // solve in place before posting; unsolved → stop cleanly.
+                        if (!(await ensureClearToAct(`post ${rIdx + 1} before main comment`))) break;
                         let postRes = await postCommentVerified(page, s, generatedComment, `[engage:${taskId}]`).catch(err => ({ posted: false, reason: err.message }));
                         // Composer-missing recovery (user directive): the panel
                         // can close between ensureCommentsVisible and the post
@@ -1068,7 +1183,16 @@ export async function runSearchInteractEngagement(page, opts) {
                                 logger.warn(`[engage:${taskId}] Page drifted during retry — abandoning post.`);
                                 postRes = { posted: false, reason: 'page_navigated_away' };
                             } else {
-                                const reopen = await ensureCommentsVisible(page, `[engage:${taskId}] (re-open)`, null).catch(() => ({ ok: false }));
+                                const reopen = await ensureCommentsVisible(
+                                    page,
+                                    `[engage:${taskId}] (re-open)`,
+                                    null,
+                                    (where) => ensureClearToAct(`post ${rIdx + 1} ${where}`)
+                                ).catch(() => ({ ok: false }));
+                                if (reopen.reason === 'captcha_failed') {
+                                    logger.warn(`[engage:${taskId}] CAPTCHA_BLOCKED reopening comments — stopping account, no navigation.`);
+                                    break;
+                                }
                                 if (reopen.ok) {
                                     await pause(1500, 2500);
                                     postRes = await postCommentVerified(page, s, generatedComment, `[engage:${taskId}] (retry)`).catch(err => ({ posted: false, reason: err.message }));
@@ -1354,6 +1478,17 @@ export async function runSearchInteractEngagement(page, opts) {
                         }
                         const comment = queue[qi++];
                         if (stopType) break;
+                        // USER PAUSE checkpoint between completed actions. The
+                        // per-comment loop can run for many minutes (AI per reply),
+                        // so checking only at post/keyword boundaries let a pause
+                        // appear to be ignored. This is a SAFE boundary: the
+                        // previous like/reply already finished and progress is
+                        // tracked in memory; nothing is half-done here.
+                        if (await checkUserPause(`post ${rIdx + 1} comment ${qi}`)) break;
+                        // Captcha checkpoint at every per-comment action boundary.
+                        // Solved in place → continue on THIS post; unsolved →
+                        // ensureClearToAct sets stopType and we stop cleanly.
+                        if (!(await ensureClearToAct(`post ${rIdx + 1} before comment action`))) break;
                         // URL-drift guard: if the SPA navigated to another post,
                         // every subsequent locate/type would hit the wrong page.
                         if (!stillOnTarget()) {
@@ -1520,6 +1655,17 @@ export async function runSearchInteractEngagement(page, opts) {
                                 continue;
                             }
                             await pause(450, 700);
+                            // USER-OBSERVED: the slide-puzzle captcha appears as the
+                            // "Replying to @..." composer opens. Check RIGHT HERE.
+                            const replyCaptcha = await ensureClearToAct(`post ${rIdx + 1} after reply click`);
+                            if (!replyCaptcha) break;
+                            if (replyCaptcha === 'solved') {
+                                // React re-render can unmount comment containers —
+                                // re-locate in the live DOM, then retry the SAME
+                                // reply below (editor verification re-opens the box).
+                                const freshIdx = await locateComment(comment).catch(() => -1);
+                                if (freshIdx >= 0) cIdx = freshIdx;
+                            }
                             // ---- CONTAINER-VERIFIED RETARGET ----
                             // Verify the visible reply editor belongs to THIS
                             // container before typing — the leftover-box bug was
@@ -1552,6 +1698,9 @@ export async function runSearchInteractEngagement(page, opts) {
                                 if (retryRect) {
                                     await DOMHelpers.humanClickAt(page, retryRect.x, retryRect.y, { hoverMs: [120, 300] }).catch(() => false);
                                     await pause(450, 700);
+                                    // The re-click is another captcha trigger —
+                                    // solve in place before verifying the editor.
+                                    if (!(await ensureClearToAct(`post ${rIdx + 1} after reply re-click`))) break;
                                     verified = await editorInTarget();
                                 }
                             }
@@ -1710,16 +1859,21 @@ export async function runSearchInteractEngagement(page, opts) {
         const kwResults = results.filter(r => r.keyword === keyword);
         const hasNavError = kwResults.some(r => r.status === 'nav_failed' || r.status === 'page_unsettled');
         const hasSuccessfulEngagement = kwResults.some(r => r.status === 'engaged' || r.status === 'already_engaged');
+        const hasGenuineEmpty = kwResults.some(r => r.status === 'empty_results');
         const hasOnlyErrors = kwResults.length > 0 && kwResults.every(r => r.status === 'failed' || r.status === 'nav_failed' || r.status === 'page_unsettled' || r.status === 'action_bar_missing');
 
-        // A keyword is only completed if navigation succeeded without network/fatal errors,
-        // and had successful engagements (or search genuinely returned empty results with no errors).
-        // Unresolved (nav_failed / page_unsettled / thrown) keywords NEVER complete.
-        if (!stopType && !hasNavError && !hasOnlyErrors && !unresolvedKeywords.includes(keyword) && (hasSuccessfulEngagement || (kwResults.length === 0 && !hasNavError))) {
+        // A keyword is completed ONLY on real evidence:
+        //   - a successful engagement (post/post-reply), OR
+        //   - all posts already engaged by this account, OR
+        //   - a genuinely settled empty search (explicit empty_results marker).
+        // Zero results with NO marker (stuck/unknown page, detached frame, logged
+        // out) must NEVER be marked done — that was the false "all tags complete"
+        // bug when the account was never even logged in.
+        if (!stopType && !hasNavError && !hasOnlyErrors && !unresolvedKeywords.includes(keyword) && (hasSuccessfulEngagement || hasGenuineEmpty)) {
             completedKeywords.push(keyword);
-            logger.info(`[engage:${taskId}] Keyword "${keyword}" marked as completed (successful=${hasSuccessfulEngagement}, items=${kwResults.length}).`);
+            logger.info(`[engage:${taskId}] Keyword "${keyword}" marked as completed (successful=${hasSuccessfulEngagement}, empty=${hasGenuineEmpty}, items=${kwResults.length}).`);
         } else {
-            logger.warn(`[engage:${taskId}] Keyword "${keyword}" NOT marked completed — interactions failed, incomplete, or navigation errored (hasNavError=${hasNavError}, onlyErrors=${hasOnlyErrors}, stopType=${stopType || 'none'}).`);
+            logger.warn(`[engage:${taskId}] Keyword "${keyword}" NOT marked completed — no real work or navigation error (hasNavError=${hasNavError}, onlyErrors=${hasOnlyErrors}, successful=${hasSuccessfulEngagement}, empty=${hasGenuineEmpty}, stopType=${stopType || 'none'}).`);
         }
     }
 
@@ -1762,6 +1916,8 @@ export async function runSearchInteractEngagement(page, opts) {
         stopType,
         stopReason,
         captchaFailed,
+        pausedByUser,
+        restDetected,
         isNetworkError,
         engaged: results.filter(r => r.status === 'engaged').length,
         failed: results.filter(r => r.status === 'failed' || r.status === 'nav_failed' || r.status === 'page_unsettled').length,

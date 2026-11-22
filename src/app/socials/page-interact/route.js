@@ -71,15 +71,25 @@ export async function discoverPeopleHandles(page, platformConfig, tags, maxPerTa
         }
         await new Promise(r => setTimeout(r, 1500));
         if (s.searchBox) {
-            await page.click(s.searchBox, { timeout: 4000 }).catch(() => {});
-            await page.keyboard.down('Control').catch(() => {});
-            const keys = process.platform === 'darwin' ? 'Meta' : 'Control';
-            await page.keyboard.down(keys).catch(() => {});
-            await page.keyboard.press('a').catch(() => {});
-            await page.keyboard.up('Control').catch(() => {});
-            await page.keyboard.up(keys).catch(() => {});
-            await page.keyboard.type(q, { delay: 10 }).catch(() => {});
+            // Only Ctrl+A when the search-box click actually landed. If it
+            // misses (selector drift / overlay), focus stays on the document
+            // and Ctrl+A selects the ENTIRE page — the blue highlight seen in
+            // the screenshot. Also use ONE modifier (old code pressed Control
+            // twice on Windows).
+            const clicked = await page.click(s.searchBox, { timeout: 4000 }).then(() => true).catch(() => false);
+            if (clicked) {
+                const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
+                await page.keyboard.down(mod).catch(() => {});
+                await page.keyboard.press('a').catch(() => {});
+                await page.keyboard.up(mod).catch(() => {});
+                await page.keyboard.type(q, { delay: 10 }).catch(() => {});
+            } else {
+                logger.warn(`[discover] searchBox not clickable for "${q}" — skipping Ctrl+A/type to avoid selecting the page.`);
+            }
         }
+        // Belt-and-braces: clear any stray document selection (failed click,
+        // overlay, drag) so the page is never left blue-highlighted.
+        await page.evaluate(() => { try { window.getSelection()?.removeAllRanges(); } catch (_) {} }).catch(() => {});
         if (s.searchSubmit) await page.click(s.searchSubmit, { timeout: 2000 }).catch(() => {});
         await page.keyboard.press('Enter').catch(() => {});
         await new Promise(r => setTimeout(r, 2500));
@@ -90,8 +100,25 @@ export async function discoverPeopleHandles(page, platformConfig, tags, maxPerTa
         const ext = platformConfig.extractors?.people;
         if (ext?.selector && ext?.parseFunction) {
             try {
-                const parseFunc = new Function('items', 'return (' + ext.parseFunction + '\n)(items);');
-                items = await page.$$eval(ext.selector, parseFunc).catch(() => []);
+                // Build the parser INSIDE the page from the config string.
+                // The old `new Function(...) + page.$$eval` re-serialized the
+                // function and threw "Unexpected token 'const'" on block-bodied
+                // parsers, so every tag fell through to the generic junk scan.
+                items = await page.evaluate(({ selector, src }) => {
+                    const nodes = Array.from(document.querySelectorAll(selector));
+                    let parse = null;
+                    try { parse = new Function('return (' + src + ')')(); } catch (_) {}
+                    if (parse) { try { return parse(nodes) || []; } catch (_) {} }
+                    // CSP can block new Function in-page — generic config-selector
+                    // fallback still yields real {username,url} pairs.
+                    return nodes.map(n => {
+                        const a = n.querySelector?.('a[href]') || (n.tagName === 'A' ? n : null);
+                        const href = a ? (a.getAttribute('href') || '') : '';
+                        const m = href.match(/\/(?:@)?([A-Za-z0-9_.]+)\/?(?:\?.*)?$/);
+                        const username = m ? m[1] : (n.textContent || '').trim().replace(/^@+/, '').split(/\s+/)[0];
+                        return username ? { username, url: a ? a.href : '' } : null;
+                    }).filter(Boolean);
+                }, { selector: ext.selector, src: ext.parseFunction }).catch(() => []);
             } catch (e) { logger.warn(`[discover] extractor failed (${q}): ${e.message}`); items = []; }
         }
         if (!items.length) {
@@ -405,7 +432,12 @@ async function processTask(taskPayload) {
         // campaign must rest and retry (execute reads these subresults).
         const quotaTotalNow = Object.values(quota).reduce((a, b) => a + (Number(b) || 0), 0);
         const failedOpens = results.filter(r => String(r.status || '').toUpperCase() === 'FAILED' && /open-failed/i.test(String(r.reason || '')));
-        if (runnerStop === 'hourly') {
+        if (runnerStop === 'paused') {
+            // User pause must not be reported as COMPLETED — that let the
+            // orchestrator overwrite the sheet's paused status.
+            finalStatus = "PAUSED";
+            results.push({ status: 'paused', reason: 'paused_by_user' });
+        } else if (runnerStop === 'hourly') {
             finalStatus = "COMPLETED";
             results.push({ status: 'rate_limited', reason: 'hourly_limit', resumedNextCycle: true });
         } else if (results.length > 0 && failedOpens.length > 0 && quotaTotalNow === 0) {
@@ -455,7 +487,7 @@ async function processTask(taskPayload) {
         }
     } finally {
         // Centralized, failure-agnostic debug capture while the page is still open.
-        if (finalStatus && finalStatus !== "COMPLETED" && page) {
+        if (finalStatus && finalStatus !== "COMPLETED" && finalStatus !== "PAUSED" && finalStatus !== "RESTING" && page) {
             try {
                 await captureFailureDebug({
                     page,
@@ -477,12 +509,15 @@ async function processTask(taskPayload) {
         }
         if (page) { try { await page.close(); } catch (e) {} }
         if (browser) { try { await browser.close(); } catch (e) {} }
-        // profileDir intentionally not deleted — downloadAndExtractProfile caches it for 60 min.
+        // Delete only the unique per-launch profile copy; shared cache is kept.
+        if (profileDir && /__launch_\d+_\d+$/.test(profileDir)) {
+            try { const fse = await import('fs-extra'); await fse.remove(profileDir); } catch (_) {}
+        }
         activeTasks.delete(taskId);
     }
 
     const quotaTotal = Object.values(quota).reduce((a, b) => a + (Number(b) || 0), 0);
-    return { taskId, status: finalStatus, resultCount: results.length, results, quota: { ...quota, total: quotaTotal } };
+    return { taskId, status: finalStatus, resultCount: results.length, results, quota: { ...quota, total: quotaTotal }, pausedByUser: finalStatus === "PAUSED", stopType: finalStatus === "PAUSED" ? 'paused' : null };
 }
 
 export async function POST(request) {

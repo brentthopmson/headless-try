@@ -12,6 +12,7 @@ import { getAccountUsage, consumeAccountActions, updateAccountStatus, updateUser
 import { resolveAccountGate } from "../../socials/_shared/accountGate.js";
 import { requireFeature } from "../../../utils/featureGate.js";
 import { captureFailureDebug } from "../../socials/_shared/debugCapture.js";
+import { isSocialCampaignPaused } from "../../socials/_shared/pauseCheck.js";
 
 const STANDARD_88_COLUMNS = [
   'SN',
@@ -328,6 +329,10 @@ export async function processSendMessages(body) {
     const profileSendCounts = new Map();
 
     for (const entry of recipients) {
+      if (campaignId && await isSocialCampaignPaused(campaignId)) {
+        logger.info(`[Send Message] PAUSE_DETECTED at recipient ${entry.recipient || ''} — stopping sends cleanly.`);
+        break;
+      }
       // USER tier — monthly senderUsage budget, checked once per recipient
       // (identity: body/settings.userId → owner in the cookie sheet).
       const entryUserId = requestUserId || profileCookies.find(p => p.userId)?.userId || null;

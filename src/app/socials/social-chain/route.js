@@ -25,6 +25,7 @@ import {
 import { resolveAccountGate, accountGateError } from "../_shared/accountGate.js";
 import { markTagsDone } from "../../campaign/_shared/pipelineUtils.js";
 import { captureFailureDebug } from "../_shared/debugCapture.js";
+import { isSocialCampaignPaused } from "../_shared/pauseCheck.js";
 
 export { processTask as processSocialChainTask };
 
@@ -47,6 +48,8 @@ function addQuota(target, source) {
 
 function stageStatus(summary) {
   if (!summary) return "none";
+  // User pause is authoritative — never classify it as done/completed.
+  if (summary.pausedByUser || summary.stopType === "paused") return "paused";
   if (summary.stopType === "hourly") return "rate_limited";
   if (["daily", "monthly", "yearly", "cap"].includes(summary.stopType)) return "limit_reached";
   if (summary.captchaFailed) return "captcha_failed";
@@ -215,8 +218,16 @@ async function processTask(task) {
       }
 
       const useRunner = supportsPageRunner(platform) && !!pageActionForOperation("page-interact", engagementMode);
-      if (useRunner) {
+      if (await isSocialCampaignPaused(campaignId)) {
+        logger.info(`[social-chain] ${taskId}: PAUSE_DETECTED before page stage — stopping chain cleanly.`);
+        results.push({ stage: "page", status: "paused", reason: "paused_by_user" });
+      } else if (useRunner) {
         for (const h of handles) {
+          if (await isSocialCampaignPaused(campaignId)) {
+            logger.info(`[social-chain] ${taskId}: PAUSE_DETECTED in page stage — stopping chain cleanly.`);
+            results.push({ stage: "page", status: "paused", reason: "paused_by_user" });
+            break;
+          }
           const run = await runPageInteract({
             page,
             platform,
@@ -247,7 +258,7 @@ async function processTask(task) {
     }
 
     // ---- Stage 3: ACTIVITIES (normal feed/notifications fallback) ----
-    if (operations.includes("activities-interact") && supportsActivitiesRunner(platform)) {
+    if (operations.includes("activities-interact") && supportsActivitiesRunner(platform) && !(await isSocialCampaignPaused(campaignId))) {
       page = await ensureUsablePage(taskId, browser, page);
       const actRun = await runActivitiesInteract({
         page,
@@ -271,17 +282,24 @@ async function processTask(task) {
       }
     }
 
-    finalStatus = "COMPLETED";
-    logger.info(
-      `[social-chain] ${taskId}: completed in one session — actions=${Object.values(quota).reduce((a, b) => a + (Number(b) || 0), 0)}`
-    );
+    // A user pause detected in any stage is authoritative — never report the
+    // chain as COMPLETED (that let the orchestrator overwrite sheet status).
+    if (results.some(r => r && String(r.status).toLowerCase() === "paused")) {
+      finalStatus = "PAUSED";
+      logger.info(`[social-chain] ${taskId}: user pause — chain PAUSED (progress saved).`);
+    } else {
+      finalStatus = "COMPLETED";
+      logger.info(
+        `[social-chain] ${taskId}: completed in one session — actions=${Object.values(quota).reduce((a, b) => a + (Number(b) || 0), 0)}`
+      );
+    }
   } catch (error) {
     logger.error(`[social-chain] ${taskId} failed: ${error.message}`);
     finalStatus = "FAILED";
     results.push({ error: error.message, timestamp: new Date().toISOString() });
   } finally {
     // One browser serves all stages — snapshot before teardown on any failure.
-    if (finalStatus && finalStatus !== "COMPLETED" && page) {
+    if (finalStatus && finalStatus !== "COMPLETED" && finalStatus !== "PAUSED" && finalStatus !== "RESTING" && page) {
       try {
         await captureFailureDebug({
           page,
@@ -314,6 +332,8 @@ async function processTask(task) {
     resultCount: results.length,
     results,
     quota: { ...quota, total },
+    pausedByUser: finalStatus === "PAUSED",
+    stopType: finalStatus === "PAUSED" ? 'paused' : null,
   };
 }
 

@@ -144,6 +144,46 @@ export async function isCampaignPaused(campaignId, stage = null) {
 }
 
 /**
+ * Why an IN-FLIGHT engine loop should stop: 'paused' (user, via GAS) or
+ * 'resting' (engine error/limit — setEngineRest wrote a timed rest while this
+ * run was already executing). isCampaignPaused deliberately stays pause-only:
+ * setEngineRest uses it for "user pause wins". This helper is for mid-run
+ * checkpoints, where a RESTING written by the orchestrator/GAS/another server
+ * was previously invisible and let the task keep engaging.
+ * Returns null on any read failure so a transient Sheets error cannot stop a run.
+ */
+export async function getCampaignStopReason(campaignId) {
+  try {
+    const campaignsResult = await getSheetDataApi("campaigns");
+    if (!campaignsResult.success) return null;
+    const headers = campaignsResult.headers;
+    const idIdx = headers.indexOf("campaignId");
+    const statusIdx = headers.indexOf("status");
+    if (idIdx === -1 || statusIdx === -1) return null;
+    const row = campaignsResult.data.find(r => String(r[idIdx]).trim() === String(campaignId).trim());
+    if (!row) return null;
+    const status = String(row[statusIdx] || '').trim().toLowerCase();
+    if (status === 'paused') return 'paused';
+    if (status === 'resting' || status === 'limit reached') {
+      // Only an ACTIVE timed rest. An expired restUntil is not a stop signal.
+      let settings = {};
+      const settingsRaw = row[headers.indexOf('settings')];
+      try {
+        settings = typeof settingsRaw === 'string' ? JSON.parse(settingsRaw) : (settingsRaw || {});
+      } catch (_) {}
+      const until = Number(settings.restUntil);
+      if (Number.isFinite(until) && until > Date.now()) {
+        return 'resting';
+      }
+    }
+    return null;
+  } catch (err) {
+    logger.warn(`[Pipeline] Stop-reason check failed for ${campaignId}: ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Merges updates into the campaign's settings JSON and writes it back to the campaigns sheet.
  * Uses optimistic concurrency control via _settingsVersion to prevent write conflicts.
  */
@@ -861,6 +901,29 @@ export async function setEngineRest(campaignId, opts = {}) {
     logger.warn(`[engine-rest] ${campaignId}: failed to set rest state: ${e.message}`);
     return { rested: false, reason: 'error', error: e.message };
   }
+}
+
+/**
+ * Reconcile a stale `_fullAccounts` with the currently checked `accounts`.
+ * Account switches (replacing one checked account with another) leave the old
+ * browserId in `_fullAccounts`; engines that trust it restore the removed
+ * account. Must run at orchestrator pre-dispatch so it also covers social
+ * interactions-only campaigns that never hit execute-campaign's own guard.
+ * Multi-account lists are preserved — only a set mismatch is corrected.
+ */
+export async function reconcileCampaignAccounts(campaignId, settings) {
+  if (!settings || !Array.isArray(settings.accounts)) return { changed: false, accounts: [] };
+  const checked = settings.accounts.map(String);
+  const full = Array.isArray(settings._fullAccounts) ? settings._fullAccounts.map(String) : null;
+  if (full && !(full.length === checked.length && full.every(id => checked.includes(id)))) {
+    logger.info(`[account-switch] ${campaignId}: clearing stale _fullAccounts [${full.join(',')}] — checked [${checked.join(',')}]`);
+    settings._fullAccounts = undefined;
+    delete settings._fullAccounts;
+    if (settings._scopedCompleted) { settings._scopedCompleted = undefined; delete settings._scopedCompleted; }
+    await updateCampaignSettings(campaignId, { _fullAccounts: null, _scopedCompleted: null }).catch(() => {});
+    return { changed: true, accounts: checked };
+  }
+  return { changed: false, accounts: checked };
 }
 
 

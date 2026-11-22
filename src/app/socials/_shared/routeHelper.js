@@ -84,6 +84,25 @@ async function readProfileCacheAge(destDir) {
     }
 }
 
+/**
+ * Copy the cached profile into a unique launch directory so Chromium never
+ * shares a userDataDir with another concurrent engine/task.
+ */
+async function cloneProfileForLaunch(destDir, launchDir, browserId) {
+    try {
+        await fs.remove(launchDir).catch(() => {});
+        await fs.copy(destDir, launchDir, {
+            // Skip heavy runtime artifacts that can cause single-instance conflicts.
+            filter: (src) => !/(DevToolsActivePort|SingletonLock|SingletonSocket|SingletonCookie|lockfile|BrowserMetrics-spare\.pma)$/.test(src),
+        });
+        logger.info(`[profileCache] Cloned profile ${browserId} -> ${path.basename(launchDir)} for isolated launch`);
+        return launchDir;
+    } catch (e) {
+        logger.warn(`[profileCache] Failed to clone profile for ${browserId}: ${e.message} — using cache dir directly`);
+        return destDir;
+    }
+}
+
 export async function downloadAndExtractProfile(driveUrl, browserId) {
     if (!driveUrl) return null;
     const directUrl = getDirectDownloadUrl(driveUrl);
@@ -91,6 +110,45 @@ export async function downloadAndExtractProfile(driveUrl, browserId) {
 
     const destDir = path.join(os.tmpdir(), 'webfixx_profiles', browserId);
     const zipPath = `${destDir}.zip`;
+    const lockPath = `${destDir}.lock`;
+    // Each Chromium launch gets its OWN copy of the profile. Two engines on one
+    // machine (or two concurrent tasks for the same account) must never point
+    // Chromium at the same userDataDir — that corrupts cookies and logs out the
+    // session. destDir remains the locked shared download/extract CACHE; the
+    // unique launchDir is a copy made just before returning.
+    const launchDir = path.join(os.tmpdir(), 'webfixx_profiles', `${browserId}__launch_${process.pid}_${Date.now()}`);
+
+    // CROSS-PROCESS LOCK: two engines on the same machine must never extract or
+    // reuse the same browserId profile concurrently — one would remove/extract
+    // the dir while the other launches Chromium on it, corrupting the session
+    // (the "logged out" symptom). Atomic exclusive-create lock; stale locks (>10m)
+    // are reclaimed. The lock is released in the finally at the end of this fn.
+    const LOCK_TTL_MS = 10 * 60 * 1000;
+    let lockAcquired = false;
+    const lockDeadline = Date.now() + 90 * 1000; // wait up to 90s for another process
+    while (!lockAcquired) {
+        try {
+            await fs.ensureDir(path.dirname(lockPath));
+            // 'wx' = create exclusively; fails if the file already exists.
+            await fs.writeFile(lockPath, String(process.pid), { flag: 'wx' });
+            lockAcquired = true;
+        } catch (lockErr) {
+            if (lockErr && lockErr.code !== 'EEXIST') {
+                logger.warn(`[profileLock] Unexpected error acquiring ${browserId}: ${lockErr.message}`);
+                break; // proceed without lock rather than deadlock
+            }
+            let stale = false;
+            try {
+                const ageMs = Date.now() - (await fs.stat(lockPath)).mtimeMs;
+                if (ageMs > LOCK_TTL_MS) { await fs.remove(lockPath).catch(() => {}); stale = true; }
+            } catch (_) { stale = true; }
+            if (Date.now() >= lockDeadline) {
+                logger.warn(`[profileLock] Timed out waiting for ${browserId} lock — proceeding (another engine may hold it).`);
+                break;
+            }
+            if (!stale) await new Promise(r => setTimeout(r, 400));
+        }
+    }
 
     // Serve from cache when a fresh extracted profile already exists.
     try {
@@ -108,7 +166,8 @@ export async function downloadAndExtractProfile(driveUrl, browserId) {
                 for (const f of runtimeLocks) {
                     try { const p = path.join(destDir, f); if (fs.existsSync(p)) fs.unlinkSync(p); } catch (_) {}
                 }
-                return destDir;
+                if (lockAcquired) await fs.remove(lockPath).catch(() => {});
+                return await cloneProfileForLaunch(destDir, launchDir, browserId);
             }
             logger.info(`[profileCache] Cached profile for ${browserId} is stale (age ${Math.round(ageMs / 1000)}s) — re-downloading`);
         }
@@ -133,6 +192,7 @@ export async function downloadAndExtractProfile(driveUrl, browserId) {
         if (!hasDefault) {
             logger.warn(`[profileDownload] No Default/ directory in extracted profile`);
             await fs.remove(destDir);
+            if (lockAcquired) await fs.remove(lockPath).catch(() => {});
             return null;
         }
 
@@ -205,11 +265,13 @@ export async function downloadAndExtractProfile(driveUrl, browserId) {
                 size: fs.statSync(artifactPath).size,
             }));
         logger.info(`[profileDownload] ${browserId} COOKIE_ARTIFACTS: ${JSON.stringify(cookieArtifactSummary)}`);
-        return destDir;
+        if (lockAcquired) await fs.remove(lockPath).catch(() => {});
+        return await cloneProfileForLaunch(destDir, launchDir, browserId);
     } catch (e) {
         logger.warn(`[profileDownload] Failed to download/extract profile: ${e.message}`);
         await fs.remove(destDir).catch(() => {});
         await fs.remove(zipPath).catch(() => {});
+        if (lockAcquired) await fs.remove(lockPath).catch(() => {});
         return null;
     }
 }

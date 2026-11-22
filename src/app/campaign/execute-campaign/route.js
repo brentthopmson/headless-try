@@ -43,8 +43,27 @@ import { getSetting } from "../../../utils/settingsCache.js";
 import { getMaxConcurrentTasks, getMaxRepliesPerPost, checkUserConcurrentCampaigns, registerActiveCampaignRun, unregisterActiveCampaignRun } from "../../../utils/campaignConcurrency.js";
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { dispatchToServers } from "../../../utils/multiServerDispatcher.js";
-import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getFirestickEmails, getPerformancePresets, updateCampaignSettings, getCampaignSettings, getAccountTagStatuses, buildPersonalizedLink, isRestCooldownActive, setEngineRest, getRestDurations } from "../_shared/pipelineUtils.js";
+import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getCampaignStopReason, getFirestickEmails, getPerformancePresets, updateCampaignSettings, getCampaignSettings, getAccountTagStatuses, buildPersonalizedLink, isRestCooldownActive, setEngineRest, getRestDurations } from "../_shared/pipelineUtils.js";
 import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
+
+// Throttled mid-run stop check (1s). A timed REST written while this run is
+// already executing (network blip / orchestrator / GAS) must stop the loops;
+// isCampaignPaused stays pause-only. A transient Sheets failure returns null.
+let _midRunStop = { at: 0, value: null, inFlight: null };
+async function midRunStopReason(campaignId) {
+  const now = Date.now();
+  if (now - _midRunStop.at < 1000) return _midRunStop.value;
+  if (_midRunStop.inFlight) return await _midRunStop.inFlight;
+  _midRunStop.inFlight = (async () => {
+    try { _midRunStop.value = await getCampaignStopReason(campaignId); }
+    catch (_) { _midRunStop.value = null; }
+    _midRunStop.at = Date.now();
+    return _midRunStop.value;
+  })();
+  try { return await _midRunStop.inFlight; }
+  finally { _midRunStop.inFlight = null; }
+}
+
 import { calculateScheduleTimes } from "../../../utils/scheduleCalculator.js";
 import { detectEmailProvider } from "../../../utils/sendRateLimiter.js";
 
@@ -553,7 +572,23 @@ export async function POST(request) {
     const maxAccountsSetting = await getSetting('maxAccountsPerCampaign');
     const parsedMax = parseInt(maxAccountsSetting?.value1, 10);
     const maxCampaignAccounts = (!isNaN(parsedMax) && parsedMax > 0) ? parsedMax : 1;
-    const allConfiguredAccounts = (settings._fullAccounts || settings.accounts || []).map(String);
+    // ACCOUNT SWITCH SAFETY: the checked `accounts` list is authoritative.
+    // A stale `_fullAccounts` from a previous account selection must never
+    // override the current choice. `_fullAccounts` is ONLY meaningful for an
+    // in-flight scoped multi-server run (set just below from `accounts`).
+    const checkedAccounts = (settings.accounts || []).map(String);
+    if (settings._fullAccounts && Array.isArray(settings._fullAccounts)) {
+      const full = settings._fullAccounts.map(String);
+      const sameSet = full.length === checkedAccounts.length && full.every(id => checkedAccounts.includes(id));
+      if (!sameSet) {
+        log.warn(`[account-switch] Clearing stale _fullAccounts (${full.join(',')}) — checked accounts are [${checkedAccounts.join(',')}]`);
+        settings._fullAccounts = undefined;
+        delete settings._fullAccounts;
+        if (settings._scopedCompleted) { settings._scopedCompleted = undefined; delete settings._scopedCompleted; }
+        await updateCampaignSettings(campaignId, { _fullAccounts: null, _scopedCompleted: null }).catch(() => {});
+      }
+    }
+    const allConfiguredAccounts = (settings.accounts || []).map(String);
     if (allConfiguredAccounts.length > maxCampaignAccounts) {
       log.warn(` Campaign ${campaignId} exceeds maxAccountsPerCampaign (${allConfiguredAccounts.length} > ${maxCampaignAccounts}). Capping to top ${maxCampaignAccounts}.`);
       settings.accounts = (settings.accounts || []).slice(0, maxCampaignAccounts);
@@ -982,6 +1017,7 @@ if (!String(settings.helperKeyword || "").trim()) {
 
         // Step 3e: Processing loop over deduplicated rows with checkpointing
         let pausedByAdmin = false;
+        let restDetectedMidRun = false;
         let durationExpiredMidRun = false;
         let firestickIndex = 0;
         // Validation/send gating applies ONLY when validation is active/staged for this campaign.
@@ -1017,17 +1053,19 @@ if (!String(settings.helperKeyword || "").trim()) {
         let sentSinceFlush = 0;
         log.info(` Execution mode: sequential (one-by-one), firestick=${firestickEnabled ? 'on' : 'off'}, delivery=${deliveryMethod}, flushEvery=${SHOOTING_BATCH_SIZE}`);
         for (let i = startIndex; i < deduplicatedRows.length; i++) {
-          if (pausedByAdmin || limitReached || smtpPoolExhaustedStop) break;
-          if (await isCampaignPaused(campaignId)) {
+          if (pausedByAdmin || restDetectedMidRun || limitReached || smtpPoolExhaustedStop) break;
+          // Mid-run stop signal: USER PAUSE or a TIMED REST written while this
+          // run was already executing (network blip / orchestrator / GAS).
+          // isCampaignPaused alone could not see 'resting'.
+          const midStop = await midRunStopReason(campaignId);
+          if (midStop === 'paused') {
             pausedByAdmin = true;
             log.info(` Campaign ${campaignId} was paused during run. Stopping at row ${i}.`);
             break;
           }
-          // List shooting ignores the duration window by design (see entry
-          // guard): bounded only by quotas/caps, never by elapsed days.
-          if (await isCampaignPaused(campaignId)) {
-            pausedByAdmin = true;
-            log.info(` Campaign ${campaignId} was paused during run. Stopping at row ${i}.`);
+          if (midStop === 'resting') {
+            restDetectedMidRun = true;
+            log.info(` Campaign ${campaignId} RESTING detected mid-run. Stopping at row ${i}; preserving existing restUntil.`);
             break;
           }
           // USER tier Ã¢â‚¬â€ monthly shootCampaign budget re-checked per row so a
@@ -1392,8 +1430,19 @@ if (!String(settings.helperKeyword || "").trim()) {
         // If retryable failures remain, keep campaign resumable (paused) instead of completing.
         // A quota/limit pause is a REST, not a user pause. GAS auto-resumes rows
         // whose status is 'resting' once restUntil elapses; 'paused' never wakes.
-        let finalStatus = pausedByAdmin ? "paused" : (limitReached ? "resting" : "completed");
-        if (!pausedByAdmin && !limitReached && retryablePendingCount > 0) {
+        let finalStatus = pausedByAdmin ? "paused" : (restDetectedMidRun ? "resting" : (limitReached ? "resting" : "completed"));
+        if (restDetectedMidRun) {
+          // Preserve the timed rest written mid-run by another actor — our
+          // in-memory snapshot predates it.
+          const freshRest = await getCampaignSettings(campaignId);
+          if (freshRest?.settings?.restUntil) {
+            settings.restUntil = freshRest.settings.restUntil;
+            settings.restReason = freshRest.settings.restReason || settings.restReason || "engine_rest_detected";
+            settings.restSetAt = freshRest.settings.restSetAt || settings.restSetAt;
+          }
+          log.info(` [campaign-rest] Email run preserving mid-run restUntil=${settings.restUntil || 'none'} for ${campaignId}`);
+        }
+        if (!pausedByAdmin && !restDetectedMidRun && !limitReached && retryablePendingCount > 0) {
           // Retryable e-mail failures are an engine condition, not a user pause.
           // Rest with a cooldown so GAS auto-resumes; 'paused' never wakes.
           finalStatus = "resting";
@@ -1404,6 +1453,8 @@ if (!String(settings.helperKeyword || "").trim()) {
         }
         if (pausedByAdmin) {
           settings.restReason = settings.restReason || "paused_by_admin";
+        } else if (restDetectedMidRun) {
+          // Leave the preserved rest reason untouched.
         } else if (limitReached) {
           settings.restReason = settings.restReason || "limit_reached";
           settings.pauseReason = settings.pauseReason || settings.restReason;
@@ -1444,7 +1495,7 @@ if (!String(settings.helperKeyword || "").trim()) {
 
         settings.analytics = analytics;
         const scopedRunAccounts = isScopedRun ? (settings.accounts || []).map(String) : null;
-        if (isScopedRun) { settings.accounts = settings._fullAccounts || settings.accounts; }
+        if (isScopedRun && settings._fullAccounts) { settings.accounts = settings._fullAccounts; }
         const restMeta = Number(settings.restUntil) ? { restUntil: Number(settings.restUntil), restReason: settings.restReason } : {};
         if (isScopedRun) {
           const scopedUpdate = {
@@ -1573,7 +1624,9 @@ if (!String(settings.helperKeyword || "").trim()) {
             searchQueries: queryList,
             maxResultsPerKeyword,
             maxRepliesPerPost,
-            requireAiForComments: !!settings.requireAiForComments,
+            // Parse properly — the old `!!` read a stored string "false" as true.
+            // Keep this identical to line 2061 and every social route.
+            requireAiForComments: settings.requireAiForComments === true || String(settings.requireAiForComments || '').toLowerCase() === 'true',
             fallbackToActivities: true,
             fallbackToDiscovery: true,
             ...extra,
@@ -1861,6 +1914,7 @@ if (!String(settings.helperKeyword || "").trim()) {
         }
 
         let pausedByAdmin = false;
+        let restDetectedMidRun = false;
         let durationExpiredMidRun = false;
         let skippedLimitCount = 0;
         let quotaStopped = false;
@@ -1942,6 +1996,20 @@ if (!String(settings.helperKeyword || "").trim()) {
             if (userId) await incrementInteractionUsage(userId, actionCount);
             log.info(` Task ${task.taskId} completed: ${result.status} (actions=${actionCount})`);
 
+            // If the user paused while this task was running, stop the whole
+            // dispatch loop. The task's finally already closed its browser, so
+            // resources are released and the campaign stays paused (no rest).
+            if (result.pausedByUser || result.stopType === 'paused') {
+                pausedByAdmin = true;
+                log.info(` [execute] Task ${task.taskId} detected user pause — stopping social dispatch (resources closed by task finally).`);
+            }
+            // A task that detected a timed rest mid-run must stop dispatch too.
+            // Do NOT mark the account WAITING — it resumes after the rest.
+            if (result.restDetected || result.stopType === 'resting') {
+                restDetectedMidRun = true;
+                log.info(` [execute] Task ${task.taskId} detected RESTING — stopping social dispatch, preserving restUntil.`);
+            }
+
             // Live-progress CSV flush after each task so the file view advances mid-run
             await flushSocialCsvSafe(`task ${task.taskId}`);
           } catch (taskError) {
@@ -1976,9 +2044,21 @@ if (!String(settings.helperKeyword || "").trim()) {
         const socialRunners = Array.from(
           { length: Math.min(maxConcurrentSocial, socialQueue.length) },
           async () => {
-            while (!pausedByAdmin && !quotaStopped && !durationExpiredMidRun) {
+            while (!pausedByAdmin && !restDetectedMidRun && !quotaStopped && !durationExpiredMidRun) {
               if (isDurationElapsed()) {
                 durationExpiredMidRun = true;
+                break;
+              }
+              // A RESTING written mid-run must stop dispatch of remaining tasks.
+              const midStop = await midRunStopReason(campaignId);
+              if (midStop === 'paused') {
+                pausedByAdmin = true;
+                log.info(` [execute] User pause detected mid-dispatch — stopping (resources closed by task finally).`);
+                break;
+              }
+              if (midStop === 'resting') {
+                restDetectedMidRun = true;
+                log.info(` [execute] RESTING detected mid-dispatch — stopping, preserving existing restUntil.`);
                 break;
               }
               const task = socialQueue.shift();
@@ -2159,11 +2239,25 @@ if (!String(settings.helperKeyword || "").trim()) {
         const limitReached = executedCount < pendingSocialTasks.length || (interactionLimit !== Infinity && executedCount >= interactionLimit) || hasHourlyRateLimits;
         let finalStatus = isNowExpired
           ? "completed"
-          : (pausedByAdmin ? "paused" : (shouldRest ? "resting" : (limitReached ? "resting" : "completed")));
-if (limitReached) settings.restReason = "limit_reached";
+          : (pausedByAdmin ? "paused" : (restDetectedMidRun ? "resting" : (shouldRest ? "resting" : (limitReached ? "resting" : "completed"))));
+if (limitReached && !restDetectedMidRun) settings.restReason = "limit_reached";
+
+        if (restDetectedMidRun) {
+          // A timed rest was written by ANOTHER actor while this run was live.
+          // Our in-memory settings snapshot is stale — re-read and preserve its
+          // restUntil so the final write cannot clobber the active cooldown.
+          const freshRest = await getCampaignSettings(campaignId);
+          if (freshRest?.settings?.restUntil) {
+            settings.restUntil = freshRest.settings.restUntil;
+            settings.restReason = freshRest.settings.restReason || settings.restReason || "engine_rest_detected";
+            settings.restSetAt = freshRest.settings.restSetAt || settings.restSetAt;
+          }
+          log.info(` [campaign-rest] Preserving mid-run restUntil=${settings.restUntil || 'none'} for ${campaignId}`);
+        }
 
         // Auto-resumable statuses require restUntil (GAS trigger). Ensure it's always set.
-        if (isRestingLikeStatus(finalStatus)) {
+        // Skip redefaulting when we just preserved a live rest from another actor.
+        if (isRestingLikeStatus(finalStatus) && !restDetectedMidRun) {
           if (!Number(settings.restUntil) || Number(settings.restUntil) <= Date.now()) {
             settings.restUntil = Date.now() + (finalStatus.toLowerCase() === "limit reached" ? restDurations.quotaMs : restDurations.errorMs);
             settings.restReason = settings.restReason || String(finalStatus).toLowerCase().replace(/\s+/g, "_");
@@ -2206,8 +2300,8 @@ if (limitReached) settings.restReason = "limit_reached";
         // Scoped runs: capture this server's subset, restore the full account
         // list before persisting (same pattern as the email path above).
         const scopedRunAccounts = isScopedRun ? (settings.accounts || []).map(String) : null;
-        if (isScopedRun) {
-          settings.accounts = settings._fullAccounts || settings.accounts;
+        if (isScopedRun && settings._fullAccounts) {
+          settings.accounts = settings._fullAccounts;
         }
         if (isScopedRun && !pausedByAdmin) {
           // Merge-write (preserves sibling scopes' _scopedCompleted records). Status flips only

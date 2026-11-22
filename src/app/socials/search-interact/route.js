@@ -222,7 +222,21 @@ async function processTask(taskRow, columnIndexes) {
             // Rate-limited: account already marked RATE_LIMITED inside runner.
             // Treat as COMPLETED-with-stop so the campaign moves to the next
             // account (the hourly window rolls and the account auto-recovers).
-            if (engagementSummary.stopType === 'hourly') {
+            // USER PAUSE wins over every other classification. The runner stops
+            // cleanly and sets pausedByUser; reporting COMPLETED here let the
+            // orchestrator overwrite the sheet's `paused` status with completed.
+            if (engagementSummary.pausedByUser || engagementSummary.stopType === 'paused') {
+                finalStatus = "PAUSED";
+                results.push({ status: 'paused', reason: engagementSummary.stopReason || 'paused_by_user' });
+                logger.info(`[processTask] ${taskId}: user pause — task PAUSED (progress saved, resources closed).`);
+            } else if (engagementSummary.restDetected || engagementSummary.stopType === 'resting') {
+                // A timed rest was written mid-run (network blip / orchestrator /
+                // GAS). Stop as RESTING, never COMPLETED — preserve the existing
+                // restUntil so GAS resumes on schedule.
+                finalStatus = "RESTING";
+                results.push({ status: 'resting', reason: engagementSummary.stopReason || 'engine_rest_detected' });
+                logger.info(`[processTask] ${taskId}: REST_DETECTED — task RESTING (progress saved, resources closed, restUntil preserved).`);
+            } else if (engagementSummary.stopType === 'hourly') {
                 finalStatus = "COMPLETED";
                 results.push({ status: 'rate_limited', reason: engagementSummary.stopReason, resumedNextCycle: true });
                 logger.info(`[processTask] ${taskId}: hourly limit — stopping this run, account resumes next hour-cycle.`);
@@ -264,7 +278,9 @@ async function processTask(taskRow, columnIndexes) {
             results = engagementSummary.results || [];
             quotaSummary = engagementSummary.quota || {};
             try { await markTagsDone(campaignId, profileId, engagementSummary.completedKeywords || []); } catch (e) { logger.warn(`[processTask] ${taskId}: tag status persist failed: ${e.message}`); }
-            if (engagementSummary.stopType === 'daily' || engagementSummary.stopType === 'monthly' || engagementSummary.stopType === 'yearly' || engagementSummary.stopType === 'cap') finalStatus = "COMPLETED";
+            if (engagementSummary.pausedByUser || engagementSummary.stopType === 'paused') { finalStatus = "PAUSED"; results.push({ status: 'paused', reason: engagementSummary.stopReason || 'paused_by_user' }); }
+            else if (engagementSummary.restDetected || engagementSummary.stopType === 'resting') { finalStatus = "RESTING"; results.push({ status: 'resting', reason: engagementSummary.stopReason || 'engine_rest_detected' }); }
+            else if (engagementSummary.stopType === 'daily' || engagementSummary.stopType === 'monthly' || engagementSummary.stopType === 'yearly' || engagementSummary.stopType === 'cap') finalStatus = "COMPLETED";
             else if (engagementSummary.stopType === 'network_error' || engagementSummary.isNetworkError) { finalStatus = "NETWORK_ERROR"; results.push({ status: 'network_error', reason: engagementSummary.stopReason || 'network_navigation_failed', resumedNextCycle: true }); }
             else if ((engagementSummary.unresolvedKeywords || []).length > 0) { finalStatus = "COMPLETED"; results.push({ status: 'network_error', reason: 'partial_unresolved_keywords', unresolvedKeywords: engagementSummary.unresolvedKeywords, resumedNextCycle: true }); }
             else if (engagementSummary.engaged === 0 && engagementSummary.failed > 0 && (engagementSummary.completedKeywords || []).length === 0) { finalStatus = "FAILED"; results.push({ status: 'failed', reason: 'all_interactions_failed' }); }
@@ -356,7 +372,7 @@ async function processTask(taskRow, columnIndexes) {
         // Centralized, failure-agnostic debug capture — runs while the page is
         // still open, best-effort, for any non-success outcome. Mirrors the
         // cookie-login debug behavior (sheet row + Drive HTML/screenshot + AI).
-        if (finalStatus && finalStatus !== "COMPLETED" && page) {
+        if (finalStatus && finalStatus !== "COMPLETED" && finalStatus !== "PAUSED" && finalStatus !== "RESTING" && page) {
             try {
                 await captureFailureDebug({
                     page,
@@ -367,7 +383,14 @@ async function processTask(taskRow, columnIndexes) {
                     operation: get('operation') || '',
                     stage: 'social-interact',
                     campaignId: get('campaignId') || '',
-                    reason: (results[0] && (results[0].error || results[0].reason)) || finalStatus,
+                    reason: (() => {
+                        // Surface captcha explicitly — the solver left the TUX
+                        // modal on-screen, so the HTML/screenshot + AI analysis
+                        // capture the exact challenge (like the TikTok login debug).
+                        const cr = (results || []).find(r => r && (r.status === 'captcha_failed' || r.reason === 'captcha_failed'));
+                        if (cr) return 'captcha_failed';
+                        return (results[0] && (results[0].error || results[0].reason)) || finalStatus;
+                    })(),
                     error: results[0]?.error,
                     details: { results: results.slice(0, 5), status: finalStatus },
                     aiTimeoutMs: 12000,
@@ -382,8 +405,12 @@ async function processTask(taskRow, columnIndexes) {
         if (browser) {
             try { await browser.close(); } catch (e) { logger.warn(`[processTask] Error closing browser: ${e.message}`); }
         }
-        // profileDir is intentionally NOT deleted here — downloadAndExtractProfile
-        // caches it for 60 min so a re-triggered run reuses it (no re-download).
+        // Delete only the unique per-launch profile copy (safe — the shared cache
+        // in webfixx_profiles/<browserId> is kept for reuse). Chromium is already
+        // closed, so no lock is held on this dir.
+        if (profileDir && /__launch_\d+_\d+$/.test(profileDir)) {
+            try { const fse = await import('fs-extra'); await fse.remove(profileDir); } catch (_) {}
+        }
 
         // Campaign direct-execute tasks have no social-tasks sheet row —
         // updateTaskRow would fail with "Unable to parse range:
@@ -416,6 +443,11 @@ async function processTask(taskRow, columnIndexes) {
         resultCount: results.length,
         results,
         quota: { ...quotaSummary, total: quotaTotal },
+        // execute-campaign's social dispatch checks these to stop the whole
+        // campaign on a user pause. Without them the pause was invisible here.
+        pausedByUser: finalStatus === "PAUSED",
+        restDetected: finalStatus === "RESTING",
+        stopType: finalStatus === "PAUSED" ? 'paused' : (finalStatus === "RESTING" ? 'resting' : null),
     };
 }
 

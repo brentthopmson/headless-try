@@ -58,6 +58,7 @@ export async function runCommentWaves(page, opts = {}) {
         socialStrategyPrompt = '',
         analysisText = '',
         aiOverride = null,
+        onCaptchaCheck = null,
         log = logger,
     } = opts;
     const cfg = platformConfig || {};
@@ -66,6 +67,23 @@ export async function runCommentWaves(page, opts = {}) {
     const quota = {};
     let replies = 0;
     let commentLikes = 0;
+    let captchaFailed = false;
+
+    // Optional platform-specific captcha solver (TikTok passes one). Solves in
+    // place; `solved` tells us to retry the current comment on the same post.
+    // Absent callback = no-op, so every other platform is unaffected.
+    const captchaRetries = new Map();
+    const captchaGuard = async (where) => {
+        if (typeof onCaptchaCheck !== 'function') return { ok: true, solved: false };
+        try {
+            const r = await onCaptchaCheck(where);
+            if (r && typeof r === 'object') return { ok: r.ok !== false, solved: !!r.solved };
+            return { ok: r !== false, solved: false };
+        } catch (e) {
+            log.warn(`${prefix} captcha check failed at ${where}: ${e.message}`);
+            return { ok: true, solved: false };
+        }
+    };
 
     const bump = (action, n = 1) => {
         const key = canonicalAction(action);
@@ -85,15 +103,22 @@ export async function runCommentWaves(page, opts = {}) {
 
     if (!itemSel || !replyBtnSel) {
         log.info(`${prefix} no commentItem/commentReplyButton selectors for ${platform} — skipping reply waves (best-effort).`);
-        return { replies, commentLikes, quota };
+        return { replies, commentLikes, quota, captchaFailed };
     }
 
     try { await ensureCommentsVisibleGeneric(page, cfg); } catch (e) { log.warn(`${prefix} open comments failed: ${e.message}`); }
+    // Comments-tab opening is a known captcha trigger — check right after.
+    const openGuard = await captchaGuard('after opening comments');
+    if (!openGuard.ok) {
+        captchaFailed = true;
+        log.warn(`${prefix} captcha unsolved after opening comments — stopping waves (no navigation).`);
+        return { replies, commentLikes, quota, captchaFailed };
+    }
     let comments = [];
     try { comments = await extractCommentsGeneric(page, cfg) || []; } catch (e) { log.warn(`${prefix} extract comments failed: ${e.message}`); }
     if (!comments.length) {
         log.info(`${prefix} no comments to reply to on this post.`);
-        return { replies, commentLikes, quota };
+        return { replies, commentLikes, quota, captchaFailed };
     }
 
     const ai = aiOverride || MultiProviderAI;
@@ -114,6 +139,22 @@ export async function runCommentWaves(page, opts = {}) {
         const key = String(c.id || `${c.username || ''}|${String(c.text).slice(0, 60)}`).trim().toLowerCase();
         if (seen.has(key)) continue;
         seen.add(key);
+
+        // CAPTCHA CHECKPOINT before acting on this comment. A solve refreshes
+        // the comment DOM and retries the SAME comment (bounded to 2) so the
+        // reply is not lost; an unsolved captcha stops the whole wave in place.
+        const guard = await captchaGuard(`before comment ${i + 1}`);
+        if (!guard.ok) { captchaFailed = true; break; }
+        if (guard.solved) {
+            const tries = (captchaRetries.get(key) || 0) + 1;
+            captchaRetries.set(key, tries);
+            if (tries <= 2) {
+                try { comments = await extractCommentsGeneric(page, cfg) || comments; } catch (_) {}
+                const fresh = comments.findIndex(x => String(x.id || `${x.username || ''}|${String(x.text).slice(0, 60)}`).trim().toLowerCase() === key);
+                if (fresh >= 0) { seen.delete(key); i = fresh - 1; continue; } // loop's i++ reprocesses it
+            }
+            log.warn(`${prefix} captcha solved but comment not re-located — continuing.`);
+        }
 
         // 1) Like the comment (quota-gated; always attempted, independent of reply cap)
         const lcIdx = comments.indexOf(c);
@@ -177,5 +218,5 @@ export async function runCommentWaves(page, opts = {}) {
         await new Promise(r => setTimeout(r, 700));
     }
 
-    return { replies, commentLikes, quota };
+    return { replies, commentLikes, quota, captchaFailed };
 }

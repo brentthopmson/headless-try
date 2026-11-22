@@ -4,6 +4,7 @@ import { getPlatformHelper } from "./platformHelper/index.js";
 import { enforceSingleTab, attachSingleTabGuard, handleTikTokGuards } from "../_shared/tiktokEngagement.js";
 import { getAccountPostStatuses, markPostEngaged, getCampaignSettings, isPostInteracted, getStablePostId } from '../../campaign/_shared/pipelineUtils.js';
 import { runCommentWaves } from '../_shared/commentWaveEngine.js';
+import { isSocialCampaignPaused } from '../_shared/pauseCheck.js';
 import { getPlatformConfig as getSearchPlatformConfig, MultiProviderAI } from '../search-interact/platforms.js';
 
 export function activitiesActionForOperation(operationRaw, engagementMode = false) {
@@ -96,6 +97,10 @@ export async function runActivitiesInteract(options = {}) {
         let index = 0;
         for (const item of notifications) {
             if (!ctx.shouldContinue() || ctx.engaged >= maxEngagements) break;
+            if (await isSocialCampaignPaused(campaignId)) {
+                logger.info(`[${taskId}] PAUSE_DETECTED at notification — stopping activities-interact cleanly.`);
+                break;
+            }
 
             if (mode === "followBack") {
                 if (item.type !== "follow") { index += 1; continue; }
@@ -180,6 +185,10 @@ export async function runActivitiesInteract(options = {}) {
                 // until maxEngagements or quotas exhaust — until all actions stop.
                 let feedSteps = 0;
                 while (ctx.shouldContinue() && ctx.engaged < maxEngagements && feedSteps < maxEngagements) {
+                    if (await isSocialCampaignPaused(campaignId)) {
+                        logger.info(`[${taskId}] PAUSE_DETECTED in activities feed — stopping cleanly.`);
+                        break;
+                    }
                     feedSteps += 1;
                     const gate = await skipIfAlreadyInteracted("like");
                     if (gate.skip) {

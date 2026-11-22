@@ -4,6 +4,7 @@ import { getPlatformHelper } from "./platformHelper/index.js";
 import { enforceSingleTab, attachSingleTabGuard, handleTikTokGuards } from "../_shared/tiktokEngagement.js";
 import { getAccountPostStatuses, markPostEngaged, getCampaignSettings, isPostInteracted, getStablePostId } from '../../campaign/_shared/pipelineUtils.js';
 import { runCommentWaves } from '../_shared/commentWaveEngine.js';
+import { isSocialCampaignPaused } from '../_shared/pauseCheck.js';
 import { getPlatformConfig as getSearchPlatformConfig, MultiProviderAI } from '../search-interact/platforms.js';
 
 const FOLLOW_OPS = new Set(["followuser", "follow", "followfromsuggested", "followfromfollowers"]);
@@ -67,6 +68,10 @@ export async function runPageInteract(options = {}) {
         detach = attachSingleTabGuard(page, `[${taskId}]`);
         for (const handle of handles) {
             if (!ctx.shouldContinue()) break;
+            if (await isSocialCampaignPaused(campaignId)) {
+                logger.info(`[${taskId}] PAUSE_DETECTED at handle ${handle} — stopping page-interact cleanly.`);
+                break;
+            }
             if (!(await ctx.check(baseAction))) break;
 
             const opened = await helper.openProfile(page, handle);

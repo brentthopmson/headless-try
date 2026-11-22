@@ -41,7 +41,7 @@ async function transcribeAudioBase64Gemini(audioBase64, mimeType = 'audio/mpeg')
     const payload = {
         contents: [{
             parts: [
-                { text: 'Transcribe this audio clip exactly as spoken. Return ONLY the transcribed words, no punctuation, no quotation marks, no explanation. Just the raw spoken text.' },
+                { text: 'This is an audio CAPTCHA code. Transcribe the spoken code EXACTLY. CRITICAL: return ONLY the code characters, with NO spaces, NO punctuation, NO quotation marks, NO explanation. Distinguish letters from digits: if you hear the letter S write S (not 5); if you hear the digit 5 write 5 (not S). Example: hearing "S R P L B" means the answer is "SRPLB".' },
                 { inlineData: { mimeType, data: audioBase64 } }
             ]
         }],
@@ -62,26 +62,82 @@ async function transcribeAudioBase64Gemini(audioBase64, mimeType = 'audio/mpeg')
 // audio mode already (the switch button reads "Image" = switch TO image).
 // Flow: read audio[src] → download → Gemini transcribe → type → Verify.
 
+// All known TikTok TUX captcha container variants. TikTok ships several shells:
+// #captcha-verify-container-main-page (older), #captcha-verify-container and
+// .captcha-verify-container (newer), plus the always-present switch button.
+export const TIKTOK_CAPTCHA_SELECTORS = [
+    '#captcha-verify-container-main-page',
+    '#captcha-verify-container',
+    '.captcha-verify-container',
+];
+
 export async function isTikTokCaptchaVisible(page) {
     try {
-        return await page.evaluate(() => {
-            const el = document.querySelector('#captcha-verify-container-main-page');
-            if (!el) return false;
-            const rect = el.getBoundingClientRect();
-            return rect.width > 0 && rect.height > 0;
-        });
+        return await page.evaluate((sels) => {
+            const isVisible = (el) => {
+                if (!el) return false;
+                const r = el.getBoundingClientRect();
+                if (r.width < 1 || r.height < 1) return false;
+                const cs = getComputedStyle(el);
+                return cs.visibility !== 'hidden' && cs.display !== 'none';
+            };
+            for (const sel of sels) {
+                if (isVisible(document.querySelector(sel))) return true;
+            }
+            // Fallback: the switch button is unique to the captcha widget.
+            if (isVisible(document.querySelector('#captcha_switch_button'))) return true;
+            // Heading text used by both puzzle and audio variants.
+            const headings = Array.from(document.querySelectorAll('h1,h2,h3,[role="heading"],div'));
+            if (headings.some(el => isVisible(el) && /^(Verify identity|Drag the puzzle piece into place|Play the audio and enter the code you hear|Slide to complete the puzzle)/i.test((el.textContent || '').trim().slice(0, 80)))) return true;
+            return false;
+        }, TIKTOK_CAPTCHA_SELECTORS);
     } catch (e) {
+        return false;
+    }
+}
+
+// Find the first visible captcha container from the known variants.
+async function findCaptchaRoot(page) {
+    for (const sel of TIKTOK_CAPTCHA_SELECTORS) {
+        const found = await page.evaluate((s) => {
+            const el = document.querySelector(s);
+            if (!el) return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+        }, sel).catch(() => false);
+        if (found) return sel;
+    }
+    return null;
+}
+
+// Real mouse click at the element's center (TUX ignores synthetic .click() on some builds).
+async function realClick(page, selector, logPrefix, label) {
+    try {
+        const handle = await page.$(selector);
+        if (!handle) return false;
+        const box = await handle.boundingBox();
+        if (!box) { await handle.dispose().catch(() => {}); return false; }
+        await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+        await handle.dispose().catch(() => {});
+        logger.info(`${logPrefix} Real-clicked ${label} at (${Math.round(box.x + box.width / 2)},${Math.round(box.y + box.height / 2)})`);
+        return true;
+    } catch (e) {
+        logger.warn(`${logPrefix} Real-click ${label} failed: ${e.message}`);
         return false;
     }
 }
 
 export async function solveTikTokAudioCaptcha(page, logPrefix = '[tiktokCaptcha]') {
     const MAX_ATTEMPTS = 3;
+    const containerSel = await findCaptchaRoot(page) || TIKTOK_CAPTCHA_SELECTORS[0];
+    logger.info(`${logPrefix} Solving captcha (container=${containerSel})`);
+    let replayedSameAudio = false; // one replay of the same clip before spending a new signed URL
     try {
         for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             logger.info(`${logPrefix} Audio captcha attempt ${attempt}/${MAX_ATTEMPTS}...`);
+            if (!(await isTikTokCaptchaVisible(page))) { logger.info(`${logPrefix} Captcha gone before attempt — treating as solved.`); return true; }
 
-            // Ensure audio mode: switch button label "Audio" means we're on image → click to audio.
+            // Ensure AUDIO mode. Switch button label "Audio" = currently on IMAGE → click to switch to audio.
             try {
                 const switchLabel = await page.evaluate(() => {
                     const btn = document.querySelector('#captcha_switch_button');
@@ -89,104 +145,142 @@ export async function solveTikTokAudioCaptcha(page, logPrefix = '[tiktokCaptcha]
                     return label ? label.textContent.trim() : null;
                 });
                 if (switchLabel === 'Audio') {
-                    await page.evaluate(() => document.querySelector('#captcha_switch_button')?.click());
-                    await new Promise(r => setTimeout(r, 1500));
+                    const ok = await realClick(page, '#captcha_switch_button', logPrefix, 'Audio switch');
+                    if (!ok) await page.evaluate(() => document.querySelector('#captcha_switch_button')?.click()).catch(() => {});
+                    await new Promise(r => setTimeout(r, 1800));
                     logger.info(`${logPrefix} Switched from image to audio mode.`);
+                } else {
+                    logger.info(`${logPrefix} Already in audio mode (switch label=${switchLabel}).`);
                 }
-            } catch (e) { /* already on audio or no switch */ }
+            } catch (e) { logger.warn(`${logPrefix} switch check failed: ${e.message}`); }
 
-            // Read audio src (present with preload=none; may need a refresh).
-            let audioUrl = await page.evaluate(() => {
-                const el = document.querySelector('#captcha-verify-container-main-page audio');
-                return el ? el.getAttribute('src') : null;
-            });
+            // Read audio src (preload=none; click Play to force load if absent).
+            const readAudioUrl = () => page.evaluate((sel) => {
+                const el = document.querySelector(`${sel} audio`);
+                return el ? (el.getAttribute('src') || el.src) : null;
+            }, containerSel).catch(() => null);
+            const clickPlay = () => realClick(page, `${containerSel} button[aria-label="Play"], #captcha-verify-container button[aria-label="Play"]`, logPrefix, 'Play').catch(() => false);
+            // After Refresh the old signed URL stays in the DOM briefly. Reading
+            // it immediately gives a stale signature → instant download failures.
+            // Wait until the <audio src> actually changes.
+            const refreshChallenge = async () => {
+                const before = await readAudioUrl();
+                await realClick(page, '#captcha_refresh_button', logPrefix, 'Refresh').catch(() => false);
+                for (let w = 0; w < 12; w++) {
+                    await new Promise(r => setTimeout(r, 400));
+                    const now = await readAudioUrl();
+                    if (now && now !== before) { logger.info(`${logPrefix} New audio URL after refresh.`); return now; }
+                }
+                return await readAudioUrl();
+            };
+
+            let audioUrl = await readAudioUrl();
             if (!audioUrl) {
-                // Click Play to force load, then re-read.
-                await page.evaluate(() => {
-                    const play = document.querySelector('#captcha-verify-container-main-page button[aria-label="Play"]');
-                    play?.click();
-                }).catch(() => {});
+                await clickPlay();
                 await new Promise(r => setTimeout(r, 1500));
-                audioUrl = await page.evaluate(() => {
-                    const el = document.querySelector('#captcha-verify-container-main-page audio');
-                    return el ? el.getAttribute('src') : null;
-                });
+                audioUrl = await readAudioUrl();
             }
             if (!audioUrl) {
-                logger.warn(`${logPrefix} No audio src found in captcha container.`);
-                // Refresh for a new challenge.
-                await page.evaluate(() => document.querySelector('#captcha_refresh_button')?.click()).catch(() => {});
-                await new Promise(r => setTimeout(r, 1500));
-                continue;
+                logger.warn(`${logPrefix} No audio src found in captcha container — refreshing challenge.`);
+                audioUrl = await refreshChallenge();
+                if (!audioUrl) continue;
             }
             logger.info(`${logPrefix} Audio URL obtained (${audioUrl.length} chars).`);
 
-            // Download + transcribe via Gemini.
-            const audioResp = await axios.get(audioUrl, { responseType: 'arraybuffer', timeout: 15000 }).catch(() => null);
+            // Download + transcribe via Gemini. A signed URL can go stale after
+            // several refreshes — click Play and re-read once before giving up.
+            let audioResp = await axios.get(audioUrl, { responseType: 'arraybuffer', timeout: 15000 }).catch(() => null);
             if (!audioResp || !audioResp.data) {
-                logger.warn(`${logPrefix} Failed to download captcha audio.`);
-                continue;
+                await clickPlay();
+                await new Promise(r => setTimeout(r, 1200));
+                const fresh = await readAudioUrl();
+                if (fresh && fresh !== audioUrl) {
+                    audioUrl = fresh;
+                    logger.info(`${logPrefix} Retrying download with refreshed audio URL.`);
+                    audioResp = await axios.get(audioUrl, { responseType: 'arraybuffer', timeout: 15000 }).catch(() => null);
+                }
             }
+            if (!audioResp || !audioResp.data) { logger.warn(`${logPrefix} Failed to download captcha audio.`); continue; }
             const audioBase64 = Buffer.from(audioResp.data).toString('base64');
             let transcribed = '';
-            try {
-                transcribed = await transcribeAudioBase64Gemini(audioBase64);
-            } catch (e) {
-                logger.error(`${logPrefix} Gemini transcription failed: ${e.message}`);
-                continue;
-            }
-            if (!transcribed) {
-                logger.warn(`${logPrefix} Gemini returned empty transcription.`);
-                continue;
-            }
-            // Strip quotes/punctuation the model sometimes adds.
-            const answer = transcribed.replace(/["'.!?]/g, '').trim();
-            logger.info(`${logPrefix} Audio transcribed: "${answer}"`);
+            try { transcribed = await transcribeAudioBase64Gemini(audioBase64); }
+            catch (e) { logger.error(`${logPrefix} Gemini transcription failed: ${e.message}`); continue; }
+            if (!transcribed) { logger.warn(`${logPrefix} Gemini returned empty transcription.`); continue; }
+            // TikTok wants a compact code ("SRPLB"), not spaced letters
+            // ("S R P L B"). Strip ALL non-alphanumerics before typing.
+            const answer = transcribed.replace(/[^A-Za-z0-9]/g, '').trim();
+            logger.info(`${logPrefix} Audio transcribed: "${transcribed.trim()}" → answer "${answer}"`);
+            if (!answer) { logger.warn(`${logPrefix} Empty answer after normalization — refreshing.`); audioUrl = await refreshChallenge(); continue; }
 
-            // Type into the input (clear first via the clear button if present).
-            await page.evaluate((text) => {
-                const input = document.querySelector('#captcha-verify-container-main-page input.TUXTextInputCore-input, #captcha-verify-container-main-page input[placeholder="Enter what you hear"]');
-                if (!input) return;
+            // Type into the input via React-compatible native setter.
+            // NOTE: page.evaluate forwards only ONE argument to the page
+            // function — pass { text, sel } as a single object (the old two-arg
+            // form left `sel` undefined and worked only via the global fallback).
+            const typed = await page.evaluate(({ text, sel }) => {
+                const input = document.querySelector(`${sel} input.TUXTextInputCore-input, ${sel} input[placeholder="Enter what you hear"], input[placeholder="Enter what you hear"]`);
+                if (!input) return null;
                 const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-                if (setter) {
-                    setter.call(input, '');
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                    setter.call(input, text);
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                } else {
-                    input.focus();
-                    input.value = text;
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                }
-            }, answer);
-            logger.info(`${logPrefix} Typed transcription into captcha input.`);
-            await new Promise(r => setTimeout(r, 500));
+                setter ? setter.call(input, text) : (input.value = text);
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                return input.value;
+            }, { text: answer, sel: containerSel });
+            logger.info(`${logPrefix} Typed transcription into captcha input (value="${typed}").`);
+            await new Promise(r => setTimeout(r, 600));
 
-            // Click Verify.
-            await page.evaluate(() => {
-                const buttons = Array.from(document.querySelectorAll('#captcha-verify-container-main-page button'));
-                const verify = buttons.find(b => {
-                    const label = b.querySelector('.TUXButton-label');
-                    return label && label.textContent.trim() === 'Verify';
+            // Wait for Verify to become ENABLED (was the failure: clicking a disabled button).
+            let verifyEnabled = false;
+            for (let w = 0; w < 10; w++) {
+                verifyEnabled = await page.evaluate((sel) => {
+                    const buttons = Array.from(document.querySelectorAll(`${sel} button, button`));
+                    const verify = buttons.find(b => {
+                        const label = b.querySelector('.TUXButton-label');
+                        return label && label.textContent.trim() === 'Verify';
+                    });
+                    return !!verify && verify.getAttribute('aria-disabled') !== 'true' && !verify.classList.contains('TUXButton--disabled');
+                }, containerSel).catch(() => false);
+                if (verifyEnabled) break;
+                await new Promise(r => setTimeout(r, 400));
+            }
+            logger.info(`${logPrefix} Verify button ${verifyEnabled ? 'ENABLED' : 'STILL DISABLED'}.`);
+            if (!verifyEnabled) {
+                logger.warn(`${logPrefix} Verify stayed disabled (transcription likely not accepted) — refreshing challenge.`);
+                audioUrl = await refreshChallenge();
+                continue;
+            }
+
+            // Click Verify with a REAL mouse click, locating it by its label text.
+            const verifyClicked = await page.evaluate((sel) => {
+                const verify = Array.from(document.querySelectorAll(`${sel} button`)).find(b => {
+                    const l = b.querySelector('.TUXButton-label');
+                    return l && l.textContent.trim() === 'Verify';
                 });
-                verify?.click();
-            });
+                if (!verify) return false;
+                verify.setAttribute('data-captcha-verify', '1');
+                return true;
+            }, containerSel).catch(() => false);
+            if (verifyClicked) {
+                await realClick(page, 'button[data-captcha-verify="1"]', logPrefix, 'Verify');
+            }
             logger.info(`${logPrefix} Clicked Verify. Waiting for result...`);
-            await new Promise(r => setTimeout(r, 4000));
+            await new Promise(r => setTimeout(r, 4500));
 
-            const stillVisible = await isTikTokCaptchaVisible(page);
-            if (!stillVisible) {
-                logger.info(`${logPrefix} Captcha SOLVED.`);
+            if (!(await isTikTokCaptchaVisible(page))) {
+                logger.info(`${logPrefix} Captcha SOLVED on attempt ${attempt}.`);
                 return true;
             }
-
+            // A wrong answer is often just a bad transcription — replay the
+            // SAME clip once (no new signed URL) before refreshing.
+            if (!replayedSameAudio) {
+                replayedSameAudio = true;
+                logger.warn(`${logPrefix} Attempt ${attempt} rejected the answer — replaying same audio once before refresh.`);
+                await clickPlay();
+                await new Promise(r => setTimeout(r, 1200));
+                continue;
+            }
             logger.warn(`${logPrefix} Attempt ${attempt} failed (captcha still visible). Refreshing...`);
-            await page.evaluate(() => document.querySelector('#captcha_refresh_button')?.click()).catch(() => {});
-            await new Promise(r => setTimeout(r, 1500));
+            audioUrl = await refreshChallenge();
         }
-
-        // Final fail → close the captcha and report.
-        await page.evaluate(() => document.querySelector('#captcha_close_button')?.click()).catch(() => {});
         logger.warn(`${logPrefix} All ${MAX_ATTEMPTS} attempts failed.`);
         return false;
     } catch (err) {
@@ -235,8 +329,11 @@ async function classifyPageState(page, s) {
                 const rect = el.getBoundingClientRect();
                 return rect.width > 0 && rect.height > 0;
             };
-            // Captcha first — it overlays everything.
-            if (visible(document.querySelector('#captcha-verify-container-main-page'))) return 'captcha';
+            // Captcha first — it overlays everything. Match all TUX variants.
+            for (const cs of ['#captcha-verify-container-main-page', '#captcha-verify-container', '.captcha-verify-container']) {
+                if (visible(document.querySelector(cs))) return 'captcha';
+            }
+            if (visible(document.querySelector('#captcha_switch_button'))) return 'captcha';
             // Logged-out login modal.
             const loginTitle = document.querySelector('h2[data-e2e="login-title"]');
             if (loginTitle && loginTitle.textContent.includes('Log in')) return 'logged_out';
@@ -451,22 +548,28 @@ export async function navigateAndWait(page, url, s, opts = {}) {
 
         if (navError) {
             logger.warn(`${logPrefix} Navigation to ${label} failed (attempt ${attempt}/2): ${navError.message}`);
-            // Check if despite the error (e.g. Navigation timeout), the page is on target
-            try {
-                const currentUrl = page.url() || '';
-                const onTarget = targetAweme
-                    ? currentUrl.includes(targetAweme)
-                    : (String(url).includes('/search')
-                        ? currentUrl.includes('/search')
-                        : (/tiktok\.com\/@[^/]+\/(photo|video)\//.test(currentUrl)));
-                if (onTarget) {
-                    logger.info(`${logPrefix} Navigation timeout on ${label}, but browser reached target URL (${currentUrl}). Continuing.`);
-                    navError = null;
-                    break;
-                }
-            } catch (_) {}
+            const isDetached = /detached Frame|context was destroyed/i.test(navError.message || '');
+            // Check if despite the error (e.g. Navigation timeout), the page is on target.
+            // CRITICAL: never accept a stale URL as success when the goto failed with a
+            // detached frame — that masks the dead frame and burns every remaining
+            // keyword against it (the page.url() still shows the PREVIOUS /search URL).
+            if (!isDetached) {
+                try {
+                    const currentUrl = page.url() || '';
+                    const onTarget = targetAweme
+                        ? currentUrl.includes(targetAweme)
+                        : (String(url).includes('/search')
+                            ? currentUrl.includes('/search')
+                            : (/tiktok\.com\/@[^/]+\/(photo|video)\//.test(currentUrl)));
+                    if (onTarget) {
+                        logger.info(`${logPrefix} Navigation timeout on ${label}, but browser reached target URL (${currentUrl}). Continuing.`);
+                        navError = null;
+                        break;
+                    }
+                } catch (_) {}
+            }
 
-            if (navError.message && (navError.message.includes('detached Frame') || navError.message.includes('context was destroyed'))) {
+            if (isDetached) {
                 // In-flight navigation or frame swap destroyed execution context.
                 // Same-page retries keep hitting the dead frame, so navigate to
                 // about:blank to force a fresh frame before the retry goto.
@@ -562,8 +665,27 @@ export async function readCommentsPanelCount(page) {
     }
 }
 
-export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]', expectedCount = null) {
+export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]', expectedCount = null, captchaCheck = null) {
     try {
+        // USER-OBSERVED (Nov 2026): the TUX captcha (slide puzzle / audio) pops
+        // at the exact moment the Comments tab is clicked. The caller's guard
+        // runs BEFORE that click and cannot see it, so the caller passes a
+        // callback that solves it in place and blocks here (no navigation).
+        let captchaBlocked = false;
+        const captchaAbort = () => ({ ok: false, state: null, items: 0, reason: 'captcha_failed' });
+        const guardCaptcha = async (where) => {
+            if (captchaBlocked || typeof captchaCheck !== 'function') return !captchaBlocked;
+            let res;
+            try { res = await captchaCheck(where); }
+            catch (e) { logger.warn(`${logPrefix} captcha check failed at ${where}: ${e.message}`); return true; }
+            const ok = res && typeof res === 'object' ? res.ok !== false : res !== false;
+            if (!ok) {
+                captchaBlocked = true;
+                logger.warn(`${logPrefix} CAPTCHA_UNSOLVED at ${where} — aborting comments phase (no navigation).`);
+            }
+            return ok;
+        };
+
         // Clear any cookie banner first — it overlays the composer/submit.
         await dismissCookieBanner(page, logPrefix);
         const COMPOSER = "div[data-e2e='comment-text'][contenteditable='true'], div[data-key-interaction='comment_input']";
@@ -591,6 +713,9 @@ export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]'
             let snap = await probe();
             while (Date.now() < deadline && !snap.state) {
                 await new Promise(r => setTimeout(r, 400));
+                // Captcha can appear slightly AFTER the tab click, while the
+                // comment list is still loading. Detect + solve here too.
+                if (!(await guardCaptcha('while comments load'))) return snap;
                 snap = await probe();
             }
             return snap;
@@ -705,10 +830,15 @@ export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]'
                 return { ok: false, state: null, items: 0, reason: 'comments_tab_not_found' };
             }
             logger.info(`${logPrefix} Opened comments. Expected ${expectReal ? expectedCount : '?'} comments.`);
+            // USER-OBSERVED: captcha is triggered by this first click in some
+            // sessions. Check IMMEDIATELY — the pre-click guard cannot see it.
+            if (!(await guardCaptcha('right after Comments-tab click'))) return captchaAbort();
             // First click may have activated "You may like" — click Comments again.
             await new Promise(r => setTimeout(r, 1400));
             const reClicked = await clickTab('Comments');
             if (reClicked) logger.info(`${logPrefix} Second Comments-tab click (first may have opened "You may like").`);
+            // The second tab click is another known trigger point.
+            if (!(await guardCaptcha('after second Comments-tab click'))) return captchaAbort();
             // Action-bar count was 0 (common on photo posts) → read the panel
             // header ("23.1K comments") once the tab is active. Real count
             // flips expectReal so the poll requires actual list items.
@@ -724,6 +854,7 @@ export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]'
 
         // Patient wait for real comment items (or a valid non-real state).
         snap = await poll(15000);
+        if (captchaBlocked) return captchaAbort();
         if (snap.state) {
             const composerOk = snap.state === 'composer' ? true : await ensureComposer();
             logger.info(`${logPrefix} Comments panel ready (${snap.state}${snap.items ? `, ${snap.items} items` : ''}, composer=${composerOk}).`);
@@ -735,6 +866,7 @@ export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]'
             logger.warn(`${logPrefix} 0 items after 15s (expected ${expectedCount}) — trying comment-icon click.`);
             await clickCommentIcon();
             snap = await poll(6000);
+            if (captchaBlocked) return captchaAbort();
             if (snap.state) {
                 logger.info(`${logPrefix} Comments loaded after comment-icon click (${snap.items} items).`);
                 return { ok: true, state: snap.state, items: snap.items };
@@ -747,6 +879,7 @@ export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]'
             for (let i = 0; i < 3 && !snap.state; i++) {
                 await DOMHelpers.humanScroll(page, "div[class*='DivCommentMain'], div[class*='DivTabContainer'], div[class*='RightPanel']", { totalPx: 500 }).catch(() => false);
                 snap = await poll(3000);
+                if (captchaBlocked) return captchaAbort();
             }
             if (snap.state) {
                 logger.info(`${logPrefix} Comments loaded after panel scroll (${snap.items} items).`);
@@ -763,6 +896,7 @@ export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]'
             const reClicked = await clickTab('Comments');
             if (reClicked) {
                 snap = await poll(6000);
+                if (captchaBlocked) return captchaAbort();
                 if (snap.state) {
                     logger.info(`${logPrefix} Comments loaded after tab toggle (${snap.items} items).`);
                     return { ok: true, state: snap.state, items: snap.items };
@@ -789,6 +923,7 @@ export async function ensureCommentsVisible(page, logPrefix = '[tiktokComments]'
         await new Promise(r => setTimeout(r, 1300));
         await clickTab('Comments');
         snap = await poll(6000);
+        if (captchaBlocked) return captchaAbort();
         if (snap.state) {
             const composerOk = snap.state === 'composer' ? true : await ensureComposer();
             logger.info(`${logPrefix} Comments panel ready after tab toggle (${snap.state}${snap.items ? `, ${snap.items} items` : ''}, composer=${composerOk}).`);

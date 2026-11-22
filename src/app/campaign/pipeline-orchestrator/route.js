@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
 import { getSetting } from "../../../utils/settingsCache.js";
 import { getSelfUrl, getSelfUrlWithFallback, getSelfId, getInternalSelfUrl, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
-import { getCampaignSettings, updateCampaignSettings, isCampaignPaused, classifyStageFailure, recordStageError, clearStageError, getRetryBudget, isRestCooldownActive, setEngineRest, getRestDurations } from "../_shared/pipelineUtils.js";
+import { getCampaignSettings, updateCampaignSettings, isCampaignPaused, classifyStageFailure, recordStageError, clearStageError, getRetryBudget, isRestCooldownActive, setEngineRest, getRestDurations, reconcileCampaignAccounts } from "../_shared/pipelineUtils.js";
 import { acquireCampaignLock, releaseCampaignLock } from "../../../utils/campaignLock.js";
 import { checkUserConcurrentCampaigns, registerActiveCampaignRun, unregisterActiveCampaignRun, getActiveCampaignIdsInProcess } from "../../../utils/campaignConcurrency.js";
 import { getSheetDataApi, updateSheetRowApi } from "../../api/googlesheets.js";
@@ -51,6 +51,16 @@ const STAGE_CONFIG = {
 
 function resolveCurrentStage(settings) {
   const channel = settings.channel || "email";
+  // SOCIAL INTERACTIONS-ONLY: the social interaction work lives entirely inside
+  // /campaign/execute-campaign. The frontend disables the "Execute" checkbox for
+  // interactions-only campaigns, leaving executeStaged=false while
+  // interactionStaged=true. With 'execute' being the ONLY stage social campaigns
+  // consider, that made every stage skip -> false "All enabled stages complete"
+  // and the campaign never triggered (e.g. CMP-D12EB2A2). Treat interaction-only
+  // social campaigns as having execute staged so they actually dispatch and run.
+  const socialInteractionsOnly = channel === "social"
+    && settings.executeStaged !== true
+    && (settings.interactionStaged === true || String(settings.campaignMode || "") === "interactions-only");
   for (const stage of STAGE_ORDER) {
     // Social campaigns execute in one step (interactions run inside the
     // execute stage) — mirror the frontend, which hides validate/enrich/
@@ -58,7 +68,9 @@ function resolveCurrentStage(settings) {
     if (channel === "social" && stage !== "execute") continue;
 
     const config = STAGE_CONFIG[stage];
-    const isStaged = settings[config.stagedField] === true;
+    // For social interactions-only campaigns, force the 'execute' stage as staged.
+    let isStaged = settings[config.stagedField] === true;
+    if (socialInteractionsOnly && stage === "execute") isStaged = true;
     if (!isStaged) continue;
 
     if (config.statusField) {
@@ -86,7 +98,18 @@ function resolveCurrentStage(settings) {
 
     if (stage === "execute") {
       const campaignStatus = settings._campaignStatus;
-      if (campaignStatus === "completed" || campaignStatus === "paused" || campaignStatus === "Limit Reached") continue;
+      // Only a genuine 'completed' is terminal. A 'paused' row that has a staged
+      // idle/retry execute step must RESUME, not be skipped into the false
+      // "All enabled stages complete" state (which made paused campaigns look
+      // done while no work had actually run).
+      if (campaignStatus === "completed" || campaignStatus === "Limit Reached") continue;
+      if (campaignStatus === "paused") {
+        const st = settings[config.statusField];
+        if (st === "idle" || st === "retry" || st === undefined || st === null || st === "") {
+          return { stage, action: "run" };
+        }
+        continue;
+      }
     }
 
     return { stage, action: "run" };
@@ -334,6 +357,9 @@ export async function POST(request) {
 
     const { settings } = campaignData;
     settings._campaignStatus = campaignData.status;
+    // Reconcile stale account switches BEFORE any stage decision so a removed
+    // account can never be reintroduced/restored by downstream engines.
+    await reconcileCampaignAccounts(campaignId, settings);
     const restDurations = await getRestDurations(); // SETTINGS-driven, cached
 
     // GAS is the resume conductor. Never dispatch a stage while a timed rest
@@ -683,6 +709,16 @@ export async function POST(request) {
           const interactConfig = STAGE_CONFIG.interact;
           const interactStatus = settings[interactConfig.statusField];
           if (!interactStatus || interactStatus === "idle") {
+            // Re-check rest right before launching: a failure/relay write may
+            // have put the campaign into a timed rest during this invocation.
+            try {
+              const fresh = await getCampaignSettings(campaignId);
+              if (isRestCooldownActive({ status: fresh?.status, settings: fresh?.settings || {} })) {
+                const remaining = Number(fresh?.settings?.restUntil) - Date.now();
+                log.info(`[engine-rest] Skipping parallel interact trigger — campaign resting (${remaining}ms remaining).`);
+                return NextResponse.json({ success: true, skipped: true, resting: true, restRemainingMs: remaining });
+              }
+            } catch (_) { /* non-fatal: fall through to existing behavior */ }
             // Fire-and-forget: trigger interact in background. Use the SAME
             // routing as triggerStage so email watchers go to the AI inbox
             // watcher instead of the legacy CSV monitor (which finds 0 rows

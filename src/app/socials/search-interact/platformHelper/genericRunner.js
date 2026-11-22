@@ -15,6 +15,7 @@ import { capturePostFrame } from '../../_shared/routeHelper.js';
 import limitsCore from '../../_shared/limitsCore.js';
 import { navigateAndWaitGeneric, isPostLikedGeneric, isConfidentlyUnlikedGeneric, genericLike, ensureCommentsVisibleGeneric, extractCommentsGeneric, postCommentGeneric } from './GenericHelpers.js';
 import { runCommentWaves } from '../../_shared/commentWaveEngine.js';
+import { isSocialCampaignPaused, getSocialStopReason } from '../../_shared/pauseCheck.js';
 
 function stripMentions(text) {
     return String(text || '').replace(/@[A-Za-z0-9._-]+/g, ' ').replace(/@+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -121,8 +122,21 @@ export async function runGenericEngagement(page, opts) {
         } catch (e) { logger.warn(`[generic:${taskId}] extractor failed (${platform} ${kw}): ${e.message}`); return []; }
     };
 
+    let pausedByUser = false;
+    let restDetected = false;
     for (const kw of keywords) {
         if (stopType) break;
+        const stopReasonNow = await getSocialStopReason(campaignId);
+        if (stopReasonNow === 'paused' || await isSocialCampaignPaused(campaignId)) {
+            stopType = 'paused'; stopReason = `paused_by_user_at_${kw}`; pausedByUser = true;
+            logger.info(`[generic:${taskId}] PAUSE_DETECTED at keyword "${kw}" — stopping task cleanly.`);
+            break;
+        }
+        if (stopReasonNow === 'resting') {
+            stopType = 'resting'; stopReason = `engine_rest_detected_at_${kw}`; restDetected = true;
+            logger.info(`[generic:${taskId}] REST_DETECTED at keyword "${kw}" — stopping cleanly (account stays ACTIVE for resume).`);
+            break;
+        }
         if (stopAfterHours > 0 && (Date.now() - startedAt) / 3600000 >= stopAfterHours) { stopType = 'time'; stopReason = 'interaction_stop_after_hours'; break; }
         try {
             const videos = await searchResults(kw);
@@ -134,14 +148,31 @@ export async function runGenericEngagement(page, opts) {
             }
             logger.info(`[generic:${taskId}] "${kw}": ${videos.length} result(s), cap=${maxResultsPerKeyword}`);
             const slice = videos.slice(0, maxResultsPerKeyword);
-            let kwDone = true;
+            // A keyword is done ONLY with real evidence: at least one verified
+            // engagement on a post, or a genuinely settled empty-search signal.
+            // An empty extractor result (failed/unsettled page) must NOT mark the
+            // tag done — that was the false "all tags complete" bug.
+            let kwEngaged = 0;
+            let kwStopped = false;
             for (let i = 0; i < slice.length; i++) {
                 const v = slice[i];
                 const st = await engageOne(page, v, i, kw);
-                if (st === 'stop') { kwDone = false; break; }
-                if (st === 'ok') engaged++; else failed++;
+                if (st === 'stop') { kwStopped = true; break; }
+                if (st === 'ok') { engaged++; kwEngaged++; } else failed++;
             }
-            if (kwDone) completedKeywords.push(kw);
+            if (kwEngaged > 0) {
+                completedKeywords.push(kw);
+                results.push({ keyword: kw, status: 'engaged', count: kwEngaged });
+                logger.info(`[generic:${taskId}] Keyword "${kw}" completed (${kwEngaged} post(s) engaged).`);
+            } else if (videos.length === 0) {
+                // Extractor returned zero posts — cannot confirm this was a real
+                // empty result vs a failed page. Leave pending.
+                unresolvedKeywords.push(kw);
+                results.push({ keyword: kw, status: 'page_unsettled', reason: 'zero_results_unconfirmed' });
+                logger.warn(`[generic:${taskId}] Keyword "${kw}" NOT completed — zero results could not be confirmed as a genuine empty search.`);
+            } else {
+                logger.warn(`[generic:${taskId}] Keyword "${kw}" NOT completed — ${videos.length} post(s) but none engaged${kwStopped ? ' (stopped)' : ''}.`);
+            }
         } catch (e) {
             logger.warn(`[generic:${taskId}] keyword "${kw}" failed: ${e.message} — stays pending.`);
             unresolvedKeywords.push(kw);
@@ -149,7 +180,7 @@ export async function runGenericEngagement(page, opts) {
         }
     }
     const isNetworkError = unresolvedKeywords.length > 0 && unresolvedKeywords.length === keywords.length && engaged === 0;
-    return { results, quota: quotaTally, engaged, failed: failed + unresolvedKeywords.length, stopType: isNetworkError ? 'network_error' : stopType, stopReason: isNetworkError ? 'all_keywords_unsettled' : stopReason, completedKeywords, unresolvedKeywords: [...new Set(unresolvedKeywords)], captchaFailed: false, isNetworkError };
+    return { results, quota: quotaTally, engaged, failed: failed + unresolvedKeywords.length, stopType: isNetworkError ? 'network_error' : stopType, stopReason: isNetworkError ? 'all_keywords_unsettled' : stopReason, completedKeywords, unresolvedKeywords: [...new Set(unresolvedKeywords)], captchaFailed: false, isNetworkError, pausedByUser, restDetected };
 
     async function engageOne(page, v, idx, kw) {
         const label = `[generic:${taskId}] ${platform} ${idx + 1}: ${String(v.url || '').slice(0, 80)}`;
