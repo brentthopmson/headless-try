@@ -1204,13 +1204,14 @@ export async function runSearchInteractEngagement(page, opts) {
                         // solve in place before posting; unsolved → stop cleanly.
                         if (!(await ensureClearToAct(`post ${rIdx + 1} before main comment`))) break;
                         let postRes = await postCommentVerified(page, s, generatedComment, `[engage:${taskId}]`).catch(err => ({ posted: false, reason: err.message }));
-                        // Composer-missing recovery (user directive): the panel
-                        // can close between ensureCommentsVisible and the post
-                        // (SPA re-render). Re-enter ensureCommentsVisible — its
-                        // re-entry path clicks the Comments tab / action-rail
-                        // comment icon to reopen, or the input container to
-                        // mount the DraftEditor — then retry ONCE.
-                        if (!postRes.posted && (postRes.reason === 'composer-not-found' || postRes.reason === 'composer-missing-after-type')) {
+                        // Composer-missing / swallowed-submit recovery: the panel
+                        // can close or re-render between ensureCommentsVisible and
+                        // the post (SPA re-render + long AI delay), or the submit
+                        // click can be swallowed (composer-not-cleared). Re-enter
+                        // ensureCommentsVisible to re-mount the DraftEditor, then
+                        // retry ONCE. (postCommentVerified already tries DOM-click
+                        // and Enter fallbacks internally before returning this.)
+                        if (!postRes.posted && (postRes.reason === 'composer-not-found' || postRes.reason === 'composer-missing-after-type' || postRes.reason === 'composer-not-cleared')) {
                             logger.warn(`[engage:${taskId}] Main composer missing (${postRes.reason}) — reopening comments panel and retrying once.`);
                             if (!stillOnTarget()) {
                                 logger.warn(`[engage:${taskId}] Page drifted during retry — abandoning post.`);

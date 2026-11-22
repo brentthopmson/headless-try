@@ -522,8 +522,21 @@ export async function launchBrowserWithSession(cookieJSON, headless = undefined,
         let socialProfileHasSession = true; // default: trust profile unless probe proves otherwise
         if (options.userDataDir && isSocial) {
             try {
-                const allCookies = await page.context().cookies();
-                const matching = allCookies.filter(c => socialProbe.domains.some(d => String(c.domain || '').toLowerCase().includes(d)));
+                // Puppeteer: page.cookies(url) returns cookies for that URL.
+                // (page.context() is a Playwright API — not available here.)
+                let matching = [];
+                for (const domain of socialProbe.domains) {
+                    const urlCookies = await page.cookies(`https://${domain}/`).catch(() => []);
+                    matching = matching.concat(urlCookies || []);
+                }
+                // Dedup by name+domain in case a cookie is returned for multiple probe URLs.
+                const seen = new Set();
+                matching = matching.filter(c => {
+                    const k = `${c.name}|${c.domain}`;
+                    if (seen.has(k)) return false;
+                    seen.add(k);
+                    return true;
+                });
                 const hasAuth = socialProbe.auth.length === 0
                     ? matching.length > 0
                     : matching.some(c => socialProbe.auth.includes(c.name));
@@ -1510,9 +1523,12 @@ export async function postCommentVerified(page, s, text, logPrefix = '', opts = 
         if (r.width < 1 || r.height < 1) return { ed: null, submit: null };
         // Scoped submit: same DivTextInputWithPostContainer as the editor.
         const wrapper = ed.closest("div[class*='DivTextInputWithPostContainer']") || ed.parentElement;
+        // Main POST must use ONLY comment-post — the generic
+        // data-key-interaction='comment_submit' also matches reply submits and
+        // made postCommentVerified click the wrong button after the SPA re-render.
         const submitSel = mode === 'reply'
             ? "button[data-e2e='comment-reply-post'], button[data-key-interaction='comment_submit']"
-            : "button[data-e2e='comment-post'], button[data-key-interaction='comment_submit']";
+            : "button[data-e2e='comment-post']";
         const submit = wrapper ? wrapper.querySelector(submitSel) : null;
         // Report positions for Puppeteer-side clicks (handles can't cross the
         // evaluate boundary — return rects and re-resolve by position).
@@ -1657,9 +1673,9 @@ export async function postCommentVerified(page, s, text, logPrefix = '', opts = 
         }
         if (!ed) return null;
         const wrapper = ed.closest("div[class*='DivTextInputWithPostContainer']") || ed.parentElement;
-        const submitSel = containerSel && mode === 'reply'
+        const submitSel = mode === 'reply'
             ? "button[data-e2e='comment-reply-post'], button[data-key-interaction='comment_submit']"
-            : "button[data-e2e='comment-post'], button[data-key-interaction='comment_submit']";
+            : "button[data-e2e='comment-post']";
         const submit = wrapper ? wrapper.querySelector(submitSel) : null;
         if (!submit) return null;
         const sr = submit.getBoundingClientRect();
@@ -1710,6 +1726,28 @@ export async function postCommentVerified(page, s, text, logPrefix = '', opts = 
         if (!targets || !targets.submitRect) return { posted: false, reason: 'submit-missing-after-scroll' };
     }
 
+    // Re-verify the composer immediately before submit. After a long AI delay
+    // the SPA can re-render the DraftEditor, leaving a stale rect / disabled
+    // button. Re-check text survived and the button is enabled; if disabled,
+    // wait briefly for React to enable it once the typed text is registered.
+    const beforeSubmitText = await readComposerText();
+    if (beforeSubmitText !== null && normText(beforeSubmitText) !== normText(text)) {
+        if (logPrefix) logger.warn(`${logPrefix} [${mode}] composer text changed before submit ("${beforeSubmitText.substring(0, 40)}") — retyping.`);
+        await focusComposer();
+        await page.keyboard.press('Backspace').catch(() => {});
+        await DOMHelpers.randomDelay(180, 320);
+        await page.keyboard.type(text, { delay: 15 }).catch(() => false);
+        await DOMHelpers.randomDelay(250, 450);
+    }
+    targets = await resolveTargets();
+    if (!targets || !targets.submitRect) return { posted: false, reason: 'submit-missing-before-click' };
+    if (targets.submitDisabled) {
+        // Give React a moment to flip the button enabled after the typed text.
+        await DOMHelpers.randomDelay(400, 700);
+        targets = await resolveTargets();
+    }
+    if (targets && targets.submitDisabled) return { posted: false, reason: 'submit-disabled-before-click' };
+
     let publishResponse = null;
     let onResponseHandler = null;
     const responsePromise = new Promise((resolve) => {
@@ -1729,7 +1767,9 @@ export async function postCommentVerified(page, s, text, logPrefix = '', opts = 
             } catch (e) { /* ignore */ }
         };
         page.on('response', onResponseHandler);
-        setTimeout(() => resolve(null), 5000);
+        // Extended to 8s: the re-click / DOM-click / Enter fallbacks can push the
+        // publish response later than the 4.5s composer poll.
+        setTimeout(() => resolve(null), 8000);
     });
 
     const clicked = await DOMHelpers.humanClickAt(page, targets.submitRect.x, targets.submitRect.y, { hoverMs: [120, 300] }).catch(() => false);
@@ -1751,12 +1791,47 @@ export async function postCommentVerified(page, s, text, logPrefix = '', opts = 
             break;
         }
         if (!reClicked && Date.now() > deadline - 2500) {
-            // ~2s elapsed with text still present — re-click submit once.
+            // ~2s elapsed with text still present — the real-mouse click was
+            // likely swallowed by a re-rendered overlay. Try, in order:
+            // (1) re-click at the current rect, (2) a direct DOM .click() on the
+            // real button, (3) Enter on the focused composer (DraftEditor submit).
             const again = await resolveTargets();
             if (again && again.submitRect) {
                 if (logPrefix) logger.warn(`${logPrefix} [${mode}] composer still has text ~2s after submit — re-clicking submit once.`);
                 await DOMHelpers.humanClickAt(page, again.submitRect.x, again.submitRect.y, { hoverMs: [100, 200] }).catch(() => false);
                 reClicked = true;
+            }
+            await DOMHelpers.randomDelay(350, 550);
+            const stillThere = await readComposerText();
+            if (stillThere && normText(stillThere) === normText(text)) {
+                // (2) Direct DOM click on the actual button — bypasses overlays.
+                const domClicked = await page.evaluate(({ mode, containerSel, containerIndex }) => {
+                    let ed = null;
+                    if (mode === 'reply') {
+                        const el = document.querySelectorAll(containerSel)[containerIndex];
+                        if (el) ed = el.querySelector("div[data-e2e='comment-reply-text'] div[contenteditable='true'], div[data-e2e='comment-reply-input'] div[contenteditable='true']");
+                    } else {
+                        ed = document.querySelector("div[data-e2e='comment-text'] div[contenteditable='true'], div[data-e2e='comment-input'] div[contenteditable='true']");
+                    }
+                    if (!ed) return false;
+                    const wrapper = ed.closest("div[class*='DivTextInputWithPostContainer']") || ed.parentElement;
+                    const sel = mode === 'reply'
+                        ? "button[data-e2e='comment-reply-post'], button[data-key-interaction='comment_submit']"
+                        : "button[data-e2e='comment-post']";
+                    const btn = wrapper ? wrapper.querySelector(sel) : null;
+                    if (!btn || btn.disabled) return false;
+                    btn.click();
+                    return true;
+                }, { mode, containerSel, containerIndex }).catch(() => false);
+                if (domClicked && logPrefix) logger.info(`${logPrefix} [${mode}] direct DOM click on submit fired.`);
+                await DOMHelpers.randomDelay(350, 550);
+                const afterDom = await readComposerText();
+                if (afterDom && normText(afterDom) === normText(text)) {
+                    // (3) Enter fallback — TikTok's DraftEditor submits on Enter.
+                    await focusComposer();
+                    await page.keyboard.press('Enter').catch(() => false);
+                    if (logPrefix) logger.info(`${logPrefix} [${mode}] Enter fallback submitted composer.`);
+                }
             }
         }
         await DOMHelpers.randomDelay(200, 350);
@@ -1769,7 +1844,7 @@ export async function postCommentVerified(page, s, text, logPrefix = '', opts = 
     // visible post, which is the user-visible truth.
     const pubRes = await Promise.race([
         responsePromise,
-        new Promise(r => setTimeout(() => r(null), 1500))
+        new Promise(r => setTimeout(() => r(null), 2500))
     ]);
     if (onResponseHandler) page.off('response', onResponseHandler);
 
