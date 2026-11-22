@@ -933,9 +933,9 @@ N (localhost_down:ECONNREFUSED)
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] 2026-11-22T11:54:49.987Z links.serverless4 public URL unhealthy (http_502) url=https://fundamental-quilt-occurs-engineer.trycloudflare.com local=down:ECONNREFUSED
 [tunnel-healer] 2026-11-22T11:54:53.522Z links.serverless4 marked FAILED/DOWN (localhost_down:ECONNREFUSED)
-42:30.865Z --- Health check cycle start (serverless=serverless4) ---
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
+[tunnel-healer] 2026-11-22T11:55:03.300Z --- Health check cycle end ---
+nnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] 2026-11-22T08:42:53.170Z --- Health check cycle end ---
 [tunnel-healer] 2026-11-22T08:44:30.892Z --- Health check cycle start (serverless=serverless4) ---
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
@@ -1464,7 +1464,8 @@ N (localhost_down:ECONNREFUSED)
 [tunnel-healer] 2026-11-22T11:54:44.703Z links.serverless4 public URL unhealthy (http_502) url=https://fundamental-quilt-occurs-engineer.trycloudflare.com local=down:ECONNREFUSED
 [tunnel-healer] 2026-11-22T11:54:48.493Z links.serverless4 marked FAILED/DOWN (localhost_down:ECONNREFUSED)
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-22T10:21:41.082Z links.serverless4 marked FAILED/DOWN (localhost_down:ECONNREFUSED)
+[tunnel-healer] 2026-11-22T11:54:57.042Z --- Health check cycle end ---
+ONNREFUSED)
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] 2026-11-22T10:21:50.337Z --- Health check cycle end ---
 [tunnel-healer] 2026-11-22T10:23:24.758Z --- Health check cycle start (serverless=serverless4) ---
@@ -1828,9 +1829,9 @@ Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] 2026-11-22T11:53:17.102Z --- Health check cycle end ---
 [tunnel-healer] 2026-11-22T11:54:55.109Z --- Health check cycle start (serverless=serverless4) ---
-T11:44:31.032Z --- Health check cycle start (serverless=serverless4) ---
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-[tunnel-healer] 2026-11-22T11:44:43.908Z links.serverless4 public URL unhealthy (http_502) url=https://fundamental-quilt-occurs-engineer.trycloudflare.com local=down:ECONNREFUSED
+[tunnel-healer] 2026-11-22T11:55:08.052Z links.serverless4 public URL unhealthy (http_502) url=https://fundamental-quilt-occurs-engineer.trycloudflare.com local=down:ECONNREFUSED
+damental-quilt-occurs-engineer.trycloudflare.com local=down:ECONNREFUSED
 [tunnel-healer] 2026-11-22T11:44:47.747Z links.serverless4 marked FAILED/DOWN (localhost_down:ECONNREFUSED)
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] 2026-11-22T11:44:56.098Z --- Health check cycle end ---
@@ -1863,8 +1864,8 @@ T11:44:31.032Z --- Health check cycle start (serverless=serverless4) ---
 [tunnel-healer] 2026-11-22T11:54:45.760Z links.serverless4 public URL unhealthy (http_502) url=https://fundamental-quilt-occurs-engineer.trycloudflare.com local=down:ECONNREFUSED
 [tunnel-healer] 2026-11-22T11:54:49.086Z links.serverless4 marked FAILED/DOWN (localhost_down:ECONNREFUSED)
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-='serverless4'
-[tunnel-healer] 2026-11-22T11:22:11.389Z --- Health check cycle end ---
+[tunnel-healer] 2026-11-22T11:54:59.637Z --- Health check cycle end ---
+ cycle end ---
 [tunnel-healer] 2026-11-22T11:23:45.974Z --- Health check cycle start (serverless=serverless4) ---
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] 2026-11-22T11:23:57.949Z links.serverless4 public URL unhealthy (http_502) url=https://fundamental-quilt-occurs-engineer.trycloudflare.com local=down:ECONNREFUSED
@@ -2155,8 +2156,8 @@ eer.trycloudflare.com local=down:ECONNREFUSED
 [tunnel-healer] 2026-11-22T11:54:12.866Z links.serverless4 public URL unhealthy (http_502) url=https://fundamental-quilt-occurs-engineer.trycloudflare.com local=down:ECONNREFUSED
 [tunnel-healer] 2026-11-22T11:54:48.142Z links.serverless4 marked FAILED/DOWN (localhost_down:ECONNREFUSED)
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
----
-[tunnel-healer] 2026-11-22T07:50:37.218Z --- Health check cycle start (serverless=serverless4) ---
+[tunnel-healer] 2026-11-22T11:54:57.215Z --- Health check cycle end ---
+t (serverless=serverless4) ---
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] 2026-11-22T07:51:44.768Z --- Health check cycle end ---
@@ -2792,17 +2793,17 @@ eer.trycloudflare.com local=down:ECONNREFUSED
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] 2026-11-22T11:54:51.669Z links.serverless4 public URL unhealthy (http_502) url=https://fundamental-quilt-occurs-engineer.trycloudflare.com local=down:ECONNREFUSED
 [tunnel-healer] 2026-11-22T11:54:54.238Z links.serverless4 marked FAILED/DOWN (localhost_down:ECONNREFUSED)
-oudflare.com local=down:ECONNREFUSED
-[tunnel-healer] 2026-11-22T11:52:47.557Z links.serverless4 marked FAILED/DOWN (localhost_down:ECONNREFUSED)
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
+[tunnel-healer] 2026-11-22T11:55:03.013Z --- Health check cycle end ---
+nel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] 2026-11-22T11:52:56.386Z --- Health check cycle end ---
 [tunnel-healer] 2026-11-22T11:54:32.119Z --- Health check cycle start (serverless=serverless4) ---
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] 2026-11-22T11:54:46.664Z links.serverless4 public URL unhealthy (http_502) url=https://fundamental-quilt-occurs-engineer.trycloudflare.com local=down:ECONNREFUSED
 [tunnel-healer] 2026-11-22T11:54:49.312Z links.serverless4 marked FAILED/DOWN (localhost_down:ECONNREFUSED)
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
-ERVERLESS_ID='serverless4'
-[tunnel-healer] 2026-11-22T11:33:56.265Z links.serverless4 public URL unhealthy (http_502) url=https://fundamental-quilt-occurs-engineer.trycloudflare.com local=down:ECONNREFUSED
+[tunnel-healer] 2026-11-22T11:54:57.288Z --- Health check cycle end ---
+s.serverless4 public URL unhealthy (http_502) url=https://fundamental-quilt-occurs-engineer.trycloudflare.com local=down:ECONNREFUSED
 [tunnel-healer] 2026-11-22T11:34:00.432Z links.serverless4 marked FAILED/DOWN (localhost_down:ECONNREFUSED)
 [tunnel-healer] Resolved opencode row aiSn=1 for SERVERLESS_ID='serverless4'
 [tunnel-healer] 2026-11-22T11:34:10.771Z --- Health check cycle end ---
