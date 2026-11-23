@@ -2229,14 +2229,20 @@ if (!String(settings.helperKeyword || "").trim()) {
           log.warn(` Pending-tag check failed (treating as pending): ${tagErr.message}`);
           pendingTagCount = 1;
         }
-        if (pendingTagCount > 0) {
+        if (pendingTagCount > 0 && !pausedByAdmin) {
           log.warn(` [campaign-rest] ${pendingTagCount} tag(s) still pending for ${campaignId} â€” campaign will rest, not complete.`);
         }
-        if (hasHourlyRateLimits) {
+        // Skip all rest wiring when pausing — a paused campaign must not emit
+        // "resting for 15m" logs (GAS never auto-resumes a pause, and restUntil
+        // is deleted from settings below for paused runs anyway).
+        if (pausedByAdmin) {
+          log.info(` [campaign-pause] Campaign ${campaignId} paused (${socialAccountPause ? 'account logged out — needs replacement' : 'by user'}) — no timed rest; resume to continue.`);
+        }
+        if (!pausedByAdmin && hasHourlyRateLimits) {
           settings.restUntil = Date.now() + restDurations.quotaMs; // quota window rest before auto-resume
           settings.restReason = "hourly_rate_limit";
           log.info(` [campaign-rest] Hourly rate limit hit Ã¢â‚¬â€ resting campaign ${campaignId} until ${new Date(settings.restUntil).toISOString()}`);
-        } else if (hasNetworkErrors) {
+        } else if (!pausedByAdmin && hasNetworkErrors) {
           settings.restUntil = Date.now() + restDurations.errorMs; // network cooldown rest
           settings.restReason = settings.restReason || "network_error";
           log.warn(` [campaign-rest] Network/navigation error detected Ã¢â‚¬â€ resting campaign ${campaignId} for 15m until ${new Date(settings.restUntil).toISOString()}`);
@@ -2246,12 +2252,12 @@ if (!String(settings.helperKeyword || "").trim()) {
         const isZeroActionTransientFailure = totalActions === 0 && (hasNetworkErrors || failedCount > 0);
         const shouldRest = hasHourlyRateLimits || hasNetworkErrors || isZeroActionTransientFailure || pendingTagCount > 0;
 
-        if (pendingTagCount > 0 && !settings.restUntil) {
+        if (!pausedByAdmin && pendingTagCount > 0 && !settings.restUntil) {
           settings.restUntil = Date.now() + restDurations.errorMs;
           settings.restReason = "pending_tags";
         }
 
-        if (isZeroActionTransientFailure && !settings.restUntil) {
+        if (!pausedByAdmin && isZeroActionTransientFailure && !settings.restUntil) {
           settings.restUntil = Date.now() + restDurations.errorMs;
           settings.restReason = settings.restReason || "zero_action_transient_failure";
           log.warn(` [campaign-rest] Zero actions completed with errors Ã¢â‚¬â€ resting campaign ${campaignId} for 15m cooldown`);

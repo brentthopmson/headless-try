@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import logger from "../../../utils/logger.js";
+import { registerBrowserForCampaign, forceCloseCampaignBrowsers } from "../../../utils/browserRegistry.js";
 import {
   resolveSocialSession,
   launchBrowserWithSession,
@@ -152,6 +153,7 @@ async function processTask(task) {
     } catch (e) {
       ({ browser, page } = await launchBrowserWithSession(task.cookieJSON, undefined, { fullPage: true }));
     }
+    registerBrowserForCampaign(campaignId, browser);
 
     // ---- Stage 1: SEARCH (top priority) ----
     if (operations.includes("search-interact")) {

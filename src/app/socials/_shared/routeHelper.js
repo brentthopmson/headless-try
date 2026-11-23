@@ -360,7 +360,11 @@ export async function launchBrowserWithSession(cookieJSON, headless = undefined,
     try {
         // Respect app/browser visibility like emails cookie login
         if (headless === undefined || headless === null) {
-            if (process.env.SHOW_BROWSER === 'true' || process.env.BROWSER_VISIBLE === 'true' || process.env.VISUAL === 'true' || process.env.HEADLESS === 'false') {
+            // HEADLESS=true is authoritative (silent mode) — it must override a
+            // stale SHOW_BROWSER=true leaked in from .env.
+            if (process.env.HEADLESS === 'true') {
+                headless = "new";
+            } else if (process.env.SHOW_BROWSER === 'true' || process.env.BROWSER_VISIBLE === 'true' || process.env.VISUAL === 'true' || process.env.HEADLESS === 'false') {
                 headless = false;
             } else if (isDev) {
                 headless = false;

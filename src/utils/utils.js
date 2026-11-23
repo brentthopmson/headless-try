@@ -392,7 +392,12 @@ export async function launchBrowser(customOptions = {}) {
     dumpio: false,
     defaultViewport,
     executablePath: isDev ? localExecutablePath : fullChromiumExecutablePath,
-    headless: process.env.SHOW_BROWSER === 'true' || process.env.BROWSER_VISIBLE === 'true' || process.env.VISUAL === 'true' ? false : "new",
+    // HEADLESS=true is authoritative: silent mode must win even if a stale
+    // SHOW_BROWSER=true leaked in from .env. Only when HEADLESS isn't forcing
+    // headless do the visibility flags take effect.
+    headless: process.env.HEADLESS === 'true'
+      ? "new"
+      : (process.env.SHOW_BROWSER === 'true' || process.env.BROWSER_VISIBLE === 'true' || process.env.VISUAL === 'true' ? false : "new"),
     timeout: 60000,
     userDataDir: customOptions.userDataDir || path.join(os.tmpdir(), `puppeteer_dev_profile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
   };

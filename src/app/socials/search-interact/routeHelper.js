@@ -8,6 +8,7 @@ import limitsCore from '../_shared/limitsCore.js';
 import { isTikTokCaptchaVisible, solveTikTokAudioCaptcha, isTikTokLoggedOut, navigateAndWait, ensureCommentsVisible, isPostLiked, isConfidentlyUnliked, readCommentsPanelCount, dismissCookieBanner } from './platformHelper/TikTokHelpers.js';
 import { getAccountPostStatuses, markPostEngaged, getCampaignSettings, isPostInteracted } from '../../campaign/_shared/pipelineUtils.js';
 import { getSocialStopState } from '../_shared/pauseCheck.js';
+import { forceCloseCampaignBrowsers } from '../../../utils/browserRegistry.js';
 
 // Voice frame for search-interact (public-post engagement). The campaign
 // account is an OUTSIDER viewer joining someone else's post — never the post
@@ -320,6 +321,14 @@ export async function runSearchInteractEngagement(page, opts) {
             stopType = 'paused';
             stopReason = `paused_by_user_at_${where}`;
             pausedByUser = true;
+            // Force-close this campaign's browser so the user doesn't see it
+            // linger while we unwind a long AI call / navigation wait. The
+            // task's finally also closes (no-op after this). Desktop session
+            // browsers are not in this registry and stay open by design.
+            try {
+                const closed = await forceCloseCampaignBrowsers(campaignId, logger);
+                if (closed) logger.info(`[engage:${taskId}] Force-closed ${closed} campaign browser(s) on pause.`);
+            } catch (_) {}
             return true;
         }
         if (st?.reason === 'resting') {
