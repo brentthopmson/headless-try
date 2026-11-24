@@ -44,6 +44,7 @@ import { getMaxConcurrentTasks, getMaxRepliesPerPost, checkUserConcurrentCampaig
 import { getSelfUrl, getSelfUrlWithFallback, identifySelfFromHost } from "../../../utils/serverlessTracker.js";
 import { dispatchToServers } from "../../../utils/multiServerDispatcher.js";
 import { extractFileId, parseCSV, stringifyCSV, isCampaignPaused, getCampaignStopState, getFirestickEmails, getPerformancePresets, updateCampaignSettings, getCampaignSettings, getAccountTagStatuses, buildPersonalizedLink, isRestCooldownActive, setEngineRest, getRestDurations } from "../_shared/pipelineUtils.js";
+import { getAccountUsage } from "../../socials/_shared/hubUpdater.js";
 import { notifyCampaignFailure } from "../../../utils/notifyCampaignFailure.js";
 
 // Throttled mid-run stop check (1s). A timed REST written while this run is
@@ -1939,6 +1940,8 @@ if (!String(settings.helperKeyword || "").trim()) {
 
         let pausedByAdmin = false;
         let socialAccountPause = false;
+        const loggedOutAccounts = new Set(); // accounts whose session died this run
+        let allAccountsLoggedOut = false;
         let restDetectedMidRun = false;
         let durationExpiredMidRun = false;
         let skippedLimitCount = 0;
@@ -2021,14 +2024,19 @@ if (!String(settings.helperKeyword || "").trim()) {
             if (userId) await incrementInteractionUsage(userId, actionCount);
             log.info(` Task ${task.taskId} completed: ${result.status} (actions=${actionCount})`);
 
-            // If the user paused while this task was running, stop the whole
-            // dispatch loop. The task's finally already closed its browser, so
-            // resources are released and the campaign stays paused (no rest).
-            if (result.pausedByUser || result.pauseForAccountIssue || result.stopType === 'paused') {
+            // A logged-out account is an ACCOUNT-level failure, not necessarily
+            // a campaign-level one. Mark it and let the dispatch loop continue
+            // with the remaining accounts. Only when NO active accounts remain
+            // do we pause the campaign (see final-status block below).
+            if (result.pauseForAccountIssue || result.stopType === 'logged_out') {
+                loggedOutAccounts.add(String(task.profileId || task.payload?.profileId || 'unknown'));
+                socialAccountPause = true;
+                log.info(` [execute] Task ${task.taskId}: account logged out — skipped (marked WAITING). Continuing other accounts.`);
+            }
+            // USER pause (or an explicit campaign pause) stops the whole dispatch loop.
+            if (result.pausedByUser || result.stopType === 'paused') {
                 pausedByAdmin = true;
-                if (result.pauseForAccountIssue) socialAccountPause = true;
-                const why = result.pauseForAccountIssue ? 'account logged out — campaign paused for replacement' : 'user pause';
-                log.info(` [execute] Task ${task.taskId} detected ${why} — stopping social dispatch (resources closed by task finally).`);
+                log.info(` [execute] Task ${task.taskId} detected user pause — stopping social dispatch (resources closed by task finally).`);
             }
             // A task that detected a timed rest mid-run must stop dispatch too.
             // Do NOT mark the account WAITING — it resumes after the rest.
@@ -2267,17 +2275,36 @@ if (!String(settings.helperKeyword || "").trim()) {
           clearActiveCampaignForAccount(pid, campaignId);
         }
 
+        // PAUSE only if EVERY account in this campaign is logged out / not
+        // ACTIVE. If at least one account is still usable, the campaign carries
+        // on normally (the dead accounts were skipped and marked WAITING above).
+        if (loggedOutAccounts.size > 0 && activeProfiles.length > 0) {
+          let activeRemaining = 0;
+          for (const pid of activeProfiles) {
+            if (loggedOutAccounts.has(String(pid))) continue;
+            try {
+              const usage = await getAccountUsage(pid);
+              const st = String(usage?.interactionStatus || '').trim().toUpperCase();
+              if (st !== 'CANCELLED' && st !== 'WAITING' && st !== 'RATE_LIMITED') activeRemaining++;
+            } catch (_) { activeRemaining++; } // unknown status → assume usable
+          }
+          allAccountsLoggedOut = activeRemaining === 0;
+          log.info(` [execute] Logged-out accounts: ${loggedOutAccounts.size}/${activeProfiles.length}; active remaining: ${activeRemaining} — ${allAccountsLoggedOut ? 'PAUSING campaign' : 'continuing'}.`);
+        }
+
         const isNowExpired = durationExpiredMidRun || isDurationElapsed();
 
         const limitReached = executedCount < pendingSocialTasks.length || (interactionLimit !== Infinity && executedCount >= interactionLimit) || hasHourlyRateLimits;
         let finalStatus = isNowExpired
           ? "completed"
-          : (pausedByAdmin ? "paused" : (restDetectedMidRun ? "resting" : (shouldRest ? "resting" : (limitReached ? "resting" : "completed"))));
+          : (pausedByAdmin || allAccountsLoggedOut
+            ? "paused"
+            : (restDetectedMidRun ? "resting" : (shouldRest ? "resting" : (limitReached ? "resting" : "completed"))));
 if (limitReached && !restDetectedMidRun) settings.restReason = "limit_reached";
         // Make the pause self-explanatory in the UI so the user knows to replace
         // the affected account before resuming.
-        if (pausedByAdmin) {
-            settings.pauseReason = settings.pauseReason || (socialAccountPause ? "account_logged_out" : "paused_by_admin");
+        if (pausedByAdmin || allAccountsLoggedOut) {
+            settings.pauseReason = settings.pauseReason || (allAccountsLoggedOut ? "all_accounts_logged_out" : (socialAccountPause ? "account_logged_out" : "paused_by_admin"));
         }
 
         if (restDetectedMidRun) {

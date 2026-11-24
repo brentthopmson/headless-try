@@ -16,6 +16,7 @@ import limitsCore from '../../_shared/limitsCore.js';
 import { navigateAndWaitGeneric, isPostLikedGeneric, isConfidentlyUnlikedGeneric, genericLike, ensureCommentsVisibleGeneric, extractCommentsGeneric, postCommentGeneric } from './GenericHelpers.js';
 import { runCommentWaves } from '../../_shared/commentWaveEngine.js';
 import { isSocialCampaignPaused, getSocialStopState } from '../../_shared/pauseCheck.js';
+import { isLoggedOut } from '../../_shared/socialDom.js';
 
 function stripMentions(text) {
     return String(text || '').replace(/@[A-Za-z0-9._-]+/g, ' ').replace(/@+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -93,6 +94,14 @@ export async function runGenericEngagement(page, opts) {
             logger.warn(`[generic:${taskId}] search navigation did not settle for "${kw}" (${(nav && (nav.error || nav.state)) || 'unknown'})`);
             return null;
         }
+        // Logged-out detection for non-TikTok platforms (TikTok has its own in
+        // the search runner). Reuse the platform's configured loggedOut selectors.
+        const loggedOut = await isLoggedOut(page, platformConfig.selectors?.loggedOut || []).catch(() => false);
+        if (loggedOut) {
+            logger.warn(`[generic:${taskId}] ACCOUNT_LOGGED_OUT for ${platform} at search "${kw}" — stopping task.`);
+            stopType = 'logged_out'; stopReason = 'logged_out_at_search'; pauseForAccountIssue = true;
+            return null;
+        }
         if (s.searchBox) {
             await page.click(s.searchBox, { timeout: 4000 }).catch(() => {});
             await page.keyboard.down('Control').catch(() => {});
@@ -149,6 +158,11 @@ export async function runGenericEngagement(page, opts) {
         try {
             const videos = await searchResults(kw);
             if (videos === null) {
+                if (stopType === 'logged_out') {
+                    // Account session dead — don't claim "unsettled"; the loop
+                    // will break at the next iteration and report logged_out.
+                    break;
+                }
                 // Navigation/load failure: keyword stays pending, never done.
                 unresolvedKeywords.push(kw);
                 results.push({ keyword: kw, status: 'page_unsettled' });

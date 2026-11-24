@@ -297,11 +297,28 @@ export async function solveTikTokAudioCaptcha(page, logPrefix = '[tiktokCaptcha]
 export async function isTikTokLoggedOut(page) {
     try {
         return await page.evaluate(() => {
+            const visible = (el) => {
+                if (!el) return false;
+                const r = el.getBoundingClientRect();
+                return r.width >= 1 && r.height >= 1;
+            };
             const loginTitle = document.querySelector('h2[data-e2e="login-title"]');
             if (loginTitle && loginTitle.textContent.includes('Log in')) return true;
             if (document.querySelector('#login-modal-title')) return true;
             if (document.querySelector("div[class*='DivLoginContainer']")) return true;
             if (location.href.includes('/login')) return true;
+            // Logged-out SEARCH page shows a nav "Log in" button (no modal).
+            // Observed: page body "... Log in Company Programme ..." with no
+            // results and no avatar. Guard against false positives: only treat
+            // the nav button as logged-out when there is NO visible signed-in
+            // avatar in the nav/header.
+            const navLogin = document.querySelector("button[data-e2e='login-button'], [data-e2e='login-button']");
+            if (visible(navLogin)) {
+                const selfAvatar = document.querySelector(
+                    "[data-e2e='nav-avatar'], a[href='/profile'], a[href*='/profile/'], [aria-label='Profile'] img"
+                );
+                if (!visible(selfAvatar)) return true;
+            }
             return false;
         });
     } catch (e) {
@@ -340,6 +357,12 @@ async function classifyPageState(page, s) {
             if (visible(document.querySelector('#login-modal-title'))) return 'logged_out';
             if (visible(document.querySelector("div[class*='DivLoginContainer']"))) return 'logged_out';
             if (location.href.includes('/login')) return 'logged_out';
+            // Nav "Log in" button with no signed-in avatar = logged-out search page.
+            const navLogin = document.querySelector("button[data-e2e='login-button'], [data-e2e='login-button']");
+            if (visible(navLogin)) {
+                const selfAvatar = document.querySelector("[data-e2e='nav-avatar'], a[href='/profile'], a[href*='/profile/'], [aria-label='Profile'] img");
+                if (!visible(selfAvatar)) return 'logged_out';
+            }
             // Search results rendered.
             if (document.querySelector(sel.results)) return 'results';
             // Opened post page. Image-text photo posts have NO browse-desc
