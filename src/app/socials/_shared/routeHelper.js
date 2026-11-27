@@ -17,6 +17,34 @@ import { createTally, stepQuotaAction, accountStep } from './quotaActions.js';
 
 const { toLimitActions } = limitsCore;
 
+// ==================== Campaign-context-first prompt framing ====================
+// The campaign's socialStrategyPrompt (the "AI context" the user writes per
+// campaign) is the AUTHORITATIVE voice/persona. Engine rules only note the
+// SETTING (public comment on someone else's post), never the identity/tone.
+// Previously engine frames like "you are an everyday viewer, NOT the author"
+// were placed ABOVE the strategy and said "apply only within the voice rules
+// above", which overrode campaign personas (e.g. a first-person artist burner).
+const SETTING_NOTE = "Setting: this is a public comment/reply on someone else's post, not a private DM and not your own profile. Stay consistent with the campaign voice below.";
+
+/**
+ * Build the authoritative voice block for a comment or reply prompt.
+ * @param {string} socialStrategyPrompt - campaign's configured AI context (authoritative)
+ * @param {string} engineFrame - platform-specific setting-only note (optional)
+ */
+export function campaignVoiceBlock(socialStrategyPrompt, engineFrame = '') {
+  const strategy = String(socialStrategyPrompt || '').trim();
+  if (strategy) {
+    return [
+      'CAMPAIGN VOICE & IDENTITY (AUTHORITATIVE — follow this exactly for tone, persona, and how to address people):',
+      strategy,
+      '',
+      SETTING_NOTE + (engineFrame ? ' ' + String(engineFrame).trim() : ''),
+    ].join('\n');
+  }
+  // No campaign strategy: fall back to the engine frame verbatim (old behavior).
+  return [engineFrame || '', SETTING_NOTE].filter(Boolean).join('\n');
+}
+
 // ==================== Profile Download ====================
 
 function getDirectDownloadUrl(driveUrl) {
@@ -1243,22 +1271,28 @@ export async function executeWorkflow(page, workflow, context, platformConfig, a
                         const rawFull = Object.entries(replaceContext).reduce((p, [key, val]) => {
                             return p.replace(new RegExp(`\\{${key}\\}`, 'g'), String(val ?? ''));
                         }, prompt);
-                        // Workflow voice frame (shared executor): public-post
-                        // commentary, same rule as search-interact — "you" is
-                        // the post author, comments you reply to were posted to
-                        // the audience, not to you.
+                        // Campaign context (socialStrategyPrompt) is authoritative
+                        // for voice/persona; the engine frame is only a setting note.
                         const isReply = step.action === 'aiGenerateReply';
-                        const voiceFrame = isReply
-                            ? 'VOICE (workflow reply): you are outsider viewer replying peer-to-peer to another viewer whose comment sits UNDER this post (not addressed to you, not a DM). Never thank them for following you or propose a follow-for-follow pact; react to their comment and the post topic. "You" = that commenter.'
-                            : 'VOICE (workflow comment): you are an outsider viewer commenting on someone else\'s post. "You" = the post author; the post was not made for you and you are not the author.';
-                        const fullPrompt = `${voiceFrame}\n\n${rawFull}`;
+                        const engineFrame = isReply
+                            ? 'Setting: this is a public reply to another viewer\'s comment under the post (not a private DM).'
+                            : 'Setting: this is a public comment on a post (not a private DM, not your own profile).';
+                        const strategyForWorkflow = stepContext.socialStrategyPrompt
+                            || (typeof context === 'object' && context?.socialStrategyPrompt)
+                            || '';
+                        const fullPrompt = `${campaignVoiceBlock(strategyForWorkflow, engineFrame)}\n\n${rawFull}`;
                         try {
                             const rawGen = aiProvider ? await aiProvider.generate(fullPrompt) : '';
                             // Workflow comment/reply text is typed downstream —
-                            // apply the same typed gate as the TikTok flow.
-                            const gated = aiProvider?.sanitizeAiPlainText
-                                ? aiProvider.sanitizeAiPlainText(String(rawGen || ''), 500)
-                                : String(rawGen || '').replace(/<\/?\s*[A-Za-z][^>]*?>/g, ' ').replace(/[\x00-\x1F\x7F]/g, ' ').trim().slice(0, 500);
+                            // apply the same typed gate as the TikTok flow:
+                            // NO length cap (full text) + close unfinished lines.
+                            let gated = aiProvider?.sanitizeAiPlainText
+                                ? aiProvider.sanitizeAiPlainText(String(rawGen || ''))
+                                : String(rawGen || '').replace(/<\/?\s*[A-Za-z][^>]*?>/g, ' ').replace(/[\x00-\x1F\x7F]/g, ' ').trim();
+                            if (gated && /[A-Za-zÀ-ÿ0-9,;:\-–—]$/.test(gated)) {
+                                const closed = gated.replace(/[,;:\-–—\s]+$/, '');
+                                gated = closed ? closed + '.' : '';
+                            }
                             if (requireAiForComments && !gated) {
                                 results[step.resultKey || 'generated'] = '';
                                 commentGenerationBlocked = true;
@@ -1431,6 +1465,40 @@ export async function capturePostFrame(page) {
         const buf = await el.screenshot({ type: 'png' });
         return Buffer.from(buf).toString('base64');
     } catch (e) {
+        return null;
+    }
+}
+
+/**
+ * Download the post's poster/cover image (photo posts or video thumbnails)
+ * as base64 for vision analysis. TikTok ships real CDN URLs inside the
+ * <picture><img data-fmp srcset|src> of feed/search/post media cards; blob:
+ * and data: placeholders are skipped. Best-effort: returns null on any failure.
+ */
+export async function fetchPosterImageBase64(page) {
+    try {
+        const url = await page.evaluate(() => {
+            const imgs = Array.from(document.querySelectorAll(
+                "section[data-e2e='feed-video'] img, [data-e2e='feed-video'] img, [aria-label='Watch in full screen'] img, picture img"
+            ));
+            for (const img of imgs) {
+                const candidates = [];
+                const direct = img.getAttribute('src') || '';
+                if (direct && !/^(data:|blob:)/i.test(direct)) candidates.push(direct);
+                const srcset = img.getAttribute('srcset') || '';
+                for (const part of srcset.split(',')) {
+                    const u = part.trim().split(/\s+/)[0];
+                    if (u && !/^(data:|blob:)/i.test(u)) candidates.push(u);
+                }
+                if (candidates.length) return candidates[0];
+            }
+            return null;
+        }).catch(() => null);
+        if (!url) return null;
+        const resp = await axios.get(url, { responseType: 'arraybuffer', timeout: 15000 }).catch(() => null);
+        if (!resp?.data) return null;
+        return Buffer.from(resp.data).toString('base64');
+    } catch (_) {
         return null;
     }
 }

@@ -4,6 +4,10 @@ import logger from './logger.js';
 let localDownUntil = 0;
 let activeRequests = 0;
 const MAX_CONCURRENT = 1;
+// The decision service caps chat images per request (MAX_CHAT_IMAGES=4 by
+// default). Keep our side of the contract so a multi-frame media analysis
+// never gets rejected with "too many chat images" and poisons the provider.
+const MAX_CHAT_IMAGES = Math.max(1, parseInt(process.env.MAX_CHAT_IMAGES || '4', 10) || 4);
 
 function now() {
     return Date.now();
@@ -50,6 +54,7 @@ function buildHeaders(provider) {
 
 function convertMessages(messages) {
     const converted = [];
+    let imageBudget = MAX_CHAT_IMAGES;
     for (const msg of messages) {
         if (!msg) continue;
         if (msg.role === 'system') {
@@ -81,8 +86,14 @@ function convertMessages(messages) {
                 }
             }
             const content = textParts.join('\n');
-            if (images.length > 0) {
-                converted.push({ role: msg.role === 'assistant' ? 'assistant' : 'user', content, images });
+            // Cap total images across the whole request (not per message).
+            const allowed = imageBudget > 0 ? images.slice(0, imageBudget) : [];
+            if (allowed.length < images.length) {
+                logger.warn(`[localAIClient] Capped images ${images.length} -> ${allowed.length} (MAX_CHAT_IMAGES=${MAX_CHAT_IMAGES})`);
+            }
+            imageBudget -= allowed.length;
+            if (allowed.length > 0) {
+                converted.push({ role: msg.role === 'assistant' ? 'assistant' : 'user', content, images: allowed });
             } else {
                 converted.push({ role: msg.role === 'assistant' ? 'assistant' : 'user', content });
             }
@@ -131,8 +142,11 @@ export async function callOllama(provider, messages, temperature, maxTokens, tim
         if (options.jsonMode) {
             payload.format = 'json';
         }
-        // For Qwen3.5 thinking models, disable thinking
-        if (String(provider.model).toLowerCase().includes('qwen3')) {
+        // The decision service thinks ON by default. Disable it for our
+        // thinking-capable local models (qwen3, lfm3 / lfm3-vl, webfixx/qwen):
+        // thinking can eat a small num_predict and leave an EMPTY content,
+        // which the waterfall treats as an empty response / FAILED provider.
+        if (/qwen|lfm/i.test(String(provider.model || ''))) {
             payload.options.think = false;
         }
 

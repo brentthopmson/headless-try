@@ -1,7 +1,7 @@
 import axios from 'axios';
 import logger from "../../../utils/logger.js";
 import { getSheetDataApi, updateSheetRowApi, stripFormulaColumns } from '../../api/googlesheets.js';
-import { DOMHelpers, checkGate, consumeAction, capturePostFrame, capturePostFrames, postCommentVerified } from '../_shared/routeHelper.js';
+import { DOMHelpers, checkGate, consumeAction, capturePostFrame, capturePostFrames, fetchPosterImageBase64, postCommentVerified, campaignVoiceBlock } from '../_shared/routeHelper.js';
 import { getPlatformLimits } from '../_shared/limits.js';
 import { updateAccountStatus } from '../_shared/hubUpdater.js';
 import limitsCore from '../_shared/limitsCore.js';
@@ -54,7 +54,7 @@ export function stripMentions(text) {
 // HTML/script stripping + control removal + single-line collapse so model
 // markup/JSON garbage can never post verbatim. Returns '' when nothing
 // postable remains (caller falls back / skips).
-export function sanitizeTypedText(text, maxChars = 150) {
+export function sanitizeTypedText(text, maxChars = 0, keepMentions = false) {
     let s = String(text || '').replace(/<(script|style|iframe|object|embed)[^>]*>[\s\S]*?<\/\1>/gi, ' ');
     s = s.replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/[\x00-\x1F\x7F]/g, ' ');
     s = s.replace(/<\/?\s*[A-Za-z][^>]*?>/g, ' ');
@@ -62,11 +62,21 @@ export function sanitizeTypedText(text, maxChars = 150) {
     const fenced = s.trim().match(/^```(?:json|text|markdown)?\s*\n([\s\S]*?)\n\s*```\s*$/i);
     if (fenced) s = fenced[1];
     s = s.replace(/^["']|["']$/g, '').trim().replace(/\n{2,}/g, ' ').trim();
-    s = stripMentions(s);
+    // keepMentions (replies): preserve @name so the response is personalized.
+    if (!keepMentions) s = stripMentions(s);
+    // NO length truncation by default. The user wants the full comment posted;
+    // passing maxChars > 0 still trims only for explicit callers.
     if (maxChars && s.length > maxChars) {
         const cut = s.slice(0, maxChars);
         const sp = cut.lastIndexOf(' ');
         s = (sp > maxChars * 0.7 ? cut.slice(0, sp) : cut).trim();
+    }
+    // Never post a mid-sentence fragment: close an unfinished line cleanly.
+    // Only letters/numbers/trailing separators count as "unfinished" — real
+    // terminal punctuation, quotes, brackets, and emoji are left alone.
+    if (s && /[A-Za-zÀ-ÿ0-9,;:\-–—]$/.test(s)) {
+        const closed = s.replace(/[,;:\-–—\s]+$/, '');
+        s = closed ? closed + '.' : '';
     }
     return s;
 }
@@ -1031,11 +1041,15 @@ export async function runSearchInteractEngagement(page, opts) {
                     // posts have no readable caption element), so we analyze them
                     // together AFTER the comments panel has hydrated. This analysis
                     // feeds both the comment we post and the replies.
-                    // Pass 1 (primary): text — caption + author + top-10 comments.
-                    // Fallback: only if Pass 1 gives a bad result → vision on a
-                    // post frame (video/photo) + caption. Replies reuse whichever
-                    // result landed — no second vision pass.
-                    let analyzedVideo = '';
+                    // MEDIA is primary: analyze the real post media (CDN poster
+                    // + sequential video frames) whenever AI + media are available.
+                    // The text analysis (caption + author + top-10 comments) is
+                    // ALWAYS kept and merged in — if media is missing or fails,
+                    // text is the graceful fallback. Replies reuse the same result.
+                    let analyzedVideo = '';   // FINAL combined topic context for comment/reply prompts
+                    let textAnalysis = '';    // text-only understanding (caption + comments) — always preserved
+                    let mediaAnalysis = '';   // vision understanding of the actual media (when available)
+                    let commentLines = '';    // extracted existing comments (used by text + media prompts)
                     let aiComments = [];   // pre-existing comments (AI context + tone fit)
                     let analysisMode = 'text';
                     let caption = '';
@@ -1053,7 +1067,7 @@ export async function runSearchInteractEngagement(page, opts) {
                             const parseFunc = new Function('items', 'return (' + cExtractor.parseFunction + '\n)(items);');
                             aiComments = await page.$$eval(cExtractor.selector, parseFunc).catch(() => []) || [];
                         }
-                        const commentLines = aiComments
+                        commentLines = aiComments
                             .filter(c => c.text)
                             .slice(0, 10)
                             .map(c => `- ${c.username ? c.username + ': ' : ''}${c.text}`)
@@ -1067,62 +1081,72 @@ export async function runSearchInteractEngagement(page, opts) {
                                 : 'Existing comments: none yet',
                         ].join('\n');
                         const analyzePrompt = `${platformConfig.aiPrompts?.analyzeVideo || 'Summarize this post.'}\n\nUnderstand this post from its caption and the existing comments — the comments reveal what the post is about.\n\nPost:\n${postContext}`;
-                        analyzedVideo = ai ? await ai.generate(analyzePrompt) : postContext;
+                        textAnalysis = ai ? await ai.generate(analyzePrompt) : postContext;
                     } catch (e) {
                         logger.warn(`[engage:${taskId}] AI text analysis failed: ${e.message}`);
-                        analyzedVideo = video.caption || '';
+                        textAnalysis = video.caption || '';
                         analysisMode = 'text_failed';
                     }
 
-                    // Quality gate: Pass 1 must return a usable description. Weak
-                    // or failed text → single vision fallback (frame + caption).
-                    const textResult = String(analyzedVideo || '').trim();
+                    // Quality gate helper: refusals / very short answers are weak
+                    // and must never feed the comment/reply prompts.
                     const weakResult = (v) => {
                         const text = String(v || '').trim();
                         if (text.length < 40) return true;
-                        // A long answer that merely contains an honest "I can't
-                        // view the video" disclaimer is STILL a valid caption/
-                        // comment-based analysis — treat it as good text so we
-                        // don't trigger a needless vision fallback. Only short,
-                        // refusal-only answers count as weak.
                         if (text.length >= 150) return false;
                         return /^(could not analyze|ai not available|no ai providers)/i.test(text)
                             || /can'?t view|can'?t see|cannot (view|see)|don'?t support image|no image input|image input (isn'?t|is not|not) supported/i.test(text);
                     };
-                    const textGood = analysisMode !== 'text_failed' && !weakResult(textResult);
-                    if (!textGood && ai) {
-                        logger.info(`[engage:${taskId}] Text analysis weak (${textResult.length} chars, ${analysisMode}) — trying vision fallback (video frames + caption).`);
-                        try {
-                            // Sample sequential frames so a TikTok *video* is
-                            // understood across time (single photo still works —
-                            // capturePostFrames falls back to one frame).
-                            const frames = (await capturePostFrames(page, { count: 4 }).catch(() => [])) || [];
-                            const frameList = frames.length ? frames : [];
-                            if (frameList.length && ai) {
-                                const multi = frameList.length > 1;
-                                const visionPrompt = `${platformConfig.aiPrompts?.analyzeVideo || 'Summarize this post.'}\n\n${multi ? `These are ${frameList.length} sequential frames sampled across the video, in order. Describe what happens across the frames — actions, objects, text, and the overall topic.` : 'This is a screenshot of the post itself (a video frame or a photo). Describe what is actually shown in it.'} Use the caption for context.\n\nCaption: ${caption || 'n/a'}\nAuthor: ${video.author || 'unknown'}`;
-                                // Vision is slower (e.g. crouton ~20s) — give it a real budget.
-                                const visionOpts = frameList.length === 1
-                                    ? { imageBase64: frameList[0], timeoutMs: 90000 }
-                                    : { frameBase64s: frameList, timeoutMs: 90000 };
-                                const visionResult = String(await ai.generate(visionPrompt, visionOpts) || '').trim();
+
+                    // ---- Proactive MEDIA analysis (prioritized) + TEXT fallback ----
+                    // The media is the primary source of truth: captions/comments often
+                    // don't explain what is actually shown. Whenever AI + visual media
+                    // are available, analyze the REAL post media (CDN poster image and
+                    // sequential video frames). The text analysis above is NEVER
+                    // removed — it is merged into the final context. If media can't be
+                    // fetched or analyzed for ANY reason, we keep the text-only result.
+                    if (ai) {
+                        const mediaImages = [];
+                        // CDN poster/cover (real URL; works for photo posts + thumbnails).
+                        const poster = await fetchPosterImageBase64(page).catch(() => null);
+                        if (poster) mediaImages.push(poster);
+                        // Sequential frames for temporal understanding of videos
+                        // (capturePostFrames falls back to a single still/photo frame).
+                        // 3 frames + 1 poster = 4 = the service's MAX_CHAT_IMAGES cap.
+                        const frames = (await capturePostFrames(page, { count: 3 }).catch(() => [])) || [];
+                        for (const f of frames) if (f && !mediaImages.includes(f)) mediaImages.push(f);
+
+                        if (mediaImages.length) {
+                            try {
+                                const multi = mediaImages.length > 1;
+                                const mediaPrompt = `${platformConfig.aiPrompts?.analyzeVideo || 'Summarize this post.'}\n\n${multi ? `These are ${mediaImages.length} images from the post (the first is its cover/thumbnail, then sequential video frames in order). Describe what is ACTUALLY shown across them — people, actions, objects, on-screen text, and the overall topic.` : 'This is an image of the post itself (a photo or a video frame). Describe what is actually shown in it.'} Use the caption and comments below for context, but PRIORITIZE what the media shows.\n\nCaption: ${caption || 'n/a'}\nAuthor: ${video.author || 'unknown'}\nExisting comments:\n${commentLines || 'none yet'}`;
+                                // Vision is slower — give it a real budget. All images
+                                // go in one call so the model sees cover + frames together.
+                                const visionResult = String(await ai.generate(mediaPrompt, { frameBase64s: mediaImages, timeoutMs: 90000 }) || '').trim();
                                 if (!weakResult(visionResult)) {
-                                    analyzedVideo = visionResult;
-                                    analysisMode = multi ? 'vision_multiframe' : 'vision';
+                                    mediaAnalysis = visionResult;
+                                    analysisMode = multi ? 'vision_multiframe+text' : 'vision+text';
+                                    logger.info(`[engage:${taskId}] Media analysis OK (${mediaImages.length} images).`);
                                 } else {
-                                    logger.warn(`[engage:${taskId}] Vision result weak — keeping text/caption fallback.`);
+                                    logger.warn(`[engage:${taskId}] Media analysis weak — falling back to text-only (caption + comments).`);
                                 }
-                            } else if (!frameList.length) {
-                                logger.warn(`[engage:${taskId}] No post frames captured — keeping text/caption fallback.`);
+                            } catch (ve) {
+                                logger.warn(`[engage:${taskId}] Media analysis failed (${ve.message}) — falling back to text-only.`);
                             }
-                        } catch (ve) {
-                            logger.warn(`[engage:${taskId}] Vision fallback failed: ${ve.message}`);
+                        } else {
+                            logger.info(`[engage:${taskId}] No media images available — using text-only analysis (caption + comments).`);
                         }
-                    } else if (!textGood) {
-                        // No AI provider: capturing a frame would be discarded —
-                        // and capturePostFrame used to force-play videos, which
-                        // navigated photo posts away. Skip entirely.
-                        logger.info(`[engage:${taskId}] Text analysis weak (${textResult.length} chars) — skipping vision fallback (no AI providers).`);
+                    } else {
+                        logger.info(`[engage:${taskId}] No AI provider — using text-only analysis (caption + comments).`);
+                    }
+
+                    // Combine: media first (prioritized), text context always kept.
+                    const textTrim = String(textAnalysis || '').trim();
+                    const mediaTrim = String(mediaAnalysis || '').trim();
+                    if (mediaTrim && textTrim && mediaTrim !== textTrim) {
+                        analyzedVideo = `What the media shows: ${mediaTrim}\n\nCaption & comments context: ${textTrim}`;
+                    } else {
+                        analyzedVideo = mediaTrim || textTrim || video.caption || '';
                     }
                     // Cap analysis before it feeds comment/reply prompts (token guard).
                     if (analyzedVideo && String(analyzedVideo).length > 2000) {
@@ -1156,9 +1180,11 @@ export async function runSearchInteractEngagement(page, opts) {
                         // Keyword must appear in the comment (user directive: like
                         // competing comments "Teamwork ifb" — carry the topic).
                         // AI weaves it in naturally; do not copy raw + random letters.
-                        const _voiceMain = SEARCH_VOICE_MAIN(video.author || 'author', keyword);
-                        const genPrompt = `${_voiceMain}\n\n${platformConfig.aiPrompts?.generateComment || 'Write a natural comment.'}\n\n${socialStrategyPrompt ? 'Strategy (apply only within the voice rules above): ' + socialStrategyPrompt + '\n' : ''}Topic/keyword that brought us here: "${keyword}" — work it into the comment naturally (related wording like teamwork, the product, etc. is fine); do NOT copy the raw string with random letters appended.\n\nIf the video is not actually about "teamwork", do NOT force the raw keyword — react genuinely to the video instead.\n\nPost analysis (about the AUTHOR's post, not about you):\n${String(analyzedVideo || '').slice(0, 2000)}${recentLines ? `\nOther viewers' comments (tone context only — do not reply to them here):\n${recentLines}` : ''}`;
-                        generatedComment = ai ? sanitizeTypedText(await ai.generate(genPrompt), 150) : '';
+                        // Campaign context is authoritative; engine frame is only a
+                        // setting note (never an identity/tone override).
+                        const _voiceBlock = campaignVoiceBlock(socialStrategyPrompt, SEARCH_VOICE_MAIN(video.author || 'author', keyword));
+                        const genPrompt = `${_voiceBlock}\n\nTask: ${platformConfig.aiPrompts?.generateComment || 'Write a natural comment.'}\n\nTopic/keyword that brought us here: "${keyword}" — reference it only if it fits the campaign voice and the video; never copy a raw string with random letters appended. Do not force a keyword that is unrelated to the post — react genuinely to the video in the campaign voice.\n\nPost analysis about the video on screen:\n${String(analyzedVideo || '').slice(0, 2000)}${recentLines ? `\nExisting viewers' comments (context only):\n${recentLines}` : ''}`;
+                        generatedComment = ai ? sanitizeTypedText(await ai.generate(genPrompt)) : '';
                     } catch (e) {
                         logger.warn(`[engage:${taskId}] AI comment generation failed: ${e.message}`);
                         generatedComment = '';
@@ -1762,17 +1788,22 @@ export async function runSearchInteractEngagement(page, opts) {
                             try {
                                 const safeAnalysis = String(analyzedVideo || '').slice(0, 1200);
                                 const commenter = String(comment.username || '').replace(/^@+/, '').slice(0, 40);
+                                // Prefer the human display name (e.g. "Olivia Jackson",
+                                // "smiles 😃") over the raw handle for personalization.
+                                const displayName = String(comment.displayName || comment.name || '').replace(/^@+/, '').trim().slice(0, 40) || commenter;
                                 const authorHandle = String(video.author || '').replace(/^@+/, '').slice(0, 40);
                                 const safeComment = String(comment.text || '').slice(0, 300);
-                                const _voiceReply = SEARCH_VOICE_REPLY(commenter, authorHandle);
-                                const replyPrompt = `${_voiceReply}\n\n${platformConfig.aiPrompts?.replyToComment || 'Reply briefly.'}\n\n${socialStrategyPrompt ? 'Strategy (apply only within the voice rules above): ' + socialStrategyPrompt + '\n' : ''}Post author: @${authorHandle || 'author'} (not you)\nCommenter you are replying to: @${commenter || 'a fellow viewer'} (not you, not the author)\n\nVideo analysis (for topic context only): ${safeAnalysis}\nYour main comment on the post (as the viewer): ${generatedComment}\nTheir comment (posted to the author's post, not to you): "${safeComment}"\n\nReply peer-to-peer to @${commenter || 'them'} about their comment + the video. Do NOT thank them for following you and do NOT propose mutual following / hitting 1k.`;
+                                // Campaign context is authoritative for the reply voice.
+                                const _voiceBlock = campaignVoiceBlock(socialStrategyPrompt, SEARCH_VOICE_REPLY(commenter, authorHandle));
+                                const replyPrompt = `${_voiceBlock}\n\nTask: ${platformConfig.aiPrompts?.replyToComment || 'Reply briefly.'}\n\nPost author: @${authorHandle || 'author'}\nCommenter you are replying to: @${commenter || 'a fellow viewer'} (display name: ${displayName || 'unknown'}).\n\nVideo analysis (topic context): ${safeAnalysis}\nYour earlier main comment on this post: ${generatedComment}\nTheir comment on the post: "${safeComment}"\n\nReply to @${commenter || 'them'} about their comment + the video, in the campaign voice above. PERSONALIZE: when natural, address them by their name/handle (e.g. "@${displayName || commenter || 'them'}, good point...") so they know you are replying to them specifically — use it once, not repeatedly. Apply the campaign's rules for invitations/links exactly as written — if the strategy says to invite fans to DM for tickets/meetups, do so; never add follow-for-follow or follower-count talk unless the campaign voice asks for it.`;
                                 // Reply generation is on the per-comment critical
                                 // path: short cap + no transient retries, fall
                                 // back to one emoji instead of stalling.
                                 const rawReply = (ai && !aiCoolingDown)
-                                    ? await ai.generate(replyPrompt, { maxTokens: 80, timeoutMs: 25000, maxTransientAttempts: 1 })
+                                    ? await ai.generate(replyPrompt, { maxTokens: 300, timeoutMs: 25000, maxTransientAttempts: 1 })
                                     : '';
-                                replyText = sanitizeTypedText(rawReply, 120);
+                                // Keep @mentions so the reply is personalized; no char cap.
+                                replyText = sanitizeTypedText(rawReply, 0, true);
                                 if (!replyText && !aiCoolingDown) {
                                     aiReplyCooldownUntil = Date.now() + 20000;
                                     logger.warn(`[engage:${taskId}] Reply AI returned empty — emoji fallback for ~20s.`);

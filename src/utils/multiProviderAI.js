@@ -448,7 +448,25 @@ class MultiProviderAI {
             || msg.includes('opencode_empty_response') || msg.includes('empty_response') || msg.includes('empty response');
     }
 
+    // A 400 that says the model/service can't accept the media we sent is a
+    // CAPABILITY mismatch, not a broken provider. Skip this call (so the
+    // waterfall tries the next row / text fallback) but do NOT stamp FAILED —
+    // a 24h cooldown for one oversized/unsupported media call would poison a
+    // perfectly good text provider.
+    isCapabilityError(err) {
+        const status = err?.response?.status ?? err?.status;
+        if (status !== 400 && status !== 422) return false;
+        const data = err?.response?.data;
+        const detail = (data && typeof data === 'object') ? String(data.error || data.message || '') : String(data || '');
+        const msg = `${err?.message || ''} ${detail}`.toLowerCase();
+        return /too many chat images|does not support multimodal|multimodal data provided|unsupported media|image input|content of type string|invalid image/i.test(msg);
+    }
+
     async _handleProviderError(provider, err) {
+        if (this.isCapabilityError(err)) {
+            logger.warn(`[MultiProviderAI] Capability mismatch for ${provider.provider}/${provider.model} — skipping this call, status unchanged (${String(err?.response?.data?.error || err?.message || '').slice(0, 160)})`);
+            return;
+        }
         if (this.isRateLimitError(err)) {
             this.recordRateLimit(provider);
         } else if (this.isTransientError(err)) {

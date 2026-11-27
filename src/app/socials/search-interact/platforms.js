@@ -447,11 +447,17 @@ YOUR REPLY (only the reply text, no quotes):`
                             const userEl = item.querySelector("[data-e2e^='comment-username-']");
                             const likeCountEl = item.querySelector("span[data-e2e='comment-like-count']");
                             if (textEl) {
+                                // Prefer the visible TUXText display name (e.g. "Olivia
+                                // Jackson", "smiles 😃") over the raw handle. Fall back
+                                // to the handle text if the TUXText is empty.
+                                const nameEl = userEl ? userEl.querySelector("p.TUXText, .TUXText") : null;
+                                const displayName = nameEl ? nameEl.textContent.trim() : (userEl ? userEl.textContent.trim() : '');
                                 comments.push({
                                     index: idx,
                                     id: item.id || '',
                                     text: textEl.textContent.trim(),
                                     username: userEl ? userEl.textContent.trim() : '',
+                                    displayName,
                                     likeCount: likeCountEl ? likeCountEl.textContent.trim() : ''
                                 });
                             }

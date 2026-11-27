@@ -8,7 +8,7 @@
 // Selector/DOM failures are non-fatal: log and skip, never break the campaign.
 
 import logger from "../../../utils/logger.js";
-import { checkGate, consumeAction } from "./routeHelper.js";
+import { checkGate, consumeAction, campaignVoiceBlock } from "./routeHelper.js";
 import limitsCore from "./limitsCore.js";
 import { ensureCommentsVisibleGeneric, extractCommentsGeneric, postCommentGeneric } from "../search-interact/platformHelper/GenericHelpers.js";
 import { MultiProviderAI } from "../search-interact/platforms.js";
@@ -18,7 +18,7 @@ const { canonicalAction } = limitsCore;
 function stripMentions(text) {
     return String(text || '').replace(/@[A-Za-z0-9._-]+/g, ' ').replace(/@+/g, ' ').replace(/\s+/g, ' ').trim();
 }
-function sanitizeTypedText(text, maxChars = 150) {
+function sanitizeTypedText(text, maxChars = 0, keepMentions = true) {
     let s = String(text || '').replace(/<(script|style|iframe|object|embed)[^>]*>[\s\S]*?<\/\1>/gi, ' ');
     s = s.replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/[\x00-\x1F\x7F]/g, ' ');
     s = s.replace(/<\/?\s*[A-Za-z][^>]*?>/g, ' ');
@@ -31,7 +31,13 @@ function sanitizeTypedText(text, maxChars = 150) {
         const sp = cut.lastIndexOf(' ');
         s = (sp > maxChars * 0.7 ? cut.slice(0, sp) : cut).trim();
     }
-    return stripMentions(s).trim();
+    // Never post a mid-sentence fragment.
+    if (s && /[A-Za-zÀ-ÿ0-9,;:\-–—]$/.test(s)) {
+        const closed = s.replace(/[,;:\-–—\s]+$/, '');
+        s = closed ? closed + '.' : '';
+    }
+    // Keep @mentions by default so replies address the commenter by name.
+    return keepMentions ? s.trim() : stripMentions(s).trim();
 }
 function voiceReply(commenter, author) {
     return [
@@ -194,9 +200,11 @@ export async function runCommentWaves(page, opts = {}) {
         let replyText = '';
         try {
             const commenter = String(c.username || '').replace(/^@+/, '').slice(0, 40);
-            const prompt = `${voiceReply(commenter, author || 'author')}\n\n${cfg.aiPrompts?.replyToComment || cfg.aiPrompts?.generateReply || 'Reply briefly.'}\n\n${socialStrategyPrompt ? 'Strategy (apply only within voice rules): ' + socialStrategyPrompt + '\n' : ''}Post analysis (context only): ${String(analysisText || '').slice(0, 800)}\nTheir comment (posted on the author's post, not to you): "${String(c.text).slice(0, 300)}"\n\nReply peer-to-peer to @${commenter || 'them'} about their comment + the post topic. One sentence, no follow-pact.`;
-            const raw = ai ? await ai.generate(prompt, { maxTokens: 80, timeoutMs: 25000, maxTransientAttempts: 1 }).catch(() => '') : '';
-            replyText = sanitizeTypedText(raw, 120);
+            const displayName = String(c.displayName || c.name || '').replace(/^@+/, '').trim().slice(0, 40) || commenter;
+            const voiceBlock = campaignVoiceBlock(socialStrategyPrompt, voiceReply(commenter, author || 'author'));
+            const prompt = `${voiceBlock}\n\nTask: ${cfg.aiPrompts?.replyToComment || cfg.aiPrompts?.generateReply || 'Reply briefly.'}\n\nPost analysis (topic context): ${String(analysisText || '').slice(0, 800)}\nTheir comment on the post: "${String(c.text).slice(0, 300)}"\n\nReply to @${commenter || 'them'} (${displayName || 'fellow viewer'}) about their comment + the post topic, in the campaign voice above. PERSONALIZE: address them by name/handle once where natural. Keep it short and follow the campaign's rules for invitations/links exactly.`;
+            const raw = ai ? await ai.generate(prompt, { maxTokens: 300, timeoutMs: 25000, maxTransientAttempts: 1 }).catch(() => '') : '';
+            replyText = sanitizeTypedText(raw);
         } catch (e) {
             log.warn(`${prefix} reply AI failed: ${e.message}`);
         }

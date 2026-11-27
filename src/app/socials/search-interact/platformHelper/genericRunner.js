@@ -1,7 +1,7 @@
 // Generic engagement runner for non-TikTok search-interact platforms
 // (YouTube, X/Twitter, Instagram, Facebook, Quora).
 // Mirrors the TikTok runner's *shape* — search → open post → verified like →
-// open comments → extract → analyze (vision fallback when media exists) →
+// open comments → extract → analyze (media prioritized, text fallback) →
 // voice-framed main comment → verified post → quota — but every DOM step is
 // driven by platformConfigs.selectors / extractors so each platform's UI/UX
 // differs only in config, not in duplicated logic.
@@ -9,9 +9,9 @@
 // they stay on the workflow path until per-platform comment DOM is proven.
 
 import logger from '../../../../utils/logger.js';
-import { DOMHelpers, checkGate, consumeAction } from '../../_shared/routeHelper.js';
+import { DOMHelpers, checkGate, consumeAction, campaignVoiceBlock } from '../../_shared/routeHelper.js';
 import { getPlatformLimits } from '../../_shared/limits.js';
-import { capturePostFrame } from '../../_shared/routeHelper.js';
+import { capturePostFrames, fetchPosterImageBase64 } from '../../_shared/routeHelper.js';
 import limitsCore from '../../_shared/limitsCore.js';
 import { navigateAndWaitGeneric, isPostLikedGeneric, isConfidentlyUnlikedGeneric, genericLike, ensureCommentsVisibleGeneric, extractCommentsGeneric, postCommentGeneric } from './GenericHelpers.js';
 import { runCommentWaves } from '../../_shared/commentWaveEngine.js';
@@ -21,7 +21,7 @@ import { isLoggedOut } from '../../_shared/socialDom.js';
 function stripMentions(text) {
     return String(text || '').replace(/@[A-Za-z0-9._-]+/g, ' ').replace(/@+/g, ' ').replace(/\s+/g, ' ').trim();
 }
-function sanitizeTypedText(text, maxChars = 150) {
+function sanitizeTypedText(text, maxChars = 0, keepMentions = true) {
     let s = String(text || '').replace(/<(script|style|iframe|object|embed)[^>]*>[\s\S]*?<\/\1>/gi, ' ');
     s = s.replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/[\x00-\x1F\x7F]/g, ' ');
     s = s.replace(/<\/?\s*[A-Za-z][^>]*?>/g, ' ');
@@ -29,11 +29,16 @@ function sanitizeTypedText(text, maxChars = 150) {
     const f = s.trim().match(/^```(?:json|text|markdown)?\s*\n([\s\S]*?)\n\s*```\s*$/i);
     if (f) s = f[1];
     s = s.replace(/^["']|["']$/g, '').trim().replace(/\n{2,}/g, ' ').trim();
-    s = stripMentions(s);
+    if (!keepMentions) s = stripMentions(s);
     if (maxChars && s.length > maxChars) {
         const cut = s.slice(0, maxChars);
         const sp = cut.lastIndexOf(' ');
         s = (sp > maxChars * 0.7 ? cut.slice(0, sp) : cut).trim();
+    }
+    // Never post a mid-sentence fragment.
+    if (s && /[A-Za-zÀ-ÿ0-9,;:\-–—]$/.test(s)) {
+        const closed = s.replace(/[,;:\-–—\s]+$/, '');
+        s = closed ? closed + '.' : '';
     }
     return s;
 }
@@ -233,8 +238,13 @@ export async function runGenericEngagement(page, opts) {
         const comments = await extractCommentsGeneric(page, platformConfig);
         const commentLines = comments.filter(c => c.text).slice(0, 10).map(c => `- ${c.username ? c.username + ': ' : ''}${String(c.text).slice(0, 200)}`).join('\n');
 
-        // --- analyze (text first, vision fallback when media exists) ---
+        // --- analyze: MEDIA first (prioritized), text (caption + comments) always kept ---
+        // If media is missing / can't be downloaded / AI can't analyze it, the
+        // text-only analysis remains the graceful fallback (never removed).
         let analyzed = '';
+        let textAnalysis = '';
+        let mediaAnalysis = '';
+        let analysisMode = 'text';
         try {
             const caption = String(v.caption || v.title || '').slice(0, 600);
             const context = [
@@ -244,18 +254,44 @@ export async function runGenericEngagement(page, opts) {
             ].join('\n');
             const basePrompt = platformConfig.aiPrompts?.analyzePost || platformConfig.aiPrompts?.analyzeVideo || 'Summarize this post.';
             const analyzePrompt = `${basePrompt}\n\nDescribe this post neutrally from a viewer's perspective (it was NOT made for you).\n\nPost:\n${context}`;
-            analyzed = ai ? String(await ai.generate(analyzePrompt) || '') : context;
-            const weak = !analyzed.trim() || analyzed.length < 30 || /^(could not analyze|ai not available|no ai providers)/i.test(analyzed);
-            if (weak) {
-                const frame = await capturePostFrame(page).catch(() => null);
-                if (frame && ai) {
-                    const visionPrompt = `${basePrompt}\n\nThis is a screenshot of the post (video frame or photo). Describe what is shown.\n\nCaption: ${caption || 'n/a'}`;
-                    const vr = String(await ai.generate(visionPrompt, { imageBase64: frame, timeoutMs: 90000 }) || '').trim();
-                    if (vr && vr.length >= 30 && !/^(could not analyze|ai not available)/i.test(vr)) analyzed = vr;
+            textAnalysis = ai ? String(await ai.generate(analyzePrompt) || '') : context;
+
+            if (ai) {
+                const mediaImages = [];
+                const poster = await fetchPosterImageBase64(page).catch(() => null);
+                if (poster) mediaImages.push(poster);
+                // 3 frames + 1 poster = 4 = the service's MAX_CHAT_IMAGES cap.
+                const frames = (await capturePostFrames(page, { count: 3 }).catch(() => [])) || [];
+                for (const f of frames) if (f && !mediaImages.includes(f)) mediaImages.push(f);
+                if (mediaImages.length) {
+                    try {
+                        const multi = mediaImages.length > 1;
+                        const mediaPrompt = `${basePrompt}\n\n${multi ? `These are ${mediaImages.length} images from the post (cover first, then sequential frames). Describe what is ACTUALLY shown — people, actions, objects, on-screen text, overall topic.` : 'This image shows the post itself (a photo or video frame). Describe what is actually shown.'} Use the caption/comments below for context, but PRIORITIZE the media.\n\nCaption: ${caption || 'n/a'}\nAuthor: ${v.author || 'unknown'}\nExisting comments:\n${commentLines || 'none yet'}`;
+                        const visionResult = String(await ai.generate(mediaPrompt, { frameBase64s: mediaImages, timeoutMs: 90000 }) || '').trim();
+                        const weakMedia = !visionResult || visionResult.length < 30 || /^(could not analyze|ai not available|no ai providers)/i.test(visionResult);
+                        if (!weakMedia) {
+                            mediaAnalysis = visionResult;
+                            analysisMode = multi ? 'vision_multiframe+text' : 'vision+text';
+                        } else {
+                            logger.warn(`${label} media analysis weak — using text-only fallback.`);
+                        }
+                    } catch (ve) {
+                        logger.warn(`${label} media analysis failed (${ve.message}) — using text-only fallback.`);
+                    }
+                } else {
+                    logger.info(`${label} no media images available — using text-only analysis.`);
                 }
             }
-        } catch (e) { logger.warn(`${label} analyze failed: ${e.message}`); analyzed = String(v.caption || v.title || ''); }
+            const t = String(textAnalysis || '').trim();
+            const m = String(mediaAnalysis || '').trim();
+            analyzed = (m && t && m !== t) ? `What the media shows: ${m}\n\nCaption & comments context: ${t}` : (m || t || String(v.caption || v.title || ''));
+        } catch (e) {
+            logger.warn(`${label} analyze failed: ${e.message}`);
+            analyzed = String(v.caption || v.title || '');
+            analysisMode = 'text_failed';
+        }
         if (analyzed.length > 2000) analyzed = analyzed.slice(0, 2000);
+        logger.info(`${label} analysis ready (mode=${analysisMode}).`);
 
         // --- main comment (voice-framed, verified post) ---
         if (actionExhausted.comment) { logger.info(`${label} comment per-run cap hit — skipping comment`); results.push({ keyword: kw, url: v.url, author: v.author, status: 'comment_cap_skip', comment: '' }); return likeDone ? 'ok' : 'fail'; }
@@ -263,9 +299,10 @@ export async function runGenericEngagement(page, opts) {
         if (!commentGate.allowed) { logger.info(`${label} comment quota exhausted — skipping comment`); markExhausted('comment', commentGate.reason || 'quota'); results.push({ keyword: kw, url: v.url, author: v.author, status: 'comment_quota_skip', comment: '' }); return likeDone ? 'ok' : 'fail'; }
         let posted = false; let commentText = '';
         try {
-            const genPrompt = `${voiceMain(platform, v.author || 'author')}\n\n${platformConfig.aiPrompts?.generateReply || platformConfig.aiPrompts?.generateComment || 'Write a natural comment.'}\n\n${socialStrategyPrompt ? 'Strategy (within voice rules): ' + socialStrategyPrompt + '\n' : ''}Keyword that brought us here: "${kw}" — weave it in only if it fits naturally.\n\nPost analysis (about the AUTHOR's post, not about you):\n${analyzed}${commentLines ? `\nOther viewers' comments (tone only):\n${commentLines.slice(0, 800)}` : ''}`;
+            const voiceBlock = campaignVoiceBlock(socialStrategyPrompt, voiceMain(platform, v.author || 'author'));
+            const genPrompt = `${voiceBlock}\n\nTask: ${platformConfig.aiPrompts?.generateReply || platformConfig.aiPrompts?.generateComment || 'Write a natural comment.'}\n\nKeyword that brought us here: "${kw}" — reference it only if it fits the campaign voice naturally.\n\nPost analysis about the video:\n${analyzed}${commentLines ? `\nExisting viewers' comments (context only):\n${commentLines.slice(0, 800)}` : ''}`;
             const raw = ai ? await ai.generate(genPrompt) : '';
-            commentText = sanitizeTypedText(raw, 150);
+            commentText = sanitizeTypedText(raw, 0, false);
         } catch (e) { logger.warn(`${label} comment gen failed: ${e.message}`); }
         if (commentText) {
             const boxSel = s.commentBox || s.replyTextBox || "div[contenteditable='true']";
