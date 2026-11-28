@@ -363,22 +363,12 @@ Keep to 2-3 sentences, be concise.`,
 5. What would be a fitting, natural response?
 Be concise, capture the vibe.`,
 
-            generateComment: `You are an everyday TikTok viewer who found this post. The post author is someone else — the post was NOT made for you, and you are NOT the author. Write a NATURAL, AUTHENTIC TikTok comment that:
-- Is 1-2 sentences maximum
-- Matches the video's tone and vibe
-- Engages genuinely with the content
-- Uses casual, conversational language
-- Can include 1-2 relevant emojis if natural
-- Feels like a real person commenting, not a bot
-- NO @mentions unless it adds real value
-- NO generic phrases like "love this" or "so funny"
-- Should prompt engagement (ask a question or share a relatable thought)
-- "You" = the post author. Never speak as the author and never talk about hitting 1k / follow-for-follow unless the video is explicitly about that.
-
-Video vibe: {videoAnalysis}
-Comments context: {commentsContext}
-
-YOUR COMMENT (only the comment text, no quotes, just the text):`,
+            // Structural fallback only (used when a campaign has no strategy).
+            // Identity, voice, wording and tactics belong to the campaign prompt.
+            generateComment: `Write one public comment on this post (observed data below).
+Video analysis: {videoAnalysis}
+Existing comments: {commentsContext}
+Before writing, determine: who posted this, who appears in the media, and who the existing comments are addressing.`,
 
             shouldLikeComment: `Should this comment be liked? Evaluate:
 1. Is it genuinely engaging/funny/helpful?
@@ -387,20 +377,11 @@ YOUR COMMENT (only the comment text, no quotes, just the text):`,
 4. Is it spam, promotional, or low-quality?
 Respond with ONLY: like or skip`,
 
-            replyToComment: `You are the viewer who just commented on this video. A different viewer (not you, not the author) left this comment UNDER the author's post — it was NOT sent to you and was NOT made for you. Generate a NATURAL, SHORT peer-to-peer reply to that fellow viewer:
-- 1 sentence maximum
-- Conversational, like a real person responding
-- Can include 1 emoji if natural
-- NO hashtags, NO @mentions
-- Adds to the conversation, not generic
-- Never thank them for following YOU, never assume "followed" means they followed you, never propose a follow-for-follow pact / hitting 1k, never speak as the author
-- "You" = the commenter; "I" = you, the replier
-
-Video context: {videoAnalysis}
-Original video comment you posted (as a fellow viewer): {yourComment}
-Commenter you reply to (their comment was posted to the author's post, not to you): {commentText}
-
-YOUR REPLY (only the reply text, no quotes):`
+            replyToComment: `Write one public reply to the comment below, under this post (observed data below).
+Video analysis: {videoAnalysis}
+Your earlier comment on this post: {yourComment}
+Their comment: {commentText}
+Before writing, determine who wrote this comment and who it is addressing.`
         },
 
         // ===== EXTRACTORS =====

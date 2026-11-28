@@ -24,6 +24,8 @@ import { getAccountUsage, consumeAccountActions, updateAccountStatus, updateAcco
 import { runInboxInteract, supportsInboxRunner, inboxActionForOperation } from './routeHelper.js';
 import { getPlatformHelper } from './platformHelper/index.js';
 import { probeSocialPlatform } from '../_shared/probeRunner.js';
+import { resolveCommentPolicy } from '../_shared/commentPolicy.js';
+import { screenTargets, isTargetApproved } from '../_shared/commentTargeting.js';
 import { captureFailureDebug } from '../_shared/debugCapture.js';
 
 export { processTask as processInboxInteractTask };
@@ -58,6 +60,12 @@ async function processTask(taskPayload) {
         const profileId = taskPayload.profileId || taskPayload.accountId || null;
         const socialStrategyPrompt = taskPayload.socialStrategyPrompt || null;
         const messageText = taskPayload.messageText || "";
+        // CENTRAL POLICY: both toggles inherited from the task or campaign row.
+        const commentPolicy = await resolveCommentPolicy(taskPayload, {
+            campaignId: taskPayload.campaignId || taskPayload.campaign || null,
+            log: logger,
+            label: `inbox:${taskId}:policy`,
+        });
 
         logger.info(`[processTask] ${taskId}: ${platform}/${operation} target=${keyword}`);
 
@@ -152,6 +160,26 @@ async function processTask(taskPayload) {
             return [...new Set(arr.map(r => String(r || '').trim().replace(/^@+/, '')).filter(Boolean))];
         })();
 
+        // CENTRAL TARGETING: AI screens inbox recipients/messages before any DM.
+        let inboxTargetScreen = null;
+        if (commentPolicy.targetedComments) {
+            inboxTargetScreen = await screenTargets({
+                ai: MultiProviderAI,
+                targets: recipients.map(r => ({ id: r, username: r, text: String(messageText || `Inbox conversation with ${r}`) })),
+                context: { platform, operation, recipientCount: recipients.length },
+                socialStrategyPrompt,
+                maxTargets: Math.max(10, recipients.length),
+                log: logger,
+                label: `inbox:${taskId}:targeting`,
+            });
+            const approvedRecipients = recipients.filter(r => isTargetApproved(inboxTargetScreen, { id: r, username: r, text: String(messageText || `Inbox conversation with ${r}`) }));
+            if (approvedRecipients.length !== recipients.length) {
+                logger.info(`[processTask] ${taskId}: targetedComments approved ${approvedRecipients.length}/${recipients.length} inbox recipient(s) — skipping the rest.`);
+            }
+            recipients.length = 0;
+            recipients.push(...approvedRecipients);
+        }
+
         const useRunner = supportsInboxRunner(platform) && !!inboxActionForOperation(operationRaw);
         if (useRunner && recipients.length > 1) {
             for (const recipient of recipients) {
@@ -196,6 +224,8 @@ async function processTask(taskPayload) {
                         const actRun = await actHelper.runActivitiesInteract({
                             page, platform, profileId,
                             campaignId: taskPayload.campaignId || taskPayload.campaign || null,
+                            requireAiForComments: commentPolicy.requireAiForComments,
+                            targetedComments: commentPolicy.targetedComments,
                             taskId: taskId + '-fallback',
                             operation: 'engageWithNotifications',
                             engagementMode: true,
@@ -209,13 +239,19 @@ async function processTask(taskPayload) {
                 } catch (e) { logger.warn(`[processTask] ${taskId}: activities fallback failed: ${e.message}`); }
             }
         } else if (useRunner) {
+            const singleRecipient = String(taskPayload.targetUsername || taskPayload.recipient || '').replace(/^@+/, '');
+            if (commentPolicy.targetedComments && inboxTargetScreen
+                && !isTargetApproved(inboxTargetScreen, { id: singleRecipient, username: singleRecipient, text: String(messageText || `Inbox conversation with ${singleRecipient}`) })) {
+                logger.info(`[processTask] ${taskId}: recipient ${singleRecipient || 'unknown'} skipped (targetedComments, not on-target).`);
+                results.push({ status: 'dm_skipped_not_targeted', recipient: singleRecipient });
+            } else {
             const run = await runInboxInteract({
                 page,
                 platform,
                 profileId,
                 taskId,
                 operation: operationRaw,
-                recipient: taskPayload.targetUsername || taskPayload.recipient || "",
+                recipient: singleRecipient,
                 messageText: finalMessageText,
                 stopAfterHours: Number(taskPayload.stopAfterHours) || 0,
                 maxReplies: Number(taskPayload.maxReplies) || 5,
@@ -243,6 +279,8 @@ async function processTask(taskPayload) {
                         const actRun = await actHelper.runActivitiesInteract({
                             page, platform, profileId,
                             campaignId: taskPayload.campaignId || taskPayload.campaign || null,
+                            requireAiForComments: commentPolicy.requireAiForComments,
+                            targetedComments: commentPolicy.targetedComments,
                             taskId: taskId + '-fallback',
                             operation: 'engageWithNotifications',
                             engagementMode: true,
@@ -255,6 +293,7 @@ async function processTask(taskPayload) {
                     }
                 } catch (e) { logger.warn(`[processTask] ${taskId}: activities fallback failed: ${e.message}`); }
             }
+            }
         } else {
             const workflowKeys = resolveWorkflowOps(operationRaw, platformConfig.workflows);
             if (workflowKeys.length === 0) throw new Error(`No workflow resolved for operation: ${operationRaw}`);
@@ -264,15 +303,20 @@ async function processTask(taskPayload) {
                 platform,
                 operation,
                 keyword,
+                campaignId: taskPayload.campaignId || taskPayload.campaign || null,
                 messageText: finalMessageText,
                 platformConfig,
                 socialStrategyPrompt,
+                requireAiForComments: commentPolicy.requireAiForComments,
+                targetedComments: commentPolicy.targetedComments,
+                targetScreen: inboxTargetScreen,
             };
 
             let workflowResults = {};
             for (const workflow of workflows) {
-                // DM path is compulsory-AI regardless of the comment toggle.
-                const wfResult = await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI, true);
+                // Policy is resolved centrally; the existing no-text guard below
+                // still blocks any DM that has no AI-generated message.
+                const wfResult = await executeWorkflow(page, workflow, context, platformConfig, MultiProviderAI, commentPolicy.requireAiForComments);
                 for (const [k, v] of Object.entries(wfResult.__quota || {})) {
                     const key = k === "coldMessage" ? "inboxReply" : k;
                     quota[key] = (quota[key] || 0) + (Number(v) || 0);

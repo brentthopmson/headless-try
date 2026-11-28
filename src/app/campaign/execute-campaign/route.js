@@ -19,6 +19,7 @@ import { getCampaignLimits, checkUserQuota } from "../../socials/_shared/limits.
 import { updateUserUsage, setActiveCampaignForAccount, clearActiveCampaignForAccount, seedCampaignAccountsInStats, updateCampaignStatsUsage, flushAllAccountUsage } from "../../socials/_shared/hubUpdater.js";
 import { resolveAccountGate, isLimitSkipError } from "../../socials/_shared/accountGate.js";
 import workflowOps from "../../socials/_shared/workflowOps.js";
+import { resolveCommentPolicy } from "../../socials/_shared/commentPolicy.js";
 
 const { resolveSocialMessage } = workflowOps;
 
@@ -1629,6 +1630,10 @@ if (!String(settings.helperKeyword || "").trim()) {
         const maxResultsPerKeyword = Math.max(1, parseInt(settings.maxResultsPerKeyword, 10) || 5);
         // Per-post reply cap from SETTINGS.interactionMaxRepliesPerPost (default 30).
         const maxRepliesPerPost = await getMaxRepliesPerPost();
+        // Resolve BOTH comment-policy toggles once, centrally — every queued
+        // interaction task inherits them (older/sheet-driven tasks fall back
+        // to campaign settings in the resolver).
+        const commentPolicy = await resolveCommentPolicy(settings, { campaignId, log: logger, label: 'execute:policy' });
 
         // One batch task per profile per operation, carrying ALL target
         // keywords/queries in searchQueries[]. `extra` carries discovery info for
@@ -1651,7 +1656,8 @@ if (!String(settings.helperKeyword || "").trim()) {
             maxRepliesPerPost,
             // Parse properly — the old `!!` read a stored string "false" as true.
             // Keep this identical to line 2061 and every social route.
-            requireAiForComments: settings.requireAiForComments === true || String(settings.requireAiForComments || '').toLowerCase() === 'true',
+            requireAiForComments: commentPolicy.requireAiForComments,
+            targetedComments: commentPolicy.targetedComments,
             fallbackToActivities: true,
             fallbackToDiscovery: true,
             ...extra,
@@ -2149,7 +2155,8 @@ if (!String(settings.helperKeyword || "").trim()) {
                 searchQueries: [""],
                 maxResultsPerKeyword,
                 maxRepliesPerPost: getMaxRepliesPerPost(),
-                requireAiForComments: settings.requireAiForComments === true || String(settings.requireAiForComments || '').toLowerCase() === 'true',
+                requireAiForComments: commentPolicy.requireAiForComments,
+                targetedComments: commentPolicy.targetedComments,
                 fallbackToActivities: true,
                 fallbackToDiscovery: true,
                 cookieJSON: typeof pData.cookies === "string" ? pData.cookies : JSON.stringify(pData.cookies),

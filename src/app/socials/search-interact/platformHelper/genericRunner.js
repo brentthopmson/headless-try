@@ -9,13 +9,15 @@
 // they stay on the workflow path until per-platform comment DOM is proven.
 
 import logger from '../../../../utils/logger.js';
-import { DOMHelpers, checkGate, consumeAction, campaignVoiceBlock } from '../../_shared/routeHelper.js';
+import { DOMHelpers, checkGate, consumeAction, campaignVoiceBlock, structuralTaskLine } from '../../_shared/routeHelper.js';
 import { getPlatformLimits } from '../../_shared/limits.js';
 import { capturePostFrames, fetchPosterImageBase64 } from '../../_shared/routeHelper.js';
 import limitsCore from '../../_shared/limitsCore.js';
 import { navigateAndWaitGeneric, isPostLikedGeneric, isConfidentlyUnlikedGeneric, genericLike, ensureCommentsVisibleGeneric, extractCommentsGeneric, postCommentGeneric } from './GenericHelpers.js';
 import { runCommentWaves } from '../../_shared/commentWaveEngine.js';
 import { isSocialCampaignPaused, getSocialStopState } from '../../_shared/pauseCheck.js';
+import { resolveCommentPolicy } from '../../_shared/commentPolicy.js';
+import { screenTargets, isTargetApproved } from '../../_shared/commentTargeting.js';
 import { isLoggedOut } from '../../_shared/socialDom.js';
 
 function stripMentions(text) {
@@ -43,26 +45,32 @@ function sanitizeTypedText(text, maxChars = 0, keepMentions = true) {
     return s;
 }
 
-function voiceMain(platformLabel, author) {
+// STRUCTURAL placement only — identity, tone and wording belong to the campaign.
+function placementMain(platformLabel, author) {
     return [
-        `WHO YOU ARE: an everyday ${platformLabel} viewer who just found this post. You are NOT the post author and the post was NOT made for you.`,
-        `WHO YOU TALK TO: the post author @${author || 'author'} ("you" = the author) and the general audience.`,
-        'RULES: react to what the AUTHOR made/shows. Never speak as the author, never thank anyone for inviting you, never talk about your own follower count / hitting 1k / a follow-for-follow pact unless the author\'s post is explicitly about that.',
-        'PRONOUNS: "you" = the author; "I/we" = you, the viewer.',
+        `Action: a public comment posted on another account's ${platformLabel} post.`,
+        `Post owner: @${author || 'author'}.`,
+        'Setting: the comments section of that post; not a private message, not your own profile.',
     ].join('\n');
 }
 
-function voiceReply(commenter, author) {
+function placementReply(commenter, author) {
     return [
-        `WHO YOU ARE: the viewer who just commented on @${author || 'author'}'s post. You are NOT the author and NOT the commenter.`,
-        `WHO YOU TALK TO: @${commenter || 'a fellow viewer'} — another viewer whose comment sits UNDER the same post (not addressed to you, not a DM).`,
-        'RULES: reply peer-to-peer. Never thank them for following YOU, never assume "followed" means they followed you, never propose a follow-for-follow pact or ask about their follower count as if you ran a growth account. React to their words + the post topic.',
-        `PRONOUNS: "you" = @${commenter || 'the commenter'}; "I" = you, the replier; "the author" = @${author || 'author'}.`,
+        'Action: a public reply to another user\'s comment under a post.',
+        `Post owner: @${author || 'author'}.`,
+        `Author of the comment being replied to: @${commenter || 'unknown'}.`,
+        'Setting: that comment thread under the post; not a private message.',
     ].join('\n');
 }
 
 export async function runGenericEngagement(page, opts) {
-    const { platform, platformConfig, ai, profileId, campaignId, keywords, maxResultsPerKeyword = 5, maxRepliesPerPost = 30, stopAfterHours = 0, socialStrategyPrompt, requireAiForComments = false, taskId = 'session' } = opts;
+    const { platform, platformConfig, ai, profileId, campaignId, keywords, maxResultsPerKeyword = 5, maxRepliesPerPost = 30, stopAfterHours = 0, socialStrategyPrompt, requireAiForComments: _requireAiForCommentsRaw = false, targetedComments: _targetedCommentsRaw, taskId = 'session' } = opts;
+    const commentPolicy = await resolveCommentPolicy(
+        { requireAiForComments: _requireAiForCommentsRaw, targetedComments: _targetedCommentsRaw },
+        { campaignId, log: logger, label: `generic:${taskId}:policy` }
+    );
+    const requireAiForComments = commentPolicy.requireAiForComments;
+    const targetedComments = commentPolicy.targetedComments;
     const { canonicalAction } = limitsCore;
     const s = platformConfig.selectors || {};
     const likeSel = s.likeButton || s.upvoteButton || "button[aria-label*='Like']";
@@ -293,14 +301,37 @@ export async function runGenericEngagement(page, opts) {
         if (analyzed.length > 2000) analyzed = analyzed.slice(0, 2000);
         logger.info(`${label} analysis ready (mode=${analysisMode}).`);
 
+        // --- central target screening (targetedComments toggle) ---
+        let targetScreen = null;
+        if (targetedComments) {
+            targetScreen = await screenTargets({
+                ai,
+                targets: comments,
+                context: { postOwner: v.author || 'author', caption: String(v.caption || v.title || '').slice(0, 600), mediaAnalysis: analyzed.slice(0, 1200) },
+                socialStrategyPrompt,
+                maxTargets: maxRepliesPerPost,
+                log: logger,
+                label: `generic:${taskId}:targeting`,
+            });
+        }
+
         // --- main comment (voice-framed, verified post) ---
         if (actionExhausted.comment) { logger.info(`${label} comment per-run cap hit — skipping comment`); results.push({ keyword: kw, url: v.url, author: v.author, status: 'comment_cap_skip', comment: '' }); return likeDone ? 'ok' : 'fail'; }
         const commentGate = await checkGate(platform, profileId, 'comment');
         if (!commentGate.allowed) { logger.info(`${label} comment quota exhausted — skipping comment`); markExhausted('comment', commentGate.reason || 'quota'); results.push({ keyword: kw, url: v.url, author: v.author, status: 'comment_quota_skip', comment: '' }); return likeDone ? 'ok' : 'fail'; }
         let posted = false; let commentText = '';
         try {
-            const voiceBlock = campaignVoiceBlock(socialStrategyPrompt, voiceMain(platform, v.author || 'author'));
-            const genPrompt = `${voiceBlock}\n\nTask: ${platformConfig.aiPrompts?.generateReply || platformConfig.aiPrompts?.generateComment || 'Write a natural comment.'}\n\nKeyword that brought us here: "${kw}" — reference it only if it fits the campaign voice naturally.\n\nPost analysis about the video:\n${analyzed}${commentLines ? `\nExisting viewers' comments (context only):\n${commentLines.slice(0, 800)}` : ''}`;
+            // ENGINE = structure + raw observations; no voice/tone/tactics here.
+            const postContext = [
+                'POST CONTEXT (observed data):',
+                `Post owner: @${v.author || 'author'}`,
+                `Caption/title: ${String(v.caption || v.title || '').slice(0, 600) || '(none observed)'}`,
+                `Media analysis: ${String(analyzed || '').slice(0, 2000) || '(none observed)'}`,
+                commentLines ? `Existing comments:\n${commentLines.slice(0, 800)}` : 'Existing comments: (none observed)',
+                'Before writing, determine: who posted this, who appears in the media, and who the existing comments are addressing.',
+            ].join('\n');
+            const voiceBlock = campaignVoiceBlock(socialStrategyPrompt, placementMain(platform, v.author || 'author'));
+            const genPrompt = `${voiceBlock}\n\n${structuralTaskLine(socialStrategyPrompt, platformConfig.aiPrompts?.generateReply || platformConfig.aiPrompts?.generateComment)}\n\n${postContext}`;
             const raw = ai ? await ai.generate(genPrompt) : '';
             commentText = sanitizeTypedText(raw, 0, false);
         } catch (e) { logger.warn(`${label} comment gen failed: ${e.message}`); }
@@ -320,8 +351,8 @@ export async function runGenericEngagement(page, opts) {
         let wavesDone = 0;
         if (s.commentItem && s.commentReplyButton) {
             const wave = await runCommentWaves(page, {
-                platform, platformConfig, profileId, taskId,
-                maxRepliesPerPost, requireAiForComments,
+                platform, platformConfig, profileId, campaignId, taskId,
+                maxRepliesPerPost, requireAiForComments, targetedComments, targetScreen,
                 author: v.author || 'author', socialStrategyPrompt,
                 analysisText: analyzed, aiOverride: ai, log: logger,
             });

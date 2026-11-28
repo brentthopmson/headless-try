@@ -14,35 +14,50 @@ import limitsCore from './limitsCore.js';
 import { checkActionAllowed } from './limits.js';
 import { getAccountUsage, updateAccountUsage } from './hubUpdater.js';
 import { createTally, stepQuotaAction, accountStep } from './quotaActions.js';
+import { resolveCommentPolicy } from './commentPolicy.js';
+import { screenTargets, isTargetApproved } from './commentTargeting.js';
 
 const { toLimitActions } = limitsCore;
 
-// ==================== Campaign-context-first prompt framing ====================
-// The campaign's socialStrategyPrompt (the "AI context" the user writes per
-// campaign) is the AUTHORITATIVE voice/persona. Engine rules only note the
-// SETTING (public comment on someone else's post), never the identity/tone.
-// Previously engine frames like "you are an everyday viewer, NOT the author"
-// were placed ABOVE the strategy and said "apply only within the voice rules
-// above", which overrode campaign personas (e.g. a first-person artist burner).
-const SETTING_NOTE = "Setting: this is a public comment/reply on someone else's post, not a private DM and not your own profile. Stay consistent with the campaign voice below.";
+// ==================== Structural prompt framing (engine) ====================
+// ENGINE = STRUCTURE ONLY. It describes WHERE an action happens (public comment
+// on a post / public reply to a comment under a post) and the raw data observed
+// about that placement. It never supplies identity, persona, tone, wording,
+// address-forms, or engagement tactics — ALL of that comes from the campaign's
+// socialStrategyPrompt, which is authoritative and generic across campaigns.
+const PLACEMENT_NOTE = "PLACEMENT (structural facts only — do not override the campaign voice above): this action is public, on someone else's post, not a private message and not your own profile.";
 
 /**
- * Build the authoritative voice block for a comment or reply prompt.
+ * Build a prompt block: campaign voice (authoritative) + structural placement.
  * @param {string} socialStrategyPrompt - campaign's configured AI context (authoritative)
- * @param {string} engineFrame - platform-specific setting-only note (optional)
+ * @param {string} placement - structural facts about where the action happens (optional)
  */
-export function campaignVoiceBlock(socialStrategyPrompt, engineFrame = '') {
+export function campaignVoiceBlock(socialStrategyPrompt, placement = '') {
   const strategy = String(socialStrategyPrompt || '').trim();
+  const placementText = String(placement || '').trim();
   if (strategy) {
     return [
       'CAMPAIGN VOICE & IDENTITY (AUTHORITATIVE — follow this exactly for tone, persona, and how to address people):',
       strategy,
       '',
-      SETTING_NOTE + (engineFrame ? ' ' + String(engineFrame).trim() : ''),
+      PLACEMENT_NOTE,
+      ...(placementText ? [placementText] : []),
     ].join('\n');
   }
-  // No campaign strategy: fall back to the engine frame verbatim (old behavior).
-  return [engineFrame || '', SETTING_NOTE].filter(Boolean).join('\n');
+  // No campaign strategy: keep the legacy engine-only framing (generic structure).
+  return [placementText, PLACEMENT_NOTE].filter(Boolean).join('\n');
+}
+
+/**
+ * Neutral, structural Task line. With a campaign strategy present the engine
+ * emits NO platform voice/style rules (sentence caps, @mention bans, "ask a
+ * question", follower rules, etc.) — those belong in the campaign prompt.
+ * Without a strategy the legacy platform prompt is used as fallback.
+ */
+export function structuralTaskLine(socialStrategyPrompt, platformFallback) {
+  return String(socialStrategyPrompt || '').trim()
+    ? 'Task: Write one public comment/reply for the placement described above, in the campaign voice above.'
+    : `Task: ${String(platformFallback || 'Write a natural comment.').trim()}`;
 }
 
 // ==================== Profile Download ====================
@@ -1136,9 +1151,36 @@ export function interpolate(value, context) {
     });
 }
 
+// Collect observed comment/message targets from workflow results/context for
+// central screening. Accepts arrays of objects, arrays of strings, or JSON.
+function collectWorkflowTargets(source) {
+    const out = [];
+    if (!source || typeof source !== 'object') return out;
+    const keys = ['comments', 'capturedComments', 'analyzedComments', 'commentList', 'inboxMessages', 'messages'];
+    for (const key of keys) {
+        let v = source[key];
+        if (typeof v === 'string') { try { v = JSON.parse(v); } catch { continue; } }
+        if (!Array.isArray(v)) continue;
+        for (const item of v) {
+            if (typeof item === 'string') out.push({ text: item });
+            else if (item && typeof item === 'object') out.push(item);
+        }
+    }
+    return out;
+}
+
 // ==================== Generic Workflow Executor ====================
 
 export async function executeWorkflow(page, workflow, context, platformConfig, aiProvider, requireAiForComments = false) {
+    // CENTRAL POLICY: both toggles resolved from the task context (with campaign
+    // settings fallback). The positional arg stays for backward compatibility.
+    const commentPolicy = await resolveCommentPolicy(
+        { requireAiForComments, targetedComments: context?.targetedComments },
+        { campaignId: context?.campaignId || null, log: logger, label: 'workflow:policy' }
+    );
+    const requireAiForCommentsEffective = commentPolicy.requireAiForComments;
+    const targetedComments = commentPolicy.targetedComments;
+    let workflowTargetScreen = context?.targetScreen || null;
     const results = {};
     // Set when the guard blocked an AI-generated comment/reply — the following
     // fillText/submit steps are skipped so no fallback text can ever be posted.
@@ -1163,7 +1205,7 @@ export async function executeWorkflow(page, workflow, context, platformConfig, a
 
             // Guard: if AI was required but unavailable, never type or submit a
             // comment/reply (covers every platform's workflow-based endpoints).
-            if (requireAiForComments && commentGenerationBlocked) {
+            if (requireAiForCommentsEffective && commentGenerationBlocked) {
                 const rawSel = String(step.selector || '');
                 const isCommentFill = action === 'fillText' && /commentBox|replyTextBox|comment/i.test(rawSel);
                 const isCommentSubmit = action === 'click' && /commentSubmit|replySubmit|commentPost/i.test(rawSel);
@@ -1268,18 +1310,53 @@ export async function executeWorkflow(page, workflow, context, platformConfig, a
                             if (k === 'action' || k === 'prompt') continue;
                             replaceContext[k] = interpolate(v, stepContext);
                         }
-                        const rawFull = Object.entries(replaceContext).reduce((p, [key, val]) => {
-                            return p.replace(new RegExp(`\\{${key}\\}`, 'g'), String(val ?? ''));
-                        }, prompt);
-                        // Campaign context (socialStrategyPrompt) is authoritative
-                        // for voice/persona; the engine frame is only a setting note.
-                        const isReply = step.action === 'aiGenerateReply';
-                        const engineFrame = isReply
-                            ? 'Setting: this is a public reply to another viewer\'s comment under the post (not a private DM).'
-                            : 'Setting: this is a public comment on a post (not a private DM, not your own profile).';
                         const strategyForWorkflow = stepContext.socialStrategyPrompt
                             || (typeof context === 'object' && context?.socialStrategyPrompt)
                             || '';
+                        let rawFull;
+                        if (String(strategyForWorkflow || '').trim()) {
+                            // ENGINE = structure + raw data only. Drop the
+                            // platform prompt's identity/style/tactic text.
+                            const dataLines = Object.entries(replaceContext)
+                                .filter(([k]) => !['socialStrategyPrompt', 'prompt', 'action'].includes(String(k)))
+                                .map(([k, v]) => `${k}: ${String(v ?? '').slice(0, 2000)}`);
+                            rawFull = `${structuralTaskLine(strategyForWorkflow, '')}\n\nSTRUCTURAL CONTEXT (observed data):\n${dataLines.join('\n')}\nBefore writing, determine: who posted this, who appears in the media, and who the existing comments are addressing.`;
+                        } else {
+                            // Legacy fallback: no campaign strategy, keep the platform prompt.
+                            rawFull = Object.entries(replaceContext).reduce((p, [key, val]) => {
+                                return p.replace(new RegExp(`\\{${key}\\}`, 'g'), String(val ?? ''));
+                            }, prompt);
+                        }
+                        const isReply = step.action === 'aiGenerateReply';
+                        // CENTRAL TARGETING: screen the observed comments once, then
+                        // skip generation for targets the campaign wouldn't reply to.
+                        if (targetedComments && isReply) {
+                            const observed = [...collectWorkflowTargets(results), ...collectWorkflowTargets(stepContext)];
+                            if (!workflowTargetScreen) {
+                                workflowTargetScreen = await screenTargets({
+                                    ai: aiProvider,
+                                    targets: observed,
+                                    context: { strategyPrompt: strategyForWorkflow, postOwner: stepContext.author || '' },
+                                    socialStrategyPrompt: strategyForWorkflow,
+                                    maxTargets: 30,
+                                    log: logger,
+                                    label: 'workflow:targeting',
+                                });
+                            }
+                            const candidateText = String(
+                                replaceContext.commentText || replaceContext.targetText || replaceContext.text
+                                || replaceContext.capturedComment || replaceContext.comment || ''
+                            ).trim();
+                            if (candidateText && !isTargetApproved(workflowTargetScreen, { text: candidateText })) {
+                                results[step.resultKey || 'generated'] = '';
+                                commentGenerationBlocked = true;
+                                logger.info(`[executeWorkflow] Reply skipped (targetedComments) — target not on-target: "${candidateText.slice(0, 60)}..."`);
+                                break;
+                            }
+                        }
+                        const engineFrame = isReply
+                            ? 'Action: a public reply to another user\'s comment under a post (not a private message).'
+                            : 'Action: a public comment on another account\'s post (not a private message, not your own profile).';
                         const fullPrompt = `${campaignVoiceBlock(strategyForWorkflow, engineFrame)}\n\n${rawFull}`;
                         try {
                             const rawGen = aiProvider ? await aiProvider.generate(fullPrompt) : '';
@@ -1293,7 +1370,7 @@ export async function executeWorkflow(page, workflow, context, platformConfig, a
                                 const closed = gated.replace(/[,;:\-–—\s]+$/, '');
                                 gated = closed ? closed + '.' : '';
                             }
-                            if (requireAiForComments && !gated) {
+                            if (requireAiForCommentsEffective && !gated) {
                                 results[step.resultKey || 'generated'] = '';
                                 commentGenerationBlocked = true;
                                 logger.info('[executeWorkflow] AI generation unavailable — comment/reply will be skipped (no fallback text).');
@@ -1303,7 +1380,7 @@ export async function executeWorkflow(page, workflow, context, platformConfig, a
                             }
                         } catch (e) {
                             logger.error(`[executeWorkflow] AI generation failed: ${e.message}`);
-                            if (requireAiForComments) {
+                            if (requireAiForCommentsEffective) {
                                 results[step.resultKey || 'generated'] = '';
                                 commentGenerationBlocked = true;
                                 logger.info('[executeWorkflow] AI generation failed — comment/reply will be skipped (no fallback text).');

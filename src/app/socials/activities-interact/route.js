@@ -14,6 +14,7 @@ import {
     DOMHelpers,
 } from '../_shared/routeHelper.js';
 import workflowOps from '../_shared/workflowOps.js';
+import { resolveCommentPolicy } from '../_shared/commentPolicy.js';
 
 const { normalizeWorkflowOp, resolveWorkflowOps, pickWorkflowKey } = workflowOps;
 import limitsCore from '../_shared/limitsCore.js';
@@ -50,7 +51,13 @@ async function processTask(taskPayload) {
     let profileDir = null;
     let runnerAccounted = false;
     const taskId = taskPayload.taskId || ("act-" + Math.random().toString(36).substring(2, 11));
-    const requireAiForComments = taskPayload.requireAiForComments === true || String(taskPayload.requireAiForComments || '').toLowerCase() === 'true';
+    const commentPolicy = await resolveCommentPolicy(taskPayload, {
+        campaignId: taskPayload.campaignId || null,
+        log: logger,
+        label: `activities:${taskId}:policy`,
+    });
+    const requireAiForComments = commentPolicy.requireAiForComments;
+    const targetedComments = commentPolicy.targetedComments;
     const maxRepliesPerPost = Math.max(1, parseInt(taskPayload.maxRepliesPerPost, 10) || 30);
     const socialStrategyPrompt = taskPayload.socialStrategyPrompt || '';
 
@@ -135,6 +142,7 @@ async function processTask(taskPayload) {
                 maxEngagements: Number(taskPayload.maxEngagements) || 20,
                 maxRepliesPerPost,
                 requireAiForComments,
+                targetedComments,
                 socialStrategyPrompt,
             });
             for (const [k, v] of Object.entries(run.quota || {})) {
@@ -175,7 +183,11 @@ async function processTask(taskPayload) {
                     platform,
                     operation,
                     keyword: kw || undefined,
+                    campaignId: taskPayload.campaignId || null,
                     platformConfig,
+                    socialStrategyPrompt,
+                    requireAiForComments,
+                    targetedComments,
                 };
 
                 let workflowResults = {};

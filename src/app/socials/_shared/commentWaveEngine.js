@@ -8,7 +8,9 @@
 // Selector/DOM failures are non-fatal: log and skip, never break the campaign.
 
 import logger from "../../../utils/logger.js";
-import { checkGate, consumeAction, campaignVoiceBlock } from "./routeHelper.js";
+import { checkGate, consumeAction, campaignVoiceBlock, structuralTaskLine } from "./routeHelper.js";
+import { resolveCommentPolicy } from "./commentPolicy.js";
+import { screenTargets, isTargetApproved } from "./commentTargeting.js";
 import limitsCore from "./limitsCore.js";
 import { ensureCommentsVisibleGeneric, extractCommentsGeneric, postCommentGeneric } from "../search-interact/platformHelper/GenericHelpers.js";
 import { MultiProviderAI } from "../search-interact/platforms.js";
@@ -39,12 +41,13 @@ function sanitizeTypedText(text, maxChars = 0, keepMentions = true) {
     // Keep @mentions by default so replies address the commenter by name.
     return keepMentions ? s.trim() : stripMentions(s).trim();
 }
-function voiceReply(commenter, author) {
+// STRUCTURAL placement only — identity, tone and wording belong to the campaign.
+function placementReply(commenter, author) {
     return [
-        `WHO YOU ARE: the viewer who just commented on @${author || 'author'}'s post. You are NOT the author and NOT the commenter.`,
-        `WHO YOU TALK TO: @${commenter || 'a fellow viewer'} — another viewer whose comment sits UNDER the same post (not addressed to you, not a DM).`,
-        'RULES: reply peer-to-peer. Never thank them for following YOU, never propose a follow-for-follow pact, never talk about follower counts. React to their words + the post topic, briefly.',
-        `PRONOUNS: "you" = @${commenter || 'the commenter'}; "I" = you, the replier; "the author" = @${author || 'author'}.`,
+        'Action: a public reply to another user\'s comment under a post.',
+        `Post owner: @${author || 'author'}.`,
+        `Author of the comment being replied to: @${commenter || 'unknown'}.`,
+        'Setting: that comment thread under the post; not a private message.',
     ].join('\n');
 }
 
@@ -57,9 +60,13 @@ export async function runCommentWaves(page, opts = {}) {
         platform,
         platformConfig,
         profileId = null,
+        campaignId = null,
         taskId = 'waves',
         maxRepliesPerPost = 30,
-        requireAiForComments = false,
+        requireAiForComments: _requireAiForCommentsRaw = false,
+        targetedComments: _targetedCommentsRaw,
+        targetScreen: _targetScreenRaw = null,
+        targetContext = {},
         author = '',
         socialStrategyPrompt = '',
         analysisText = '',
@@ -67,6 +74,13 @@ export async function runCommentWaves(page, opts = {}) {
         onCaptchaCheck = null,
         log = logger,
     } = opts;
+    const policy = await resolveCommentPolicy(
+        { requireAiForComments: _requireAiForCommentsRaw, targetedComments: _targetedCommentsRaw },
+        { campaignId, log, label: `waves:${taskId}:policy` }
+    );
+    const requireAiForComments = policy.requireAiForComments;
+    const targetedComments = policy.targetedComments;
+    let targetScreen = _targetScreenRaw;
     const cfg = platformConfig || {};
     const s = cfg.selectors || {};
     const prefix = `[waves:${taskId}]`;
@@ -128,6 +142,19 @@ export async function runCommentWaves(page, opts = {}) {
     }
 
     const ai = aiOverride || MultiProviderAI;
+    // Central screening: callers may pass a precomputed result (avoiding a
+    // duplicate AI call); otherwise screen here before any reply DOM work.
+    if (targetedComments && !targetScreen) {
+        targetScreen = await screenTargets({
+            ai,
+            targets: comments,
+            context: { postOwner: author || 'author', mediaAnalysis: String(analysisText || '').slice(0, 1200), ...(targetContext || {}) },
+            socialStrategyPrompt,
+            maxTargets: maxRepliesPerPost,
+            log,
+            label: `${prefix}:targeting`,
+        });
+    }
     const cap = Math.max(1, Number(maxRepliesPerPost) || 30);
     const seen = new Set();
     let capLogged = false;
@@ -178,8 +205,12 @@ export async function runCommentWaves(page, opts = {}) {
             if (did) { commentLikes++; await countAction('likeComment'); await new Promise(r => setTimeout(r, 400)); }
         }
 
-        // 2) Reply (capped)
+        // 2) Reply (capped) — central targeting gate BEFORE any reply DOM click
         if (replies >= cap) continue;
+        if (targetedComments && targetScreen && !isTargetApproved(targetScreen, c)) {
+            log.info(`${prefix} reply skipped (targetedComments): "${String(c.text || '').slice(0, 50)}..."`);
+            continue;
+        }
         const replyGate = await checkGate(platform, profileId, 'commentComment').catch(() => ({ allowed: false }));
         if (!replyGate.allowed) {
             log.info(`${prefix} commentComment quota exhausted (${replyGate.reason || 'gate'}) — stopping replies on this post.`);
@@ -201,8 +232,8 @@ export async function runCommentWaves(page, opts = {}) {
         try {
             const commenter = String(c.username || '').replace(/^@+/, '').slice(0, 40);
             const displayName = String(c.displayName || c.name || '').replace(/^@+/, '').trim().slice(0, 40) || commenter;
-            const voiceBlock = campaignVoiceBlock(socialStrategyPrompt, voiceReply(commenter, author || 'author'));
-            const prompt = `${voiceBlock}\n\nTask: ${cfg.aiPrompts?.replyToComment || cfg.aiPrompts?.generateReply || 'Reply briefly.'}\n\nPost analysis (topic context): ${String(analysisText || '').slice(0, 800)}\nTheir comment on the post: "${String(c.text).slice(0, 300)}"\n\nReply to @${commenter || 'them'} (${displayName || 'fellow viewer'}) about their comment + the post topic, in the campaign voice above. PERSONALIZE: address them by name/handle once where natural. Keep it short and follow the campaign's rules for invitations/links exactly.`;
+            const voiceBlock = campaignVoiceBlock(socialStrategyPrompt, placementReply(commenter, author || 'author'));
+            const prompt = `${voiceBlock}\n\n${structuralTaskLine(socialStrategyPrompt, cfg.aiPrompts?.replyToComment || cfg.aiPrompts?.generateReply)}\n\nREPLY CONTEXT (observed data):\nPost owner: @${author || 'author'}\nComment author: @${commenter || 'unknown'} (display name: ${displayName || 'unknown'})\nMedia analysis: ${String(analysisText || '').slice(0, 800) || '(none observed)'}\nTheir comment: "${String(c.text).slice(0, 300)}"\nBefore writing, determine who wrote this comment and who it is addressing.`;
             const raw = ai ? await ai.generate(prompt, { maxTokens: 300, timeoutMs: 25000, maxTransientAttempts: 1 }).catch(() => '') : '';
             replyText = sanitizeTypedText(raw);
         } catch (e) {

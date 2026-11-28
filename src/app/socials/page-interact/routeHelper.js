@@ -6,6 +6,7 @@ import { getAccountPostStatuses, markPostEngaged, getCampaignSettings, isPostInt
 import { runCommentWaves } from '../_shared/commentWaveEngine.js';
 import { isSocialCampaignPaused } from '../_shared/pauseCheck.js';
 import { getPlatformConfig as getSearchPlatformConfig, MultiProviderAI } from '../search-interact/platforms.js';
+import { resolveCommentPolicy } from '../_shared/commentPolicy.js';
 
 const FOLLOW_OPS = new Set(["followuser", "follow", "followfromsuggested", "followfromfollowers"]);
 const UNFOLLOW_OPS = new Set(["unfollowuser", "unfollow"]);
@@ -38,10 +39,18 @@ export async function runPageInteract(options = {}) {
         stopAfterHours = 0,
         maxRepliesPerPost = 30,
         maxResultsPerKeyword = 5,
-        requireAiForComments = false,
+        requireAiForComments: _requireAiForCommentsRaw = false,
+        targetedComments: _targetedCommentsRaw,
         socialStrategyPrompt = '',
         log = logger,
     } = options;
+
+    const policy = await resolveCommentPolicy(
+        { requireAiForComments: _requireAiForCommentsRaw, targetedComments: _targetedCommentsRaw },
+        { campaignId, log, label: `page:${taskId}:policy` }
+    );
+    const requireAiForComments = policy.requireAiForComments;
+    const targetedComments = policy.targetedComments;
 
     let accountPostStatuses = {};
     if (campaignId && profileId) {
@@ -137,8 +146,8 @@ export async function runPageInteract(options = {}) {
                         const scfg = getSearchPlatformConfig(String(platform).toLowerCase());
                         if (scfg?.selectors?.commentItem && scfg?.selectors?.commentReplyButton) {
                             const wave = await runCommentWaves(page, {
-                                platform, platformConfig: scfg, profileId, taskId,
-                                maxRepliesPerPost, requireAiForComments,
+                                platform, platformConfig: scfg, profileId, campaignId, taskId,
+                                maxRepliesPerPost, requireAiForComments, targetedComments,
                                 author: String(handle || '').replace(/^@+/, ''),
                                 socialStrategyPrompt, analysisText: '',
                                 aiOverride: MultiProviderAI, log,

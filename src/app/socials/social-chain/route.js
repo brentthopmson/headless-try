@@ -27,6 +27,7 @@ import { resolveAccountGate, accountGateError } from "../_shared/accountGate.js"
 import { markTagsDone } from "../../campaign/_shared/pipelineUtils.js";
 import { captureFailureDebug } from "../_shared/debugCapture.js";
 import { isSocialCampaignPaused } from "../_shared/pauseCheck.js";
+import { resolveCommentPolicy } from "../_shared/commentPolicy.js";
 
 export { processTask as processSocialChainTask };
 
@@ -121,7 +122,13 @@ async function processTask(task) {
     const maxRepliesPerPost = Math.max(1, parseInt(task.maxRepliesPerPost, 10) || 30);
     const stopAfterHours = Math.max(0, parseFloat(task.interactionStopAfterHours ?? task.stopAfterHours) || 0);
     const engagementMode = task.engagementMode === true || String(task.engagementMode || "").toLowerCase() === "true";
-    const requireAiForComments = task.requireAiForComments === true || String(task.requireAiForComments || "").toLowerCase() === "true";
+    const taskFlags = {
+      requireAiForComments: task.requireAiForComments,
+      targetedComments: task.targetedComments,
+    };
+    const policy = await resolveCommentPolicy(taskFlags, { campaignId, log: logger, label: `social-chain:${taskId}:policy` });
+    const requireAiForComments = policy.requireAiForComments;
+    const targetedComments = policy.targetedComments;
     const messageText = task.messageText || task.commentText || task.comment || "";
     const socialStrategyPrompt = task.socialStrategyPrompt || null;
 
@@ -173,6 +180,7 @@ async function processTask(task) {
           stopAfterHours,
           socialStrategyPrompt,
           requireAiForComments,
+          targetedComments,
           taskId: `${taskId}-search`,
         };
         // Same single-tab sequential flow for every platform, not just TikTok.
@@ -254,6 +262,7 @@ async function processTask(task) {
             stopAfterHours,
             maxRepliesPerPost,
             requireAiForComments,
+            targetedComments,
             socialStrategyPrompt,
           });
           addQuota(quota, run.quota);

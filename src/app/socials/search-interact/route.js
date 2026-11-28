@@ -16,6 +16,7 @@ import {
     executeWorkflow
 } from '../_shared/routeHelper.js';
 import workflowOps from '../_shared/workflowOps.js';
+import { resolveCommentPolicy } from '../_shared/commentPolicy.js';
 
 const { normalizeWorkflowOp, resolveWorkflowOps, pickWorkflowKey } = workflowOps;
 import limitsCore from '../_shared/limitsCore.js';
@@ -84,8 +85,13 @@ async function processTask(taskRow, columnIndexes) {
         ? (key => taskRow[columnIndexes[key]])
         : (key => (taskRow ? taskRow[key] : undefined));
         const taskId = get('taskId');
-        const requireAiForComments = get('requireAiForComments') === true || String(get('requireAiForComments') || '').toLowerCase() === 'true';
         const campaignId = get('campaignId') || null;
+        const commentPolicy = await resolveCommentPolicy(
+            { requireAiForComments: get('requireAiForComments'), targetedComments: get('targetedComments') },
+            { campaignId, log: logger, label: `search:${taskId}:policy` }
+        );
+        const requireAiForComments = commentPolicy.requireAiForComments;
+        const targetedComments = commentPolicy.targetedComments;
         let browser = null;
     let page = null;
     let finalStatus = "FAILED";
@@ -205,7 +211,8 @@ async function processTask(taskRow, columnIndexes) {
                 maxRepliesPerPost,
                 stopAfterHours: interactionStopAfterHours,
                 socialStrategyPrompt,
-                requireAiForComments: get('requireAiForComments') === true || String(get('requireAiForComments') || '').toLowerCase() === 'true',
+                requireAiForComments,
+                targetedComments,
                 taskId,
             });
             results = engagementSummary.results || [];
@@ -279,7 +286,8 @@ async function processTask(taskRow, columnIndexes) {
                 platform, platformConfig, ai: MultiProviderAI, profileId, campaignId,
                 keywords: searchQueries, maxResultsPerKeyword, maxRepliesPerPost,
                 stopAfterHours: interactionStopAfterHours, socialStrategyPrompt, taskId,
-                requireAiForComments: get('requireAiForComments') === true || String(get('requireAiForComments') || '').toLowerCase() === 'true',
+                requireAiForComments,
+                targetedComments,
             });
             results = engagementSummary.results || [];
             quotaSummary = engagementSummary.quota || {};
@@ -314,8 +322,11 @@ async function processTask(taskRow, columnIndexes) {
                     platform,
                     operation,
                     keyword: kw,
+                    campaignId,
                     platformConfig,
                     socialStrategyPrompt,
+                    requireAiForComments,
+                    targetedComments,
                 };
 
                 let workflowResults = {};
